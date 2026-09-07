@@ -10,7 +10,7 @@ This is an audit control, not runtime verification — runtime network
 observation is a separate required evidence type.
 
 Usage:
-    python audit_hosted_paths.py [--manifest PATH] [--root PATH] [--fail-on-new-only]
+    python audit_hosted_paths.py [--manifest PATH] [--root PATH]
 Exit code 0 = every match has an explicit disposition.
 Exit code 1 = new/undispositioned matches (or malformed manifest).
 """

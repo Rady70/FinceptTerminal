@@ -45,7 +45,8 @@ bool HostedPathGuard::is_fincept_destination(const QUrl& url) {
                url.path().compare(QLatin1String("/Fincept-Corporation"), Qt::CaseInsensitive) == 0;
     }
     if (host == QLatin1String("github.com")) {
-        return url.path().startsWith(QLatin1String("/Fincept-Corporation"), Qt::CaseInsensitive);
+        return url.path().startsWith(QLatin1String("/Fincept-Corporation/"), Qt::CaseInsensitive) ||
+               url.path().compare(QLatin1String("/Fincept-Corporation"), Qt::CaseInsensitive) == 0;
     }
 
     return false;

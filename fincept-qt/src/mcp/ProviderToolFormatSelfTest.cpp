@@ -617,8 +617,6 @@ int run_provider_tool_format_selftest() {
         // provider added later is covered the day it is added.
         QStringList coverage;
         for (const QString& prov : ai_chat::ProviderCatalog::known_providers()) {
-            if (prov == QLatin1String("fincept"))
-                continue; // route is AppConfig::api_base_url() + "/research/chat", composed by the caller
             const QString url =
                 ai_chat::ProviderCatalog::chat_endpoint(prov, QString(), QStringLiteral("test-model"));
             if (url.isEmpty()) {

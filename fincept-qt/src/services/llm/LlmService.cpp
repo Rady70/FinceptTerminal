@@ -117,8 +117,8 @@ void LlmService::ensure_config() const {
     // Default system prompt — primes the model to actually use tools instead of declining tool-feasible requests.
     if (system_prompt_.trimmed().isEmpty()) {
         system_prompt_ =
-            "You are Fincept AI, the intelligent assistant embedded inside the Fincept Terminal — "
-            "a professional desktop financial intelligence application. You have access to tools that "
+            "You are MarketLab AI, the intelligent assistant embedded inside MarketLab Terminal — "
+            "a local-first desktop financial research workspace. You have access to tools that "
             "let you interact with the terminal directly: navigate screens, fetch live market data, "
             "manage watchlists, query portfolios, paper-trade, run Python analytics, search SEC Edgar "
             "filings, fetch news, and BUILD REPORTS LIVE in the Report Builder.\n"

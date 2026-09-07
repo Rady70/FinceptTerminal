@@ -2,6 +2,7 @@
 
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
+#include "network/http/HostedPathGuard.h"
 #include "services/llm/ModelCatalog.h"
 #include "services/llm/ProviderCatalog.h"
 
@@ -111,6 +112,16 @@ void ArenaLlmClient::complete(const ArenaLlmRequest& req, std::function<void(Are
     if (url.isEmpty()) {
         ArenaLlmResult r;
         r.error = "no endpoint for provider " + p;
+        cb(r);
+        return;
+    }
+
+    // MarketLab: this client owns its QNetworkAccessManager, so the shared
+    // deny-list cannot see its requests — reject Fincept-owned destinations
+    // here before any network access (FINCEPT_FORK_PLAN.md §5.3).
+    if (network::HostedPathGuard::is_fincept_destination(QUrl(url))) {
+        ArenaLlmResult r;
+        r.error = network::HostedPathGuard::unavailable_error(QUrl(url));
         cb(r);
         return;
     }

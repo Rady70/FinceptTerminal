@@ -534,12 +534,12 @@ void LockScreen::retranslateUi() {
     if (lockout_badge_)
         lockout_badge_->setText(tr("SECURITY"));
     if (lockout_msg_)
-        // MarketLab: no account session exists — the recovery step is to set
-        // a fresh local PIN, not to re-authenticate.
+        // MarketLab: no account session exists — the recovery step is to
+        // clear the PIN and set a fresh local one, not to re-authenticate.
         lockout_msg_->setText(tr("Too many failed PIN attempts.\n\n"
                                  "For your security, the terminal has been locked.\n"
-                                 "Your PIN has been cleared — press the button below\n"
-                                 "to set a new PIN and regain access."));
+                                 "Press the button below to clear your PIN and set\n"
+                                 "a new one to regain access."));
     if (lockout_reauth_btn_)
         lockout_reauth_btn_->setText(tr("  SET NEW PIN  "));
 }

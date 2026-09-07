@@ -243,6 +243,6 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
 // NOTE: call_sync() used to live here. It had zero call sites and parked the
 // calling thread in an unbounded `loop.exec()` with no timeout — a permanent
 // UI-freeze hazard for whoever reached for it next. Deleted; use the
-// callback-based call() above. Its declaration in QuantLibClient.h can go too.
+// callback-based call() above.
 
 } // namespace fincept::services
