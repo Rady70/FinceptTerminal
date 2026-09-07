@@ -102,7 +102,7 @@ from .config import (
 
 __version__ = "1.0.0"
 __author__ = "Fincept Corporation"
-__email__ = "dev@fincept.com"
+__email__ = "local@marketlab.local"
 
 # Module metadata
 __all__ = [

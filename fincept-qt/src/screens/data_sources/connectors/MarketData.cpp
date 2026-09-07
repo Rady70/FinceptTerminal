@@ -178,17 +178,8 @@ static QVector<ConnectorConfig> market_configs() {
          true,
          {{"apiKey", "API Key", FieldType::Password, "your-api-key", true, "", {}}}},
 
-        {"fincept",
-         "Fincept Data API",
-         "fincept",
-         Category::MarketData,
-         "F",
-         "#F58025",
-         "Fincept Terminal Data API",
-         true,
-         true,
-         {{"host", "Host", FieldType::Text, "localhost", true, "", {}},
-          {"port", "Port", FieldType::Number, "8194", true, "8194", {}}}},
+        // MarketLab: the "Fincept Data API" connector is removed — Fincept-
+        // hosted data is unavailable in this fork (FINCEPT_FORK_PLAN.md §5.3).
 
         {"reuters",
          "Refinitiv/Reuters",

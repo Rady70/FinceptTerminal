@@ -24,7 +24,7 @@ QVector<DashboardTemplate> all_dashboard_templates() {
              gi("portfolio_summary", 0, 5, 6, 4),
              gi("watchlist", 6, 5, 6, 4),
              gi("news", 0, 9, 8, 4),
-             gi("econ_calendar", 8, 9, 4, 4),
+             gi("sentiment", 8, 9, 4, 4),
          }},
 
         // ── Hedge Fund ────────────────────────────────────────────────────────
@@ -36,19 +36,19 @@ QVector<DashboardTemplate> all_dashboard_templates() {
              gi("screener", 6, 0, 6, 5, 3, 4),
              gi("risk_metrics", 0, 5, 4, 4),
              gi("performance", 4, 5, 4, 4),
-             gi("econ_calendar", 8, 5, 4, 4),
+             gi("top_movers", 8, 5, 4, 4),
              gi("news", 0, 9, 12, 4),
          }},
 
         // ── Crypto Trader ─────────────────────────────────────────────────────
+        // MarketLab: quick_trade removed (no order-entry surface).
         {"crypto_trader",
          QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Crypto Trader"),
-         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Crypto prices, quick trade, sentiment and movers"),
+         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Crypto prices, watchlist, sentiment and movers"),
          {
              gi("crypto", 0, 0, 6, 4),
              gi("top_movers", 6, 0, 6, 5, 3, 4),
-             gi("quick_trade", 0, 4, 4, 5),
-             gi("watchlist", 4, 4, 8, 5),
+             gi("watchlist", 0, 4, 12, 5),
              gi("sentiment", 0, 9, 6, 4),
              gi("news", 6, 9, 6, 4),
          }},
@@ -68,26 +68,26 @@ QVector<DashboardTemplate> all_dashboard_templates() {
          }},
 
         // ── Macro Economist ───────────────────────────────────────────────────
+        // MarketLab: econ_calendar removed (hosted macro calendar).
         {"macro_economist",
          QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Macro Economist"),
-         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Economic calendar, indices, commodities and news"),
+         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Indices, commodities, performance and news"),
          {
-             gi("econ_calendar", 0, 0, 6, 5, 3, 4),
-             gi("indices", 6, 0, 6, 4),
-             gi("commodities", 6, 4, 6, 4),
+             gi("indices", 0, 0, 6, 5, 3, 4),
+             gi("commodities", 6, 0, 6, 4),
              gi("performance", 0, 5, 6, 4),
              gi("news", 0, 9, 8, 5),
              gi("risk_metrics", 8, 8, 4, 5),
          }},
 
         // ── Geopolitics Analyst ───────────────────────────────────────────────
+        // MarketLab: econ_calendar removed (hosted macro calendar).
         {"geopolitics",
          QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "Geopolitics Analyst"),
-         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "News, sentiment, economic calendar and screener"),
+         QT_TRANSLATE_NOOP("fincept::screens::DashboardTemplates", "News, sentiment and screener"),
          {
              gi("news", 0, 0, 8, 5),
              gi("sentiment", 8, 0, 4, 4),
-             gi("econ_calendar", 8, 4, 4, 5),
              gi("screener", 0, 5, 6, 5, 3, 4),
              gi("indices", 6, 5, 6, 4),
          }},

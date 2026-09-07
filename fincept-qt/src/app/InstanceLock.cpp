@@ -72,7 +72,7 @@ QString InstanceLock::socket_name_for(const QString& key) {
     // short enough that even on macOS (where local-socket paths are subject
     // to OS-level length caps via $TMPDIR) we won't trip the cap.
     const auto hash = QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex();
-    return QStringLiteral("fincept-%1").arg(QString::fromLatin1(hash).left(16));
+    return QStringLiteral("marketlab-%1").arg(QString::fromLatin1(hash).left(16));
 }
 
 InstanceLock::InstanceLock(QObject* parent) : QObject(parent) {}

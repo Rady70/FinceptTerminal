@@ -113,7 +113,7 @@ QWidget* ContactScreen::build_page() {
                              .arg(colors::AMBER(), MF));
     vl->addWidget(title);
 
-    auto* subtitle = new QLabel(tr("Get in touch with our team"));
+    auto* subtitle = new QLabel(tr("This fork has no commercial support channel"));
     subtitle->setStyleSheet(
         QString("color: %1; font-size: 13px; background: transparent; %2").arg(colors::TEXT_TERTIARY(), MF));
     vl->addWidget(subtitle);
@@ -121,6 +121,8 @@ QWidget* ContactScreen::build_page() {
     vl->addSpacing(8);
 
     // ── Contact Information ──────────────────────────────────────────────────
+    // MarketLab: plain-text identity only — no email handlers, no Discord, no
+    // GitHub issue links, no browser launches (FINCEPT_FORK_PLAN.md §4, §5.3).
     {
         auto* panel = new QWidget(this);
         panel->setStyleSheet(PANEL());
@@ -136,24 +138,17 @@ QWidget* ContactScreen::build_page() {
         grid->setContentsMargins(14, 12, 14, 12);
         grid->setSpacing(10);
 
-        // Brand/contact values (email, handles, company name) are shown verbatim
-        // — not translated.
-        //
-        // Only channels that actually exist are listed. The previous version
-        // advertised a "+1-800-FINCEPT" phone line, staffed weekend support
-        // hours, a "response within 4-6 hours" SLA and a New York office —
-        // none of which are documented anywhere in this project. Publishing
-        // unreachable contact details on a contact page is worse than
-        // publishing none.
-        grid->addWidget(
-            make_contact_card(tr("EMAIL SUPPORT"), "support@fincept.in", tr("Primary support channel")), 0, 0);
-        grid->addWidget(make_contact_card(tr("COMMUNITY"), "discord.gg/ae87a8ygbN", tr("Discussion and peer help")), 0,
-                        1);
-        grid->addWidget(make_contact_card(tr("ISSUE TRACKER"), "github.com/Fincept-Corporation/FinceptTerminal",
-                                          tr("Bug reports and feature requests")),
+        grid->addWidget(make_contact_card(tr("FORK REPOSITORY"), tr("github.com/Rady70/FinceptTerminal"),
+                                          tr("Source of this personal fork")),
+                        0, 0);
+        grid->addWidget(make_contact_card(tr("UPSTREAM"), tr("Fincept Terminal v4.5.0 (ec88590)"),
+                                          tr("Released application-code baseline, AGPL-3.0-or-later")),
+                        0, 1);
+        grid->addWidget(make_contact_card(tr("DOCUMENTATION"), tr("Docs screen"),
+                                          tr("Bundled documentation inside the terminal")),
                         1, 0);
-        grid->addWidget(make_contact_card(tr("IN-APP TICKETS"), tr("Support tab"),
-                                          tr("Open a tracked ticket from inside the terminal")),
+        grid->addWidget(make_contact_card(tr("DIAGNOSTICS"), tr("About → Diagnostics"),
+                                          tr("Crash dumps and state locations are listed in the About screen")),
                         1, 1);
 
         pvl->addWidget(body);
@@ -161,6 +156,8 @@ QWidget* ContactScreen::build_page() {
     }
 
     // ── Quick Actions ────────────────────────────────────────────────────────
+    // MarketLab: the upstream email/discord/github actions are removed; the
+    // page carries only static identity text.
     {
         auto* panel = new QWidget(this);
         panel->setStyleSheet(PANEL());
@@ -176,40 +173,14 @@ QWidget* ContactScreen::build_page() {
         hl->setContentsMargins(14, 12, 14, 12);
         hl->setSpacing(10);
 
-        auto make_action = [](const QString& text) {
-            auto* btn = new QPushButton(text);
-            btn->setFixedHeight(36);
-            btn->setCursor(Qt::PointingHandCursor);
-            btn->setStyleSheet(QString("QPushButton { background: %1; color: %2; border: 1px solid %3; "
-                                       "border-radius: 2px; padding: 8px 16px; font-size: 12px; "
-                                       "font-family:'Consolas','Courier New',monospace; }"
-                                       "QPushButton:hover { background: %4; color: #38bdf8; }")
-                                   .arg(colors::BG_RAISED(), colors::CYAN(), colors::BORDER_DIM(), colors::BG_HOVER()));
-            return btn;
-        };
+        auto* note = new QLabel(tr("MarketLab Terminal is a personal, local-first research build of Fincept "
+                                   "Terminal. It is not affiliated with Fincept Corporation, offers no support "
+                                   "channel, and opens no external contact links."));
+        note->setWordWrap(true);
+        note->setStyleSheet(QString("color: %1; font-size: 12px; background: transparent; %2")
+                                .arg(colors::TEXT_SECONDARY(), MF));
+        hl->addWidget(note, 1);
 
-        auto* email_btn = make_action(tr("Send Email"));
-        email_btn->setAccessibleName(tr("Send an email to support"));
-        connect(email_btn, &QPushButton::clicked, this,
-                []() { QDesktopServices::openUrl(QUrl("mailto:support@fincept.in")); });
-        hl->addWidget(email_btn);
-
-        auto* discord_btn = make_action(tr("Join Discord"));
-        discord_btn->setAccessibleName(tr("Open the Fincept Discord server"));
-        connect(discord_btn, &QPushButton::clicked, this,
-                []() { QDesktopServices::openUrl(QUrl("https://discord.gg/ae87a8ygbN")); });
-        hl->addWidget(discord_btn);
-
-        auto* github_btn = make_action(tr("GitHub Issues"));
-        github_btn->setAccessibleName(tr("Open the GitHub issue tracker"));
-        connect(github_btn, &QPushButton::clicked, this, []() {
-            QDesktopServices::openUrl(QUrl("https://github.com/Fincept-Corporation/FinceptTerminal/issues"));
-        });
-        hl->addWidget(github_btn);
-
-        hl->addStretch();
-        setTabOrder(email_btn, discord_btn);
-        setTabOrder(discord_btn, github_btn);
         pvl->addWidget(body);
         vl->addWidget(panel);
     }
@@ -235,12 +206,13 @@ QWidget* ContactScreen::build_page() {
             QString a;
         };
         const Issue issues[] = {
-            {tr("Cannot log in or forgot password"),
-             tr("Use the Forgot Password option on the login screen, or contact support@fincept.in")},
             {tr("Python setup fails or times out"),
              tr("Ensure you have a stable internet connection. Retry setup or check firewall settings.")},
             {tr("Data not loading or showing stale"),
              tr("Check your internet connection. Try refreshing the screen or restarting the terminal.")},
+            {tr("A screen is missing or unavailable"),
+             tr("Unavailable screens are listed with their reasons in About → Capabilities and are "
+                "deliberately unreachable in this build.")},
         };
 
         for (const auto& issue : issues) {

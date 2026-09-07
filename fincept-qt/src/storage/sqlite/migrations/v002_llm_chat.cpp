@@ -30,9 +30,9 @@ Result<void> apply_v002(QSqlDatabase& db) {
     if (r.is_err())
         return r;
 
-    // Insert default Fincept LLM
-    sql(db, "INSERT OR IGNORE INTO llm_configs (provider, api_key, base_url, model, is_active) "
-            "VALUES ('fincept', '', 'https://api.fincept.in/research/llm', 'fincept-llm', 1)");
+    // MarketLab: the default Fincept LLM provider row is NOT seeded — the
+    // hosted fincept provider is removed from this fork (FINCEPT_FORK_PLAN.md
+    // §5.3, §6). Users configure their own local or API LLM providers.
 
     // ── LLM Global Settings (singleton row) ──────────────────────────────────
     r = sql(db, "CREATE TABLE IF NOT EXISTS llm_global_settings ("

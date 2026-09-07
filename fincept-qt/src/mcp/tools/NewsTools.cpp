@@ -474,8 +474,8 @@ std::vector<ToolDef> get_news_tools() {
         ToolDef t;
         t.name = "analyze_news_article";
         t.description = "Run AI sentiment + market-impact + risk analysis on a single article URL. "
-                        "Returns sentiment score, urgency, key points, and regulatory/geopolitical/"
-                        "operational/market risk signals. Consumes API credits.";
+                        "Unavailable in MarketLab Terminal: hosted article analysis is removed — "
+                        "use a user-configured local LLM via AI Chat on the retrieved text.";
         t.category = "news";
         t.input_schema.properties =
             QJsonObject{{"url", QJsonObject{{"type", "string"}, {"description", "Article URL"}}}};
@@ -498,7 +498,9 @@ std::vector<ToolDef> get_news_tools() {
             });
 
             if (!ok)
-                return ToolResult::fail("Analysis failed (network error or insufficient credits)");
+                return ToolResult::fail(
+                    "Hosted article analysis is unavailable in MarketLab Terminal — use a "
+                    "user-configured local LLM via AI Chat.");
 
             auto risk_to_json = [](const RiskSignal& r) {
                 return QJsonObject{{"level", r.level}, {"details", r.details}};
@@ -528,7 +530,8 @@ std::vector<ToolDef> get_news_tools() {
         ToolDef t;
         t.name = "summarize_news_headlines";
         t.description = "AI-summarize the top N current news headlines into a single paragraph "
-                        "of market-relevant insight. Cached for 10 minutes per headline set.";
+                        "of market-relevant insight. Unavailable in MarketLab Terminal: hosted "
+                        "summarization is removed — use a user-configured local LLM via AI Chat.";
         t.category = "news";
         t.input_schema.properties = QJsonObject{
             {"count", QJsonObject{{"type", "integer"},
@@ -563,7 +566,9 @@ std::vector<ToolDef> get_news_tools() {
             });
 
             if (!ok || summary.isEmpty())
-                return ToolResult::fail("Summarization failed (network error or empty response)");
+                return ToolResult::fail(
+                    "Hosted headline summarization is unavailable in MarketLab Terminal — use a "
+                    "user-configured local LLM via AI Chat.");
 
             return ToolResult::ok_data(
                 QJsonObject{{"summary", summary}, {"headline_count", filtered.size()}, {"time_range", time_range}});

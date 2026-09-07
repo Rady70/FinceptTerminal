@@ -43,7 +43,7 @@ QString ChatModeService::session_token() const {
 QNetworkRequest ChatModeService::build_request(const QString& path) const {
     QNetworkRequest req{QUrl(base_url() + path)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    req.setHeader(QNetworkRequest::UserAgentHeader, "FinceptTerminal/4.0");
+    req.setHeader(QNetworkRequest::UserAgentHeader, "MarketLabTerminal/0.1.0");
     const QString key = api_key();
     const QString tok = session_token();
     if (!key.isEmpty())

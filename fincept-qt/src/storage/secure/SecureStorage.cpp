@@ -223,7 +223,7 @@ bool dpapi_wrap(const QByteArray& dek, QByteArray& blob_out) {
     DATA_BLOB in{static_cast<DWORD>(dek.size()), reinterpret_cast<BYTE*>(const_cast<char*>(dek.constData()))};
     DATA_BLOB ent{static_cast<DWORD>(entropy.size()), reinterpret_cast<BYTE*>(const_cast<char*>(entropy.constData()))};
     DATA_BLOB out{};
-    if (!CryptProtectData(&in, L"Fincept Terminal credential key", &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
+    if (!CryptProtectData(&in, L"MarketLab Terminal credential key", &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
                           &out)) {
         LOG_WARN(TAG, QString("CryptProtectData failed (err %1)").arg(GetLastError()));
         return false;

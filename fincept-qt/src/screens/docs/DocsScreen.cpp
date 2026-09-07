@@ -475,7 +475,7 @@ DocsScreen::DocsScreen(QWidget* parent) : QWidget(parent) {
     // Brand + version string — shown verbatim, not translated. Read from the
     // running application rather than hardcoded: the literal here said v4.0.0
     // while the app shipped as 4.0.1.
-    breadcrumb_ = new QLabel(QStringLiteral("FINCEPT TERMINAL v%1").arg(QCoreApplication::applicationVersion()));
+    breadcrumb_ = new QLabel(QStringLiteral("MARKETLAB TERMINAL v%1").arg(QCoreApplication::applicationVersion()));
     breadcrumb_->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold;"
                                        " background: transparent; letter-spacing: 0.5px;"
                                        " font-family: 'Consolas','Courier New',monospace;")

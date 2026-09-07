@@ -285,13 +285,15 @@ void TerminalShell::bootstrap_auth() {
         return;
     }
 
-    LOG_INFO(kShellTag, "Bootstrapping auth");
+    // MarketLab Terminal: local-first bootstrap (FINCEPT_FORK_PLAN.md §5.1).
+    // The upstream AuthManager::initialize() saved-session validation over
+    // HTTP is NOT called — there is no Fincept account, no session recovery,
+    // and no session pulse in this fork. Only the local lock state is warmed:
+    // the workspace is reachable without any authentication.
+    LOG_INFO(kShellTag, "Bootstrapping local-first shell (no account session)");
 
-    // 1. AuthManager — loads saved session, validates with server. The
-    //    HTTP-bearing call here means we MUST be on the UI thread post
-    //    QApplication construction; main.cpp calls bootstrap_auth() in
-    //    that window.
-    auth::AuthManager::instance().initialize();
+    // 1. AuthManager is deliberately not initialised: no saved-session load,
+    //    no /user/profile or /user/subscriptions validation, no network.
 
     // 2. PinManager — touch the singleton so it loads PIN state from
     //    SecureStorage. Lazy construction would otherwise defer the load
@@ -313,7 +315,7 @@ void TerminalShell::bootstrap_auth() {
     }
 
     auth_bootstrapped_ = true;
-    LOG_INFO(kShellTag, "Auth bootstrapped");
+    LOG_INFO(kShellTag, "Local-first shell bootstrapped");
 }
 
 ProfileId TerminalShell::active_profile_id() const {

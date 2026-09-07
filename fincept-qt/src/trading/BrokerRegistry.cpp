@@ -115,38 +115,14 @@ BrokerRegistry::BrokerRegistry() {
 }
 
 void BrokerRegistry::register_all() {
-    // Indian brokers
-    brokers_["fyers"] = std::make_unique<FyersBroker>();
-    brokers_["zerodha"] = std::make_unique<ZerodhaBroker>();
-    brokers_["angelone"] = std::make_unique<AngelOneBroker>();
-    brokers_["upstox"] = std::make_unique<UpstoxBroker>();
-    brokers_["dhan"] = std::make_unique<DhanBroker>();
-    brokers_["kotak"] = std::make_unique<KotakBroker>();
-    brokers_["groww"] = std::make_unique<GrowwBroker>();
-    brokers_["aliceblue"] = std::make_unique<AliceBlueBroker>();
-    brokers_["fivepaisa"] = std::make_unique<FivePaisaBroker>();
-    brokers_["iifl"] = std::make_unique<IIFLBroker>();
-    brokers_["motilal"] = std::make_unique<MotilalBroker>();
-    brokers_["shoonya"] = std::make_unique<ShoonyaBroker>();
-    brokers_["samco"] = std::make_unique<SamcoBroker>();
-    brokers_["flattrade"] = std::make_unique<FlattradeBroker>();
-    brokers_["paytm"] = std::make_unique<PaytmBroker>();
-    brokers_["tradejini"] = std::make_unique<TradejiniBroker>();
-    brokers_["icicidirect"] = std::make_unique<IciciDirectBroker>();
-
-    // US brokers
-    brokers_["alpaca"] = std::make_unique<AlpacaBroker>();
-    brokers_["ibkr"] = std::make_unique<IBKRBroker>();
-    brokers_["tradier"] = std::make_unique<TradierBroker>();
-
-    // EU brokers
-    brokers_["saxobank"] = std::make_unique<SaxoBankBroker>();
-
-    // Hosted MetaTrader bridges — no local terminal required
-    brokers_["metatrader4"] = std::make_unique<MetaApiBroker>();   // via metaapi.cloud
-    brokers_["metatrader5"] = std::make_unique<TickerAllBroker>(); // via tickerall.com
-
-    LOG_INFO("BrokerRegistry", QString("Registered %1 brokers").arg(brokers_.size()));
+    // MarketLab: NO live order-capable broker adapters are registered in this
+    // fork (FINCEPT_FORK_PLAN.md §5.4). The upstream 22 broker implementations
+    // remain compiled for upstream-merge compatibility but are never
+    // instantiated, so no external broker or exchange order route exists.
+    // UnifiedTrading therefore fails closed: every live-order entry point
+    // returns "no brokers configured".
+    LOG_INFO("BrokerRegistry",
+             "MarketLab: 0 live brokers registered — external broker execution is unavailable by design");
 }
 
 IBroker* BrokerRegistry::get(const QString& broker_id) const {

@@ -17,11 +17,9 @@
 #include "screens/economics/panels/EcbPanel.h"
 #include "screens/economics/panels/EconDbPanel.h"
 #include "screens/economics/panels/EconPanelBase.h"
-#include "screens/economics/panels/EconomicCalendarPanel.h"
 #include "screens/economics/panels/EiaPanel.h"
 #include "screens/economics/panels/EurostatPanel.h"
 #include "screens/economics/panels/FederalReservePanel.h"
-#include "screens/economics/panels/FinceptMacroPanel.h"
 #include "screens/economics/panels/FiscalDataPanel.h"
 #include "screens/economics/panels/FredAnalyticsPanel.h"
 #include "screens/economics/panels/FredPanel.h"
@@ -70,7 +68,6 @@ static const struct {
     {"census", "US Census", "#4527A0"},
     {"econdb", "EconDB", "#00695C"},
     {"trading_economics", "Trading Econ", "#FF6F00"},
-    {"econ_calendar", "Econ Calendar", "#E65100"},
     {"bcb", "BCB Brazil", "#1B5E20"},
     {"akshare_cn", "AkShare China", "#C62828"},
     {"ons", "ONS UK", "#0277BD"},
@@ -90,7 +87,6 @@ static const struct {
     {"wto", "WTO", "#E91E63"},
     {"unesco", "UNESCO", "#00ACC1"},
     {"bea", "BEA", "#E65100"},
-    {"fincept", "Fincept Macro", "#d97706"},
 };
 
 // ── Panel factory ─────────────────────────────────────────────────────────────
@@ -117,8 +113,6 @@ static EconPanelBase* make_panel(const QString& id, QWidget* parent) {
         return new EconDbPanel(parent);
     if (id == "trading_economics")
         return new TradingEconomicsPanel(parent);
-    if (id == "econ_calendar")
-        return new EconomicCalendarPanel(parent);
     if (id == "bcb")
         return new BcbPanel(parent);
     if (id == "akshare_cn")
@@ -157,8 +151,7 @@ static EconPanelBase* make_panel(const QString& id, QWidget* parent) {
         return new UnescoPanel(parent);
     if (id == "bea")
         return new BeaPanel(parent);
-    if (id == "fincept")
-        return new FinceptMacroPanel(parent);
+    // MarketLab: the Fincept Macro panel is removed (FINCEPT_FORK_PLAN §6).
     return nullptr;
 }
 

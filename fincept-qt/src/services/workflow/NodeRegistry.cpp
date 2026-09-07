@@ -300,11 +300,14 @@ void NodeRegistry::register_builtin_nodes() {
     });
 
     // ── Register additional node categories ────────────────────────
+    // MarketLab: trading nodes (trading.place_order / cancel / modify / ...)
+    // are NOT registered — no external order operation is exposed through
+    // workflows (FINCEPT_FORK_PLAN.md §5.4).
+    // register_trading_nodes(*this);
     register_trigger_nodes(*this);
     register_control_flow_nodes(*this);
     register_utility_nodes(*this);
     register_market_data_nodes(*this);
-    register_trading_nodes(*this);
     register_analytics_nodes(*this);
     register_safety_nodes(*this);
     register_notification_nodes(*this);

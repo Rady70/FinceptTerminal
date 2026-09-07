@@ -9,6 +9,7 @@
 #include "auth/lock/LockOverlayController.h"
 #include "core/actions/ActionRegistry.h"
 #include "core/actions/builtin_actions.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/config/ProfileManager.h"
 #include "core/events/EventBus.h"
 #include "core/keys/KeyConfigManager.h"
@@ -27,22 +28,12 @@
 #include "screens/ai_chat/AiChatScreen.h"
 #include "screens/ai_quant_lab/AIQuantLabScreen.h"
 #include "screens/akshare/AkShareScreen.h"
-#include "screens/algo_trading/AlgoTradingScreen.h"
-#include "screens/alpha_arena/AlphaArenaScreen.h"
 #include "screens/alt_investments/AltInvestmentsScreen.h"
 #include "screens/asia_markets/AsiaMarketsScreen.h"
-#include "screens/auth/ForgotPasswordScreen.h"
 #include "screens/auth/LockScreen.h"
-#include "screens/auth/LoginScreen.h"
-#include "screens/auth/PricingScreen.h"
-#include "screens/auth/RegisterScreen.h"
 #include "screens/backtesting/BacktestingScreen.h"
-#include "screens/chat_mode/ChatModeScreen.h"
 #include "screens/code_editor/CodeEditorScreen.h"
-#include "screens/common/ComingSoonScreen.h"
 #include "screens/common/IStatefulScreen.h"
-#include "screens/crypto_center/CryptoCenterScreen.h"
-#include "screens/crypto_trading/CryptoTradingScreen.h"
 #include "screens/dashboard/DashboardScreen.h"
 #include "screens/data_mapping/DataMappingScreen.h"
 #include "screens/data_sources/DataSourcesScreen.h"
@@ -51,11 +42,8 @@
 #include "screens/docs/DocsScreen.h"
 #include "screens/economics/EconomicsScreen.h"
 #include "screens/equity_research/EquityResearchScreen.h"
-#include "screens/equity_trading/EquityTradingScreen.h"
 #include "screens/excel/ExcelScreen.h"
 #include "screens/file_manager/FileManagerScreen.h"
-#include "screens/fno/FnoScreen.h"
-#include "screens/forum/ForumScreen.h"
 #include "screens/geopolitics/GeopoliticsScreen.h"
 #include "screens/gov_data/GovDataScreen.h"
 #include "screens/info/ContactScreen.h"
@@ -64,16 +52,12 @@
 #include "screens/info/TermsScreen.h"
 #include "screens/info/TrademarksScreen.h"
 #include "screens/ma_analytics/MAAnalyticsScreen.h"
-#include "screens/maritime/MaritimeScreen.h"
 #include "screens/markets/MarketsScreen.h"
 #include "screens/mcp_servers/McpServersScreen.h"
 #include "screens/news/NewsScreen.h"
 #include "screens/node_editor/NodeEditorScreen.h"
 #include "screens/notes/NotesScreen.h"
-#include "screens/polymarket/PolymarketScreen.h"
 #include "screens/portfolio/PortfolioScreen.h"
-#include "screens/profile/ProfileScreen.h"
-#include "screens/quantlib/QuantLibScreen.h"
 #include "screens/relationship_map/RelationshipMapScreen.h"
 #include "screens/report_builder/ReportBuilderScreen.h"
 #include "screens/settings/SettingsScreen.h"
@@ -82,7 +66,6 @@
 #include "screens/trade_viz/TradeVizScreen.h"
 #include "screens/watchlist/WatchlistScreen.h"
 #include "services/llm/LlmService.h"
-#include "services/updater/UpdateService.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "trading/instruments/InstrumentService.h"
 #include "ui/command/CommandPalette.h"
@@ -97,7 +80,6 @@
 #include "ui/navigation/ToolBar.h"
 #include "ui/pushpins/PushpinBar.h"
 #include "ui/theme/Theme.h"
-#include "ui/widgets/EnterprisePromo.h"
 #include "ui/workspace/LayoutOpenDialog.h"
 #include "ui/workspace/LayoutSaveAsDialog.h"
 
@@ -131,50 +113,6 @@
 #include <algorithm>
 
 namespace fincept {
-
-namespace {
-
-/// Binds a QTimer's run state to its host widget's visibility (§P3).
-///
-/// The rule is "start in showEvent, stop in hideEvent", but WindowFrame's header
-/// is shared with the multi-window shell and declares no show/hide overrides, so
-/// the same contract is enforced from an installed event filter instead. Minimise
-/// is covered too: on Windows a minimised top-level gets WindowStateChange, not
-/// Hide, and a minimised window has no reason to keep polling.
-class VisibilityTimerGate final : public QObject {
-  public:
-    VisibilityTimerGate(QTimer* timer, QObject* parent) : QObject(parent), timer_(timer) {}
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        if (timer_) {
-            switch (event->type()) {
-                case QEvent::Show:
-                    timer_->start();
-                    break;
-                case QEvent::Hide:
-                    timer_->stop();
-                    break;
-                case QEvent::WindowStateChange:
-                    if (auto* w = qobject_cast<QWidget*>(watched)) {
-                        if (w->isMinimized())
-                            timer_->stop();
-                        else if (w->isVisible())
-                            timer_->start();
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-        return QObject::eventFilter(watched, event);
-    }
-
-  private:
-    QPointer<QTimer> timer_;
-};
-
-} // namespace
 
 int WindowFrame::next_window_id() {
     // Seed from the max of (persisted window IDs, live window IDs) so a new
@@ -219,11 +157,11 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
         Qt::QueuedConnection);
 
     // Show active profile in title bar when using a non-default profile.
-    // "Fincept Terminal" is the product brand and is intentionally not
+    // "MarketLab Terminal" is the product brand and is intentionally not
     // translated — the bracketed profile name is the only variable part.
     const QString profile = ProfileManager::instance().active();
-    setWindowTitle(profile == "default" ? QStringLiteral("Fincept Terminal")
-                                        : QStringLiteral("Fincept Terminal [%1]").arg(profile));
+    setWindowTitle(profile == "default" ? QStringLiteral("MarketLab Terminal")
+                                        : QStringLiteral("MarketLab Terminal [%1]").arg(profile));
     // Load icon from the embedded Windows resource (IDI_ICON1 in app.rc).
     // Falls back to the .ico beside the executable on other platforms.
     QIcon app_icon;
@@ -321,18 +259,14 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
     // a redundant PIN re-entry. The singleton flag is the source of truth for
     // "user has cleared the PIN gate this session"; the per-window field is
     // a cache so on_auth_state_changed() can skip re-prompting.
-    pin_gate_cleared_ = !auth::InactivityGuard::instance().is_terminal_locked() &&
-                        auth::AuthManager::instance().is_authenticated() && auth::PinManager::instance().has_pin();
+    // MarketLab: no account session — only the local lock state matters.
+    pin_gate_cleared_ = !auth::InactivityGuard::instance().is_terminal_locked();
 
     auto* master_stack = new QStackedWidget;
 
-    // ── Auth stack ───────────────────────────────────────────────────────────
-    auth_stack_ = new QStackedWidget;
-    setup_auth_screens();
-    master_stack->addWidget(auth_stack_);
-
-    // ── Chat Mode ─────────────────────────────────────────────────────────────
-    chat_mode_screen_ = new chat_mode::ChatModeScreen;
+    // ── ADS Docking mode ─────────────────────────────────────────────────────
+    setup_docking_mode();
+    master_stack->addWidget(dock_manager_->parentWidget()); // index 0 — dock_wrapper
 
     // ── Lock Screen ─────────────────────────────────────────────────────────
     // Phase 1c lift: LockOverlayController owns LockScreen widgets. The
@@ -342,22 +276,23 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
     // already exist (preserving security-audit invariants — see
     // auth/lock/LockOverlayController.h).
     lock_screen_ = auth::LockOverlayController::instance().lock_screen_for(this);
-
-    // ── ADS Docking mode ─────────────────────────────────────────────────────
-    setup_docking_mode();
-    master_stack->addWidget(dock_manager_->parentWidget()); // index 1 — dock_wrapper
-    master_stack->addWidget(chat_mode_screen_);             // index 2
-    master_stack->addWidget(lock_screen_);                  // index 3 — lock/PIN screen
-    connect(chat_mode_screen_, &chat_mode::ChatModeScreen::exit_requested, this, &WindowFrame::toggle_chat_mode);
+    master_stack->addWidget(lock_screen_); // index 1 — lock/PIN screen
 
     // Lock screen signals
     connect(lock_screen_, &screens::LockScreen::unlocked, this, &WindowFrame::on_terminal_unlocked);
-    connect(lock_screen_, &screens::LockScreen::reauth_requested, this, []() {
-        // Max PIN attempts exceeded — wipe the PIN (this is the ONLY path
-        // that should clear it) and force a full re-login so the server
-        // re-validates the user before they can configure a new PIN.
+    connect(lock_screen_, &screens::LockScreen::reauth_requested, this, [this]() {
+        // MarketLab: max PIN attempts exceeded or "forgot PIN" — clear the
+        // PIN (the ONLY path that should clear it). With no account session
+        // there is no server re-validation; LockScreen::activate() now shows
+        // the PIN-setup page so the user can create a new PIN immediately.
         auth::PinManager::instance().clear_pin();
-        auth::AuthManager::instance().logout();
+        if (lock_screen_) {
+            lock_screen_->activate();
+            locked_ = true;
+            set_shell_visible(false);
+            if (stack_)
+                stack_->setCurrentIndex(1);
+        }
     });
 
     // Inactivity guard → lock screen. The originator window handles
@@ -440,7 +375,6 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
         }
     });
 
-    connect(toolbar, &ui::ToolBar::chat_mode_toggled, this, &WindowFrame::toggle_chat_mode);
     connect(toolbar, &ui::ToolBar::navigate_to, this, [this](const QString& id) {
         if (!locked_)
             dock_router_->navigate(id, true);
@@ -499,31 +433,10 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 Qt::QueuedConnection);
     });
 
-    // Equity Research "BUY/SELL" → reuse the Equity Trading order ticket without
-    // leaving Research. We materialise the trading screen (hidden — no tab switch)
-    // if it doesn't exist yet, then open its app-modal ticket, which pops over the
-    // current tab. The trading screen owns the form + the paper/live placement path.
-    EventBus::instance().subscribe(this, "equity.open_order_ticket", [this](const QVariantMap& d) {
-        const QString symbol = d.value("symbol").toString();
-        if (symbol.isEmpty())
-            return;
-        const QString exchange = d.value("exchange").toString();
-        const QStringList match_exchanges = d.value("match_exchanges").toStringList();
-        const bool is_buy = d.value("is_buy").toBool();
-        const double price = d.value("price").toDouble();
-        QMetaObject::invokeMethod(
-            this,
-            [this, symbol, exchange, match_exchanges, is_buy, price]() {
-                if (locked_ || !dock_router_)
-                    return;
-                const QString id = QStringLiteral("equity_trading");
-                if (!dock_router_->screen_widget(id))
-                    dock_router_->materialize_now(id); // create hidden, don't raise
-                if (auto* trading = qobject_cast<screens::EquityTradingScreen*>(dock_router_->screen_widget(id)))
-                    trading->open_external_order_ticket(symbol, exchange, match_exchanges, is_buy, price);
-            },
-            Qt::QueuedConnection);
-    });
+    // MarketLab: the Equity Research → Equity Trading order-ticket cross-open
+    // is removed — equity_trading is Unavailable and no order ticket exists
+    // (FINCEPT_FORK_PLAN.md §5.4). Equity Research keeps its public-data
+    // viewing only.
 
     // ── Keyboard shortcuts via ActionRegistry (Phase 4) ───────────────────────
     //
@@ -639,9 +552,6 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 {"panel_news", {"News Feed", "news"}},
                 {"panel_portfolio", {"Portfolio", "portfolio"}},
                 {"panel_markets", {"Markets", "markets"}},
-                {"panel_crypto", {"Crypto Trading", "crypto_trading"}},
-                {"panel_equity", {"Equity Trading", "equity_trading"}},
-                {"panel_algo", {"Algo Trading", "algo_trading"}},
                 {"panel_research", {"Equity Research", "equity_research"}},
                 {"panel_economics", {"Economics", "economics"}},
                 {"panel_geopolitics", {"Geopolitics", "geopolitics"}},
@@ -665,15 +575,11 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
         } else if (action.startsWith("perspective_")) {
             // Quick Switch — navigate directly to a preset screen layout
             // 2 screens = 1:1 side-by-side, 4 screens = 2x2 grid
+            // MarketLab: trading/F&O/hosted-QuantLab perspectives removed.
             static const QMap<QString, QStringList> view_screens = {
-                // Trading
-                {"perspective_trading", {"crypto_trading", "watchlist", "markets", "news"}},
-                {"perspective_equity", {"equity_trading", "watchlist"}},
-                {"perspective_algo", {"algo_trading", "backtesting"}},
                 // Research
                 {"perspective_research", {"equity_research", "markets", "screener", "news"}},
                 {"perspective_derivatives", {"derivatives", "surface_analytics"}},
-                {"perspective_fno", {"fno", "surface_analytics", "equity_trading"}},
                 {"perspective_ma", {"ma_analytics", "news"}},
                 // Portfolio
                 {"perspective_portfolio", {"portfolio", "markets", "watchlist", "news"}},
@@ -684,16 +590,15 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 {"perspective_economics", {"economics", "dbnomics", "gov_data", "asia_markets"}},
                 {"perspective_data", {"data_sources", "data_mapping"}},
                 // Geopolitics
-                {"perspective_geopolitics", {"geopolitics", "maritime", "relationship_map", "news"}},
+                {"perspective_geopolitics", {"geopolitics", "relationship_map", "news"}},
                 // AI & Quant
-                {"perspective_quant", {"ai_quant_lab", "quantlib", "backtesting", "markets"}},
                 {"perspective_ai", {"ai_chat", "agent_config"}},
                 // Tools
                 {"perspective_tools", {"code_editor", "node_editor"}},
             };
             const auto it = view_screens.find(action);
             if (it != view_screens.end() && dock_router_) {
-                const QStringList& screens = it.value();
+                const QStringList screens = capability::CapabilityManager::instance().allowed_screens(it.value());
                 if (!screens.isEmpty()) {
                     dock_router_->navigate(screens[0], true); // first exclusive
                     for (int i = 1; i < screens.size(); ++i)
@@ -701,17 +606,12 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 }
                 LOG_INFO("WindowFrame", QString("Quick Switch: %1 (%2 panels)").arg(action).arg(screens.size()));
             }
-        } else if (action == "logout") {
-            auth::AuthManager::instance().logout();
         } else if (action == "fullscreen") {
             if (isFullScreen())
                 showNormal();
             else
                 showFullScreen();
         } else if (action == "focus_mode") {
-            // Auth screens must never reveal the shell via focus-mode toggle.
-            if (stack_ && stack_->currentIndex() == 0)
-                return;
             focus_mode_ = !focus_mode_;
             if (dock_toolbar_)
                 dock_toolbar_->setVisible(!focus_mode_);
@@ -773,7 +673,7 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 LOG_WARN("WindowFrame", QString("layout.save failed: %1").arg(QString::fromStdString(r.error())));
         } else if (action == "import_data") {
             QString path = QFileDialog::getOpenFileName(this, tr("Import Layout"), QDir::homePath(),
-                                                        tr("Fincept Layout (*.flayout *.fwsp);;All Files (*)"));
+                                                        tr("MarketLab Layout (*.flayout *.fwsp);;All Files (*)"));
             if (!path.isEmpty()) {
                 auto r = LayoutCatalog::instance().import_from(path);
                 if (r.is_err())
@@ -785,17 +685,13 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 QMessageBox::information(this, tr("Export Layout"), tr("Open or save a layout first, then export it."));
             } else {
                 QString path = QFileDialog::getSaveFileName(this, tr("Export Layout"), QDir::homePath(),
-                                                            tr("Fincept Layout (*.flayout)"));
+                                                            tr("MarketLab Layout (*.flayout)"));
                 if (!path.isEmpty()) {
                     auto r = LayoutCatalog::instance().export_to(cur_id, path);
                     if (r.is_err())
                         QMessageBox::warning(this, tr("Export Failed"), QString::fromStdString(r.error()));
                 }
             }
-        } else if (action == "check_updates") {
-            // Help ▸ Check for Updates. silent=false so the user gets a result
-            // either way — a menu-triggered check that says nothing reads as broken.
-            services::UpdateService::instance().check_for_updates(/*silent=*/false);
         } else if (action == "screenshot") {
             QScreen* scr = this->screen();
             if (!scr)
@@ -812,20 +708,11 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
         }
     });
 
-    // Toolbar logout
-    connect(toolbar, &ui::ToolBar::logout_clicked, this, []() { auth::AuthManager::instance().logout(); });
+    // MarketLab: toolbar logout / plan / upgrade / chat-mode buttons are
+    // removed with the account model (FINCEPT_FORK_PLAN.md §5.1).
 
-    // Toolbar plan label → pricing screen
-    connect(toolbar, &ui::ToolBar::plan_clicked, this, [this]() {
-        set_shell_visible(false);
-        stack_->setCurrentIndex(0);
-        auth_stack_->setCurrentIndex(3); // PricingScreen
-    });
-
-    // Toolbar UPGRADE → Enterprise (the private edition) promo dialog.
-    connect(toolbar, &ui::ToolBar::upgrade_clicked, this, [this]() { ui::UpgradeDialog::show_now(this); });
-
-    // Auth state
+    // Auth state — kept connected so any residual auth signal (there is no
+    // account session in this fork) can never hide the local workspace.
     connect(&auth::AuthManager::instance(), &auth::AuthManager::auth_state_changed, this,
             &WindowFrame::on_auth_state_changed);
     connect(&auth::AuthManager::instance(), &auth::AuthManager::logged_out, this, &WindowFrame::on_auth_state_changed);
@@ -833,18 +720,14 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
     // Restore window state (maximised, toolbar positions, etc.)
     // Note: restoreState() also restores QToolBar visibility, which can
     // hide the toolbar from stale/corrupt saved state. We force it visible
-    // afterward unless the user is intentionally in focus/chat mode.
+    // afterward unless the user is intentionally in focus mode.
     const QByteArray saved_state = SessionManager::instance().load_state(window_id_);
     if (!saved_state.isEmpty())
         restoreState(saved_state);
 
-    // Toolbar/status bar visibility is controlled by set_shell_visible() based on
-    // auth state. Start hidden — on_auth_state_changed() will show them if the user
-    // is already authenticated and lands on the app stack.
-    if (dock_toolbar_)
-        dock_toolbar_->setVisible(false);
-    if (dock_status_bar_)
-        dock_status_bar_->setVisible(false);
+    // MarketLab: the workspace is always reachable — show the shell chrome
+    // immediately; the lock screen only appears when a local PIN is set.
+    set_shell_visible(true);
 
     // Restore ADS dock layout — must happen after all screens are registered
     // but BEFORE the initial navigate, so we don't create a widget that
@@ -912,35 +795,21 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
         SessionManager::instance().set_dock_layout_version(window_id_, kDockLayoutVersion);
     }
 
-    // Show the app or auth stack based on authentication state.
-    // If dock layout was restored, the saved tabs are already visible.
-    // Otherwise, navigate to dashboard as default.
-    auto& auth_mgr = auth::AuthManager::instance();
-    if (auth_mgr.is_authenticated() || auth_mgr.is_loading()) {
-        // If user is authenticated and has a PIN, show lock screen first —
-        // UNLESS this is an additional window opened while an existing
-        // window has already cleared the PIN gate this session.
-        // pin_gate_cleared_ was bootstrapped above from the process-wide
-        // InactivityGuard flag (which is the single source of truth for
-        // "is the terminal locked?"); skipping the prompt here just
-        // mirrors the unlocked state into the new frame.
-        if (auth_mgr.is_authenticated() && auth::PinManager::instance().has_pin() && !pin_gate_cleared_) {
-            LOG_INFO("WindowFrame", "Session restored — showing PIN unlock");
+    // MarketLab: no auth stack — the local workspace is always reachable.
+    // If a local PIN is set and the terminal is locked, show the lock screen
+    // first; otherwise show the workspace. If dock layout was restored, the
+    // saved tabs are already visible; otherwise navigate to dashboard.
+    {
+        const bool has_pin = auth::PinManager::instance().has_pin();
+        if (has_pin && !pin_gate_cleared_) {
+            LOG_INFO("WindowFrame", "Local PIN set — showing PIN unlock");
             lock_screen_->show_unlock();
             locked_ = true;
             set_shell_visible(false);
-            stack_->setCurrentIndex(3);
-        } else if (auth_mgr.is_authenticated() && auth::PinManager::instance().has_pin()) {
-            LOG_INFO("WindowFrame", "Session already unlocked — skipping PIN prompt for additional window");
-            set_shell_visible(true);
             stack_->setCurrentIndex(1);
-        } else if (auth_mgr.is_authenticated()) {
-            // Authenticated but no PIN yet — will be caught by on_auth_state_changed
-            on_auth_state_changed();
         } else {
-            // Still loading — show app stack temporarily (loading state)
             set_shell_visible(true);
-            stack_->setCurrentIndex(1);
+            stack_->setCurrentIndex(0);
         }
         // Recovery / "Continue from last session" path: WorkspaceShell::apply
         // spawns this frame with a non-null adopted_uuid and will call
@@ -1021,43 +890,14 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 QTimer::singleShot(0, this, MaterialiseWalk{this, pending});
             });
         }
-    } else {
-        on_auth_state_changed();
     }
 
-    // Periodic refresh of user credits/plan (every 3 minutes). Skip while
-    // the terminal is locked — we shouldn't be making authenticated API
-    // calls behind the back of the PIN gate, and the user can't see the
-    // refreshed data anyway.
-    user_refresh_timer_ = new QTimer(this);
-    user_refresh_timer_->setInterval(3 * 60 * 1000);
-    connect(user_refresh_timer_, &QTimer::timeout, this, []() {
-        auto& auth = auth::AuthManager::instance();
-        if (!auth.is_authenticated())
-            return;
-        if (auth::InactivityGuard::instance().is_terminal_locked())
-            return;
-        auth.refresh_user_data();
-    });
-    // §P3: no timer->start() in a constructor. Starting it here made every
-    // window fire an authenticated network refresh every 3 minutes for the
-    // whole process lifetime — including windows that were minimised or never
-    // shown. WindowFrame's header is shared with the multi-window shell, so
-    // rather than add showEvent/hideEvent overrides to it we gate the timer
-    // with an event filter that owns exactly the same lifecycle (and also
-    // covers minimise, which sends WindowStateChange rather than Hide).
-    installEventFilter(new VisibilityTimerGate(user_refresh_timer_, this));
-
-    // Confetti overlay (parented to central widget so it covers the whole app)
-    // Refresh user data when app regains focus (updates toolbar credits/plan)
+    // MarketLab: the periodic authenticated user-data refresh (credits/plan,
+    // every 3 minutes) and the focus-driven refresh are removed — there is no
+    // account session and no authenticated API traffic (FINCEPT_FORK_PLAN
+    // §5.1). The resume-from-sleep lock check stays; it is purely local.
     connect(qApp, &QApplication::applicationStateChanged, this, [](Qt::ApplicationState state) {
         if (state == Qt::ApplicationActive) {
-            auto& auth = auth::AuthManager::instance();
-            // Skip refresh while locked — same reason as the periodic
-            // timer above. check_for_resume_lock() below still runs so
-            // a wall-clock-elapsed lock fires immediately on wake.
-            if (auth.is_authenticated() && !auth::InactivityGuard::instance().is_terminal_locked())
-                auth.refresh_user_data();
             // Resume-from-sleep lock: QTimer pauses during OS suspend, so a
             // 5-minute timer can carry 4:59 of remaining time across a
             // 30-minute nap. Ask the guard to check wall-clock delta and
@@ -1070,30 +910,30 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
 
 void WindowFrame::set_shell_visible(bool visible) {
     if (dock_toolbar_)
-        dock_toolbar_->setVisible(visible && !focus_mode_ && !chat_mode_);
+        dock_toolbar_->setVisible(visible && !focus_mode_);
     if (dock_status_bar_)
-        dock_status_bar_->setVisible(visible && !focus_mode_ && !chat_mode_);
+        dock_status_bar_->setVisible(visible && !focus_mode_);
     if (!visible) {
-        // Reset title to plain app name — no screen suffix while on auth screens
+        // Reset title to plain app name — no screen suffix while locked.
         const QString profile = ProfileManager::instance().active();
-        setWindowTitle(profile == "default" ? QStringLiteral("Fincept Terminal")
-                                            : QStringLiteral("Fincept Terminal [%1]").arg(profile));
+        setWindowTitle(profile == "default" ? QStringLiteral("MarketLab Terminal")
+                                            : QStringLiteral("MarketLab Terminal [%1]").arg(profile));
     }
 }
 
 void WindowFrame::update_window_title() {
     // Brand stays in English; only the workspace/screen suffix (translated
     // via DockScreenRouter::title_for_id) responds to language changes.
-    QString title = QStringLiteral("Fincept Terminal");
+    QString title = QStringLiteral("MarketLab Terminal");
 
     const QString profile = ProfileManager::instance().active();
     if (profile != "default")
         title += QStringLiteral(" [%1]").arg(profile);
 
     // Workspace / screen name must never appear in the title while the user
-    // is on the auth or lock stack — that would leak the last-visited screen
-    // to an unauthenticated viewer.
-    const bool shell_visible = stack_ && stack_->currentIndex() == 1;
+    // is on the lock stack — that would leak the last-visited screen to a
+    // viewer who has not entered the local PIN.
+    const bool shell_visible = stack_ && stack_->currentIndex() == 0;
     if (shell_visible) {
         // Layout name set by WorkspaceShell::apply on every successful
         // layout switch / cold-boot restore. Empty until first apply.
@@ -1334,10 +1174,9 @@ void WindowFrame::changeEvent(QEvent* event) {
 
     if (!(windowState() & Qt::WindowMinimized))
         return;
-    // Only lock if the user opted in and we are actually in an authenticated
-    // session with a configured PIN — otherwise there is nothing to lock.
-    auto& auth = auth::AuthManager::instance();
-    if (!auth.is_authenticated() || !auth::PinManager::instance().has_pin())
+    // Only lock if the user opted in and a local PIN is configured —
+    // otherwise there is nothing to lock. (No account session in this fork.)
+    if (!auth::PinManager::instance().has_pin())
         return;
     auto r = SettingsRepository::instance().get("security.lock_on_minimize");
     const bool lock_on_min = r.is_ok() && r.value() == "true";

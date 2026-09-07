@@ -350,24 +350,10 @@ void register_market_data_nodes(NodeRegistry& registry) {
             },
     });
 
-    registry.register_type({
-        .type_id = "market.get_crypto_price",
-        .display_name = "Crypto Price",
-        .category = "Market Data",
-        .description = "Real-time cryptocurrency prices",
-        .icon_text = "$",
-        .accent_color = "#2563eb",
-        .version = 1,
-        .inputs = {{"input_0", "Data In", PortDirection::Input, ConnectionType::Main}},
-        .outputs = {{"output_main", "Main", PortDirection::Output, ConnectionType::PriceData}},
-        .parameters =
-            {
-                {"symbol", "Symbol", "string", "BTC", {}, "BTC, ETH, SOL...", true},
-                {"quote", "Quote Currency", "select", "USD", {"USD", "USDT", "EUR", "BTC"}, ""},
-                {"exchange", "Exchange", "select", "binance", {"binance", "kraken", "coinbase", "hyperliquid"}, ""},
-            },
-        .execute = nullptr,
-    });
+    // MarketLab: "market.get_crypto_price" is NOT registered — the exchange
+    // session machinery it would construct is removed from this fork
+    // (FINCEPT_FORK_PLAN.md §5.4, §6). Crypto public quotes remain available
+    // through the Markets screen.
 
     registry.register_type({
         .type_id = "market.get_forex_rate",

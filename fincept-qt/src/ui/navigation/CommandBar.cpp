@@ -9,14 +9,16 @@
 // Shared constants (kMaxResults) live in CommandBar_internal.h.
 #include "ui/navigation/CommandBar.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "core/events/EventBus.h"
 #include "core/keys/KeyConfigManager.h"
 #include "core/session/ScreenStateManager.h"
-#include "network/http/HttpClient.h"
+#include "services/markets/MarketSearchService.h"
 #include "ui/navigation/CommandBar_internal.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <algorithm>
 #include <QApplication>
 #include <QEvent>
 #include <QJsonArray>
@@ -341,17 +343,19 @@ void CommandBar::build_commands() {
         // Community / Info
         {"about",
          tr("About"),
-         "About Fincept Terminal",
+         "About MarketLab Terminal",
          {"about", "info", "version"},
          "",
          {"about", "information", "version"}},
-        {"support",
-         tr("Support"),
-         "Support tickets",
-         {"support", "ticket", "help"},
-         "",
-         {"support", "ticket", "assistance"}},
     };
+
+    // MarketLab: drop screens that are Unavailable in this build so they are
+    // neither suggested nor resolvable here (FINCEPT_FORK_PLAN.md §5.2).
+    commands_.erase(
+        std::remove_if(commands_.begin(), commands_.end(), [](const ScreenCommand& cmd) {
+            return !capability::CapabilityManager::instance().is_screen_allowed(cmd.id);
+        }),
+        commands_.end());
 }
 
 // ── asset type registry ──────────────────────────────────────────────────────
@@ -478,6 +482,32 @@ CommandBar::CommandBar(QWidget* parent) : QWidget(parent) {
 
     connect(&ThemeManager::instance(), &ThemeManager::theme_changed, this,
             [this](const ThemeTokens&) { refresh_theme(); });
+
+    // MarketLab: local yfinance-backed asset search (FINCEPT_FORK_PLAN.md §7).
+    connect(&services::MarketSearchService::instance(), &services::MarketSearchService::results_ready, this,
+            [this](const QString& request_id, const QString& query, const QList<services::MarketSearchService::Item>& items) {
+                Q_UNUSED(request_id);
+                // Only process if the user hasn't changed the query since we fired.
+                if (pending_query_ != query)
+                    return;
+                QJsonArray arr;
+                for (const auto& it : items) {
+                    arr.append(QJsonObject{{"symbol", it.symbol},
+                                           {"name", it.name},
+                                           {"exchange", it.exchange},
+                                           {"type", it.type},
+                                           {"country", it.country}});
+                }
+                on_asset_results(arr);
+            });
+    connect(&services::MarketSearchService::instance(), &services::MarketSearchService::search_failed, this,
+            [this](const QString& request_id, const QString& query, const QString& reason) {
+                Q_UNUSED(request_id);
+                Q_UNUSED(reason);
+                if (pending_query_ != query)
+                    return;
+                on_asset_results({}); // explicit empty result, not a silent spinner
+            });
 
     retranslateUi();
 

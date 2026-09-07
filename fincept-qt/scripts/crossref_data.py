@@ -10,7 +10,7 @@ import requests
 from typing import Dict, Any, Optional, List
 
 API_KEY = os.environ.get('CROSSREF_API_KEY', '')
-POLITE_EMAIL = os.environ.get('CROSSREF_EMAIL', 'research@fincept.in')
+POLITE_EMAIL = os.environ.get('CROSSREF_EMAIL', 'marketlab-local@localhost')
 BASE_URL = "https://api.crossref.org"
 
 session = requests.Session()
@@ -19,7 +19,7 @@ session.mount('https://', adapter)
 session.mount('http://', adapter)
 
 if POLITE_EMAIL:
-    session.headers.update({"User-Agent": f"FinceptTerminal/4.0 (mailto:{POLITE_EMAIL})"})
+    session.headers.update({"User-Agent": f"MarketLabTerminal/0.1.0 (mailto:{POLITE_EMAIL})"})
 
 
 def _make_request(endpoint: str, params: Dict = None) -> Any:

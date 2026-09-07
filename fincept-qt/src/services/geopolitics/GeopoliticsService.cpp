@@ -17,7 +17,10 @@
 
 namespace fincept::services::geo {
 
-static QString geo_api_base() {
+// MarketLab: the Fincept-hosted news-events endpoint is removed — nothing
+// calls it anymore (FINCEPT_FORK_PLAN.md §5.3, §6). The function stays so the
+// blocked-network audit sees the disposition in one place.
+[[maybe_unused]] static QString geo_api_base() {
     return fincept::AppConfig::instance().api_base_url() + QStringLiteral("/research/news-events");
 }
 
@@ -25,6 +28,10 @@ namespace {
 inline void publish_to_hub(const QString& topic, const QVariant& value) {
     fincept::datahub::DataHub::instance().publish(topic, value);
 }
+
+/// MarketLab: typed unavailable error for the removed Fincept events feed.
+constexpr const char* kEventsFeedUnavailable =
+    "HOSTED_SERVICE_UNAVAILABLE: Fincept events feed is removed from MarketLab Terminal";
 } // namespace
 
 // ── Singleton ────────────────────────────────────────────────────────────────
@@ -53,252 +60,36 @@ void GeopoliticsService::run_python(const QString& script, const QStringList& ar
 void GeopoliticsService::fetch_events(const QString& country, const QString& city, const QString& category, int limit,
                                       int page, const QString& source, const QString& date_from,
                                       const QString& date_to) {
-    QUrl url(geo_api_base());
-    QUrlQuery q;
-    if (!country.isEmpty())
-        q.addQueryItem("country", country);
-    if (!city.isEmpty())
-        q.addQueryItem("city", city);
-    if (!category.isEmpty())
-        q.addQueryItem("event_category", category);
-    if (!source.isEmpty())
-        q.addQueryItem("source", source);
-    if (!date_from.isEmpty())
-        q.addQueryItem("date_from", date_from);
-    if (!date_to.isEmpty())
-        q.addQueryItem("date_to", date_to);
-    q.addQueryItem("limit", QString::number(limit));
-    if (page > 1)
-        q.addQueryItem("page", QString::number(page));
-    url.setQuery(q);
-
-    QPointer<GeopoliticsService> self = this;
-    HttpClient::instance().get(
-        url.toString(), [self, country, city, category, limit, page](Result<QJsonDocument> result) {
-            if (!self)
-                return;
-            if (!result.is_ok()) {
-                LOG_ERROR("Geopolitics", "Events fetch failed: " + QString::fromStdString(result.error()));
-                emit self->error_occurred("events", QString::fromStdString(result.error()));
-                return;
-            }
-            // Response envelope:
-            //   {success, message, data: {events:[...], pagination:{...},
-            //                             filters_applied:{...},
-            //                             credits_used:N, remaining_credits:N}}
-            const auto root = result.value().object();
-            const auto obj = root.contains("data") ? root["data"].toObject() : root;
-            const auto arr = obj["events"].toArray();
-
-            EventsPage page_data;
-            page_data.events.reserve(arr.size());
-            for (const auto& v : arr) {
-                const auto e = v.toObject();
-                NewsEvent ev;
-                ev.url = e["url"].toString();
-                ev.source = e["source"].toString();
-                ev.event_category = e["event_category"].toString();
-                ev.title = e["title"].toString();
-                ev.city = e["city"].toString();
-                ev.country = e["country"].toString();
-                const auto lat_v = e["latitude"];
-                const auto lng_v = e["longitude"];
-                ev.has_coords = lat_v.isDouble() && lng_v.isDouble();
-                ev.latitude = ev.has_coords ? lat_v.toDouble() : 0.0;
-                ev.longitude = ev.has_coords ? lng_v.toDouble() : 0.0;
-                ev.extracted_date = e["extracted_date"].toString();
-                ev.created_at = e["created_at"].toString();
-                page_data.events.append(ev);
-            }
-
-            // Newest first — extracted_date is "YYYY-MM-DD HH:MM:SS" so plain
-            // string comparison is lexicographically correct.
-            std::sort(page_data.events.begin(), page_data.events.end(),
-                      [](const NewsEvent& a, const NewsEvent& b) { return a.extracted_date > b.extracted_date; });
-
-            if (obj.contains("pagination")) {
-                const auto p = obj["pagination"].toObject();
-                page_data.total_events = p["total_events"].toInt(page_data.events.size());
-                page_data.current_page = p["current_page"].toInt(page);
-                page_data.total_pages = p["total_pages"].toInt(0);
-                page_data.events_per_page = p["events_per_page"].toInt(limit);
-                page_data.has_next = p["has_next"].toBool(false);
-                page_data.has_prev = p["has_prev"].toBool(false);
-            } else {
-                page_data.total_events = obj["total"].toInt(page_data.events.size());
-                page_data.current_page = page;
-                page_data.events_per_page = limit;
-            }
-            page_data.credits_used = obj["credits_used"].toDouble(0.0);
-            page_data.remaining_credits = obj["remaining_credits"].toInt(-1);
-
-            // Cache the (already-sorted) events for offline replay.
-            QJsonArray cached_arr;
-            for (const auto& ev : page_data.events) {
-                QJsonObject o;
-                o["url"] = ev.url;
-                o["source"] = ev.source;
-                o["event_category"] = ev.event_category;
-                o["title"] = ev.title;
-                o["city"] = ev.city;
-                o["country"] = ev.country;
-                if (ev.has_coords) {
-                    o["latitude"] = ev.latitude;
-                    o["longitude"] = ev.longitude;
-                }
-                o["extracted_date"] = ev.extracted_date;
-                o["created_at"] = ev.created_at;
-                cached_arr.append(o);
-            }
-            QJsonObject cached_root;
-            cached_root["events"] = cached_arr;
-            cached_root["total_events"] = page_data.total_events;
-            cached_root["current_page"] = page_data.current_page;
-            cached_root["total_pages"] = page_data.total_pages;
-            cached_root["events_per_page"] = page_data.events_per_page;
-            cached_root["has_next"] = page_data.has_next;
-            cached_root["has_prev"] = page_data.has_prev;
-            cached_root["credits_used"] = page_data.credits_used;
-            cached_root["remaining_credits"] = page_data.remaining_credits;
-            const QString cache_key =
-                QString("geo:events:%1:%2:%3:%4:%5").arg(country, city, category).arg(limit).arg(page);
-            fincept::CacheManager::instance().put(cache_key,
-                                                  QVariant(QJsonDocument(cached_root).toJson(QJsonDocument::Compact)),
-                                                  kEventsTtlSec, "geopolitics");
-
-            LOG_INFO("Geopolitics", QString("Loaded %1 events (page %2/%3, total %4, %5 credits left)")
-                                        .arg(page_data.events.size())
-                                        .arg(page_data.current_page)
-                                        .arg(page_data.total_pages)
-                                        .arg(page_data.total_events)
-                                        .arg(page_data.remaining_credits));
-
-            emit self->events_loaded(page_data);
-            if (self->hub_registered_)
-                publish_to_hub(QStringLiteral("geopolitics:events"), QVariant::fromValue(page_data));
-        });
+    // MarketLab: the Fincept events feed is removed (FINCEPT_FORK_PLAN.md §6 —
+    // "disable the Fincept events feed"; HDX, ReliefWeb, trade analysis, and
+    // local geolocation remain). Emit an explicit unavailable state instead of
+    // a network call; screens show the concrete reason.
+    Q_UNUSED(country);
+    Q_UNUSED(city);
+    Q_UNUSED(category);
+    Q_UNUSED(limit);
+    Q_UNUSED(page);
+    Q_UNUSED(source);
+    Q_UNUSED(date_from);
+    Q_UNUSED(date_to);
+    LOG_WARN("Geopolitics", kEventsFeedUnavailable);
+    emit error_occurred("events", QString::fromLatin1(kEventsFeedUnavailable));
 }
 
 void GeopoliticsService::fetch_unique_countries() {
-    // Cache hit — deserialize and emit, otherwise go to network.
-    const QVariant cached = fincept::CacheManager::instance().get("geo:countries");
-    if (!cached.isNull()) {
-        const QJsonArray arr = QJsonDocument::fromJson(cached.toString().toUtf8()).array();
-        QVector<UniqueCountry> countries;
-        countries.reserve(arr.size());
-        for (const auto& v : arr) {
-            const auto o = v.toObject();
-            countries.append({o["country"].toString(), o["event_count"].toInt()});
-        }
-        emit countries_loaded(countries);
-        return;
-    }
-
-    QPointer<GeopoliticsService> self = this;
-    HttpClient::instance().get(
-        geo_api_base() + "?get_unique_countries=true&limit=100", [self](Result<QJsonDocument> result) {
-            if (!self)
-                return;
-            if (!result.is_ok()) {
-                emit self->error_occurred("countries", QString::fromStdString(result.error()));
-                return;
-            }
-            auto root = result.value().object();
-            auto data = root.contains("data") ? root["data"].toObject() : root;
-            auto arr = data["unique_countries"].toArray();
-            QVector<UniqueCountry> countries;
-            countries.reserve(arr.size());
-            QJsonArray to_cache;
-            for (const auto& v : arr) {
-                auto o = v.toObject();
-                const QString name = o["country"].toString();
-                const int count = o["event_count"].toInt();
-                countries.append({name, count});
-                QJsonObject entry;
-                entry["country"] = name;
-                entry["event_count"] = count;
-                to_cache.append(entry);
-            }
-            fincept::CacheManager::instance().put(
-                "geo:countries", QVariant(QString::fromUtf8(QJsonDocument(to_cache).toJson(QJsonDocument::Compact))),
-                kRefDataTtlSec, "geopolitics");
-            emit self->countries_loaded(countries);
-            if (self->hub_registered_)
-                publish_to_hub(QStringLiteral("geopolitics:countries"), QVariant::fromValue(countries));
-        });
+    // MarketLab: the Fincept events feed (and its reference filters) is
+    // removed — explicit unavailable state instead of a network call.
+    emit error_occurred("countries", QString::fromLatin1(kEventsFeedUnavailable));
 }
 
 void GeopoliticsService::fetch_unique_categories() {
-    const QVariant cached = fincept::CacheManager::instance().get("geo:categories");
-    if (!cached.isNull()) {
-        const QJsonArray arr = QJsonDocument::fromJson(cached.toString().toUtf8()).array();
-        QVector<UniqueCategory> cats;
-        cats.reserve(arr.size());
-        for (const auto& v : arr) {
-            const auto o = v.toObject();
-            cats.append({o["event_category"].toString(), o["event_count"].toInt()});
-        }
-        emit categories_loaded(cats);
-        return;
-    }
-
-    QPointer<GeopoliticsService> self = this;
-    HttpClient::instance().get(geo_api_base() + "?get_unique_categories=true", [self](Result<QJsonDocument> result) {
-        if (!self)
-            return;
-        if (!result.is_ok()) {
-            emit self->error_occurred("categories", QString::fromStdString(result.error()));
-            return;
-        }
-        auto root = result.value().object();
-        auto data = root.contains("data") ? root["data"].toObject() : root;
-        auto arr = data["unique_categories"].toArray();
-        QVector<UniqueCategory> cats;
-        cats.reserve(arr.size());
-        QJsonArray to_cache;
-        for (const auto& v : arr) {
-            auto o = v.toObject();
-            const QString name = o["event_category"].toString();
-            const int count = o["event_count"].toInt();
-            cats.append({name, count});
-            QJsonObject entry;
-            entry["event_category"] = name;
-            entry["event_count"] = count;
-            to_cache.append(entry);
-        }
-        fincept::CacheManager::instance().put(
-            "geo:categories", QVariant(QString::fromUtf8(QJsonDocument(to_cache).toJson(QJsonDocument::Compact))),
-            kRefDataTtlSec, "geopolitics");
-        emit self->categories_loaded(cats);
-        if (self->hub_registered_)
-            publish_to_hub(QStringLiteral("geopolitics:categories"), QVariant::fromValue(cats));
-    });
+    // MarketLab: removed with the Fincept events feed (see fetch_events).
+    emit error_occurred("categories", QString::fromLatin1(kEventsFeedUnavailable));
 }
 
 void GeopoliticsService::fetch_unique_cities() {
-    QPointer<GeopoliticsService> self = this;
-    HttpClient::instance().get(geo_api_base() + "?get_unique_cities=true", [self](Result<QJsonDocument> result) {
-        if (!self)
-            return;
-        if (!result.is_ok()) {
-            emit self->error_occurred("cities", QString::fromStdString(result.error()));
-            return;
-        }
-        // Response: {success, message, data: {unique_cities: [{city, country}, ...]}}
-        auto root = result.value().object();
-        auto data = root.contains("data") ? root["data"].toObject() : root;
-        auto arr = data["unique_cities"].toArray();
-        QStringList cities;
-        cities.reserve(arr.size());
-        for (const auto& v : arr) {
-            const auto city = v.toObject()["city"].toString();
-            if (!city.isEmpty())
-                cities.append(city);
-        }
-        emit self->cities_loaded(cities);
-        if (self->hub_registered_)
-            publish_to_hub(QStringLiteral("geopolitics:cities"), QVariant::fromValue(cities));
-    });
+    // MarketLab: removed with the Fincept events feed (see fetch_events).
+    emit error_occurred("cities", QString::fromLatin1(kEventsFeedUnavailable));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

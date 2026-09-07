@@ -1,0 +1,150 @@
+{
+  "schema": 1,
+  "note": "MarketLab Terminal hosted-path inventory (FINCEPT_FORK_PLAN.md §5.3). Every Fincept-owned host reference in src/, scripts/, resources/, packaging/, and translations/ must be listed here with an explicit disposition. The static audit (audit_hosted_paths.py) fails when a new reference appears without one. Dispositions: removed | guarded | unreachable | not_built | rejected | disabled.",
+  "rules": [
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "not_built",
+      "files": ["scripts/strategies/**", "packaging/**", "CMakeLists.txt"],
+      "note": "Third-party QuantConnect sample-strategy attribution headers (no network use); installer/AppImage metadata and CPack homepage for the upstream package name — packaging is deferred to Phase 6."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "rejected",
+      "files": ["src/core/config/AppConfig.cpp", "src/network/cloud/CloudClient.h", "src/network/cloud/CloudClient.cpp"],
+      "note": "Configuration-derived Fincept route: the default api/cloud base URLs remain Fincept-shaped but every shared-client request is rejected by the HostedPathGuard deny-list before any network access."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "not_built",
+      "files": ["packaging/**", "CMakeLists.txt"],
+      "note": "Upstream installer license text and the CPack Debian maintainer field; packaging is deferred to Phase 6."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "guarded",
+      "files": ["src/network/http/HostedPathGuard.cpp", "src/network/http/HostedPathGuard.h", "src/network/http/HttpClient.cpp", "src/services/llm/ProviderCatalog.cpp"],
+      "note": "The deny-list itself and its enforcement point; the LLM provider base-URL block guard."
+    },
+    {
+      "pattern": "fincept.com",
+      "disposition": "guarded",
+      "files": ["src/network/http/HostedPathGuard.cpp", "src/network/http/HostedPathGuard.h", "src/services/llm/ProviderCatalog.cpp"],
+      "note": "Deny-list entry; the LLM provider base-URL block guard."
+    },
+    {
+      "pattern": "fincept.app",
+      "disposition": "guarded",
+      "files": ["src/network/http/HostedPathGuard.cpp", "src/services/llm/ProviderCatalog.cpp"],
+      "note": "Deny-list entry; the LLM provider base-URL block guard."
+    },
+    {
+      "pattern": "fincept.ai",
+      "disposition": "guarded",
+      "files": ["src/network/http/HostedPathGuard.cpp", "src/services/llm/ProviderCatalog.cpp"],
+      "note": "Deny-list entry; the LLM provider base-URL block guard."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "guarded",
+      "files": ["src/network/http/HostedPathGuard.cpp", "src/network/http/HostedPathGuard.h"],
+      "note": "The deny-list's GitHub-org path prefix rules."
+    },
+    {
+      "pattern": "markets.fincept",
+      "disposition": "unreachable",
+      "files": ["src/network/http/HostedPathGuard.h", "src/services/prediction/fincept_internal/FinceptInternalAdapter.h"],
+      "note": "Deny-list documentation; the dormant Fincept-internal prediction adapter is never constructed in this fork."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "unreachable",
+      "files": [
+        "src/auth/GoogleDesktopLogin.h",
+        "src/screens/auth/PricingScreen.cpp",
+        "src/screens/chat_mode/ChatModeService.h",
+        "src/screens/chat_mode/ChatModeService.cpp",
+        "src/screens/quantlib/QuantLibScreen.h",
+        "src/screens/quantlib/QuantLibScreen.cpp",
+        "src/screens/quantlib/QuantLibScreen_Data.cpp",
+        "src/screens/profile/ProfileScreen.cpp",
+        "src/services/maritime/MaritimeService.h",
+        "src/services/maritime/MaritimeService.cpp",
+        "src/services/economics/MacroCalendarService.h",
+        "src/services/economics/MacroCalendarService.cpp",
+        "src/screens/dashboard/widgets/EconomicCalendarWidget.cpp",
+        "src/services/data_normalization/DataNormalizationService.cpp",
+        "src/services/llm/LlmHttpHelpers.cpp",
+        "src/services/prediction/fincept_internal/FinceptInternalAdapter.h",
+        "src/ui/widgets/EnterprisePromo.cpp"
+      ],
+      "note": "Owned by removed auth/pricing/chat-mode/quantlib/profile/maritime/cloud-sync surfaces that are not constructed or not registered in this fork; comment-only references to the removed endpoint."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "unreachable",
+      "files": ["src/screens/profile/ProfileScreen.cpp"],
+      "note": "Upstream profile-screen link buttons; the screen is not registered in this fork."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "removed",
+      "files": ["src/screens/dashboard/DashboardStatusBar.cpp", "src/services/news/NewsService_LiveFeed.cpp", "src/services/llm/LlmService.cpp"],
+      "note": "Comments describing the removed API-health ping, the removed hosted news WebSocket, and the removed fincept LLM path; no live code reference remains."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "removed",
+      "files": ["src/screens/about/AboutScreen.cpp", "src/python/taiwan_market_connector.py"],
+      "note": "Text-only upstream identity (no navigation); attribution header."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "disabled",
+      "files": ["src/services/updater/UpdateService.h", "src/services/updater/UpdateService.cpp"],
+      "note": "Update-manifest host for the upstream repo; check_for_updates() returns early and never fetches it."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "removed",
+      "files": ["translations/**"],
+      "note": "Stale translation catalogs carrying pre-fork brand strings; regenerated on the next upstream translation sync and never used for networking."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "guarded",
+      "files": ["src/app/MarketLabBoundarySelftest.cpp", "tests/**", "src/services/quantlib/QuantLibClient.cpp"],
+      "note": "Test fixtures: reject/deny test vectors that must never contact the network; QuantLibClient: the configuration-derived hosted route is rejected in call() before any network access (the client owns its QNetworkAccessManager, so the shared-client deny-list cannot see it)."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "removed",
+      "files": ["docs/**"],
+      "note": "Documentation text only — upstream architecture docs; no network path."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "removed",
+      "files": ["docs/**"],
+      "note": "Documentation text only — upstream attribution; no network path."
+    },
+    {
+      "pattern": "fincept.com",
+      "disposition": "guarded",
+      "files": ["tests/**"],
+      "note": "Test fixtures: deny-list test vectors."
+    },
+    {
+      "pattern": "markets.fincept",
+      "disposition": "guarded",
+      "files": ["tests/**"],
+      "note": "Test fixtures: deny-list test vectors."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "guarded",
+      "files": ["tests/**"],
+      "note": "Test fixtures: deny-list GitHub-org test vectors."
+    }
+  ]
+}

@@ -58,6 +58,9 @@ class CloudClient : public QObject {
 
     QNetworkRequest build_request(const QString& endpoint) const;
     void finish(QNetworkReply* reply, Callback cb, const QObject* context);
+    /// MarketLab containment: reject Fincept-owned destinations before any
+    /// network access (FINCEPT_FORK_PLAN.md §5.3). Returns true when rejected.
+    bool reject_hosted(const QString& endpoint, const Callback& cb, const QObject* context);
 
     QNetworkAccessManager* nam_ = nullptr;
     QString base_url_;

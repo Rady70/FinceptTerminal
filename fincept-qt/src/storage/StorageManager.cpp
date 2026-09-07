@@ -693,7 +693,7 @@ void StorageManager::start_retention_sweeper(int interval_ms) {
 
 Result<void> StorageManager::clear_qsettings() {
     LOG_INFO("StorageManager", "Clearing QSettings (window geometry, perspectives, UI state)");
-    QSettings settings("Fincept", "FinceptTerminal");
+    QSettings settings("MarketLab", "MarketLabTerminal");
     settings.clear();
     settings.sync();
     emit category_cleared("qsettings");

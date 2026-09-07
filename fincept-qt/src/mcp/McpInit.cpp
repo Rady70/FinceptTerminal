@@ -134,13 +134,18 @@ void initialize_all_tools() {
     provider.register_tools(tools::get_ai_chat_tools());
 
     // crypto trading tab
-    provider.register_tools(tools::get_crypto_trading_tools());
+    // MarketLab: crypto-trading MCP tools are NOT registered — the crypto
+    // trading screen and its order-capable tools are Unavailable in this
+    // build (FINCEPT_FORK_PLAN.md §5.4, §6).
+    // provider.register_tools(tools::get_crypto_trading_tools());
 
-    // paper trading tab
+    // paper trading tab — simulated only, proven broker-agnostic
     provider.register_tools(tools::get_paper_trading_tools());
 
     // live broker trading (order placement/cancel, account state, market data)
-    provider.register_tools(tools::get_live_trading_tools());
+    // MarketLab: NOT registered — no external order operation is exposed
+    // (FINCEPT_FORK_PLAN.md §5.4).
+    // provider.register_tools(tools::get_live_trading_tools());
 
     // sec edgar (CIK resolution, XBRL financials, filing search)
     provider.register_tools(tools::get_edgar_tools());
@@ -155,10 +160,12 @@ void initialize_all_tools() {
     provider.register_tools(tools::get_data_sources_tools());
 
     // forum tab
-    provider.register_tools(tools::get_forum_tools());
+    // MarketLab: NOT registered — the Fincept-hosted forum is removed.
+    // provider.register_tools(tools::get_forum_tools());
 
     // profile tab
-    provider.register_tools(tools::get_profile_tools());
+    // MarketLab: NOT registered — the Fincept account profile is removed.
+    // provider.register_tools(tools::get_profile_tools());
 
     // file manager tab
     provider.register_tools(tools::get_file_manager_tools());

@@ -8,6 +8,7 @@
 
 #include "app/DockScreenRouter.h"
 #include "app/WindowFrame.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/layout/LayoutCatalog.h"
 #include "core/layout/WorkspaceShell.h"
 #include "core/logging/Logger.h"
@@ -167,6 +168,13 @@ bool WindowFrame::apply_layout(const layout::FrameLayout& fl) {
     // is deferred to Phase 5 below. Idempotent after Phase 0 for non-dup
     // ids; still needed for "<type>#dup<n>" panels not in factories_.
     for (const auto& ps : fl.panels) {
+        // MarketLab: a saved layout must never reopen a screen that is
+        // Unavailable in this build (FINCEPT_FORK_PLAN.md §5.2).
+        if (!capability::CapabilityManager::instance().is_screen_allowed(ps.type_id)) {
+            LOG_WARN("WindowFrame", QString("apply_layout: dropping panel '%1' — unavailable in this build")
+                                        .arg(ps.type_id));
+            continue;
+        }
         QString id = ps.type_id;
         int dup_index = 0;
         for (const auto& other : fl.panels) {

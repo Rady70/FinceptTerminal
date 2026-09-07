@@ -8,6 +8,7 @@
 #include "app/DockScreenRouter.h"
 #include "app/WindowFrame.h"
 #include "auth/InactivityGuard.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/components/PopularityTracker.h"
 #include "core/keys/WindowCycler.h"
 #include "core/logging/Logger.h"
@@ -224,6 +225,23 @@ void DockScreenRouter::materialize_now(const QString& id) {
 void DockScreenRouter::materialize_screen(const QString& id) {
     if (screens_.contains(id))
         return;
+
+    // MarketLab: capability gate on the materialize choke point — covers
+    // tab_into, panel tools, restore walks, and any future caller that
+    // bypasses navigate() (FINCEPT_FORK_PLAN.md §5.2). "#dup<n>" suffixes
+    // from duplicated panels resolve to their base type id.
+    {
+        QString base_id = id;
+        const int dup_idx = base_id.indexOf(QStringLiteral("#dup"));
+        if (dup_idx > 0)
+            base_id = base_id.left(dup_idx);
+        if (!capability::CapabilityManager::instance().is_screen_allowed(base_id)) {
+            const auto avail = capability::CapabilityManager::instance().screen_availability(base_id);
+            LOG_WARN("DockRouter",
+                     QString("materialize('%1') denied — unavailable in this build: %2").arg(id, avail.reason));
+            return;
+        }
+    }
 
     auto fit = factories_.find(id);
     if (fit == factories_.end())

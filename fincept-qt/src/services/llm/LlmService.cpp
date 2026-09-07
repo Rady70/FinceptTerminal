@@ -60,18 +60,10 @@ void LlmService::reload_config() {
 }
 
 void LlmService::ensure_config() const {
-    // Called with mutex_ held. Cache is one-shot except for Fincept credentials —
-    // those re-resolve every call so a login that happens after first ensure_config() doesn't 401 forever.
-    if (config_loaded_) {
-        if (provider_ == "fincept") {
-            // Resolve via AuthManager (session → SecureStorage). Never the
-            // legacy plaintext settings row (CR-08).
-            const QString key = fincept::auth::AuthManager::instance().fincept_api_key();
-            if (!key.isEmpty())
-                api_key_ = key;
-        }
+    // Called with mutex_ held. Cache is one-shot — there is no Fincept
+    // credential resolution in this fork (the hosted provider is removed).
+    if (config_loaded_)
         return;
-    }
 
     provider_ = model_ = api_key_ = base_url_ = system_prompt_ = {};
     temperature_ = 0.7;
@@ -102,20 +94,15 @@ void LlmService::ensure_config() const {
         }
     }
 
-    // Nothing configured — default to Fincept with the session key.
+    // MarketLab: nothing configured — default to the LOCAL Ollama provider
+    // (FINCEPT_FORK_PLAN.md §6: keep local or user-configured LLM providers;
+    // the hosted fincept provider is removed). AI chat prompts the user to
+    // configure a provider until one is set.
     if (provider_.isEmpty()) {
-        provider_ = "fincept";
-        model_ = "MiniMax-M2.7";
-        base_url_ = {};
-        LOG_INFO(kLlmSvcTag, "No LLM provider configured — using Fincept default");
-    }
-
-    // Fincept key resolves via AuthManager (live session → encrypted
-    // SecureStorage). The legacy plaintext settings row is no longer read (CR-08).
-    if (provider_ == "fincept") {
-        const QString key = fincept::auth::AuthManager::instance().fincept_api_key();
-        if (!key.isEmpty())
-            api_key_ = key;
+        provider_ = "ollama";
+        model_ = {};
+        base_url_ = ProviderCatalog::default_base_url(QStringLiteral("ollama"));
+        LOG_INFO(kLlmSvcTag, "No LLM provider configured — defaulting to local Ollama");
     }
 
     auto gs = LlmConfigRepository::instance().get_global_settings();
@@ -383,14 +370,15 @@ QMap<QString, QString> LlmService::get_headers() const {
         const auto& sess = fincept::auth::AuthManager::instance().session();
         if (!sess.session_token.isEmpty())
             h["X-Session-Token"] = sess.session_token;
-        h["User-Agent"] = "FinceptTerminal/4.0"; // Cloudflare requires it.
+        h["User-Agent"] = "MarketLabTerminal/0.1.0"; // Cloudflare requires it.
     } else {
         if (!api_key_.isEmpty())
             h["Authorization"] = "Bearer " + api_key_;
         if (p == "openrouter") {
             // Attribution for the openrouter.ai/rankings leaderboard.
-            h["HTTP-Referer"] = "https://fincept.in";
-            h["X-Title"] = "Fincept Terminal";
+            // MarketLab: no Fincept referer/title — the fork presents its own
+            // network identity on third-party providers.
+            h["X-Title"] = "MarketLab Terminal";
         }
     }
     return h;
@@ -400,7 +388,8 @@ LlmResponse LlmService::do_request(const QString& user_message, const std::vecto
     LlmResponse resp;
 
     if (ProviderCatalog::is_blocked(provider_, base_url_)) {
-        resp.error = "AtlasCloud has been banned by Fincept and cannot be used.";
+        resp.error = "This LLM provider is unavailable in MarketLab Terminal (hosted providers removed — "
+                     "configure a local or user-owned provider in Settings \u2192 LLM Config).";
         return resp;
     }
 

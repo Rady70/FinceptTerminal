@@ -413,7 +413,7 @@ void LockScreen::build_unlock_page() {
     // "Forgot PIN?" escape — a forgotten PIN is recoverable by signing in again
     // (this clears the PIN). Without this link the only path was to fail the unlock
     // kMaxAttempts times through escalating lockouts, which is minutes of dead-end.
-    unlock_forgot_btn_ = new QPushButton(tr("Forgot PIN?  Sign in again"));
+    unlock_forgot_btn_ = new QPushButton(tr("Forgot PIN?  Reset PIN"));
     unlock_forgot_btn_->setCursor(Qt::PointingHandCursor);
     unlock_forgot_btn_->setStyleSheet(QString("QPushButton{color:%1; background:transparent; border:none;"
                                               "font-size:12px; text-decoration:underline;"
@@ -430,7 +430,7 @@ void LockScreen::build_unlock_page() {
     unlock_pin_input_->setAccessibleName(tr("Unlock PIN"));
     unlock_pin_input_->setAccessibleDescription(tr("Six digit PIN that unlocks the terminal"));
     unlock_btn_->setAccessibleName(tr("Unlock terminal"));
-    unlock_forgot_btn_->setAccessibleName(tr("Forgot PIN, sign in again"));
+    unlock_forgot_btn_->setAccessibleName(tr("Forgot PIN, reset PIN"));
     unlock_error_->setAccessibleName(tr("Unlock error"));
     unlock_lockout_label_->setAccessibleName(tr("Lockout status"));
     setTabOrder(unlock_pin_input_, unlock_btn_);
@@ -488,7 +488,7 @@ void LockScreen::build_lockout_page() {
 
     vl->addStretch();
 
-    lockout_reauth_btn_->setAccessibleName(tr("Sign in again to reset your PIN"));
+    lockout_reauth_btn_->setAccessibleName(tr("Set a new PIN"));
     lockout_msg_->setAccessibleName(tr("Account locked message"));
 
     pages_->addWidget(page); // index 2
@@ -527,19 +527,21 @@ void LockScreen::retranslateUi() {
     if (unlock_btn_)
         unlock_btn_->setText(tr("  UNLOCK  "));
     if (unlock_forgot_btn_)
-        unlock_forgot_btn_->setText(tr("Forgot PIN?  Sign in again"));
+        unlock_forgot_btn_->setText(tr("Forgot PIN?  Reset PIN"));
 
     if (lockout_title_)
-        lockout_title_->setText(tr("ACCOUNT LOCKED"));
+        lockout_title_->setText(tr("TERMINAL LOCKED"));
     if (lockout_badge_)
         lockout_badge_->setText(tr("SECURITY"));
     if (lockout_msg_)
+        // MarketLab: no account session exists — the recovery step is to set
+        // a fresh local PIN, not to re-authenticate.
         lockout_msg_->setText(tr("Too many failed PIN attempts.\n\n"
                                  "For your security, the terminal has been locked.\n"
-                                 "You must sign in again with your email and password\n"
-                                 "to reset your PIN and regain access."));
+                                 "Your PIN has been cleared — press the button below\n"
+                                 "to set a new PIN and regain access."));
     if (lockout_reauth_btn_)
-        lockout_reauth_btn_->setText(tr("  SIGN IN AGAIN  "));
+        lockout_reauth_btn_->setText(tr("  SET NEW PIN  "));
 }
 
 void LockScreen::refresh_attempts_label() {

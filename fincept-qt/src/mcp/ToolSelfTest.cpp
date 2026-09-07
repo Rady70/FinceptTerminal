@@ -58,15 +58,12 @@ std::vector<EvalCase> corpus() {
         {"cancel my pending paper order", {"pt_cancel_order"}},
 
         // ── live broker trading ──
-        {"place a real order to buy 50 shares through my broker", {"live_place_order", "live_smart_order"}},
-        {"what positions do I hold at my broker right now", {"live_get_positions", "live_get_holdings"}},
-        {"cancel my open broker order", {"live_cancel_order", "live_cancel_all_orders"}},
-        {"check my available trading funds and margin", {"live_get_funds"}},
-        {"close all my open positions immediately", {"live_close_all_positions", "live_close_position"}},
-        {"get the live option chain for NIFTY", {"live_get_option_chain"}},
+        // MarketLab: live-trading MCP tools are NOT registered in this fork
+        // (FINCEPT_FORK_PLAN.md §5.4), so no retrieval case may expect them.
+        // Their absence is asserted by --selftest-marketlab-boundary.
 
         // ── markets / quotes ──
-        {"what is the current price of Apple stock", {"get_quote", "live_get_quote"}},
+        {"what is the current price of Apple stock", {"get_quote"}},
         {"get historical daily prices for GOOGL over the last year", {"get_history", "get_equity_historical"}},
         {"find the ticker symbol for Microsoft", {"lookup_symbol", "search_equity_symbols"}},
 
@@ -91,8 +88,9 @@ std::vector<EvalCase> corpus() {
         {"what tabs or screens are available", {"list_tabs", "list_available_screen_ids"}},
 
         // ── crypto ──
+        // MarketLab: crypto-trading MCP tools are NOT registered — only the
+        // public-data quote tools remain.
         {"get the current bitcoin price on the exchange", {"get_ticker", "get_quote"}},
-        {"show me the order book depth for ETH", {"get_order_book"}},
 
         // ── equity research ──
         {"pull the latest financial statements for Apple", {"get_equity_financials", "edgar_get_financials"}},
@@ -139,15 +137,16 @@ std::vector<EvalCase> corpus() {
         {"change an application setting", {"set_setting"}},
 
         // ── profile / account ──
-        {"how many credits do I have left", {"profile_get_credits"}},
-        {"what subscription tier am I on", {"profile_get_subscription"}},
+        // MarketLab: profile/account MCP tools are NOT registered (Fincept
+        // account removed — FINCEPT_FORK_PLAN.md §5.1, §6).
 
         // ── workspace ──
         {"tile my open panels in a 2x2 grid", {"tile_panels_2x2"}},
         {"save my current window layout", {"save_current_layout", "snapshot_workspace_now"}},
 
         // ── economics / data ──
-        {"find economic time series data on GDP", {"search_dbnomics", "list_dbnomics_series"}},
+        {"find economic time series data on GDP",
+         {"search_dbnomics", "list_dbnomics_series", "list_dbnomics_datasets", "get_dbnomics_observations"}},
 
         // ── mcp servers / data sources ──
         {"list my connected MCP servers", {"list_mcp_servers"}},

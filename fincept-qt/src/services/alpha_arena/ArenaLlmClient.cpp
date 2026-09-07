@@ -128,7 +128,7 @@ void ArenaLlmClient::complete(const ArenaLlmRequest& req, std::function<void(Are
         const auto& sess = fincept::auth::AuthManager::instance().session();
         if (!sess.session_token.isEmpty())
             nr.setRawHeader("X-Session-Token", sess.session_token.toUtf8());
-        nr.setRawHeader("User-Agent", "FinceptTerminal/4.0");
+        nr.setRawHeader("User-Agent", "MarketLabTerminal/0.1.0");
     } else if (!req.api_key.isEmpty()) {
         nr.setRawHeader("Authorization", ("Bearer " + req.api_key).toUtf8());
     }

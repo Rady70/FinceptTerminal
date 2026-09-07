@@ -5,6 +5,7 @@
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
 #include "core/logging/Logger.h"
+#include "network/http/HostedPathGuard.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -64,7 +65,7 @@ static QNetworkRequest build_request(const QString& endpoint, const QJsonObject&
     QNetworkRequest req{QUrl(url)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Accept", "application/json");
-    req.setRawHeader("User-Agent", "FinceptTerminal/4.0.0");
+    req.setRawHeader("User-Agent", "MarketLabTerminal/0.1.0");
 
     auto& auth_mgr = auth::AuthManager::instance();
     if (auth_mgr.is_authenticated())
@@ -133,6 +134,24 @@ mcp::ToolResult QuantLibClient::parse_response(int http_status, const QByteArray
 // ── Async call ───────────────────────────────────────────────────────────────
 
 void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, QuantLibCallback callback) {
+    // MarketLab: the hosted QuantLib suite is Unavailable in this fork
+    // (FINCEPT_FORK_PLAN.md §5.3, §6 — the suite lives at api.fincept.in via a
+    // configuration-derived route and this client uses its OWN
+    // QNetworkAccessManager, so the shared-client deny-list cannot see it).
+    // The composed URL is rejected here before any network access; the local
+    // derivatives calculator is the retained alternative.
+    {
+        const QString full_url = fincept::AppConfig::instance().api_base_url() + "/quantlib/" + endpoint;
+        const QUrl qurl(full_url);
+        if (network::HostedPathGuard::is_fincept_destination(qurl)) {
+            const QString err = network::HostedPathGuard::unavailable_error(qurl);
+            LOG_WARN("QuantLib", QString("Hosted QuantLib call rejected for '%1' — %2")
+                                      .arg(endpoint, err));
+            callback(mcp::ToolResult::fail(err));
+            return;
+        }
+    }
+
     // Cache GET endpoints (static reference data) and query-param endpoints
     const bool cacheable = is_get_endpoint(endpoint) || is_query_param_endpoint(endpoint);
     if (cacheable) {

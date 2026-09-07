@@ -74,41 +74,9 @@ void wire_market_data_bridges(NodeRegistry& registry) {
     // market.get_quote and market.get_historical already have real Python-backed
     // executors from MarketDataNodes.cpp — do NOT overwrite them.
 
-    // Crypto Price — uses ExchangeService (Kraken public API, no key needed)
-    auto* crypto_price_def = const_cast<NodeTypeDef*>(registry.find("market.get_crypto_price"));
-    if (crypto_price_def) {
-        crypto_price_def->execute = [](const QJsonObject& params, const QVector<QJsonValue>&,
-                                       std::function<void(bool, QJsonValue, QString)> cb) {
-            QString base = params.value("symbol").toString("BTC").toUpper();
-            QString quote = params.value("quote").toString("USD").toUpper();
-            QString symbol = base + "/" + quote; // Kraken format: BTC/USD
-
-            (void)QtConcurrent::run([symbol, cb]() {
-                auto& svc = trading::ExchangeService::instance();
-                trading::TickerData t = svc.fetch_ticker(symbol);
-
-                if (t.last <= 0.0) {
-                    cb(false, {}, QString("No price data for %1").arg(symbol));
-                    return;
-                }
-
-                QJsonObject out;
-                out["symbol"] = symbol;
-                out["price"] = t.last;
-                out["bid"] = t.bid;
-                out["ask"] = t.ask;
-                out["high"] = t.high;
-                out["low"] = t.low;
-                out["change"] = t.change;
-                out["change_pct"] = t.percentage;
-                out["volume"] = t.base_volume;
-                out["exchange"] = "kraken";
-                out["timestamp"] = static_cast<qint64>(t.timestamp);
-                cb(true, out, {});
-                LOG_DEBUG("MarketBridge", QString("Crypto price fetched: %1 = %2").arg(symbol).arg(t.last));
-            });
-        };
-    }
+    // MarketLab: the crypto-price node and its ExchangeService bridge are
+    // removed with the exchange surface (FINCEPT_FORK_PLAN.md §5.4, §6); the
+    // node is not registered, so there is nothing to wire here.
 
     // market.get_news already has a real executor from MarketDataNodes.cpp.
     // Remaining market nodes (depth, stats, fundamentals, economics) are wired
@@ -2496,7 +2464,10 @@ static void wire_mcp_bridges(NodeRegistry& registry) {
 void wire_all_bridges(NodeRegistry& registry) {
     wire_mcp_bridges(registry);
     wire_market_data_bridges(registry);
-    wire_trading_bridges(registry);
+    // MarketLab: trading bridges (UnifiedTrading live order routing) are NOT
+    // wired — the trading nodes themselves are unregistered in this fork
+    // (FINCEPT_FORK_PLAN.md §5.4).
+    // wire_trading_bridges(registry);
     wire_agent_bridges(registry);
     wire_utility_bridges(registry);
 

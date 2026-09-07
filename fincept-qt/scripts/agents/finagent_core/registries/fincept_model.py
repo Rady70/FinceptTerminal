@@ -79,7 +79,7 @@ def _rate_limit_fincept() -> None:
             except Exception:
                 pass
 
-FINCEPT_DEFAULT_URL = "https://api.fincept.in/research/llm"
+FINCEPT_DEFAULT_URL = None  # MarketLab: Fincept hosted LLM removed
 
 
 # ── Anthropic tool schema builder ─────────────────────────────────────────────
@@ -249,52 +249,16 @@ class FinceptChat(Model):
         tool_results_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Call /research/llm and return the parsed response dict.
-
-        Tries self.base_url first. If that URL is different from the canonical
-        FINCEPT_DEFAULT_URL and it fails with a gateway error, automatically
-        falls back to the canonical URL so a misconfigured/expired custom
-        endpoint never permanently blocks the agent.
-
-        Returns the full data dict:
-          {"response": str, "tool_calls": [...], "model": str, ...}
+        MarketLab: the hosted Fincept LLM endpoint is removed
+        (FINCEPT_FORK_PLAN.md §5.3, §6). This adapter is retained only so any
+        stale saved configuration fails with an explicit unavailable error
+        instead of contacting the network; agents must use a local or
+        user-configured provider.
         """
-        _rate_limit_fincept()
-
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["X-API-Key"] = self.api_key
-
-        # Build the full prompt — include tool results from prior rounds
-        full_prompt = prompt
-        if tool_results_context:
-            full_prompt = f"{prompt}\n\n{tool_results_context}"
-
-        payload: Dict[str, Any] = {"prompt": full_prompt}
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-        if self.max_tokens is not None:
-            payload["max_tokens"] = self.max_tokens
-        if tools:
-            payload["tools"] = tools
-        if tool_choice:
-            payload["tool_choice"] = tool_choice
-
-        # Try the configured URL first
-        try:
-            return self._try_url(self.base_url, payload, headers)
-        except RuntimeError as primary_err:
-            # If we're already using the default URL, re-raise immediately
-            if self.base_url == FINCEPT_DEFAULT_URL:
-                raise
-
-            # Custom/tunnel URL failed — fall back to the real Fincept API
-            logger.warning(
-                f"FinceptChat: custom base_url '{self.base_url}' failed ({primary_err}). "
-                f"Falling back to {FINCEPT_DEFAULT_URL}"
-            )
-            _rate_limit_fincept()  # honour rate limit before fallback attempt
-            return self._try_url(FINCEPT_DEFAULT_URL, payload, headers)
+        raise RuntimeError(
+            "Fincept hosted LLM is unavailable in MarketLab Terminal — "
+            "configure a local or user-owned LLM provider instead."
+        )
 
     # ── Tool execution ────────────────────────────────────────────────────────
 

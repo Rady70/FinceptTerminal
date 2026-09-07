@@ -268,13 +268,9 @@ class ModelsRegistry:
         },
 
         # Fincept (Built-in custom endpoint)
-        "fincept": {
-            "class": "finagent_core.registries.fincept_model.FinceptChat",
-            "models": ["fincept-llm"],
-            "api_key_env": "FINCEPT_API_KEY",
-            "default_model": "fincept-llm",
-            "base_url": "https://api.fincept.in/research/llm",
-        },
+        # MarketLab: the hosted Fincept LLM endpoint is removed
+        # (FINCEPT_FORK_PLAN.md §5.3, §6). Configure a local or user-owned
+        # provider instead — "fincept" is no longer a selectable provider.
     }
 
     _loaded_models: Dict[str, Any] = {}

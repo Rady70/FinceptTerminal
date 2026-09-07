@@ -200,8 +200,8 @@ QWidget* PrivacyScreen::build_page() {
 
     // 7 — Contact
     pvl->addWidget(section_heading("@", tr("CONTACT US")));
-    pvl->addWidget(body_text(tr("Privacy Officer: support@fincept.in")));
-    pvl->addWidget(body_text(tr("For privacy-related inquiries, write to the address above.")));
+    pvl->addWidget(body_text(tr("Privacy Officer: local research build — no external contact channel.")));
+    pvl->addWidget(body_text(tr("For privacy-related questions about this fork, see the bundled Help screen.")));
 
     vl->addWidget(panel);
 

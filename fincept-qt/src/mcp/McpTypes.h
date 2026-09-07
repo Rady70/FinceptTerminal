@@ -460,7 +460,7 @@ struct UnifiedTool {
 // Constants
 // ============================================================================
 
-inline constexpr const char* INTERNAL_SERVER_ID = "fincept-terminal";
-inline constexpr const char* INTERNAL_SERVER_NAME = "Fincept Terminal";
+inline constexpr const char* INTERNAL_SERVER_ID = "marketlab-terminal";
+inline constexpr const char* INTERNAL_SERVER_NAME = "MarketLab Terminal";
 
 } // namespace fincept::mcp

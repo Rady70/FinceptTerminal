@@ -119,4 +119,11 @@ fincept_add_test(tst_order_validator
     tst_order_validator.cpp
     "${PROJECT_SOURCE_DIR}/src/trading/OrderValidator.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator")
+# MarketLab: capability defaults, screen gating, and the hosted-path deny-list
+# (Qt Core only — two leaf TUs, no service linkage).
+fincept_add_test(tst_marketlab_boundary
+    tst_marketlab_boundary.cpp
+    "${PROJECT_SOURCE_DIR}/src/core/capability/CapabilityManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary")

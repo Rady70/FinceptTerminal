@@ -116,10 +116,8 @@ WidgetRegistry::WidgetRegistry() {
          QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Filter stocks by fundamentals and technicals"), 6, 5, 3,
          4, [](const QJsonObject&) { return new widgets::ScreenerWidget; }});
 
-    register_widget({"econ_calendar", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Economic Calendar"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Upcoming macro events and releases"), 4, 4,
-                     2, 3, [](const QJsonObject&) { return new widgets::EconomicCalendarWidget; }});
+    // MarketLab: the hosted Economic Calendar widget is removed
+    // (FINCEPT_FORK_PLAN.md §5.3, §6).
 
     // ── Portfolio ─────────────────────────────────────────────────────────────
     register_widget({"watchlist", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Watchlist"),
@@ -150,34 +148,11 @@ WidgetRegistry::WidgetRegistry() {
                      4, 5, 3, 4, [](const QJsonObject&) { return new widgets::RiskMetricsWidget; }});
 
     // ── Trading ───────────────────────────────────────────────────────────────
-    register_widget({"quick_trade", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Quick Trade"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trading"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Fast order entry for crypto and equities"),
-                     4, 5, 2, 3, [](const QJsonObject&) { return new widgets::QuickTradeWidget; }});
-
-    register_widget({"open_positions", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Open Positions"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trading"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Live open positions for a broker account — pick via gear icon"),
-                     6, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::OpenPositionsWidget(cfg); }});
-
-    register_widget({"working_orders", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Working Orders"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trading"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Pending/working orders for a broker account — click × to cancel"),
-                     6, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::OrderBookMiniWidget(cfg); }});
-
-    register_widget({"margin_usage", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Margin Usage"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trading"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Broker account funds — available, used margin, total, usage %"),
-                     3, 4, 2, 3, [](const QJsonObject& cfg) { return new widgets::MarginUsageWidget(cfg); }});
-
-    register_widget({"today_pnl", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Today P&L"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trading"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Aggregate broker account P&L — total, day, realized, open positions"),
-                     3, 4, 2, 3, [](const QJsonObject& cfg) { return new widgets::TodayPnLWidget(cfg); }});
+    // MarketLab: broker/execution widgets are NOT registered — no order entry,
+    // order-cancel, broker-account, or margin surface is exposed on the
+    // dashboard (FINCEPT_FORK_PLAN.md §5.4, §6). Retained broker-adjacent
+    // widgets (holdings) are read-only and show an explicit empty state with
+    // no brokers configured.
 
     register_widget(
         {"holdings", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings"),
@@ -204,17 +179,9 @@ WidgetRegistry::WidgetRegistry() {
                                        "Configurable live quote list — pick symbols via gear icon"),
                      3, 5, 2, 3, [](const QJsonObject& cfg) { return new widgets::MarketQuoteStripWidget(cfg); }});
 
-    register_widget({"crypto_ticker", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Crypto Ticker"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Live Kraken / HyperLiquid ticker strip — configurable pair list"),
-                     3, 5, 2, 3, [](const QJsonObject& cfg) { return new widgets::CryptoTickerWidget(cfg); }});
-
-    register_widget({"polymarket_prices", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Polymarket"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Live prediction-market prices — configurable asset list"),
-                     3, 5, 2, 3, [](const QJsonObject& cfg) { return new widgets::PolymarketPriceWidget(cfg); }});
+    // MarketLab: crypto-ticker, prediction-market, and trade-tape widgets are
+    // not registered — their exchange/prediction WebSocket producers are not
+    // started in this fork (FINCEPT_FORK_PLAN.md §5.4, §6).
 
     register_widget({"agent_errors", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Agent Errors"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Tools"),
@@ -226,13 +193,7 @@ WidgetRegistry::WidgetRegistry() {
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
                                        "Configurable sparkline strip — subscribes to market:sparkline:*"),
-                     4, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::SparklineStripWidget(cfg); }});
-
-    register_widget({"trade_tape", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Trade Tape"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Live trade prints for a crypto pair — ws:<exchange>:trades:<pair>"),
-                     4, 5, 3, 4, [](const QJsonObject& cfg) { return new widgets::TradeTapeWidget(cfg); }});
+                      4, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::SparklineStripWidget(cfg); }});
 
     register_widget({"news_category", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "News — Category"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
@@ -247,18 +208,9 @@ WidgetRegistry::WidgetRegistry() {
                      6, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::WebScraperWidget(cfg); }});
 
     // ── Geopolitics ──────────────────────────────────────────────────────────
-    register_widget({"geopolitics_events", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Geopolitics Events"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Geopolitics"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Live conflict / political events — subscribes to geopolitics:events"),
-                     6, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::GeopoliticsEventsWidget(cfg); }});
-
-    register_widget(
-        {"maritime_vessels", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Maritime Vessels"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Geopolitics"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                           "Live vessel positions — configurable IMO list, subscribes to maritime:vessel:*"),
-         5, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::MaritimeVesselsWidget(cfg); }});
+    // MarketLab: the Fincept events-feed widget and the maritime widget are
+    // not registered — their data feeds are removed/not started in this fork
+    // (FINCEPT_FORK_PLAN.md §5.3, §6).
 
     register_widget({"notes", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Notes"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Tools"),

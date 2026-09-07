@@ -347,7 +347,7 @@ ReportBuilderService::ReportBuilderService() {
 
     // Restore current_file_ from settings so the title bar shows the right
     // path on relaunch. (The doc itself comes from autosave below.)
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     current_file_ = s.value(kCurrentFileKey).toString();
 
     // Try to restore from autosave on construction. Failures are silent —
@@ -616,7 +616,7 @@ void ReportBuilderService::set_current_file(const QString& path) {
 }
 
 void ReportBuilderService::persist_current_file() {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     s.setValue(kCurrentFileKey, current_file_);
 }
 
@@ -640,13 +640,13 @@ void ReportBuilderService::trigger_autosave() {
 }
 
 void ReportBuilderService::load_recent() const {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     recent_cache_ = s.value(kRecentKey).toStringList();
     recent_loaded_ = true;
 }
 
 void ReportBuilderService::save_recent() const {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     s.setValue(kRecentKey, recent_cache_);
 }
 

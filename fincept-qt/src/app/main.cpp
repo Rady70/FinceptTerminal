@@ -3,14 +3,14 @@
 #include "algo_engine/UniverseScanSelftest.h"
 #include "algo_engine/fno/FnoAlgoSelftest.h"
 #include "app/InstanceLock.h"
+#include "app/MarketLabBoundarySelftest.h"
 #include "app/MonitorPickerDialog.h"
 #include "app/ScreenSmokeTest.h"
 #include "app/TerminalShell.h"
 #include "app/WindowFrame.h"
-#include "auth/AuthManager.h"
 #include "auth/InactivityGuard.h"
 #include "auth/PinManager.h"
-#include "auth/SessionGuard.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/components/ComponentCatalog.h"
 #include "core/config/AppConfig.h"
 #include "core/config/AppPaths.h"
@@ -40,53 +40,22 @@
 #include "screens/recovery/CrashRecoveryDialog.h"
 #include "screens/setup/SetupScreen.h"
 #include "services/agents/AgentService.h"
-#include "services/alpha_arena/ArenaEngine.h"
 #include "services/alpha_arena/ArenaSelftest.h"
-#include "services/billing/FeeDiscountService.h"
-#include "services/billing/TierService.h"
-#include "services/cloud/AgentConfigCloudAdapter.h"
-#include "services/cloud/CloudSyncEngine.h"
-#include "services/cloud/DashboardCloudAdapter.h"
-#include "services/cloud/NewsFeedCloudAdapter.h"
-#include "services/cloud/NewsMonitorCloudAdapter.h"
-#include "services/cloud/NotebookCloudAdapter.h"
-#include "services/cloud/NotesCloudAdapter.h"
-#include "services/cloud/PortfolioCloudAdapter.h"
-#include "services/cloud/ReportCloudAdapter.h"
-#include "services/cloud/SettingsCloudAdapter.h"
-#include "services/cloud/WatchlistCloudAdapter.h"
-#include "services/cloud/WorkflowCloudAdapter.h"
 #include "services/dbnomics/DBnomicsService.h"
 #include "services/economics/EconomicsService.h"
-#include "services/economics/MacroCalendarService.h"
 #include "services/feeds/FeedSelfTest.h"
-#include "services/forum/ForumService.h"
 #include "services/geopolitics/GeopoliticsService.h"
 #include "services/gov_data/GovDataService.h"
 #include "services/llm/LlmService.h"
 #include "services/ma_analytics/MAAnalyticsService.h"
-#include "services/maritime/MaritimeService.h"
-#include "services/maritime/PortsCatalog.h"
 #include "services/markets/MarketDataService.h"
 #include "services/news/NewsService.h"
 #include "services/notebooks/NotebookLibraryService.h"
 #include "services/options/FiiDiiService.h"
 #include "services/options/OISnapshotter.h"
 #include "services/options/OptionChainService.h"
-#include "services/polymarket/PolymarketWebSocket.h"
-#include "services/prediction/PredictionCredentialStore.h"
-#include "services/prediction/PredictionExchangeRegistry.h"
-#include "services/prediction/fincept_internal/FinceptInternalAdapter.h"
-#include "services/prediction/kalshi/KalshiAdapter.h"
-#include "services/prediction/polymarket/PolymarketAdapter.h"
 #include "services/relationship_map/RelationshipMapService.h"
 #include "services/report_builder/ReportBuilderService.h"
-#include "services/wallet/BuybackBurnService.h"
-#include "services/wallet/RealYieldService.h"
-#include "services/wallet/StakingService.h"
-#include "services/wallet/TokenMetadataService.h"
-#include "services/wallet/TreasuryService.h"
-#include "services/wallet/WalletService.h"
 #include "storage/HistoricalDataStore.h"
 #include "storage/StorageManager.h"
 #include "storage/repositories/NewsArticleRepository.h"
@@ -98,8 +67,6 @@
 #include "storage/workspace/WorkspaceSnapshotRing.h"
 #include "trading/AccountManager.h"
 #include "trading/DataStreamManager.h"
-#include "trading/ExchangeService.h"
-#include "trading/ExchangeSessionManager.h"
 #include "trading/PaperMarkService.h"
 #include "trading/PaperTradingSelftest.h"
 #include "trading/UnifiedPortfolioService.h"
@@ -108,7 +75,6 @@
 #include "ui/tables/LiveTableSelftest.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
-#include "ui/widgets/EnterprisePromo.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -123,7 +89,6 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -291,8 +256,8 @@ int main(int argc, char* argv[]) {
     // "FinceptTerminal --profile work" and "FinceptTerminal --profile personal"
     // run as two independent primaries.
     QApplication app(argc, argv);
-    app.setApplicationName("FinceptTerminal");
-    app.setOrganizationName("Fincept");
+    app.setApplicationName("MarketLabTerminal");
+    app.setOrganizationName("MarketLab");
 #ifndef FINCEPT_VERSION_STRING
 #    define FINCEPT_VERSION_STRING "0.0.0-dev"
 #endif
@@ -317,7 +282,7 @@ int main(int argc, char* argv[]) {
     }
 
     // ── Single-instance lock + new-window IPC ────────────────────────────────
-    const QString profile_key = QString("FinceptTerminal-%1").arg(fincept::ProfileManager::instance().active());
+    const QString profile_key = QString("MarketLabTerminal-%1").arg(fincept::ProfileManager::instance().active());
     fincept::InstanceLock instance_lock;
     const auto lock_status = instance_lock.acquire(profile_key, QCoreApplication::arguments());
 
@@ -405,14 +370,10 @@ int main(int argc, char* argv[]) {
     // perceived latency drops without changing functional behavior.
     fincept::services::NewsService::instance().ensure_registered_with_hub();
     fincept::services::EconomicsService::instance().ensure_registered_with_hub();
-    fincept::services::MacroCalendarService::instance().ensure_registered_with_hub();
     fincept::trading::DataStreamManager::instance().ensure_registered_with_hub();
     fincept::services::geo::GeopoliticsService::instance().ensure_registered_with_hub();
-    fincept::services::maritime::MaritimeService::instance().ensure_registered_with_hub();
-    fincept::services::maritime::PortsCatalog::instance().ensure_registered_with_hub();
     fincept::services::RelationshipMapService::instance().ensure_registered_with_hub();
     fincept::services::ma::MAAnalyticsService::instance().ensure_registered_with_hub();
-    fincept::wallet::TokenMetadataService::instance().load_from_storage();
 
     // ── Pre-warm the dashboard topics ────────────────────────────────────────
     // The user spends real time on the login / setup / recovery flow before
@@ -450,7 +411,6 @@ int main(int argc, char* argv[]) {
 
         // Non-quote topics used by the default template.
         topics.append(QStringLiteral("news:general"));
-        topics.append(QStringLiteral("econ:fincept:upcoming_events"));
 
         // De-duplicate (several add_quotes calls overlap on common symbols).
         topics.removeDuplicates();
@@ -479,6 +439,10 @@ int main(int argc, char* argv[]) {
     // group is preserved; the groups only touch their own singletons.
 
     // ── Group 1: DataHub producer registrations ─────────────────────────────
+    // MarketLab: execution-bearing and hosted registrations are removed
+    // (FINCEPT_FORK_PLAN.md §5.4): no prediction-market adapters (order actions
+    // + private keys), no crypto exchange session manager, no arena engine, no
+    // algo-deployment producer. Retained producers are data-only or local.
     auto init_hub_producers = []() {
         // F&O / Options chain — `option:chain:*`, `option:tick:*`,
         // `option:atm_iv:*`, `fno:pcr:*`, `fno:max_pain:*`.
@@ -489,175 +453,25 @@ int main(int argc, char* argv[]) {
         fincept::services::options::OISnapshotter::instance().ensure_registered_with_hub();
         // F&O FII/DII flows — daily NSE cash-market institutional buy/sell.
         fincept::services::options::FiiDiiService::instance().ensure_registered_with_hub();
-        // Multi-broker session manager — `ws:kraken:*` / `ws:hyperliquid:*`.
-        fincept::trading::ExchangeSessionManager::instance().ensure_registered_with_hub();
-        // Prediction Markets — `prediction:polymarket:*`.
-        fincept::services::polymarket::PolymarketWebSocket::instance().ensure_registered_with_hub();
-        // Alpha Arena engine — init() is idempotent and only scans for
-        // crashed competitions (no-op with none). Not a DataHub Producer
-        // (callback-style by design).
-        fincept::arena::ArenaEngine::instance().init();
-        {
-            auto& reg = fincept::services::prediction::PredictionExchangeRegistry::instance();
-            reg.register_adapter(std::make_unique<fincept::services::prediction::polymarket_ns::PolymarketAdapter>());
-            reg.register_adapter(std::make_unique<fincept::services::prediction::kalshi_ns::KalshiAdapter>());
-            // Fincept internal prediction-market adapter (demo mode until
-            // `fincept.markets_endpoint` is configured).
-            reg.register_adapter(
-                std::make_unique<fincept::services::prediction::fincept_internal::FinceptInternalAdapter>());
 
-            // Hydrate credentials from SecureStorage if previously saved.
-            if (auto* pm = dynamic_cast<fincept::services::prediction::polymarket_ns::PolymarketAdapter*>(
-                    reg.adapter(QStringLiteral("polymarket")))) {
-                pm->reload_credentials();
-            }
-            if (auto* ks = dynamic_cast<fincept::services::prediction::kalshi_ns::KalshiAdapter*>(
-                    reg.adapter(QStringLiteral("kalshi")))) {
-                if (auto creds = fincept::services::prediction::PredictionCredentialStore::load_kalshi()) {
-                    ks->set_credentials(*creds);
-                }
-                // Register the Kalshi WS producer + push-only topic policies
-                // (prediction:kalshi:price:*, prediction:kalshi:orderbook:*) with the hub.
-                ks->ensure_registered_with_hub();
-            }
-            if (auto* fi = reg.adapter(QStringLiteral("fincept"))) {
-                fi->ensure_registered_with_hub();
-            }
-        }
         // Specialized data sources.
         fincept::services::DBnomicsService::instance().ensure_registered_with_hub();
         fincept::services::GovDataService::instance().ensure_registered_with_hub();
         // Agents — `agent:*` push-only producer.
         fincept::services::AgentService::instance().ensure_registered_with_hub();
-
-        // Algo Engine — `algo:metrics:*`, `algo:trade:*`, `algo:state:*`.
-        fincept::algo::AlgoEngineProducer::instance().ensure_registered_with_hub();
     };
 
     // ── Group 2: Fincept Cloud sync ─────────────────────────────────────────
-    auto init_cloud_sync = []() {
-        // Drains the durable outbox (push) + pulls cloud→local. NOT a DataHub
-        // producer; reads stay on the local repo cache. Every adapter must be
-        // registered before initialize(), which is why they share one group.
-        // See fincept-qt/CLOUD_SYNC_PLAN.md.
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::WatchlistCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::NotesCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::PortfolioCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::AgentConfigCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::ReportCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::WorkflowCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::DashboardCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::SettingsCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::NewsMonitorCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::NewsFeedCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().register_adapter(
-            &fincept::services::cloud::NotebookCloudAdapter::instance());
-        fincept::services::cloud::CloudSyncEngine::instance().initialize();
-    };
+    // MarketLab: removed entirely. Cloud sync, cloud adapters, and CloudClient
+    // are not initialised in this fork; local state plus an ordinary
+    // user-managed backup replaces them (FINCEPT_FORK_PLAN.md §5.3, §6).
 
-    // ── Group 3: wallet / treasury / billing + broker session monitor ───────
-    auto init_wallet_treasury_and_monitors = []() {
-        // Token metadata refresh — network call to Jupiter aggregator.
-        fincept::wallet::TokenMetadataService::instance().refresh_from_jupiter_async();
-        // Wallet — `wallet:balance:*`, `market:price:token:*`.
-        fincept::wallet::WalletService::instance().ensure_registered_with_hub();
-        fincept::wallet::WalletService::instance().restore_from_storage();
-
-        // Fee-discount eligibility producer (paid screens only).
-        {
-            static fincept::billing::FeeDiscountService discount_service;
-            auto& hub = fincept::datahub::DataHub::instance();
-            hub.register_producer(&discount_service);
-            fincept::datahub::TopicPolicy p;
-            p.ttl_ms = 60 * 1000;
-            p.min_interval_ms = 15 * 1000;
-            hub.set_policy_pattern(QStringLiteral("billing:fncpt_discount:*"), p);
-        }
-
-        // Buyback & burn / treasury producers (treasury:*).
-        {
-            static fincept::wallet::BuybackBurnService buyback_burn_service;
-            static fincept::wallet::TreasuryService treasury_service;
-            auto& hub = fincept::datahub::DataHub::instance();
-            hub.register_producer(&buyback_burn_service);
-            hub.register_producer(&treasury_service);
-
-            fincept::datahub::TopicPolicy epoch_p;
-            epoch_p.ttl_ms = 60 * 1000;
-            epoch_p.min_interval_ms = 30 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:buyback_epoch"), epoch_p);
-
-            fincept::datahub::TopicPolicy burn_p;
-            burn_p.ttl_ms = 5 * 60 * 1000;
-            burn_p.min_interval_ms = 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:burn_total"), burn_p);
-
-            fincept::datahub::TopicPolicy supply_p;
-            supply_p.ttl_ms = 60 * 60 * 1000;
-            supply_p.min_interval_ms = 5 * 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:supply_history"), supply_p);
-
-            fincept::datahub::TopicPolicy reserves_p;
-            reserves_p.ttl_ms = 5 * 60 * 1000;
-            reserves_p.min_interval_ms = 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:reserves"), reserves_p);
-
-            fincept::datahub::TopicPolicy runway_p;
-            runway_p.ttl_ms = 5 * 60 * 1000;
-            runway_p.min_interval_ms = 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:runway"), runway_p);
-        }
-
-        // STAKE tab producers (veFNCPT lock + real-yield + tier system).
-        {
-            auto& hub = fincept::datahub::DataHub::instance();
-            hub.register_producer(&fincept::wallet::StakingService::instance());
-            hub.register_producer(&fincept::wallet::RealYieldService::instance());
-            hub.register_producer(&fincept::billing::TierService::instance());
-
-            fincept::datahub::TopicPolicy locks_p;
-            locks_p.ttl_ms = 60 * 1000;
-            locks_p.min_interval_ms = 30 * 1000;
-            hub.set_policy_pattern(QStringLiteral("wallet:locks:*"), locks_p);
-            hub.set_policy_pattern(QStringLiteral("wallet:vefncpt:*"), locks_p);
-
-            fincept::datahub::TopicPolicy yield_p;
-            yield_p.ttl_ms = 5 * 60 * 1000;
-            yield_p.min_interval_ms = 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("wallet:yield:*"), yield_p);
-
-            fincept::datahub::TopicPolicy revenue_p;
-            revenue_p.ttl_ms = 60 * 60 * 1000;
-            revenue_p.min_interval_ms = 5 * 60 * 1000;
-            hub.set_policy_pattern(QStringLiteral("treasury:revenue"), revenue_p);
-
-            // billing:tier:* derived from wallet:vefncpt:* — TTL is just a
-            // safety net; the service republishes whenever vefncpt emits.
-            fincept::datahub::TopicPolicy tier_p;
-            tier_p.ttl_ms = 60 * 1000;
-            tier_p.min_interval_ms = 15 * 1000;
-            hub.set_policy_pattern(QStringLiteral("billing:tier:*"), tier_p);
-        }
-
-        // Broker session monitor — re-validates each connected broker account's
-        // access token on a 5-min cadence and silently refreshes where supported
-        // (Zerodha/Angel One TOTP re-login, Fyers refresh token). Keeps the
-        // connection indicator honest instead of showing a stale "green".
-        fincept::trading::AccountManager::instance().start_session_monitor();
-
+    // ── Group 3: broker session monitor + watchlist candle timer ─────────────
+    auto init_broker_and_storage_timers = []() {
         // Periodically auto-download historical candles for any watchlisted
         // series. Double-gated to a no-op: does nothing unless the Historify
-        // watchlist has entries AND a broker account is connected.
+        // watchlist has entries AND a broker account is connected (no broker
+        // registration exists in this fork).
         auto* historify_timer = new QTimer(qApp);
         historify_timer->setInterval(15 * 60 * 1000); // 15 min
         QObject::connect(historify_timer, &QTimer::timeout, qApp,
@@ -667,30 +481,15 @@ int main(int argc, char* argv[]) {
         LOG_INFO("App", "Deferred service init complete");
     };
 
-    post_chain({init_hub_producers, init_cloud_sync, init_wallet_treasury_and_monitors});
+    post_chain({init_hub_producers, init_broker_and_storage_timers});
 
-    // Create all application directories under %LOCALAPPDATA%/com.fincept.terminal
+    // Create all application directories under %LOCALAPPDATA%/com.marketlab.terminal
     fincept::AppPaths::ensure_all();
 
-    // ── One-time migration from legacy %APPDATA% location ─────────────────
-    // Current locations (under %LOCALAPPDATA%\com.fincept.terminal\):
-    //   Log: <root>/logs/fincept.log    DB: <root>/data/fincept.db
-    {
-        const QString old_base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        const auto migrate_file = [](const QString& old_path, const QString& new_path) {
-            if (QFile::exists(old_path) && !QFile::exists(new_path))
-                QFile::rename(old_path, new_path);
-        };
-        migrate_file(old_base + "/fincept.db", fincept::AppPaths::data() + "/fincept.db");
-        migrate_file(old_base + "/cache.db", fincept::AppPaths::data() + "/cache.db");
-        migrate_file(old_base + "/fincept.log", fincept::AppPaths::logs() + "/fincept.log");
-        migrate_file(old_base + "/fincept-files", fincept::AppPaths::files());
-        // Remove stale WAL/SHM from old location too
-        QFile::remove(old_base + "/fincept.db-wal");
-        QFile::remove(old_base + "/fincept.db-shm");
-        QFile::remove(old_base + "/cache.db-wal");
-        QFile::remove(old_base + "/cache.db-shm");
-    }
+    // MarketLab: the automatic migrations from legacy Fincept storage locations
+    // (%APPDATA% FinceptTerminal dirs, legacy v3 settings DB) are removed —
+    // this fork never reads, migrates, renames, or deletes official Fincept
+    // storage (FINCEPT_FORK_PLAN.md §5.1).
 
     // SQLite owns its own .db-wal / .db-shm files. Pre-deleting them is
     // destructive: any committed transaction that has not yet been checkpointed
@@ -701,18 +500,10 @@ int main(int argc, char* argv[]) {
     // open to recover any uncheckpointed or crash-truncated state, so we leave
     // these files for SQLite to manage. Single-instance enforcement is owned
     // by InstanceLock above.
-
-    // Clean legacy v3 DB location (these paths are no longer live DBs)
-    {
-        const QString local_dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-        const QString legacy1 = local_dir.section('/', 0, -3) + "/FinceptTerminal/fincept_settings.db";
-        const QString legacy2 =
-            QString(local_dir).replace("Fincept/FinceptTerminal", "FinceptTerminal") + "/fincept_settings.db";
-        QFile::remove(legacy1 + "-wal");
-        QFile::remove(legacy1 + "-shm");
-        QFile::remove(legacy2 + "-wal");
-        QFile::remove(legacy2 + "-shm");
-    }
+    //
+    // MarketLab: the legacy v3 DB cleanup for FinceptTerminal settings paths is
+    // removed — this fork never touches official Fincept storage locations
+    // (FINCEPT_FORK_PLAN.md §5.1).
 
     fincept::Logger::instance().set_file(fincept::AppPaths::logs() + "/fincept.log");
 
@@ -768,7 +559,8 @@ int main(int argc, char* argv[]) {
                 log.set_tag_level(tag, lvl_map.value(level));
         }
     }
-    LOG_INFO("App", "Fincept Terminal v" FINCEPT_VERSION_STRING " starting...");
+    LOG_INFO("App", "MarketLab Terminal v" FINCEPT_VERSION_STRING
+                    " starting (upstream base: Fincept Terminal v" FINCEPT_UPSTREAM_BASE_VERSION ")");
     LOG_INFO("App", QString("TLS backend: %1 (available: %2)")
                         .arg(QSslSocket::activeBackend(), QSslSocket::availableBackends().join(", ")));
 
@@ -850,7 +642,7 @@ int main(int argc, char* argv[]) {
         // A newer-than-build schema never reaches here: MigrationRunner::run()
         // warns and returns ok() for that case, so the DB opens normally.
         if (fincept::MigrationRunner::is_fatal_error(db_err)) {
-            QMessageBox::critical(nullptr, QObject::tr("Fincept Terminal — database error"),
+            QMessageBox::critical(nullptr, QObject::tr("MarketLab Terminal — database error"),
                                   QString::fromStdString(db_err));
             // Returning from main() never reaches exec(), so aboutToQuit never
             // fires and the shell's clean-shutdown marker would never be
@@ -965,72 +757,28 @@ int main(int argc, char* argv[]) {
         LOG_INFO("App", "Session ID: " + sid);
     }
 
-    LOG_INFO("App", "Checking settings for legacy migration...");
-    // One-time migration: copy settings from old DB (Local\FinceptTerminal\fincept_settings.db)
-    // to new DB (Roaming\Fincept\FinceptTerminal\fincept.db) if the new DB has no settings yet.
-    {
-        LOG_INFO("App", "Querying settings...");
-        auto existing = fincept::SettingsRepository::instance().get("fincept_session");
-        LOG_INFO("App", "Settings query done");
-        bool new_db_empty = existing.is_err() || existing.value().isEmpty();
-        if (new_db_empty) {
-            QString local_base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-            // AppLocalDataLocation = .../Local/Fincept/FinceptTerminal — strip to .../Local/FinceptTerminal
-            QString old_db_path = local_base.section('/', 0, -3) + "/FinceptTerminal/fincept_settings.db";
-            if (!QFile::exists(old_db_path)) {
-                // Try without the org subfolder
-                old_db_path = local_base.replace("Fincept/FinceptTerminal", "FinceptTerminal") + "/fincept_settings.db";
-            }
-            if (QFile::exists(old_db_path)) {
-                QSqlDatabase old_db = QSqlDatabase::addDatabase("QSQLITE", "legacy_migration");
-                old_db.setDatabaseName(old_db_path);
-                if (old_db.open()) {
-                    QSqlQuery src(old_db);
-                    if (src.exec("SELECT key, value FROM settings")) {
-                        int count = 0;
-                        while (src.next()) {
-                            fincept::SettingsRepository::instance().set(src.value(0).toString(),
-                                                                        src.value(1).toString(), "migrated");
-                            ++count;
-                        }
-                        LOG_INFO("App", QString("Migrated %1 settings from legacy DB").arg(count));
-                    }
-                    old_db.close();
-                }
-                QSqlDatabase::removeDatabase("legacy_migration");
-            }
-        }
-    }
+    // MarketLab: the one-time migration that copied settings from the legacy
+    // Local\FinceptTerminal\fincept_settings.db is removed — official Fincept
+    // storage is never read or written (FINCEPT_FORK_PLAN.md §5.1).
 
     LOG_INFO("App", "Starting session manager...");
     // Start session
     fincept::SessionManager::instance().start_session();
 
-    // Phase 1 final lift: shell owns auth/lock service initialisation.
-    // bootstrap_auth() runs AuthManager::initialize(), warms PinManager
-    // from SecureStorage, and configures InactivityGuard's lock timeout
-    // from SettingsRepository. The previous in-line block here is folded
-    // into TerminalShell::bootstrap_auth.
+    // MarketLab: bootstrap_auth() no longer performs any HTTP session
+    // validation — it only warms the local PIN/lock state. See
+    // TerminalShell::bootstrap_auth.
     fincept::TerminalShell::instance().bootstrap_auth();
 
-    // Session guard — auto-logout on 401. Lives on the stack here so its
-    // destructor runs on shutdown via QApplication::exec returning.
-    fincept::auth::SessionGuard session_guard;
+    // MarketLab: SessionGuard (periodic session pulse + auto-logout on 401)
+    // and ForumService are not initialised — Fincept-hosted services are
+    // removed (FINCEPT_FORK_PLAN.md §5.1, §5.3).
 
     // Force the ReportBuilderService singleton onto the main thread before
     // MCP tools register — tools route into it via QMetaObject::invokeMethod
     // with BlockingQueuedConnection from worker threads, so the service must
     // already exist with main-thread affinity.
     (void)fincept::services::ReportBuilderService::instance();
-
-    // Same reason for ForumService: ForumTools (MCP) and ForumScreen (GUI)
-    // share one singleton that owns a QNetworkAccessManager. Whichever caller
-    // hits instance() first dictates thread affinity. If a worker thread
-    // touches it before the GUI does, every subsequent fetch from the Forum
-    // tab queues its reply onto a thread with no live event loop and the
-    // callback never fires — the tab spins on "loading" forever. Forcing
-    // construction here pins it to the main thread up front.
-    (void)fincept::services::ForumService::instance();
 
     // Initialize MCP tool system — registers all internal tools and starts
     // external MCP servers in the background (non-blocking).
@@ -1044,7 +792,11 @@ int main(int argc, char* argv[]) {
         bool tools_needed_synchronously = false;
         for (int i = 1; i < argc; ++i) {
             if (qstrcmp(argv[i], "--selftest-tools") == 0 || qstrcmp(argv[i], "--selftest-llm-tools") == 0 ||
-                qstrcmp(argv[i], "--dump-tools") == 0)
+                qstrcmp(argv[i], "--dump-tools") == 0 ||
+                // MarketLab boundary selftest asserts the SHIPPED MCP tool set
+                // (no live-trading/forum/profile tools), so the real registry
+                // must be populated before it runs.
+                qstrcmp(argv[i], "--selftest-marketlab-boundary") == 0)
                 tools_needed_synchronously = true;
         }
         if (tools_needed_synchronously)
@@ -1085,6 +837,7 @@ int main(int argc, char* argv[]) {
         {"--selftest-portfolio-monitor", &fincept::trading::run_portfolio_monitor_selftest},
         {"--selftest-portfolio-replication", &fincept::trading::replication::run_portfolio_replication_selftest},
         {"--selftest-arena", &fincept::arena::run_arena_selftest},
+        {"--selftest-marketlab-boundary", &fincept::marketlab::run_marketlab_boundary_selftest},
     };
 
     for (int i = 1; i < argc; ++i) {
@@ -1157,7 +910,7 @@ int main(int argc, char* argv[]) {
         // (e.g. user somehow triggers it twice before the window is hidden).
         auto* setup_screen = new fincept::screens::SetupScreen;
         QPointer<fincept::screens::SetupScreen> screen_guard(setup_screen);
-        setup_screen->setWindowTitle("Fincept Terminal — First-Time Setup");
+        setup_screen->setWindowTitle("MarketLab Terminal — First-Time Setup");
         setup_screen->resize(800, 600);
         setup_screen->show();
 
@@ -1196,14 +949,6 @@ int main(int argc, char* argv[]) {
                     auto* window = new fincept::WindowFrame(primary_id);
                     window->setAttribute(Qt::WA_DeleteOnClose);
                     window->show();
-
-                    // Enterprise promo, once the frame has painted. Self-
-                    // suppresses when the user ticked "Don't show this again"
-                    // and when the platform has no window system.
-                    QPointer<fincept::WindowFrame> promo_target = window;
-                    QTimer::singleShot(1200, &app, [promo_target]() {
-                        fincept::ui::UpgradeDialog::maybe_show_at_startup(promo_target.data());
-                    });
                 }
 
                 // Wire new-window handler + Launchpad surface now that the
@@ -1264,14 +1009,7 @@ int main(int argc, char* argv[]) {
         // runtime (DLL, plugin, or data file like QtWebEngineProcess.exe) shows
         // up as a hard process abort or a non-constructing screen here — exactly
         // the class of failure the static dependency gate cannot detect.
-        // Enterprise promo, once the frame has painted. Never in --smoke-test:
-        // that run walks every screen headlessly and a modal would block it.
-        if (!smoke_mode) {
-            QPointer<fincept::WindowFrame> promo_target = primary;
-            QTimer::singleShot(1200, &app, [promo_target]() {
-                fincept::ui::UpgradeDialog::maybe_show_at_startup(promo_target.data());
-            });
-        }
+        // MarketLab: the upgrade promotion is removed (FINCEPT_FORK_PLAN.md §5.1).
 
         if (smoke_mode) {
             QPointer<fincept::WindowFrame> w = primary;

@@ -22,8 +22,8 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Fincept hosted LLM endpoint
-_FINCEPT_LLM_URL   = "https://api.fincept.in/research/llm"
-_FINCEPT_LLM_ASYNC = "https://api.fincept.in/research/llm/async"
+_FINCEPT_LLM_URL   = None  # MarketLab: Fincept hosted LLM removed
+_FINCEPT_LLM_ASYNC = None  # MarketLab: Fincept hosted LLM removed
 _DEFAULT_TIMEOUT   = 120  # seconds
 
 # System prompts for each specialist role
@@ -319,38 +319,10 @@ class FinceptOrchestrator:
         return self._call_llm(prompt, max_tokens=3000)
 
     def _call_llm(self, prompt: str, max_tokens: int = 1000) -> str:
-        """Call the Fincept LLM endpoint with retry on async failure."""
-        payload = {
-            "prompt":     prompt,
-            "max_tokens": max_tokens,
-        }
-
-        # Try async endpoint first
-        try:
-            resp = self._session.post(
-                _FINCEPT_LLM_ASYNC,
-                json=payload,
-                timeout=_DEFAULT_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("success") and data.get("result"):
-                return data["result"]
-        except requests.RequestException as exc:
-            logger.warning("Async LLM endpoint failed: %s — falling back to sync", exc)
-
-        # Fall back to sync endpoint
-        try:
-            resp = self._session.post(
-                _FINCEPT_LLM_URL,
-                json=payload,
-                timeout=_DEFAULT_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("result") or data.get("response") or data.get("text", "")
-            if not result:
-                raise ValueError(f"Empty response from LLM: {data}")
-            return result
-        except requests.RequestException as exc:
-            raise RuntimeError(f"LLM call failed: {exc}") from exc
+        """MarketLab: the hosted Fincept LLM endpoint is removed
+        (FINCEPT_FORK_PLAN.md §5.3, §6). Fail explicitly instead of
+        contacting the network; use a local or user-configured provider."""
+        raise RuntimeError(
+            "Fincept hosted LLM is unavailable in MarketLab Terminal — "
+            "configure a local or user-owned LLM provider instead."
+        )

@@ -1,7 +1,7 @@
 #include "screens/about/AboutScreen.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "core/config/AppPaths.h"
-#include "services/updater/UpdateService.h"
 #include "ui/theme/Theme.h"
 
 #include <QApplication>
@@ -135,12 +135,12 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
 
         auto* left = new QVBoxLayout;
         left->setSpacing(4);
-        app_name_ = new QLabel(QStringLiteral("Fincept Terminal"));
+        app_name_ = new QLabel(QStringLiteral("MarketLab Terminal"));
         app_name_->setStyleSheet(QString("color: %1; font-size: 15px; font-weight: bold; background: transparent; "
                                          "font-family: 'Consolas','Courier New',monospace;")
                                      .arg(ui::colors::TEXT_PRIMARY()));
         left->addWidget(app_name_);
-        app_subtitle_ = new QLabel(tr("NATIVE DESKTOP FINANCIAL INTELLIGENCE TERMINAL"));
+        app_subtitle_ = new QLabel(tr("LOCAL-FIRST RESEARCH WORKSPACE — PERSONAL FORK OF FINCEPT TERMINAL"));
         app_subtitle_->setStyleSheet(MUTED());
         left->addWidget(app_subtitle_);
         bhl->addLayout(left);
@@ -156,35 +156,24 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
         ver->setAlignment(Qt::AlignRight);
         right->addWidget(ver);
 
-        // Check-for-updates button — user-initiated, always shows a result dialog.
-        check_btn_ = new QPushButton(tr("Check for Updates"));
-        check_btn_->setStyleSheet(LINK_BTN());
-        check_btn_->setCursor(Qt::PointingHandCursor);
-        connect(check_btn_, &QPushButton::clicked, this, [this]() {
-            check_in_progress_ = true;
-            check_btn_->setEnabled(false);
-            check_btn_->setText(tr("Checking…"));
-            auto& svc = services::UpdateService::instance();
-            svc.set_dialog_parent(window());
-            // Re-enable the button when the check completes. Using a unique
-            // connection is fine since the service is a long-lived singleton.
-            connect(
-                &svc, &services::UpdateService::check_finished, check_btn_,
-                [this](bool /*found*/) {
-                    check_in_progress_ = false;
-                    check_btn_->setEnabled(true);
-                    check_btn_->setText(tr("Check for Updates"));
-                },
-                Qt::SingleShotConnection);
-            svc.check_for_updates(/*silent=*/false);
-        });
-        right->addWidget(check_btn_);
+        // Upstream-base identity — displayed separately from the fork version
+        // (FINCEPT_FORK_PLAN.md §5.1).
+#ifndef FINCEPT_UPSTREAM_BASE_VERSION
+#    define FINCEPT_UPSTREAM_BASE_VERSION "4.5.0"
+#endif
+        auto* base = new QLabel(QStringLiteral("upstream base: Fincept Terminal v" FINCEPT_UPSTREAM_BASE_VERSION
+                                               " (ec88590)"));
+        base->setStyleSheet(MUTED());
+        base->setAlignment(Qt::AlignRight);
+        right->addWidget(base);
+        // MarketLab: automatic updates are disabled and the update-manifest
+        // host is a Fincept-owned destination — no check-for-updates button.
         bhl->addLayout(right);
 
         pvl->addWidget(body);
 
         // Footer bar
-        copyright_ = new QLabel(tr("© 2024-2026 Fincept Corporation. All rights reserved."));
+        copyright_ = new QLabel(tr("© 2026 MarketLab Terminal — personal fork. Upstream © 2024-2026 Fincept Corporation."));
         copyright_->setStyleSheet(
             QString("color: %1; font-size: 11px; background: %2; "
                     "padding: 6px 14px; border-top: 1px solid %3; "
@@ -237,15 +226,13 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
             rl->addWidget(panel, 1);
         }
 
-        // Enterprise — the separate closed-source product, not a licence for this build.
-        // Fincept no longer sells a commercial licence for the open-source edition;
-        // commercial, institutional and academic use is served by Enterprise instead.
+        // Capabilities — the fork's central availability source (FINCEPT_FORK_PLAN.md §5.2).
         {
             auto* panel = makePanel();
             auto* pvl = new QVBoxLayout(panel);
             pvl->setContentsMargins(0, 0, 0, 0);
             pvl->setSpacing(0);
-            enterprise_header_ = makePanelHeader("★", tr("FINCEPT TERMINAL ENTERPRISE"), ui::colors::AMBER);
+            enterprise_header_ = makePanelHeader("✓", tr("CAPABILITIES"), ui::colors::AMBER);
             pvl->addWidget(enterprise_header_);
 
             auto* body = new QWidget(this);
@@ -253,21 +240,22 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
             auto* bvl = new QVBoxLayout(body);
             bvl->setContentsMargins(14, 10, 14, 10);
             bvl->setSpacing(6);
-            enterprise_bullets_ = {makeBullet(tr("41 modules · private & proprietary data")),
-                                   makeBullet(tr("Multi-agent research · live broker routing")),
-                                   makeBullet(tr("SSO, audit logs & SLA-backed support")),
-                                   makeBullet(tr("From $99/user/month · no copyleft"))};
+            const auto avail = [](capability::Capability c) {
+                return capability::CapabilityManager::instance().availability(c);
+            };
+            auto bullet_for = [](capability::AvailabilityState s) { return s == capability::AvailabilityState::Available ? "✓ " : "— "; };
+            enterprise_bullets_ = {
+                makeBullet(bullet_for(avail(capability::Capability::LocalWorkspace).state) +
+                           tr("Local workspace — no account or subscription")),
+                makeBullet(bullet_for(avail(capability::Capability::PublicData).state) +
+                           tr("Public market data from independently configured providers")),
+                makeBullet(bullet_for(avail(capability::Capability::LocalAnalytics).state) +
+                           tr("Local analytics and historical simulation")),
+                makeBullet(bullet_for(avail(capability::Capability::BrokerExecution).state) +
+                           tr("External broker/exchange execution — not exposed"))};
             for (auto* b : enterprise_bullets_)
                 bvl->addWidget(b);
             pvl->addWidget(body);
-
-            // Footer link
-            auto* foot = new QLabel("fincept.in/enterprise");
-            foot->setStyleSheet(QString("color: %1; font-size: 11px; background: transparent; "
-                                        "padding: 6px 14px; border-top: 1px solid %2; "
-                                        "font-family: 'Consolas','Courier New',monospace;")
-                                    .arg(ui::colors::CYAN(), ui::colors::BORDER_DIM()));
-            pvl->addWidget(foot);
 
             rl->addWidget(panel, 1);
         }
@@ -354,7 +342,10 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
         vl->addWidget(panel);
     }
 
-    // ── Resources — 3×2 grid ─────────────────────────────────────────────────
+    // ── Resources ─────────────────────────────────────────────────────────────
+    // MarketLab: no browser-launch links — every Fincept-owned destination
+    // (including the Fincept GitHub org) is off-limits for this build
+    // (FINCEPT_FORK_PLAN.md §4, §5.3). Fork identity is shown as text instead.
     {
         auto* panel = makePanel();
         auto* pvl = new QVBoxLayout(panel);
@@ -365,44 +356,27 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
 
         auto* body = new QWidget(this);
         body->setStyleSheet("background: transparent;");
-        auto* grid = new QGridLayout(body);
-        grid->setContentsMargins(14, 10, 14, 12);
-        grid->setSpacing(8);
+        auto* bvl = new QVBoxLayout(body);
+        bvl->setContentsMargins(14, 10, 14, 12);
+        bvl->setSpacing(6);
 
-        struct Link {
-            QString label;
-            QString url;
-        };
-        // Every URL here must resolve. docs/TRADEMARK.md and docs/CLA.md do NOT
-        // exist in the repository — those two buttons opened GitHub 404 pages.
-        // Replaced with documents that are actually checked in.
-        const Link links[] = {
-            {tr("GitHub Repository"), "https://github.com/Fincept-Corporation/FinceptTerminal"},
-            {tr("License (AGPL-3.0)"), "https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/LICENSE"},
-            {tr("Fincept Enterprise"), "https://fincept.in/enterprise"},
-            {tr("Documentation"), "https://github.com/Fincept-Corporation/FinceptTerminal/tree/main/docs"},
-            {tr("Contributing Guide"),
-             "https://github.com/Fincept-Corporation/FinceptTerminal/blob/main/docs/CONTRIBUTING.md"},
-            {tr("Official Website"), "https://fincept.in"},
-        };
-
-        for (int i = 0; i < 6; ++i) {
-            auto* btn = new QPushButton(links[i].label);
-            btn->setStyleSheet(LINK_BTN());
-            btn->setFixedHeight(36);
-            const QString url = links[i].url;
-            btn->setAccessibleName(links[i].label);
-            btn->setToolTip(url);
-            connect(btn, &QPushButton::clicked, this, [url]() { QDesktopServices::openUrl(QUrl(url)); });
-            grid->addWidget(btn, i / 3, i % 3);
-            resource_btns_.append(btn);
-        }
+        auto* fork_info = new QLabel(
+            tr("Fork repository: github.com/Rady70/FinceptTerminal\n"
+               "Upstream: github.com/Fincept-Corporation/FinceptTerminal (v4.5.0, commit ec88590)\n"
+               "License: AGPL-3.0-or-later\n"
+               "Local documentation: Docs screen and the bundled help pages."));
+        fork_info->setStyleSheet(BODY());
+        fork_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        fork_info->setWordWrap(true);
+        bvl->addWidget(fork_info);
 
         pvl->addWidget(body);
         vl->addWidget(panel);
     }
 
     // ── Contact ───────────────────────────────────────────────────────────────
+    // MarketLab: this is a personal research fork with no support channel;
+    // contact info is replaced by a local statement (FINCEPT_FORK_PLAN §6).
     {
         auto* panel = makePanel();
         auto* pvl = new QVBoxLayout(panel);
@@ -413,39 +387,17 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
 
         auto* body = new QWidget(this);
         body->setStyleSheet("background: transparent;");
-        auto* grid = new QGridLayout(body);
-        grid->setContentsMargins(14, 10, 14, 12);
-        grid->setSpacing(12);
+        auto* bvl = new QVBoxLayout(body);
+        bvl->setContentsMargins(14, 10, 14, 12);
+        bvl->setSpacing(6);
 
-        struct Contact {
-            QString label;
-            QString email;
-        };
-        const Contact contacts[] = {
-            {tr("GENERAL"), "support@fincept.in"},
-            {tr("COMMERCIAL"), "support@fincept.in"},
-            {tr("SECURITY"), "support@fincept.in"},
-            {tr("LEGAL"), "support@fincept.in"},
-        };
-
-        for (int i = 0; i < 4; ++i) {
-            auto* col = new QWidget(this);
-            col->setStyleSheet("background: transparent;");
-            auto* cvl = new QVBoxLayout(col);
-            cvl->setContentsMargins(0, 0, 0, 0);
-            cvl->setSpacing(2);
-
-            auto* lbl = new QLabel(contacts[i].label);
-            lbl->setStyleSheet(SECTION_LABEL());
-            cvl->addWidget(lbl);
-            contact_labels_.append(lbl);
-
-            auto* email = new QLabel(contacts[i].email);
-            email->setStyleSheet(LINK_STYLE());
-            cvl->addWidget(email);
-
-            grid->addWidget(col, 0, i);
-        }
+        auto* contact_info = new QLabel(
+            tr("MarketLab Terminal is a personal, local-first research build of Fincept Terminal. "
+               "It is not affiliated with Fincept Corporation and has no commercial support. "
+               "See the bundled Help and Docs screens for usage notes."));
+        contact_info->setStyleSheet(BODY());
+        contact_info->setWordWrap(true);
+        bvl->addWidget(contact_info);
 
         pvl->addWidget(body);
         vl->addWidget(panel);
@@ -466,11 +418,9 @@ void AboutScreen::retranslateUi() {
     // Version panel
     setPanelHeaderText(version_header_, "ℹ", tr("VERSION INFORMATION"));
     if (app_subtitle_)
-        app_subtitle_->setText(tr("NATIVE DESKTOP FINANCIAL INTELLIGENCE TERMINAL"));
-    if (check_btn_)
-        check_btn_->setText(check_in_progress_ ? tr("Checking…") : tr("Check for Updates"));
+        app_subtitle_->setText(tr("LOCAL-FIRST RESEARCH WORKSPACE — PERSONAL FORK OF FINCEPT TERMINAL"));
     if (copyright_)
-        copyright_->setText(tr("© 2024-2026 Fincept Corporation. All rights reserved."));
+        copyright_->setText(tr("© 2026 MarketLab Terminal — personal fork. Upstream © 2024-2026 Fincept Corporation."));
 
     // Open source license — bullet 0 is the SPDX identifier (untranslated).
     setPanelHeaderText(oss_header_, "", tr("OPEN SOURCE LICENSE"));
@@ -480,13 +430,14 @@ void AboutScreen::retranslateUi() {
         setBulletText(oss_bullets_[3], tr("Network use counts as distribution"));
     }
 
-    // Enterprise (separate closed-source product)
-    setPanelHeaderText(enterprise_header_, "★", tr("FINCEPT TERMINAL ENTERPRISE"));
+    // Capabilities (replaces the upstream Enterprise panel)
+    setPanelHeaderText(enterprise_header_, "✓", tr("CAPABILITIES"));
     if (enterprise_bullets_.size() == 4) {
-        setBulletText(enterprise_bullets_[0], tr("41 modules · private & proprietary data"));
-        setBulletText(enterprise_bullets_[1], tr("Multi-agent research · live broker routing"));
-        setBulletText(enterprise_bullets_[2], tr("SSO, audit logs & SLA-backed support"));
-        setBulletText(enterprise_bullets_[3], tr("From $99/user/month · no copyleft"));
+        setBulletText(enterprise_bullets_[0], QStringLiteral("✓  ") + tr("Local workspace — no account or subscription"));
+        setBulletText(enterprise_bullets_[1],
+                      QStringLiteral("✓  ") + tr("Public market data from independently configured providers"));
+        setBulletText(enterprise_bullets_[2], QStringLiteral("✓  ") + tr("Local analytics and historical simulation"));
+        setBulletText(enterprise_bullets_[3], QStringLiteral("—  ") + tr("External broker/exchange execution — not exposed"));
     }
 
     // Diagnostics
@@ -508,23 +459,9 @@ void AboutScreen::retranslateUi() {
 
     // Resources
     setPanelHeaderText(resources_header_, "", tr("RESOURCES"));
-    if (resource_btns_.size() == 6) {
-        resource_btns_[0]->setText(tr("GitHub Repository"));
-        resource_btns_[1]->setText(tr("License (AGPL-3.0)"));
-        resource_btns_[2]->setText(tr("Fincept Enterprise"));
-        resource_btns_[3]->setText(tr("Documentation"));
-        resource_btns_[4]->setText(tr("Contributing Guide"));
-        resource_btns_[5]->setText(tr("Official Website"));
-    }
 
     // Contact
     setPanelHeaderText(contact_header_, "✉", tr("CONTACT"));
-    if (contact_labels_.size() == 4) {
-        contact_labels_[0]->setText(tr("GENERAL"));
-        contact_labels_[1]->setText(tr("COMMERCIAL"));
-        contact_labels_[2]->setText(tr("SECURITY"));
-        contact_labels_[3]->setText(tr("LEGAL"));
-    }
 }
 
 } // namespace fincept::screens

@@ -97,7 +97,7 @@ void SetupScreen::build_ui() {
 
     // ── Title block ───────────────────────────────────────────────────────────
     // FINCEPT TERMINAL — brand, not translated.
-    title_lbl_ = new QLabel(QStringLiteral("FINCEPT TERMINAL"), center);
+    title_lbl_ = new QLabel(QStringLiteral("MARKETLAB TERMINAL"), center);
     title_lbl_->setAlignment(Qt::AlignCenter);
     title_lbl_->setStyleSheet(QString("color:%1; font-family:%2; font-size:24px; font-weight:700; letter-spacing:3px;")
                                   .arg(kAccent, fonts::DATA_FAMILY));

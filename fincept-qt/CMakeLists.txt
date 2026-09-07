@@ -33,7 +33,10 @@ if(WIN32 AND CMAKE_HOST_WIN32)
     unset(_fincept_sdk_dirs)
 endif()
 
-project(FinceptTerminal VERSION 4.5.0 LANGUAGES C CXX)
+# MarketLab Terminal — personal fork (FINCEPT_FORK_PLAN.md). The fork carries
+# its own version; the released application-code baseline it forked from
+# (upstream v4.5.0) is recorded separately and displayed in the About screen.
+project(FinceptTerminal VERSION 0.1.0 LANGUAGES C CXX)
 
 # Strip C/C++ flags out of RC invocations — rc.exe only understands /D, /I, /fo.
 if(WIN32)
@@ -834,6 +837,7 @@ set(CMAKE_SKIP_INSTALL_RULES FALSE CACHE BOOL "" FORCE)
 set(CORE_SOURCES
     src/core/actions/ActionRegistry.cpp
     src/core/actions/builtin_actions.cpp
+    src/core/capability/CapabilityManager.cpp
     src/core/config/AppConfig.cpp
     src/core/config/AppPaths.cpp
     src/core/config/ProfileManager.cpp
@@ -876,6 +880,7 @@ set(CORE_SOURCES
 # Network
 set(NETWORK_SOURCES
     src/network/http/HttpClient.cpp
+    src/network/http/HostedPathGuard.cpp
     src/network/cloud/CloudClient.cpp
 )
 # WebSocketClient is always compiled; it stubs out when HAS_QT_WEBSOCKETS is not defined
@@ -2066,6 +2071,7 @@ set(SCREEN_SOURCES
 set(APP_SOURCES
     src/app/main.cpp
     src/app/InstanceLock.cpp
+    src/app/MarketLabBoundarySelftest.cpp
     src/app/ScreenSmokeTest.cpp
     # WindowFrame is split across multiple files; see WindowFrame.cpp header
     # comment for the layout. All variants stay outside unity build (see
@@ -3291,8 +3297,17 @@ endif()
 # ── Application version (single source of truth) ─────────────────────────────
 # FINCEPT_VERSION_STRING is consumed by main.cpp so QApplication::applicationVersion()
 # always matches the project() VERSION declared at the top of this file.
+# MarketLab: VERSION is the FORK version (0.1.0); the upstream released
+# application-code baseline is recorded as FINCEPT_UPSTREAM_BASE_VERSION and
+# shown separately in the About screen.
 target_compile_definitions(FinceptTerminal PRIVATE
-    FINCEPT_VERSION_STRING="${CMAKE_PROJECT_VERSION}")
+    FINCEPT_VERSION_STRING="${CMAKE_PROJECT_VERSION}"
+    FINCEPT_UPSTREAM_BASE_VERSION="4.5.0")
+
+# MarketLab Terminal binary identity: the target keeps the internal
+# "FinceptTerminal" name (non-user-facing; reduces upstream merge conflicts),
+# but the produced binary is MarketLabTerminal.exe.
+set_target_properties(FinceptTerminal PROPERTIES OUTPUT_NAME "MarketLabTerminal")
 
 # ── Optional feature compile definitions (applied after add_executable) ──────
 if(FINCEPT_HAS_PRIVATE_HEADERS)
@@ -4159,7 +4174,7 @@ endif()
 # ── Build configuration summary ──────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "============================================================")
-message(STATUS "  Fincept Terminal ${CMAKE_PROJECT_VERSION} — build summary")
+message(STATUS "  MarketLab Terminal ${CMAKE_PROJECT_VERSION} — build summary (upstream base: Fincept Terminal 4.5.0)")
 message(STATUS "============================================================")
 message(STATUS "  Qt version        : ${Qt6Core_VERSION}  (pin mode: ${FINCEPT_QT_PIN_MODE})")
 message(STATUS "  Build type        : ${CMAKE_BUILD_TYPE}")
@@ -4225,6 +4240,29 @@ if(UNIX AND NOT APPLE)
     if(_QM_FILES)
         install(FILES ${_QM_FILES}
             DESTINATION ${CMAKE_INSTALL_DATADIR}/fincept-terminal/translations)
+    endif()
+endif()
+
+# ── MarketLab: static hosted-path audit ───────────────────────────────────────
+# Audit control for FINCEPT_FORK_PLAN.md §5.3: fails when a new Fincept-owned
+# host reference appears without an explicit disposition in
+# marketlab/hosted_path_inventory.json. Pure-stdlib Python; runs as the
+# `marketlab-audit` target and (with tests on) as a CTest named
+# `marketlab_audit`.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(marketlab-audit
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/audit_hosted_paths.py"
+                --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "MarketLab hosted-path source audit"
+        VERBATIM)
+    if(FINCEPT_BUILD_TESTS)
+        add_test(NAME marketlab_audit
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/audit_hosted_paths.py"
+                    --root "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
 endif()
 

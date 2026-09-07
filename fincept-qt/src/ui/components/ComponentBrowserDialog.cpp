@@ -1,5 +1,6 @@
 #include "ui/components/ComponentBrowserDialog.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "core/components/ComponentCatalog.h"
 #include "core/components/PopularityTracker.h"
 #include "ui/components/ComponentCard.h"
@@ -157,6 +158,11 @@ void ComponentBrowserDialog::rebuild_cards() {
         if (!active_category_.isEmpty() && m.category != active_category_)
             continue;
         if (!matches_query(m, search_query_))
+            continue;
+        // MarketLab: the capability gate excludes Unavailable components from
+        // the browser entirely — they cannot be opened from here (their
+        // truthful reasons are listed in About → Capabilities).
+        if (!capability::CapabilityManager::instance().is_screen_allowed(m.id))
             continue;
 
         auto* card = new ComponentCard(m, grid_host_);

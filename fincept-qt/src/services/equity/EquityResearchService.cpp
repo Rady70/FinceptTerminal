@@ -532,7 +532,7 @@ void EquityResearchService::fetch_news_newsapi(const QString& symbol, int count,
 
     QNetworkRequest req(url);
     req.setRawHeader("X-Api-Key", api_key.toUtf8()); // key in header, not the URL
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("FinceptTerminal"));
+    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("MarketLabTerminal"));
 
     QNetworkReply* reply = news_nam_->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply, symbol, count]() {
