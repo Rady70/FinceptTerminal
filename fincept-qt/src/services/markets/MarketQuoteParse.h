@@ -53,6 +53,57 @@ inline QString cache_source_label(const QString& origin) {
     return origin.isEmpty() ? QStringLiteral("cache") : QStringLiteral("cache (%1)").arg(origin);
 }
 
+/// get_info numeric fields → InfoData, with per-field presence preserved.
+/// What MarketDataService::fetch_info() runs, extracted here for the same
+/// reason as the quote/history parsers above: the "is this cell a reading, or
+/// is it absent?" decision belongs to the testable boundary, not to the
+/// service that links the Python runner.
+inline void parse_info_object(const QJsonObject& o, InfoData& info) {
+    take_num(o, "market_cap", info.market_cap, info.has_market_cap);
+    take_num(o, "beta", info.beta, info.has_beta);
+    take_num(o, "fifty_two_week_high", info.week52_high, info.has_week52_high);
+    take_num(o, "fifty_two_week_low", info.week52_low, info.has_week52_low);
+    take_num(o, "average_volume", info.avg_volume, info.has_avg_volume);
+    // eps shares the same rule as the ratio parser below: either payload may
+    // arrive first (the two Python runs race), so a present reading overwrites
+    // and an absent one never erases — take_num writes the flag
+    // unconditionally, which is why the pair is handled on its own.
+    double eps = info.eps;
+    bool has_eps = false;
+    take_num(o, "revenue_per_share", eps, has_eps);
+    if (has_eps) {
+        info.eps = eps;
+        info.has_eps = true;
+    }
+}
+
+/// get_financial_ratios numeric fields → the same InfoData.
+///
+/// revenuePerShare is also delivered by get_info as revenue_per_share: the
+/// eps pair is handled on its own because take_num writes the flag
+/// unconditionally — a missing ratio row would otherwise erase a present
+/// get_info reading. Whichever source actually carried the value sets the
+/// flag; a reading from the ratio payload still wins on the value, exactly as
+/// it did before the flags existed, and the mirror rule in parse_info_object
+/// keeps the race (either callback first) symmetric.
+inline void parse_ratios_object(const QJsonObject& o, InfoData& info) {
+    take_num(o, "peRatio", info.pe_ratio, info.has_pe_ratio);
+    take_num(o, "forwardPE", info.forward_pe, info.has_forward_pe);
+    take_num(o, "priceToBook", info.price_to_book, info.has_price_to_book);
+    take_num(o, "dividendYield", info.dividend_yield, info.has_dividend_yield);
+    take_num(o, "returnOnEquity", info.roe, info.has_roe);
+    take_num(o, "profitMargin", info.profit_margin, info.has_profit_margin);
+    take_num(o, "debtToEquity", info.debt_to_equity, info.has_debt_to_equity);
+    take_num(o, "currentRatio", info.current_ratio, info.has_current_ratio);
+    double eps = info.eps;
+    bool has_eps = false;
+    take_num(o, "revenuePerShare", eps, has_eps);
+    if (has_eps) {
+        info.eps = eps;
+        info.has_eps = true;
+    }
+}
+
 /// One numeric field on its way *into* the cache envelope. Null rather than 0
 /// for an absent reading, so a later cache hit cannot resurrect the fabricated
 /// zero the flags exist to prevent.

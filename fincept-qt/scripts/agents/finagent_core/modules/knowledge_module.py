@@ -12,7 +12,17 @@ from typing import Dict, Any, Optional, List, Union
 from pathlib import Path
 import logging
 
+# MarketLab hosted-destination guard (FINCEPT_FORK_PLAN.md §5.3): the url /
+# website / arxiv / github readers below fetch the user-configured `source`
+# from inside this Python child, where the C++ manager cannot see it.
+from marketlab_net_guard import HostedServiceUnavailable, reject_if_fincept
+
 logger = logging.getLogger(__name__)
+
+# Document types whose reader fetches the configured source over the network.
+# Used by add_documents() to apply the hosted-destination guard exactly where a
+# remote fetch happens, rather than to local-file readers.
+_NETWORK_DOC_TYPES = {"url", "website", "arxiv", "github"}
 
 
 class KnowledgeModule:
@@ -155,7 +165,6 @@ class KnowledgeModule:
             if reader is None:
                 logger.warning(f"No reader available for type: {doc_type}")
                 return self
-
             # Handle different source types
             if isinstance(source, (str, Path)):
                 sources = [str(source)]
@@ -164,15 +173,37 @@ class KnowledgeModule:
 
             for src in sources:
                 try:
+                    # MarketLab: a knowledge source that NAMES a Fincept-owned
+                    # destination is refused before the reader fetches it. This
+                    # is the configuration-layer guard for this route; the
+                    # readers' own HTTP stacks (including their redirect
+                    # handling) are agno's, exactly as the C++ guard accepts
+                    # redirects to hosts it does not know.
+                    if doc_type in _NETWORK_DOC_TYPES:
+                        # GithubReader accepts a bare "owner/repo" slug, which
+                        # names a github.com destination the path-scoped
+                        # Fincept-Corporation rule must judge — a slug carries
+                        # no host for the guard to see on its own.
+                        target = (f"https://github.com/{src}"
+                                  if doc_type == "github" and "://" not in src else src)
+                        reject_if_fincept(target)
                     docs = reader.read(src, **kwargs)
                     if isinstance(docs, list):
                         self._documents.extend(docs)
                     else:
                         self._documents.append(docs)
                     logger.debug(f"Added document from: {src}")
+                except HostedServiceUnavailable:
+                    # A refused Fincept-owned source is a configuration error
+                    # the caller must see, not a per-source read failure to log
+                    # and skip.
+                    raise
                 except Exception as e:
                     logger.error(f"Failed to read document {src}: {e}")
 
+        except HostedServiceUnavailable:
+            # Same typed error, past the outer catch-all too.
+            raise
         except Exception as e:
             logger.error(f"Failed to add documents: {e}")
 

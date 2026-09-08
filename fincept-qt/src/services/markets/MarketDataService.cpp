@@ -552,22 +552,18 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                              shared->info.industry = o["industry"].toString();
                                              shared->info.country = o["country"].toString();
                                              shared->info.currency = o["currency"].toString("USD");
-                                             // get_info emits JSON null for a
-                                             // field yfinance did not return
-                                             // ("market_cap": info.get(...)),
-                                             // and toDouble() would report that
-                                             // as a market cap of zero. take_num
-                                             // leaves the field at its default
-                                             // instead of writing a fabricated
-                                             // reading over it.
-                                             bool present = false;
-                                             take_num(o, "market_cap", shared->info.market_cap, present);
-                                             take_num(o, "beta", shared->info.beta, present);
-                                             take_num(o, "fifty_two_week_high", shared->info.week52_high, present);
-                                             take_num(o, "fifty_two_week_low", shared->info.week52_low, present);
-                                             take_num(o, "average_volume", shared->info.avg_volume, present);
-                                             take_num(o, "revenue_per_share", shared->info.eps, present);
-                                             shared->info_ok = true;
+                                              // get_info emits JSON null for a
+                                              // field yfinance did not return
+                                              // ("market_cap": info.get(...)),
+                                              // and toDouble() would report that
+                                              // as a market cap of zero. The
+                                              // shared parser records per-field
+                                              // presence in InfoData's has_*
+                                              // flags instead of writing a
+                                              // fabricated reading over the
+                                              // default.
+                                              parse_info_object(o, shared->info);
+                                              shared->info_ok = true;
                                              try_complete();
                                          });
 
@@ -588,25 +584,18 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                                  return;
                                              }
                                              QJsonObject o = doc.object();
-                                             // get_financial_ratios emits JSON
-                                             // null for a ratio yfinance did not
-                                             // report. take_num leaves the field
-                                             // alone rather than writing 0.0 —
-                                             // which also stops a missing
-                                             // revenuePerShare here from
-                                             // clobbering the revenue_per_share
-                                             // get_info already supplied above.
-                                             bool present = false;
-                                             take_num(o, "peRatio", shared->info.pe_ratio, present);
-                                             take_num(o, "forwardPE", shared->info.forward_pe, present);
-                                             take_num(o, "priceToBook", shared->info.price_to_book, present);
-                                             take_num(o, "dividendYield", shared->info.dividend_yield, present);
-                                             take_num(o, "returnOnEquity", shared->info.roe, present);
-                                             take_num(o, "profitMargin", shared->info.profit_margin, present);
-                                             take_num(o, "debtToEquity", shared->info.debt_to_equity, present);
-                                             take_num(o, "currentRatio", shared->info.current_ratio, present);
-                                             take_num(o, "revenuePerShare", shared->info.eps, present);
-                                             shared->ratios_ok = true;
+                                              // get_financial_ratios emits JSON
+                                              // null for a ratio yfinance did
+                                              // not report. The shared parser
+                                              // records presence in the has_*
+                                              // flags and leaves the field
+                                              // alone rather than writing 0.0 —
+                                              // which also stops a missing
+                                              // revenuePerShare here from
+                                              // clobbering the revenue_per_share
+                                              // get_info already supplied above.
+                                              parse_ratios_object(o, shared->info);
+                                              shared->ratios_ok = true;
                                              try_complete();
                                          });
 }

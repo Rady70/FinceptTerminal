@@ -15,7 +15,18 @@ Key env vars rdagent reads:
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import Any
+
+# The MarketLab hosted-destination guard lives one directory up
+# (scripts/agents/marketlab_net_guard.py); scripts/agents/ is normally already
+# on sys.path via cli.py, but this module must not depend on the caller having
+# arranged it.
+_GUARD_DIR = str(Path(__file__).resolve().parent.parent)
+if _GUARD_DIR not in sys.path:
+    sys.path.insert(0, _GUARD_DIR)
+from marketlab_net_guard import reject_if_fincept
 
 
 # Providers that need anthropic-style API key env var
@@ -60,6 +71,14 @@ def apply_llm_config(config: dict[str, Any]) -> dict[str, str]:
     api_key    = config.get("llm_api_key", "")
     model      = config.get("llm_model", "gpt-4o")
     base_url   = config.get("llm_base_url", "")
+
+    # MarketLab: refuse a configured base_url that NAMES a Fincept-owned
+    # destination before it is exported to litellm's environment
+    # (FINCEPT_FORK_PLAN.md §5.3). litellm builds its own HTTP clients
+    # internally, so the configuration layer is the guard this path has;
+    # the C++ AIQuantLabService forwarder performs no host check of its own.
+    if base_url:
+        reject_if_fincept(base_url)
 
     env_vars: dict[str, str] = {}
 

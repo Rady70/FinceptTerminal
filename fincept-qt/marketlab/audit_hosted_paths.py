@@ -9,17 +9,19 @@ hosted_path_inventory.json:
    (removed | guarded | unreachable | not_built | rejected | disabled). A new
    reference that appears without a disposition fails the audit.
 
-2. Network sinks. Every occurrence under src/ of an API that can initiate
-   outbound contact must have an explicit disposition in the manifest's "sinks"
-   section AND a pinned occurrence count in its "sink_counts" section. This
-   check exists because check 1 structurally cannot see the most dangerous
-   case: a *configuration-derived* route. A connector whose host arrives from
-   stored configuration never appears as a literal string in the source, so no
+2. Network sinks. Every occurrence in the scanned sink scopes — src/ for the
+   C++/QML sinks and the reachable production Python under scripts/ for the
+   Python sinks — of an API that can initiate outbound contact must have an
+   explicit disposition in the manifest's "sinks" section AND a pinned
+   occurrence count in its "sink_counts" section. This check exists because
+   check 1 structurally cannot see the most dangerous case: a
+   *configuration-derived* route. A connector whose host arrives from stored
+   configuration never appears as a literal string in the source, so no
    literal-host grep can ever catch it — but the sink it reaches the network
    through is always in the source. Inventorying the sinks is what makes a
    newly added unguarded connectToHost(), a new direct QNetworkAccessManager, a
-   new QWebSocket or a new external-browser launch a build failure instead of a
-   silent regression.
+   new QWebSocket, a new external-browser launch, or a new Python outbound
+   call a build failure instead of a silent regression.
 
    The disposition alone is per-FILE, so on its own it rubber-stamps every
    future site in a file (or, for a "dir/**" selector, every future file in a
@@ -135,7 +137,15 @@ SINK_ROOT = "src"
 # scripts/ carries ~1,300 modules and nothing launches most of them;
 # dispositioning all of them would be the general networking framework §5.3 says
 # not to build. The reachable set is the transitive local-import closure of the
-# entry points named as string literals in src/ — 338 files, 72 with a sink.
+# entry points named as string literals in src/.
+#
+# The patterns count actual outbound call sites and network-capable client/SDK
+# constructions, not merely library imports: a file that already imports
+# `requests` and gains a new `requests.get(config["base_url"])` must change its
+# pinned count, and a model-construction site (OpenAIChat / ChatOpenAI /
+# OpenAI / AsyncOpenAI / litellm.completion …) is a sink in its own right
+# because the SDKs behind those constructors do their own networking inside
+# the Python child, where the C++ guard cannot see it.
 #
 # Honest limit, stated the way the header/impl pairing limit below is: the
 # closure follows static `import` / `from ... import` only. A module reached
@@ -145,7 +155,13 @@ SINK_ROOT = "src"
 # is a Fincept host reached from one purely through configuration.
 PY_SINK_PATTERNS = [
     ("py_http_client", re.compile(
-        r"^[ \t]*(?:import|from)[ \t]+(?:httpx|requests|aiohttp)\b", re.MULTILINE)),
+        # The import, the actual outbound verb calls, and the client factory
+        # constructions — each on its own so a new route changes the count.
+        r"^[ \t]*(?:import|from)[ \t]+(?:httpx|requests|aiohttp)\b"
+        r"|\b(?:requests|httpx|aiohttp)\s*\.\s*(?:get|post|put|patch|delete|head|options|request)\s*\("
+        r"|\brequests\.Session\s*\("
+        r"|\bhttpx\.(?:Client|AsyncClient)\s*\(",
+        re.MULTILINE)),
     # urllib.request / urlopen only. urllib.parse is string manipulation, not a
     # transport, and counting it would pad the inventory with non-sinks.
     ("py_urllib", re.compile(
@@ -154,6 +170,21 @@ PY_SINK_PATTERNS = [
         r"^[ \t]*(?:import|from)[ \t]+socket\b", re.MULTILINE)),
     ("py_websocket", re.compile(
         r"^[ \t]*(?:import|from)[ \t]+websockets?\b", re.MULTILINE)),
+    # Network-capable SDK constructions: the LLM-client factories reachable
+    # from production. These constructors build their own HTTP clients inside
+    # the Python child (openai/agno/litellm/langchain), which is exactly the
+    # class of route the C++ manager cannot see and the §5.3 finding on
+    # Python redirect-following was about. `agno.models.<x>` / `agno.knowledge.
+    # <x>` cover the catalog strings AND the import sites in one rule
+    # (models_registry / embedder_registry name their classes as strings and
+    # import them through importlib, so the catalog string is the only literal
+    # the audit can pin).
+    ("py_sdk_client", re.compile(
+        r"\bOpenAIChat\s*\(|\bChatOpenAI\s*\(|\bAsyncOpenAI\s*\(|\bOpenAI\s*\(|\bAzureOpenAI\s*\("
+        r"|\bChatAnthropic\s*\(|\bChatGoogleGenerativeAI\s*\(|\bChatGroq\s*\(|\bChatCohere\s*\("
+        r"|\bagno\.(?:models|knowledge)\.[a-zA-Z_]+"
+        r"|\blitellm\.(?:completion|acompletion|embedding|aembedding)\s*\(",
+        re.MULTILINE)),
 ]
 PY_SINK_KINDS = [name for name, _pat in PY_SINK_PATTERNS]
 SINK_KINDS = SINK_KINDS + PY_SINK_KINDS
@@ -235,7 +266,7 @@ def load_manifest(path):
                     f"genuinely share one disposition.")
             sinks[sink].append((file_sel, disposition, note))
 
-    # "sink_counts": {"<path under src/>": {"<sink kind>": <occurrences>}}.
+    # "sink_counts": {"<path under src/ or scripts/>": {"<sink kind>": <occurrences>}}.
     # Required and exhaustive — every (file, sink) with at least one occurrence
     # must appear with its exact count. This is what makes the check see a new
     # site in an already-dispositioned file, which the per-file disposition
@@ -306,7 +337,6 @@ def python_reachable(root, entries, unparsed):
     """Transitive local-import closure of `entries`, as paths under scripts/."""
     scripts_root = os.path.join(root, PY_SINK_ROOT)
     by_rel = {}
-    by_base = {}
     for dirpath, dirnames, filenames in os.walk(scripts_root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fname in filenames:
@@ -315,7 +345,6 @@ def python_reachable(root, entries, unparsed):
             full = os.path.join(dirpath, fname)
             rel = os.path.relpath(full, scripts_root).replace(os.sep, "/")
             by_rel[rel] = full
-            by_base.setdefault(os.path.splitext(fname)[0], []).append(rel)
 
     def resolve(mod, cur_rel):
         out = []
@@ -323,16 +352,42 @@ def python_reachable(root, entries, unparsed):
         for cand in (as_path + ".py", as_path + "/__init__.py"):
             if cand in by_rel:
                 out.append(cand)
+        # Package-aware resolution: the importing module's own directory and
+        # each ancestor directory act as sys.path entries, exactly how the
+        # application's Python children arrange sys.path (each cli.py inserts
+        # its own dir and scripts/agents). A dotted import such as
+        # "finagent_core.registries.models_registry" therefore resolves
+        # against scripts/agents/. Without this pass every package
+        # __init__.py — and every module reached only through one — was
+        # invisible to the closure, which is how the model-construction
+        # registries escaped the sink inventory.
+        anc = cur_rel.rsplit("/", 1)[0] if "/" in cur_rel else ""
+        parts = as_path.split("/")
+        while True:
+            for i in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:i])
+                for cand in (prefix + ".py", prefix + "/__init__.py"):
+                    full = (anc + "/" if anc else "") + cand
+                    if full in by_rel and full not in out:
+                        out.append(full)
+            if not anc:
+                break
+            anc = anc.rsplit("/", 1)[0] if "/" in anc else ""
         parent = cur_rel.rsplit("/", 1)[0] if "/" in cur_rel else ""
         sibling = (parent + "/" if parent else "") + mod.split(".")[-1] + ".py"
         if sibling in by_rel:
             out.append(sibling)
-        if not out:
-            # Unambiguous basename only. Two modules sharing a name would make
-            # this a guess, and a guess does not belong in an evidence control.
-            base = mod.split(".")[-1]
-            if len(by_base.get(base, [])) == 1:
-                out = list(by_base[base])
+        # Deliberately no last-component basename fallback. A previous revision
+        # resolved "scipy.cluster.hierarchy" to the unrelated local
+        # hedgeFundAgents/.../organization/hierarchy.py because that basename
+        # happened to be unique, pulling a subtree the product cannot run into
+        # the sink inventory. A guess does not belong in an evidence control:
+        # the sys.path arrangements the children actually set up are the
+        # importer's own directory and its ancestors (covered above), scripts/
+        # and scripts/agents (also ancestors), and the direct dotted path
+        # (covered at the top of this function). Anything else is importlib or
+        # an exec/plugin registry, which the closure already states as its
+        # documented limit.
         return out
 
     seen = set()

@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "note": "MarketLab Terminal hosted-path inventory (FINCEPT_FORK_PLAN.md §5.3). Two sections, two checks, both enforced by audit_hosted_paths.py. \"rules\": every Fincept-owned host reference in src/, scripts/, resources/, packaging/, and translations/ must be listed with an explicit disposition. \"sinks\": every occurrence under src/ of an API that can initiate outbound contact must be listed with an explicit disposition — this is the half of the control that can see a configuration-derived route, whose host never appears as a literal in the source and which therefore no host rule could ever catch. Either check fails when a new occurrence appears without a disposition. Dispositions (both sections): removed | guarded | unreachable | not_built | rejected | disabled. \"sink_counts\": the exact occurrence count of every (file, sink) pair, because a per-file disposition on its own rubber-stamps every FUTURE site in a file it already covers — a second connectToHost() added to a file already marked \"guarded\" would otherwise pass unseen.",
+  "note": "MarketLab Terminal hosted-path inventory (FINCEPT_FORK_PLAN.md \u00a75.3). Two sections, two checks, both enforced by audit_hosted_paths.py. \"rules\": every Fincept-owned host reference in src/, scripts/, resources/, packaging/, and translations/ must be listed with an explicit disposition. \"sinks\": every occurrence in the scanned sink scopes \u2014 under src/ for the C++/QML sinks, and in the reachable production Python under scripts/ for the Python sinks \u2014 of an API that can initiate outbound contact must be listed with an explicit disposition \u2014 this is the half of the control that can see a configuration-derived route, whose host never appears as a literal in the source and which therefore no host rule could ever catch. Either check fails when a new occurrence appears without a disposition. Dispositions (both sections): removed | guarded | unreachable | not_built | rejected | disabled. \"sink_counts\": the exact occurrence count of every (file, sink) pair, because a per-file disposition on its own rubber-stamps every FUTURE site in a file it already covers \u2014 a second connectToHost() added to a file already marked \"guarded\" would otherwise pass unseen.",
   "rules": [
     {
       "pattern": "Fincept-Corporation",
@@ -10,7 +10,7 @@
         "packaging/**",
         "CMakeLists.txt"
       ],
-      "note": "Third-party QuantConnect sample-strategy attribution headers (no network use); installer/AppImage metadata and CPack homepage for the upstream package name — packaging is deferred to Phase 6."
+      "note": "Third-party QuantConnect sample-strategy attribution headers (no network use); installer/AppImage metadata and CPack homepage for the upstream package name \u2014 packaging is deferred to Phase 6."
     },
     {
       "pattern": "fincept.in",
@@ -65,7 +65,7 @@
         "src/services/llm/ProviderCatalog.cpp",
         "tests/**"
       ],
-      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test — the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
+      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
     },
     {
       "pattern": "fincept.ai",
@@ -75,7 +75,7 @@
         "src/services/llm/ProviderCatalog.cpp",
         "tests/**"
       ],
-      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test — the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
+      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
     },
     {
       "pattern": "Fincept-Corporation",
@@ -184,7 +184,7 @@
       "files": [
         "docs/**"
       ],
-      "note": "Documentation text only — upstream architecture docs; no network path."
+      "note": "Documentation text only \u2014 upstream architecture docs; no network path."
     },
     {
       "pattern": "Fincept-Corporation",
@@ -192,7 +192,7 @@
       "files": [
         "docs/**"
       ],
-      "note": "Documentation text only — upstream attribution; no network path."
+      "note": "Documentation text only \u2014 upstream attribution; no network path."
     },
     {
       "pattern": "fincept.com",
@@ -217,9 +217,90 @@
         "tests/**"
       ],
       "note": "Test fixtures: deny-list GitHub-org test vectors."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py",
+        "scripts/agents/finagent_core/modules/knowledge_module.py"
+      ],
+      "note": "The Python-side deny-list and its knowledge-source application: the Fincept-Corporation GitHub path rule in the mirror of HostedPathGuard, and the comment in the knowledge reader guard that names it. The literal is the classification rule, never a destination."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The Python-side deny-list itself: fincept.in is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
+    },
+    {
+      "pattern": "fincept.com",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The Python-side deny-list itself: fincept.com is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
+    },
+    {
+      "pattern": "fincept.app",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The Python-side deny-list itself: fincept.app is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
+    },
+    {
+      "pattern": "fincept.ai",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The Python-side deny-list itself: fincept.ai is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
+    },
+    {
+      "pattern": "Fincept-Corporation",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/tests/**"
+      ],
+      "note": "Pure classification vectors: these literals are the INPUT to is_fincept_url()/is_fincept_host() assertions in the guard tests (the GitHub path rule cases), never a dialed destination. Mirrors the tests/** entries for the C++ boundary suite."
+    },
+    {
+      "pattern": "fincept.in",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/tests/**"
+      ],
+      "note": "Pure classification vectors: these literals are the INPUT to is_fincept_url()/is_fincept_host() assertions in the guard tests (host rule, trailing-dot, userinfo and scheme cases), never a dialed destination. Mirrors the tests/** entries for the C++ boundary suite."
+    },
+    {
+      "pattern": "fincept.com",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/tests/**"
+      ],
+      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
+    },
+    {
+      "pattern": "fincept.app",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/tests/**"
+      ],
+      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
+    },
+    {
+      "pattern": "fincept.ai",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/tests/**"
+      ],
+      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
     }
   ],
-  "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). Scope is src/ only — a sink in tests/ or scripts/ is not in the product. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
+  "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). C++ sink scope is src/ only \u2014 a sink in tests/ is not in the product. The Python sink scope (py_http_client, py_urllib, py_socket, py_websocket, py_sdk_client) is the transitive local-import closure of the .py entry points named as string literals in src/ \u2014 the Python children the application actually launches, which do their own networking inside the child process. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
   "sinks": [
     {
       "sink": "tcp_socket",
@@ -230,7 +311,7 @@
         "src/screens/data_sources/DataSourcesScreen_Handlers.cpp",
         "src/services/workflow/nodes/DataSourceNodes.cpp"
       ],
-      "note": "The fork's only four outbound connectToHost() probes: the Data Sources connection tester, the ds_test_connection MCP tool, the Data Sources live-status poller, and the data-source workflow node. Each takes host/port from a stored connector config — a configuration-derived route that no literal-host scan can see — and each applies HostedPathGuard before the socket: is_fincept_destination() on the URL form (which decides the path-scoped Fincept GitHub-org rules) and is_fincept_host() on the bare host+port form, returning the typed HOSTED_SERVICE_UNAVAILABLE error with no connection attempted."
+      "note": "The fork's only four outbound connectToHost() probes: the Data Sources connection tester, the ds_test_connection MCP tool, the Data Sources live-status poller, and the data-source workflow node. Each takes host/port from a stored connector config \u2014 a configuration-derived route that no literal-host scan can see \u2014 and each applies HostedPathGuard before the socket: is_fincept_destination() on the URL form (which decides the path-scoped Fincept GitHub-org rules) and is_fincept_host() on the bare host+port form, returning the typed HOSTED_SERVICE_UNAVAILABLE error with no connection attempted."
     },
     {
       "sink": "tcp_socket",
@@ -248,7 +329,7 @@
         "src/auth/GoogleDesktopLogin.cpp",
         "src/auth/GoogleDesktopLogin.h"
       ],
-      "note": "Loopback listener for the Fincept Google sign-in handoff. This fork has no account session: WindowFrame_Auth.cpp routes straight to the local workspace and LoginScreen is never constructed, so AuthManager::login_with_google() — its only construction site — has no reachable caller."
+      "note": "Loopback listener for the Fincept Google sign-in handoff. This fork has no account session: WindowFrame_Auth.cpp routes straight to the local workspace and LoginScreen is never constructed, so AuthManager::login_with_google() \u2014 its only construction site \u2014 has no reachable caller."
     },
     {
       "sink": "tcp_socket",
@@ -264,7 +345,7 @@
       "files": [
         "src/services/wallet/**"
       ],
-      "note": "LocalWalletBridge and WalletTxBridge: loopback wallet-connect and transaction-signing listeners, constructed only by ConnectWalletDialog / SignTransactionDialog on the crypto_center surface. crypto_center is Unavailable and not registered, so neither dialog is ever constructed. Inbound listeners in any case — no connectToHost()."
+      "note": "LocalWalletBridge and WalletTxBridge: loopback wallet-connect and transaction-signing listeners, constructed only by ConnectWalletDialog / SignTransactionDialog on the crypto_center surface. crypto_center is Unavailable and not registered, so neither dialog is ever constructed. Inbound listeners in any case \u2014 no connectToHost()."
     },
     {
       "sink": "network_access_manager",
@@ -273,7 +354,7 @@
         "src/network/http/HttpClient.cpp",
         "src/network/http/HttpClient.h"
       ],
-      "note": "The shared HTTP client and the one QNetworkAccessManager every non-direct caller goes through. HostedPathGuard's deny-list is applied on every request — absolute URL and base-URL-relative path alike — before the request is issued."
+      "note": "The shared HTTP client and the one QNetworkAccessManager every non-direct caller goes through. HostedPathGuard's deny-list is applied on every request \u2014 absolute URL and base-URL-relative path alike \u2014 before the request is issued."
     },
     {
       "sink": "network_access_manager",
@@ -330,7 +411,7 @@
         "src/services/news/NewsService.h",
         "src/ui/widgets/WorldMapWidget.cpp"
       ],
-      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration — a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter — so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md §5.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
+      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration \u2014 a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter \u2014 so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md \u00a75.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
     },
     {
       "sink": "network_access_manager",
@@ -349,7 +430,7 @@
       "files": [
         "src/services/workflow/adapters/ServiceBridges.cpp"
       ],
-      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration — a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter — so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md §5.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
+      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration \u2014 a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter \u2014 so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md \u00a75.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
     },
     {
       "sink": "network_access_manager",
@@ -358,7 +439,7 @@
         "src/core/telemetry/CloudTelemetryProvider.cpp",
         "src/core/telemetry/CloudTelemetryProvider.h"
       ],
-      "note": "Opt-in cloud telemetry. Guarded, not merely off. The endpoint is the user's own telemetry.cloud_endpoint setting, so it is a configuration-derived route: no literal-host scan can see where it points, and §5.3 requires such a route to be contained rather than assumed safe because the feature defaults off. Two containments now apply. The manager is a GuardedNetworkAccessManager, so every request — and, since Qt does not re-enter createRequest() on a redirect, every redirect hop — is judged by HostedPathGuard before a connection is made. And read_config() refuses a Fincept-owned telemetry.cloud_endpoint outright, logging the refusal once per configuration and leaving the uploader idle; the chained LocalTelemetrySink still persists every event to disk. The earlier \"disabled\" disposition described the default, not the guarantee — an operator who set the endpoint to a Fincept host and flipped telemetry.cloud_enabled would have reached it."
+      "note": "Opt-in cloud telemetry. Guarded, not merely off. The endpoint is the user's own telemetry.cloud_endpoint setting, so it is a configuration-derived route: no literal-host scan can see where it points, and \u00a75.3 requires such a route to be contained rather than assumed safe because the feature defaults off. Two containments now apply. The manager is a GuardedNetworkAccessManager, so every request \u2014 and, since Qt does not re-enter createRequest() on a redirect, every redirect hop \u2014 is judged by HostedPathGuard before a connection is made. And read_config() refuses a Fincept-owned telemetry.cloud_endpoint outright, logging the refusal once per configuration and leaving the uploader idle; the chained LocalTelemetrySink still persists every event to disk. The earlier \"disabled\" disposition described the default, not the guarantee \u2014 an operator who set the endpoint to a Fincept host and flipped telemetry.cloud_enabled would have reached it."
     },
     {
       "sink": "network_access_manager",
@@ -367,7 +448,7 @@
         "src/services/updater/UpdateService.h",
         "src/services/updater/UpdateService.cpp"
       ],
-      "note": "Update-manifest fetch from the upstream Fincept-Corporation GitHub repo. check_for_updates() returns early in this fork and never issues the request; the deny-list would reject the URL anyway under its path-scoped GitHub-org rules. The .cpp is listed explicitly because its manager is the header-declared member net_, so the type name never appears in the translation unit that actually issues the three GETs (net_.get at :232, :310, :465) — the paired-implementation rule in audit_hosted_paths.py exists to stop exactly that file from being invisible to this inventory."
+      "note": "Update-manifest fetch from the upstream Fincept-Corporation GitHub repo. check_for_updates() returns early in this fork and never issues the request; the deny-list would reject the URL anyway under its path-scoped GitHub-org rules. The .cpp is listed explicitly because its manager is the header-declared member net_, so the type name never appears in the translation unit that actually issues the three GETs (net_.get at :232, :310, :465) \u2014 the paired-implementation rule in audit_hosted_paths.py exists to stop exactly that file from being invisible to this inventory."
     },
     {
       "sink": "network_access_manager",
@@ -404,7 +485,7 @@
       "files": [
         "src/services/options/FiiDiiService.cpp"
       ],
-      "note": "Daily FII/DII flow scraper (https://blissquants.com/Bliss_Fii_Dii_Data — a third party, not a Fincept destination, and not configuration-derived). Recorded precisely, because \"unreachable\" is easy to overstate here: the singleton IS constructed at startup — src/app/main.cpp calls FiiDiiService::instance().ensure_registered_with_hub() unconditionally in its Group 1 DataHub producer registrations, so the object and its QNetworkAccessManager exist in every run. What is unreachable is the fetch: ensure_registered_with_hub() only registers the producer and a topic policy, and refresh() is driven solely by a DataHub subscription to fno:fii_dii:daily, whose only subscriber in the tree is screens/fno/FiiDiiSubTab under FnoScreen. fno is Unavailable (CapabilityManager) and is not a registered dock factory (WindowFrame_Setup.cpp), and no MCP tool or agent tool publishes the topic, so kick_off_refresh() has no trigger and no request is issued."
+      "note": "Daily FII/DII flow scraper (https://blissquants.com/Bliss_Fii_Dii_Data \u2014 a third party, not a Fincept destination, and not configuration-derived). Recorded precisely, because \"unreachable\" is easy to overstate here: the singleton IS constructed at startup \u2014 src/app/main.cpp calls FiiDiiService::instance().ensure_registered_with_hub() unconditionally in its Group 1 DataHub producer registrations, so the object and its QNetworkAccessManager exist in every run. What is unreachable is the fetch: ensure_registered_with_hub() only registers the producer and a topic policy, and refresh() is driven solely by a DataHub subscription to fno:fii_dii:daily, whose only subscriber in the tree is screens/fno/FiiDiiSubTab under FnoScreen. fno is Unavailable (CapabilityManager) and is not a registered dock factory (WindowFrame_Setup.cpp), and no MCP tool or agent tool publishes the topic, so kick_off_refresh() has no trigger and no request is issued."
     },
     {
       "sink": "network_access_manager",
@@ -413,7 +494,7 @@
         "src/services/polymarket/PolymarketService.cpp",
         "src/services/polymarket/PolymarketService.h"
       ],
-      "note": "Polymarket CLOB/gamma/data REST client. The polymarket screen is Unavailable and unregistered — prediction-market order actions and private keys are not exposed in this fork."
+      "note": "Polymarket CLOB/gamma/data REST client. The polymarket screen is Unavailable and unregistered \u2014 prediction-market order actions and private keys are not exposed in this fork."
     },
     {
       "sink": "network_access_manager",
@@ -432,7 +513,7 @@
       "files": [
         "src/services/wallet/**"
       ],
-      "note": "Solana wallet services (RPC, token metadata and prices, activity, buyback/burn, real yield, pump.fun swaps). All are constructed from the crypto_center surface, which is Unavailable and unregistered — wallet, staking and signing surfaces are removed from this fork."
+      "note": "Solana wallet services (RPC, token metadata and prices, activity, buyback/burn, real yield, pump.fun swaps). All are constructed from the crypto_center surface, which is Unavailable and unregistered \u2014 wallet, staking and signing surfaces are removed from this fork."
     },
     {
       "sink": "network_access_manager",
@@ -449,7 +530,7 @@
         "src/network/websocket/WebSocketClient.cpp",
         "src/network/websocket/WebSocketClient.h"
       ],
-      "note": "The shared QWebSocket transport. Recorded honestly: it does NOT apply HostedPathGuard itself — the destination always arrives from its caller. It is unreachable rather than guarded because its only three consumers in this fork (PolymarketWebSocket, KalshiWsClient, WalletBalanceProducer) belong to the polymarket, prediction and crypto_center surfaces, none of which is registered, so no code path calls open(). A future consumer on a reachable surface must apply the guard at its own call site, or this client must grow one."
+      "note": "The shared QWebSocket transport. Recorded honestly: it does NOT apply HostedPathGuard itself \u2014 the destination always arrives from its caller. It is unreachable rather than guarded because its only three consumers in this fork (PolymarketWebSocket, KalshiWsClient, WalletBalanceProducer) belong to the polymarket, prediction and crypto_center surfaces, none of which is registered, so no code path calls open(). A future consumer on a reachable surface must apply the guard at its own call site, or this client must grow one."
     },
     {
       "sink": "websocket",
@@ -503,7 +584,7 @@
         "src/screens/news/NewsDetailPanel.cpp",
         "src/screens/news/NewsScreen.cpp"
       ],
-      "note": "These screens hand a link to the OS, and the link comes from fetched content — a news item, a data-table cell, a module result — so the destination is not known statically and a Fincept-owned link could otherwise open in the user's browser. Every one of them now calls network::ExternalUrlGuard::open_external(), which consults the deny-list and refuses before the platform handoff, telling the user why rather than silently doing nothing (FINCEPT_FORK_PLAN.md §11.2). The only QDesktopServices::openUrl left in the fork is inside that guard."
+      "note": "These screens hand a link to the OS, and the link comes from fetched content \u2014 a news item, a data-table cell, a module result \u2014 so the destination is not known statically and a Fincept-owned link could otherwise open in the user's browser. Every one of them now calls network::ExternalUrlGuard::open_external(), which consults the deny-list and refuses before the platform handoff, telling the user why rather than silently doing nothing (FINCEPT_FORK_PLAN.md \u00a711.2). The only QDesktopServices::openUrl left in the fork is inside that guard."
     },
     {
       "sink": "open_url",
@@ -522,7 +603,7 @@
         "src/ui/widgets/EnterprisePromo.cpp",
         "src/screens/profile/ProfileScreen.cpp"
       ],
-      "note": "Browser launches into Fincept account surfaces: the Google sign-in start URL, the fincept.in checkout page, the enterprise-plan promo links, and the profile screen's Fincept-Corporation link buttons. This fork has no account session — LoginScreen is never constructed, and the auth/pricing/profile screens are Unavailable and unregistered. EnterprisePromo has exactly one user, PricingScreen."
+      "note": "Browser launches into Fincept account surfaces: the Google sign-in start URL, the fincept.in checkout page, the enterprise-plan promo links, and the profile screen's Fincept-Corporation link buttons. This fork has no account session \u2014 LoginScreen is never constructed, and the auth/pricing/profile screens are Unavailable and unregistered. EnterprisePromo has exactly one user, PricingScreen."
     },
     {
       "sink": "open_url",
@@ -531,7 +612,7 @@
         "src/screens/crypto_center/**",
         "src/services/wallet/**"
       ],
-      "note": "Solscan transaction links from the burn/treasury/activity panels, and the wallet-connect and sign-transaction dialogs opening their own loopback bridge page in the browser. All belong to crypto_center, which is Unavailable and unregistered — the panels and dialogs are never constructed."
+      "note": "Solscan transaction links from the burn/treasury/activity panels, and the wallet-connect and sign-transaction dialogs opening their own loopback bridge page in the browser. All belong to crypto_center, which is Unavailable and unregistered \u2014 the panels and dialogs are never constructed."
     },
     {
       "sink": "open_url",
@@ -548,7 +629,7 @@
         "src/app/TerminalShell.cpp",
         "src/network/http/DirectRouteGuard.cpp"
       ],
-      "note": "Listed only because the paired-implementation rule follows a header mention into its sibling .cpp. In both cases the header's mention is prose — a comment explaining why the event loop must be alive (TerminalShell.h:70) and a comment naming the clients that own their own manager (DirectRouteGuard.h:7) — and neither .cpp constructs or uses a QNetworkAccessManager. Verified: no net_/nam_ member call in either translation unit."
+      "note": "Listed only because the paired-implementation rule follows a header mention into its sibling .cpp. In both cases the header's mention is prose \u2014 a comment explaining why the event loop must be alive (TerminalShell.h:70) and a comment naming the clients that own their own manager (DirectRouteGuard.h:7) \u2014 and neither .cpp constructs or uses a QNetworkAccessManager. Verified: no net_/nam_ member call in either translation unit."
     },
     {
       "sink": "websocket",
@@ -556,7 +637,7 @@
       "files": [
         "src/network/http/HostedPathGuard.cpp"
       ],
-      "note": "Same paired-implementation follow-through: HostedPathGuard.h:7 names QWebSocket in the comment listing the direct-path classes the guard exists for. HostedPathGuard.cpp creates no socket of any kind — it is a pure predicate over QUrl and QString."
+      "note": "Same paired-implementation follow-through: HostedPathGuard.h:7 names QWebSocket in the comment listing the direct-path classes the guard exists for. HostedPathGuard.cpp creates no socket of any kind \u2014 it is a pure predicate over QUrl and QString."
     },
     {
       "sink": "open_url",
@@ -564,7 +645,7 @@
       "files": [
         "src/network/http/ExternalUrlGuard.cpp"
       ],
-      "note": "The fork's ONLY QDesktopServices::openUrl call. Every screen that opens a fetched link routes through open_external(), which consults HostedPathGuard::is_fincept_destination() and refuses before the platform handoff (FINCEPT_FORK_PLAN.md §11.2). Concentrating the launch here is what makes the deny-list impossible for a call site to forget."
+      "note": "The fork's ONLY QDesktopServices::openUrl call. Every screen that opens a fetched link routes through open_external(), which consults HostedPathGuard::is_fincept_destination() and refuses before the platform handoff (FINCEPT_FORK_PLAN.md \u00a711.2). Concentrating the launch here is what makes the deny-list impossible for a call site to forget."
     },
     {
       "sink": "network_access_manager",
@@ -573,7 +654,7 @@
         "src/network/http/GuardedNetworkAccessManager.cpp",
         "src/network/http/GuardedNetworkAccessManager.h"
       ],
-      "note": "The guard itself: a QNetworkAccessManager subclass whose createRequest() override refuses a Fincept-owned destination and returns an already-failed reply, so the refusal reaches each caller through its existing error path. Used by the surfaces that fetch a configuration-derived URL through their own manager (web scraper, RSS monitor/preview/dialogs, workflow HTTP+RSS bridges, candle fetcher) — see FINCEPT_FORK_PLAN.md §5.3."
+      "note": "The guard itself: a QNetworkAccessManager subclass whose createRequest() override refuses a Fincept-owned destination and returns an already-failed reply, so the refusal reaches each caller through its existing error path. Used by the surfaces that fetch a configuration-derived URL through their own manager (web scraper, RSS monitor/preview/dialogs, workflow HTTP+RSS bridges, candle fetcher) \u2014 see FINCEPT_FORK_PLAN.md \u00a75.3."
     },
     {
       "sink": "tcp_socket",
@@ -649,7 +730,7 @@
         "scripts/worldbank_health_data.py",
         "scripts/wto_data.py"
       ],
-      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source — a central bank, a statistics agency, a government open-data portal or a market-data vendor — and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
+      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source \u2014 a central bank, a statistics agency, a government open-data portal or a market-data vendor \u2014 and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
     },
     {
       "sink": "py_urllib",
@@ -659,7 +740,7 @@
         "scripts/news_geolocation.py",
         "scripts/strategies/fincept_engine/algorithm.py"
       ],
-      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source — a central bank, a statistics agency, a government open-data portal or a market-data vendor — and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
+      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source \u2014 a central bank, a statistics agency, a government open-data portal or a market-data vendor \u2014 and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
     },
     {
       "sink": "py_urllib",
@@ -732,10 +813,290 @@
         "scripts/yfinance_data.py"
       ],
       "note": "The public-quote and history producer this fork's representative task depends on. Yahoo Finance via yfinance; the host is the library's, fixed in the source, with no key and no Fincept account. This is the single most-exercised Python network path in the product and it is deliberately pinned on its own rather than folded into the bulk rule."
+    },
+    {
+      "sink": "py_sdk_client",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/finagent_core/agent_factory.py",
+        "scripts/agents/finagent_core/registries/models_registry.py"
+      ],
+      "note": "The two agno model-construction paths with a user-configurable base_url. Every OpenAIChat built from a custom base_url is pre-vetted by marketlab_net_guard.reject_if_fincept (refuses a base_url that NAMES a Fincept-owned destination) and receives guarded sync AND async OpenAI SDK clients (client=/async_client=) whose transports refuse Fincept-owned request URLs on every dial, redirect hops included. Native provider SDKs (agno Claude/Gemini/... wrappers) have no client-injection seam and take no user base_url; their configuration-layer guard is the same reject_if_fincept call."
+    },
+    {
+      "sink": "py_sdk_client",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/deepagents/models.py"
+      ],
+      "note": "LangChain model construction for the deepagent path (launched by AIQuantLabService with the user's LLM config). Every configured base_url is pre-vetted by marketlab_net_guard.reject_if_fincept; the ChatOpenAI constructions additionally receive guarded sync+async httpx clients (http_client=/http_async_client=) so the OpenAI SDK cannot follow a redirect into a Fincept-owned destination. The anthropic/google/groq/cohere SDK paths have no supported client-injection seam and are covered by the configuration-layer guard; their redirect handling is the vendor SDK's."
+    },
+    {
+      "sink": "py_sdk_client",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/finagent_core/registries/embedder_registry.py",
+        "scripts/agents/finagent_core/modules/knowledge_module.py"
+      ],
+      "note": "Embedder construction (catalog strings + importlib) and the knowledge readers (url/website/arxiv/github fetch the user-configured source). The embedder base_url is refused by marketlab_net_guard.reject_if_fincept before any client is built, and add_documents() applies the same guard to network reader sources before the reader fetches them. The readers' own HTTP stacks (including redirect handling) are agno's, exactly as the C++ guard accepts redirects to hosts it does not know."
+    },
+    {
+      "sink": "py_sdk_client",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The guard itself: the guarded_openai_clients() helper constructs the OpenAI/AsyncOpenAI SDK clients that are handed to the model construction sites above. Its own transports are the deny transports defined in the same file."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "guarded",
+      "files": [
+        "scripts/agents/marketlab_net_guard.py"
+      ],
+      "note": "The guard itself: the httpx.Client / httpx.AsyncClient constructions whose _FinceptDenyTransport/_AsyncFinceptDenyTransport refuse Fincept-owned request URLs on every dial. This is the redirect-hop vetting seam, not an unguarded route."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/Analytics/economics/data_handler.py"
+      ],
+      "note": "requests calls to fixed third-party economic-data endpoints (the economics data handler launched by its own cli entry point). The destinations are code constants, not configuration-derived; there is no Fincept-owned route through this file."
     }
   ],
-  "sink_counts_note": "Pinned occurrence count of every (file, sink) pair under src/, exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included — editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
+  "sink_counts_note": "Pinned occurrence count of every (file, sink) pair in the scanned sink scopes (under src/, and the reachable production Python under scripts/), exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included \u2014 editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
   "sink_counts": {
+    "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py": {
+      "py_urllib": 3
+    },
+    "scripts/Analytics/economics/data_handler.py": {
+      "py_http_client": 5
+    },
+    "scripts/adb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/agents/deepagents/models.py": {
+      "py_sdk_client": 6
+    },
+    "scripts/agents/finagent_core/agent_factory.py": {
+      "py_sdk_client": 15
+    },
+    "scripts/agents/finagent_core/modules/knowledge_module.py": {
+      "py_sdk_client": 10
+    },
+    "scripts/agents/finagent_core/registries/embedder_registry.py": {
+      "py_sdk_client": 17
+    },
+    "scripts/agents/finagent_core/registries/models_registry.py": {
+      "py_sdk_client": 36
+    },
+    "scripts/agents/finagent_core/tools/terminal_toolkit.py": {
+      "py_urllib": 2
+    },
+    "scripts/agents/marketlab_net_guard.py": {
+      "py_http_client": 3,
+      "py_sdk_client": 2
+    },
+    "scripts/agents/rdagents/cli.py": {
+      "py_socket": 1
+    },
+    "scripts/agents/rdagents/mcp_tools.py": {
+      "py_socket": 1
+    },
+    "scripts/akshare_index.py": {
+      "py_http_client": 2
+    },
+    "scripts/alphavantage_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/bcb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/bea_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/bis_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bls_data.py": {
+      "py_http_client": 3
+    },
+    "scripts/bnm_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/bnr_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/boc_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/boe_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/boi_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/canada_gov_api.py": {
+      "py_http_client": 3
+    },
+    "scripts/census_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/cftc_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/cnb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/congress_gov_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/data_gov_hk_api.py": {
+      "py_http_client": 2
+    },
+    "scripts/datagov_au_api.py": {
+      "py_http_client": 2
+    },
+    "scripts/datagovuk_api.py": {
+      "py_http_client": 3
+    },
+    "scripts/ecb_sdmx_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/econdb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/economic_calendar.py": {
+      "py_http_client": 1
+    },
+    "scripts/eia_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/eodhd_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/eurostat_extra_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/exchange/broker_ws_bridge.py": {
+      "py_urllib": 2
+    },
+    "scripts/exchange/ws_stream.py": {
+      "py_http_client": 1
+    },
+    "scripts/federal_reserve_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/fiscal_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/fred_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/fred_economic_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/french_gov_api.py": {
+      "py_http_client": 2
+    },
+    "scripts/government_us_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/hdx_data.py": {
+      "py_urllib": 2
+    },
+    "scripts/hnb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/ilostat_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/imf_datamapper_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/mnb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/nber_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/nbp_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/news_geolocation.py": {
+      "py_urllib": 2
+    },
+    "scripts/norges_bank_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/oecd_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/ons_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/openafrica_api.py": {
+      "py_http_client": 2
+    },
+    "scripts/owid_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/polymarket.py": {
+      "py_http_client": 2
+    },
+    "scripts/prediction_kalshi.py": {
+      "py_http_client": 3
+    },
+    "scripts/prediction_polymarket.py": {
+      "py_http_client": 4
+    },
+    "scripts/rba_data.py": {
+      "py_http_client": 3
+    },
+    "scripts/riksbank_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/snb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/spreadsheet.py": {
+      "py_http_client": 2
+    },
+    "scripts/statcan_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/swiss_gov_api.py": {
+      "py_http_client": 3
+    },
+    "scripts/tcmb_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/trading_economics_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/un_comtrade_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/unesco_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/voice/deepgram_tts.py": {
+      "py_http_client": 1,
+      "py_urllib": 2
+    },
+    "scripts/worldbank_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/worldbank_health_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/wto_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/yfinance_data.py": {
+      "py_urllib": 2
+    },
     "src/algo_engine/CandleDataFetcher.cpp": {
       "network_access_manager": 3
     },
@@ -749,8 +1110,8 @@
       "websocket": 1
     },
     "src/auth/GoogleDesktopLogin.cpp": {
-      "open_url": 1,
-      "tcp_socket": 6
+      "tcp_socket": 6,
+      "open_url": 1
     },
     "src/auth/GoogleDesktopLogin.h": {
       "tcp_socket": 3
@@ -789,7 +1150,7 @@
       "open_url": 2
     },
     "src/network/http/GuardedNetworkAccessManager.cpp": {
-      "network_access_manager": 11
+      "network_access_manager": 12
     },
     "src/network/http/GuardedNetworkAccessManager.h": {
       "network_access_manager": 6
@@ -1139,217 +1500,6 @@
     },
     "src/ui/widgets/WorldMapWidget.cpp": {
       "network_access_manager": 3
-    },
-    "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py": {
-      "py_urllib": 3
-    },
-    "scripts/adb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/agents/finagent_core/tools/terminal_toolkit.py": {
-      "py_urllib": 2
-    },
-    "scripts/agents/rdagents/cli.py": {
-      "py_socket": 1
-    },
-    "scripts/agents/rdagents/mcp_tools.py": {
-      "py_socket": 1
-    },
-    "scripts/akshare_index.py": {
-      "py_http_client": 1
-    },
-    "scripts/alphavantage_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/bcb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/bea_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/bis_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/bls_data.py": {
-      "py_http_client": 2
-    },
-    "scripts/bnm_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/bnr_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/boc_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/boe_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/boi_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/canada_gov_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/census_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/cftc_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/cnb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/congress_gov_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/data_gov_hk_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/datagov_au_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/datagovuk_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/ecb_sdmx_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/econdb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/economic_calendar.py": {
-      "py_http_client": 1
-    },
-    "scripts/eia_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/eodhd_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/eurostat_extra_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/exchange/broker_ws_bridge.py": {
-      "py_urllib": 2
-    },
-    "scripts/exchange/ws_stream.py": {
-      "py_http_client": 1
-    },
-    "scripts/federal_reserve_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/fiscal_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/fred_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/fred_economic_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/french_gov_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/government_us_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/hdx_data.py": {
-      "py_urllib": 2
-    },
-    "scripts/hnb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/ilostat_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/imf_datamapper_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/mnb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/nber_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/nbp_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/news_geolocation.py": {
-      "py_urllib": 2
-    },
-    "scripts/norges_bank_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/oecd_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/ons_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/openafrica_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/owid_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/polymarket.py": {
-      "py_http_client": 1
-    },
-    "scripts/prediction_kalshi.py": {
-      "py_http_client": 2
-    },
-    "scripts/prediction_polymarket.py": {
-      "py_http_client": 2
-    },
-    "scripts/rba_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/riksbank_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/snb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/spreadsheet.py": {
-      "py_http_client": 1
-    },
-    "scripts/statcan_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/strategies/fincept_engine/algorithm.py": {
-      "py_urllib": 2
-    },
-    "scripts/swiss_gov_api.py": {
-      "py_http_client": 1
-    },
-    "scripts/tcmb_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/trading_economics_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/un_comtrade_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/unesco_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/voice/deepgram_tts.py": {
-      "py_http_client": 1,
-      "py_urllib": 2
-    },
-    "scripts/worldbank_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/worldbank_health_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/wto_data.py": {
-      "py_http_client": 1
-    },
-    "scripts/yfinance_data.py": {
-      "py_urllib": 2
     }
   }
 }

@@ -1,4 +1,5 @@
-// tst_market_parse.cpp — markets quote / history / sparkline parsing.
+// tst_market_parse.cpp — markets quote / history / sparkline / fundamentals
+// parsing.
 //
 // The unit under test is services/markets/MarketQuoteParse.h, the markets-side
 // twin of services/equity/EquityQuoteParse.h. It is where the decision "is this
@@ -68,6 +69,10 @@ class TstMarketParse : public QObject {
     void quote_partial_nulls_keep_their_presence_flags();
     void sparkline_omits_a_non_numeric_close();
     void quote_cache_round_trip_keeps_provenance();
+    void info_partial_nulls_keep_their_presence_flags();
+    void ratios_partial_nulls_keep_their_presence_flags();
+    void eps_reading_survives_across_both_payloads();
+    void eps_reading_survives_the_opposite_arrival_order();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -234,6 +239,112 @@ void TstMarketParse::quote_cache_round_trip_keeps_provenance() {
     // question on its own cache hits.
     QCOMPARE(cache_source_label(QStringLiteral("zerodha")), QStringLiteral("cache (zerodha)"));
     QCOMPARE(cache_source_label(QString()), QStringLiteral("cache"));
+}
+
+// ── Fundamentals ─────────────────────────────────────────────────────────────
+
+void TstMarketParse::info_partial_nulls_keep_their_presence_flags() {
+    // get_info's payload: market_cap is the JSON null the producer emits for a
+    // cell yfinance did not return, beta is absent entirely, average_volume is
+    // a genuine zero. All three used to read as 0.0 with nothing to tell them
+    // apart.
+    InfoData info;
+    parse_info_object(obj_from(R"({
+        "market_cap": null, "fifty_two_week_high": 237.49,
+        "fifty_two_week_low": 164.08, "average_volume": 0, "revenue_per_share": 24.68
+    })"),
+                      info);
+
+    QVERIFY2(!info.has_market_cap, "a null market cap is an absent reading, not a company worth zero");
+    QCOMPARE(info.market_cap, 0.0);
+    QVERIFY2(!info.has_beta, "an absent key is not a beta of zero");
+    QVERIFY(info.has_week52_high);
+    QCOMPARE(info.week52_high, 237.49);
+    QVERIFY(info.has_week52_low);
+    QCOMPARE(info.week52_low, 164.08);
+    // A genuine zero volume is a reading and must survive as one.
+    QVERIFY2(info.has_avg_volume, "a volume of 0 is a reading");
+    QCOMPARE(info.avg_volume, 0.0);
+    QVERIFY(info.has_eps);
+    QCOMPARE(info.eps, 24.68);
+}
+
+void TstMarketParse::ratios_partial_nulls_keep_their_presence_flags() {
+    // get_financial_ratios' payload: peRatio is the JSON null for an
+    // unreported ratio, currentRatio is a genuine zero (a reported value the
+    // provider could in principle print), and the rest are ordinary numbers.
+    InfoData info;
+    parse_ratios_object(obj_from(R"({
+        "peRatio": null, "forwardPE": 31.2, "priceToBook": 51.4,
+        "dividendYield": 0.0044, "returnOnEquity": 1.61, "profitMargin": 0.24,
+        "debtToEquity": 1.51, "currentRatio": 0, "revenuePerShare": 24.68
+    })"),
+                        info);
+
+    QVERIFY2(!info.has_pe_ratio, "a null P/E is an absent reading, not a P/E of zero");
+    QCOMPARE(info.pe_ratio, 0.0);
+    QVERIFY(info.has_forward_pe);
+    QVERIFY(info.has_price_to_book);
+    QVERIFY(info.has_dividend_yield);
+    QVERIFY(info.has_roe);
+    QVERIFY(info.has_profit_margin);
+    QVERIFY(info.has_debt_to_equity);
+    QVERIFY2(info.has_current_ratio, "a current ratio of 0 is a reading");
+    QCOMPARE(info.current_ratio, 0.0);
+    // Same stored number as the missing ratio above, opposite presence.
+    QCOMPARE(info.current_ratio, info.pe_ratio);
+    QVERIFY(info.has_current_ratio != info.has_pe_ratio);
+    QVERIFY(info.has_eps);
+    QCOMPARE(info.eps, 24.68);
+}
+
+void TstMarketParse::eps_reading_survives_across_both_payloads() {
+    // revenue_per_share (get_info) and revenuePerShare (get_financial_ratios)
+    // write the same field. A missing ratio row must not erase a present
+    // get_info reading, and a present ratio row still wins on the value.
+    InfoData info;
+    parse_info_object(obj_from(R"({"revenue_per_share": 24.68})"), info);
+    QVERIFY(info.has_eps);
+    QCOMPARE(info.eps, 24.68);
+
+    parse_ratios_object(obj_from(R"({"revenuePerShare": null})"), info);
+    QVERIFY2(info.has_eps, "a missing ratio row must not erase a present get_info reading");
+    QCOMPARE(info.eps, 24.68);
+
+    InfoData ratio_only;
+    parse_ratios_object(obj_from(R"({"revenuePerShare": 25.1})"), ratio_only);
+    QVERIFY(ratio_only.has_eps);
+    QCOMPARE(ratio_only.eps, 25.1);
+
+    InfoData both;
+    parse_info_object(obj_from(R"({"revenue_per_share": 24.68})"), both);
+    parse_ratios_object(obj_from(R"({"revenuePerShare": 25.1})"), both);
+    QVERIFY(both.has_eps);
+    QCOMPARE(both.eps, 25.1);
+}
+
+void TstMarketParse::eps_reading_survives_the_opposite_arrival_order() {
+    // The two Python runs behind fetch_info race, so the ratio payload may be
+    // parsed first. The merge rule is symmetric: a present reading overwrites,
+    // an absent one never erases — whichever callback lands last.
+    InfoData ratios_first;
+    parse_ratios_object(obj_from(R"({"revenuePerShare": 25.1})"), ratios_first);
+    parse_info_object(obj_from(R"({"revenue_per_share": null})"), ratios_first);
+    QVERIFY2(ratios_first.has_eps, "a missing get_info row must not erase a present ratio reading");
+    QCOMPARE(ratios_first.eps, 25.1);
+
+    InfoData info_first;
+    parse_info_object(obj_from(R"({"revenue_per_share": 24.68})"), info_first);
+    parse_ratios_object(obj_from(R"({"revenuePerShare": 25.1})"), info_first);
+    QVERIFY(info_first.has_eps);
+    QCOMPARE(info_first.eps, 25.1);
+
+    // ...and both absent stays absent, in both orders.
+    InfoData none;
+    parse_ratios_object(obj_from(R"({"revenuePerShare": null})"), none);
+    parse_info_object(obj_from(R"({"revenue_per_share": null})"), none);
+    QVERIFY(!none.has_eps);
+    QCOMPARE(none.eps, 0.0);
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)

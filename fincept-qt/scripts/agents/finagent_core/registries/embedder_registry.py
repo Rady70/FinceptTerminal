@@ -8,6 +8,12 @@ from typing import Dict, Any, Optional, List
 import logging
 import os
 
+# MarketLab hosted-destination guard (FINCEPT_FORK_PLAN.md §5.3): the embedder
+# base_url below is configuration-derived, and the SDKs constructed here do
+# their own networking inside this Python child, where the C++ guard cannot
+# see it.
+from marketlab_net_guard import reject_if_fincept
+
 logger = logging.getLogger(__name__)
 
 
@@ -221,7 +227,12 @@ class EmbedderRegistry:
             if final_api_key:
                 embedder_kwargs["api_key"] = final_api_key
             if config.get("base_url"):
-                embedder_kwargs["base_url"] = kwargs.pop("base_url", config["base_url"])
+                resolved_base_url = kwargs.pop("base_url", config["base_url"])
+                # MarketLab: refuse a base_url that NAMES a Fincept-owned
+                # destination before any embedder client is constructed.
+                if resolved_base_url:
+                    reject_if_fincept(resolved_base_url)
+                embedder_kwargs["base_url"] = resolved_base_url
 
             embedder_kwargs.update(kwargs)
 

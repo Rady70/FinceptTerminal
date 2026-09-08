@@ -598,6 +598,11 @@ def get_company_profile(symbol):
             return {"error": f"No data found for symbol: {symbol}"}
 
         # Format data to match FMP structure
+        # No `, 0` default on any numeric cell: a fundamental yfinance did not
+        # report is missing, not zero (FINCEPT_FORK_PLAN.md §4). A defaulted 0
+        # is indistinguishable from a real one by the time it reaches a screen,
+        # and a profile that fabricated "market cap $0" for a missing reading
+        # was exactly the defect this removes. JSON null says "no reading".
         profile = {
             "symbol": info.get("symbol", symbol),
             "companyName": info.get("longName", info.get("shortName", "")),
@@ -610,12 +615,12 @@ def get_company_profile(symbol):
             "city": info.get("city", ""),
             "address": info.get("address1", ""),
             "phone": info.get("phone", ""),
-            "marketCap": info.get("marketCap", 0),
-            "employees": info.get("fullTimeEmployees", 0),
+            "marketCap": info.get("marketCap"),
+            "employees": info.get("fullTimeEmployees"),
             "currency": info.get("currency", "USD"),
-            "beta": info.get("beta", 0),
-            "price": info.get("currentPrice", info.get("regularMarketPrice", 0)),
-            "changes": info.get("regularMarketChangePercent", 0),
+            "beta": info.get("beta"),
+            "price": info.get("currentPrice", info.get("regularMarketPrice")),
+            "changes": info.get("regularMarketChangePercent"),
         }
 
         return profile
@@ -631,10 +636,18 @@ def get_financial_ratios(symbol):
         if not info or 'symbol' not in info:
             return {"error": f"No data found for symbol: {symbol}"}
 
-        # Calculate free cash flow per share
-        free_cashflow = info.get("freeCashflow", 0)
-        shares_outstanding = info.get("sharesOutstanding", 1)
-        fcf_per_share = free_cashflow / shares_outstanding if shares_outstanding else 0
+        # Calculate free cash flow per share. A missing free cash flow or a
+        # missing/zero share count is a missing ratio, not a ratio of zero:
+        # the previous `0` defaults turned "no reading" into a fabricated
+        # freeCashFlowPerShare of 0 that was indistinguishable from a real one
+        # (FINCEPT_FORK_PLAN.md §4). JSON null says "no reading" and stays
+        # missing all the way to the display.
+        free_cashflow = info.get("freeCashflow")
+        shares_outstanding = info.get("sharesOutstanding")
+        if free_cashflow is None or not shares_outstanding:
+            fcf_per_share = None
+        else:
+            fcf_per_share = free_cashflow / shares_outstanding
 
         # No `, 0` default on any of these: a ratio yfinance did not report is
         # missing, not zero, and a defaulted 0 is indistinguishable from a real

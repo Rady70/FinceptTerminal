@@ -8,6 +8,12 @@ from typing import Dict, Any, Optional, List
 import logging
 import os
 
+# MarketLab hosted-destination guard for the Python child (FINCEPT_FORK_PLAN.md
+# §5.3). reject_if_fincept refuses a configured base_url that NAMES Fincept;
+# guarded_openai_clients gives the OpenAIChat constructions sync+async clients
+# whose transports refuse Fincept-owned redirect targets before dialing.
+from marketlab_net_guard import guarded_openai_clients, reject_if_fincept
+
 logger = logging.getLogger(__name__)
 
 
@@ -403,6 +409,13 @@ class ModelsRegistry:
                 or config.get("base_url")
             )
 
+            # MarketLab: a base_url that NAMES a Fincept-owned destination is
+            # refused before any constructor below consumes it, whatever the
+            # provider. The C++ AgentService pre-filter covers this too, but the
+            # child does not depend on the caller having remembered.
+            if effective_base_url:
+                reject_if_fincept(effective_base_url)
+
             # If a custom base_url is set for a provider that normally doesn't
             # accept one (e.g. anthropic with a MiniMax/OpenRouter-compatible
             # endpoint), redirect to OpenAIChat — the custom endpoint speaks
@@ -435,6 +448,14 @@ class ModelsRegistry:
                 }
                 oai_kwargs = {"id": final_model_id, "base_url": _cleaned_base_url,
                               "role_map": _STANDARD_ROLE_MAP}
+                # Guarded sync AND async clients: the OpenAI SDK follows
+                # redirects by default, and agno's single `http_client` slot
+                # covers only one of the two call paths. The transports refuse
+                # Fincept-owned redirect targets before any connection.
+                _client, _async_client = guarded_openai_clients(
+                    final_api_key, _cleaned_base_url)
+                oai_kwargs["client"] = _client
+                oai_kwargs["async_client"] = _async_client
                 if final_api_key:
                     oai_kwargs["api_key"] = final_api_key
                 if "temperature" in kwargs:
@@ -453,6 +474,17 @@ class ModelsRegistry:
                         model_kwargs["host"] = effective_base_url
                     else:
                         model_kwargs["base_url"] = effective_base_url
+
+            # MarketLab: an OpenAIChat constructed with a user-configurable
+            # base_url (unknown provider, openai, deepseek-compatible, …) must
+            # not hand the OpenAI SDK's redirect-following default client an
+            # unvetted endpoint. Guarded sync+async clients cover both call
+            # paths; the transports refuse Fincept-owned redirect targets.
+            if class_name == "OpenAIChat" and effective_base_url:
+                _client, _async_client = guarded_openai_clients(
+                    final_api_key, effective_base_url)
+                model_kwargs["client"] = _client
+                model_kwargs["async_client"] = _async_client
 
             # Add optional parameters with provider-specific name mapping
             # Google Gemini uses max_output_tokens instead of max_tokens

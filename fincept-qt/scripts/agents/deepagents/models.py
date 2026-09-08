@@ -10,7 +10,17 @@ Single responsibility:
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 from typing import Any
+
+# The MarketLab hosted-destination guard lives one directory up
+# (scripts/agents/marketlab_net_guard.py), and this module is also imported
+# from paths that do not add scripts/agents to sys.path.
+_GUARD_DIR = str(Path(__file__).resolve().parent.parent)
+if _GUARD_DIR not in sys.path:
+    sys.path.insert(0, _GUARD_DIR)
+from marketlab_net_guard import guarded_async_http_client, guarded_http_client, reject_if_fincept
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +76,13 @@ def create_model(config: dict[str, Any]):
     if not provider:
         raise ValueError("llm_provider is required in config")
 
+    # MarketLab: a configured base_url that NAMES a Fincept-owned destination
+    # is refused before any SDK below constructs a client around it
+    # (FINCEPT_FORK_PLAN.md §5.3). The C++ AIQuantLabService forwarder performs
+    # no host check of its own, so this is the boundary for this child.
+    if base_url:
+        reject_if_fincept(base_url)
+
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
         kwargs: dict[str, Any] = {
@@ -81,6 +98,11 @@ def create_model(config: dict[str, Any]):
         kwargs = {"api_key": api_key, "model": model or "gpt-4o-mini"}
         if base_url:
             kwargs["base_url"] = base_url
+            # The OpenAI SDK langchain builds follows redirects by default.
+            # Guarded sync+async clients refuse Fincept-owned targets on every
+            # dial, redirect hops included.
+            kwargs["http_client"] = guarded_http_client()
+            kwargs["http_async_client"] = guarded_async_http_client()
         return ChatOpenAI(**kwargs)
 
     if provider == "google":
@@ -113,6 +135,9 @@ def create_model(config: dict[str, Any]):
             api_key=api_key,
             model=model or "default",
             base_url=url,
+            # Guarded sync+async clients, as in the openai branch above.
+            http_client=guarded_http_client(),
+            http_async_client=guarded_async_http_client(),
         )
 
     raise ValueError(

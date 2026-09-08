@@ -34,6 +34,8 @@
 
 #include <QNetworkAccessManager>
 
+#include <functional>
+
 class QUrl;
 
 namespace fincept::network {
@@ -41,7 +43,21 @@ namespace fincept::network {
 class GuardedNetworkAccessManager : public QNetworkAccessManager {
     Q_OBJECT
   public:
+    /// The predicate that decides whether a destination must not be contacted.
+    /// Defaults to HostedPathGuard::is_fincept_destination; tests inject a
+    /// predicate over a hermetic fake host so a broken guard can never dial
+    /// the real Fincept destination it would otherwise have to name.
+    using DestinationDeny = std::function<bool(const QUrl&)>;
+
     explicit GuardedNetworkAccessManager(QObject* parent = nullptr);
+
+    /// Replace the denied-destination predicate (tests/tst_redirect_guard.cpp
+    /// injects a fake-host deny so the redirect transport cases never need the
+    /// real Fincept destination URL as a dialable target). A null callback
+    /// restores the default. Both check sites — the initial URL and every
+    /// redirect hop — consult the same member, so the injection cannot
+    /// desynchronise them.
+    void setDeniedDestination(DestinationDeny deny);
 
     /// True when following `from` -> `to` would weaken the transport: the
     /// target speaks something other than http/https, or https becomes http.
@@ -61,6 +77,9 @@ class GuardedNetworkAccessManager : public QNetworkAccessManager {
   protected:
     QNetworkReply* createRequest(Operation op, const QNetworkRequest& request,
                                  QIODevice* outgoing_data) override;
+
+  private:
+    DestinationDeny denied_destination_;
 };
 
 } // namespace fincept::network

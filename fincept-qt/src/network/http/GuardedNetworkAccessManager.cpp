@@ -52,7 +52,14 @@ class HostedRefusedReply : public QNetworkReply {
 
 } // namespace
 
-GuardedNetworkAccessManager::GuardedNetworkAccessManager(QObject* parent) : QNetworkAccessManager(parent) {}
+GuardedNetworkAccessManager::GuardedNetworkAccessManager(QObject* parent)
+    : QNetworkAccessManager(parent),
+      denied_destination_(&HostedPathGuard::is_fincept_destination) {}
+
+void GuardedNetworkAccessManager::setDeniedDestination(DestinationDeny deny) {
+    denied_destination_ = deny ? std::move(deny)
+                               : DestinationDeny(&HostedPathGuard::is_fincept_destination);
+}
 
 // This predicate exists because createRequest() replaces whatever policy the
 // caller asked for with UserVerifiedRedirectPolicy, and several callers ask for
@@ -81,7 +88,7 @@ bool GuardedNetworkAccessManager::redirect_is_less_safe(const QUrl& from, const 
 QNetworkReply* GuardedNetworkAccessManager::createRequest(Operation op, const QNetworkRequest& request,
                                                           QIODevice* outgoing_data) {
     const QUrl url = request.url();
-    if (HostedPathGuard::is_fincept_destination(url)) {
+    if (denied_destination_(url)) {
         const QString err = HostedPathGuard::unavailable_error(url);
         LOG_WARN(TAG, QStringLiteral("Refused a configuration-derived request to a Fincept-owned "
                                      "destination before any connection was made: %1")
@@ -131,8 +138,8 @@ QNetworkReply* GuardedNetworkAccessManager::createRequest(Operation op, const QN
     // it before emitting redirected(), and the downgrade rule below needs the
     // previous hop's scheme, not the original request's.
     auto current = std::make_shared<QUrl>(url);
-    QObject::connect(reply, &QNetworkReply::redirected, reply, [reply, current](const QUrl& target) {
-        if (HostedPathGuard::is_fincept_destination(target)) {
+    QObject::connect(reply, &QNetworkReply::redirected, reply, [reply, current, this](const QUrl& target) {
+        if (denied_destination_(target)) {
             LOG_WARN(TAG, QStringLiteral("Refused a redirect to a Fincept-owned destination before any "
                                          "connection was made: %1 -> %2")
                               .arg(current->toString(QUrl::RemoveQuery),

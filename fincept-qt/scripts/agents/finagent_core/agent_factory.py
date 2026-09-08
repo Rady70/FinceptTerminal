@@ -9,6 +9,13 @@ import os
 from typing import Dict, Any, Optional, List
 from agno.agent import Agent
 
+# MarketLab hosted-destination guard for the Python child (FINCEPT_FORK_PLAN.md
+# §5.3). The C++ GuardedNetworkAccessManager cannot see requests made from this
+# process, and the OpenAI SDK agno builds follows redirects by default — so a
+# user-configured base_url that 302s to a Fincept-owned host would be followed
+# unless the model clients are guarded here.
+from marketlab_net_guard import guarded_openai_clients, reject_if_fincept
+
 
 class AgentFactory:
     """Factory for creating configured Agno agents"""
@@ -104,6 +111,14 @@ class AgentFactory:
         # api_key passed directly takes priority; fall back to env-var lookup
         api_key     = model_config.get("api_key") or self._get_api_key(provider) or ""
 
+        # MarketLab: a base_url that NAMES a Fincept-owned destination is refused
+        # before any client exists, whatever branch consumes it below (custom
+        # endpoint, Ollama host). This is the configuration-layer half of the
+        # guard; the redirect-layer half is the guarded clients the OpenAIChat
+        # branches receive, which also refuses a 302 target on Fincept land.
+        if base_url:
+            reject_if_fincept(base_url)
+
         # MarketLab: the removed Fincept provider is refused here, before any
         # dispatch below (FINCEPT_FORK_PLAN.md §5.3, §6). This is the second
         # model-construction path (ModelsRegistry.create_model is the other) and
@@ -133,9 +148,14 @@ class AgentFactory:
                 "tool": "tool",
                 "model": "assistant",
             }
+            # Guarded sync AND async clients, because agno's `http_client`
+            # parameter takes a single slot (sync or async, discriminated by
+            # type) while `client`/`async_client` cover both call paths.
+            _client, _async_client = guarded_openai_clients(api_key, base_url)
             kwargs = dict(id=model_id, api_key=api_key,
                           temperature=temperature, max_tokens=max_tokens,
-                          base_url=base_url, role_map=_STANDARD_ROLE_MAP)
+                          base_url=base_url, role_map=_STANDARD_ROLE_MAP,
+                          client=_client, async_client=_async_client)
             return OpenAIChat(**{k: v for k, v in kwargs.items() if v})
 
         # ── Native provider instances ─────────────────────────────────────────

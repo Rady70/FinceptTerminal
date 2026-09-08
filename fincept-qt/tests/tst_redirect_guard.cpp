@@ -22,30 +22,46 @@
 // Every other suite keeps its Core-only link line untouched. Only this target
 // adds Qt6::Network, and only this comment claims the exception.
 //
-// WHAT CANNOT BE ASSERTED HERE, AND WHY IT IS SAID OUT LOUD RATHER THAN FAKED:
+// WHY THE SUITE IS HERMETIC EVEN IF THE GUARD BREAKS.
 //
-//   * "no connection to api.fincept.in was attempted" cannot be observed by
-//     standing a local listener in its place — the deny-list matches on HOST,
-//     so no 127.0.0.1 URL can ever be a denied redirect target, and pointing
-//     api.fincept.in at loopback would need a hosts-file change this test is
-//     not entitled to make. What IS observed is the discriminating outcome:
-//     the reply finishes with OperationCanceledError, which only the guard's
-//     abort() produces. Follow the redirect instead and the reply finishes
-//     with a DNS/connect error or a success — never OperationCanceledError.
-//     That is what the vacuity check exercises.
-//   * the https->http downgrade rule cannot be driven end-to-end without a
-//     local TLS server, and a non-http redirect target dies in Qt's transport
-//     regardless (Qt follows a redirect by restarting the same HTTP reply
-//     implementation), so a transport-level assertion on it would pass with the
-//     guard removed and prove nothing. The rule is asserted directly against
-//     GuardedNetworkAccessManager::redirect_is_less_safe() instead, which is
-//     the actual code the vetting callback runs.
+// A regression test must not have "if the protection breaks, contact the real
+// forbidden production service" as its failure mode — a broken guard here used
+// to fetch https://api.fincept.in/telemetry and a real HTTP 404 from Fincept
+// was actually observed once while proving the test non-vacuous. So the
+// Fincept destination decision is now separated from the transport:
+//
+//   * the REAL Fincept URL appears only in
+//     default_predicate_classifies_real_fincept_url(), a pure predicate
+//     assertion (no sockets exist in that slot — the manager is never even
+//     constructed);
+//   * every transport case drives the manager with an INJECTED deny predicate
+//     (setDeniedDestination) that denies the reserved RFC 2606 host
+//     "denied.invalid". .invalid names are never resolved to an address, so a
+//     regression in the guard at worst produces a DNS error against a name
+//     that cannot contact anything — never traffic to api.fincept.in.
+//
+// The deny predicate is injectable for this reason alone: it is the seam that
+// lets the transport be exercised end to end while the only real Fincept URL
+// string in the file sits in a no-I/O assertion.
+//
+// What is observed in the transport cases is the discriminating outcome: the
+// reply finishes with OperationCanceledError, which only the guard's abort()
+// produces. Follow the redirect instead and the reply finishes with a
+// DNS/connect error or a success — never OperationCanceledError. That is what
+// the vacuity check exercises. The https->http downgrade rule cannot be driven
+// end-to-end without a local TLS server, and a non-http redirect target dies
+// in Qt's transport regardless (Qt follows a redirect by restarting the same
+// HTTP reply implementation), so a transport-level assertion on it would pass
+// with the guard removed and prove nothing. The rule is asserted directly
+// against GuardedNetworkAccessManager::redirect_is_less_safe() instead, which
+// is the actual code the vetting callback runs.
 //
 // The counter on the second local server is the "must never be hit" observable
 // for every local case, and redirect_is_followed_when_permitted() proves the
 // counter is live rather than stuck at zero.
 
 #include "network/http/GuardedNetworkAccessManager.h"
+#include "network/http/HostedPathGuard.h"
 
 #include <QByteArray>
 #include <QEventLoop>
@@ -66,6 +82,20 @@ namespace {
 
 constexpr int kTimeoutMs = 5000;
 const char* const kSecondServerBody = "SECOND-SERVER-BODY";
+
+// The hermetic stand-in for the real forbidden destination. RFC 2606 reserves
+// .invalid: no resolver will ever answer it with an address, so even a
+// completely broken guard produces a DNS failure against a name that cannot
+// reach anything. The real Fincept URL appears in this file only inside the
+// pure predicate slot.
+const char* const kDeniedTarget = "https://denied.invalid/telemetry";
+
+/// Deny exactly the fake host the transport cases redirect to.
+GuardedNetworkAccessManager::DestinationDeny deny_invalid() {
+    return [](const QUrl& u) {
+        return u.host().compare(QStringLiteral("denied.invalid"), Qt::CaseInsensitive) == 0;
+    };
+}
 
 /// A loopback HTTP server that answers every request with one canned response
 /// and counts the connections it accepted. The counter is the whole point: it
@@ -170,16 +200,20 @@ class TestRedirectGuard : public QObject {
   private slots:
     void initTestCase();
 
+    // The Fincept destination DECISION, asserted purely: the real Fincept URL
+    // appears nowhere else in this file, and this slot opens no socket.
+    void default_predicate_classifies_real_fincept_url();
+
     // The initial-URL refusal that already existed — kept green so the redirect
     // work cannot be mistaken for a replacement of it.
-    void initial_fincept_url_is_refused();
+    void initial_denied_url_is_refused();
 
     // Proves the fix did not simply break every redirect. Also proves the
     // "never reached" counter used by the refusal cases actually moves.
     void redirect_is_followed_when_permitted();
 
     // The adversarial case the whole change exists for.
-    void redirect_to_fincept_is_refused();
+    void redirect_to_denied_destination_is_refused();
 
     // The NoLessSafeRedirectPolicy protection the policy swap replaced.
     void less_safe_redirect_is_refused();
@@ -207,11 +241,26 @@ void TestRedirectGuard::initTestCase() {
     target_.response = ok_response(QByteArray(kSecondServerBody));
 }
 
-void TestRedirectGuard::initial_fincept_url_is_refused() {
+void TestRedirectGuard::default_predicate_classifies_real_fincept_url() {
+    // Pure: the predicate the manager ships with must classify the real
+    // Fincept destination. No manager is constructed, no reply exists, no
+    // socket can be opened — is_fincept_destination is a decision over a URL
+    // string, and this is the ONLY place in this file where the real Fincept
+    // URL appears. The predicate itself is further exercised without I/O in
+    // tst_marketlab_boundary.
+    QVERIFY(fincept::network::HostedPathGuard::is_fincept_destination(
+        QUrl(QStringLiteral("https://api.fincept.in/telemetry"))));
+}
+
+void TestRedirectGuard::initial_denied_url_is_refused() {
     GuardedNetworkAccessManager nam;
+    nam.setDeniedDestination(deny_invalid());
     const int before = target_.connections;
 
-    const Outcome out = fetch(nam, QUrl("https://api.fincept.in/telemetry"));
+    // The injected predicate denies denied.invalid, so the manager refuses the
+    // request before any connection attempt — the hermetic stand-in for the
+    // real Fincept URL.
+    const Outcome out = fetch(nam, QUrl(QString::fromLatin1(kDeniedTarget)));
 
     QVERIFY(out.finished);
     QCOMPARE(out.error, QNetworkReply::ContentAccessDenied);
@@ -237,9 +286,13 @@ void TestRedirectGuard::redirect_is_followed_when_permitted() {
     QCOMPARE(target_.connections, before + 1);
 }
 
-void TestRedirectGuard::redirect_to_fincept_is_refused() {
+void TestRedirectGuard::redirect_to_denied_destination_is_refused() {
     GuardedNetworkAccessManager nam;
-    point_redirector_at(QStringLiteral("https://api.fincept.in/telemetry"));
+    nam.setDeniedDestination(deny_invalid());
+    // The redirect target is the reserved .invalid name, never the real
+    // Fincept URL: if the guard breaks, this test fails with a DNS error
+    // against a name that cannot contact anything.
+    point_redirector_at(QString::fromLatin1(kDeniedTarget));
     const int before = target_.connections;
 
     const Outcome out = fetch(nam, redirector_.url());
@@ -323,7 +376,8 @@ void TestRedirectGuard::unset_redirect_policy_is_still_vetted() {
     // "the caller handles redirects" and lets them through unvetted. This case
     // exists so that mistake cannot come back silently.
     GuardedNetworkAccessManager nam;
-    point_redirector_at(QStringLiteral("https://api.fincept.in/telemetry"));
+    nam.setDeniedDestination(deny_invalid());
+    point_redirector_at(QString::fromLatin1(kDeniedTarget));
     const int before = target_.connections;
 
     const Outcome out = fetch(nam, redirector_.url(), std::nullopt);

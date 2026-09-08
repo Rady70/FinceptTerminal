@@ -83,6 +83,34 @@ struct InfoData {
     double profit_margin = 0;
     double debt_to_equity = 0;
     double current_ratio = 0;
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // Same rule as QuoteData above: get_info and get_financial_ratios emit JSON
+    // null for a fundamental yfinance did not report, and toDouble() flattens
+    // null, an absent key and a genuine zero to the same 0.0 — which is how a
+    // missing market cap reached the report builder as "$0". A bare `double`
+    // cannot carry that difference, so every numeric field is paired with the
+    // flag that says whether it arrived.
+    //
+    // Appended after the existing members, like the QuoteData and HistoryPoint
+    // presence blocks and for the same reason: aggregate initialisation of the
+    // leading fields stays valid and no consumer has to change to keep
+    // compiling. A reader that does not ask still sees 0.0, exactly as before;
+    // a reader that asks is told the truth.
+    bool has_market_cap = false;
+    bool has_pe_ratio = false;
+    bool has_forward_pe = false;
+    bool has_price_to_book = false;
+    bool has_dividend_yield = false;
+    bool has_beta = false;
+    bool has_week52_high = false;
+    bool has_week52_low = false;
+    bool has_avg_volume = false;
+    bool has_eps = false;
+    bool has_roe = false;
+    bool has_profit_margin = false;
+    bool has_debt_to_equity = false;
+    bool has_current_ratio = false;
 };
 
 struct HistoryPoint {
