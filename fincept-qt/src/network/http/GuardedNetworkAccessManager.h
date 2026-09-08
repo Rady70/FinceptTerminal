@@ -17,10 +17,24 @@
 // means each caller's EXISTING failure path reports it, with no new error
 // plumbing invented at eleven call sites.
 //
+// `createRequest()` alone is NOT sufficient, however. It sees only the URL the
+// caller asked for: Qt follows a 3xx inside the reply and does not re-enter
+// this override for the redirect target, so `allowed.example` answering a
+// "302 Location:" that points at a Fincept-owned host reached that host with
+// the deny-list none the wiser. That is not an inference from the docs —
+// it was established by observing the Qt 6.8.3 runtime this app pins, where
+// createRequest() was called exactly once for a request that was redirected and
+// the redirect target was contacted. So each reply is additionally put on
+// QNetworkRequest::UserVerifiedRedirectPolicy and every hop is vetted before Qt
+// is allowed to follow it; see the notes in the .cpp for what the vetting keeps
+// (the NoLessSafeRedirectPolicy rules several callers ask for by name) and why.
+//
 // This is a guard, not a networking layer: it adds no transport, no policy of
 // its own and no hosts. The deny-list stays in HostedPathGuard.
 
 #include <QNetworkAccessManager>
+
+class QUrl;
 
 namespace fincept::network {
 
@@ -28,6 +42,21 @@ class GuardedNetworkAccessManager : public QNetworkAccessManager {
     Q_OBJECT
   public:
     explicit GuardedNetworkAccessManager(QObject* parent = nullptr);
+
+    /// True when following `from` -> `to` would weaken the transport: the
+    /// target speaks something other than http/https, or https becomes http.
+    /// These are exactly the two rules QNetworkRequest::NoLessSafeRedirectPolicy
+    /// enforces, and re-applying them is what stops the policy swap in
+    /// createRequest() from costing the callers that ask for that policy by
+    /// name the protection they asked for.
+    ///
+    /// Public only so tests/tst_redirect_guard.cpp can assert it directly. It
+    /// cannot be reached end-to-end from a hermetic test: Qt follows a redirect
+    /// by restarting the SAME http reply implementation, so a non-http target
+    /// dies in the transport whether or not this returns true, and exercising
+    /// the https->http rule would need a local TLS server. It is a pure
+    /// predicate over two URLs — no state, no hosts, no policy of its own.
+    static bool redirect_is_less_safe(const QUrl& from, const QUrl& to);
 
   protected:
     QNetworkReply* createRequest(Operation op, const QNetworkRequest& request,

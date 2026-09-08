@@ -311,9 +311,22 @@ class ModelsRegistry:
         }
         provider_lower = _PROVIDER_ALIASES.get(provider_lower, provider_lower)
 
+        # MarketLab: reject the removed Fincept provider BEFORE the unknown-provider
+        # fallback below (FINCEPT_FORK_PLAN.md §5.3, §6). Deleting "fincept" from
+        # MODEL_CATALOG is what makes it unknown, and an unknown provider is treated
+        # as OpenAI-compatible — so without this branch a row named "fincept" would
+        # not be refused at all: its API key would be handed to OpenAIChat and sent
+        # to api.openai.com. Removing the provider has to mean refusing it, not
+        # silently re-routing its credential to an unrelated vendor.
+        if provider_lower == "fincept":
+            raise RuntimeError(
+                "Fincept hosted LLM is unavailable in MarketLab Terminal — "
+                "configure a local or user-owned LLM provider instead."
+            )
+
         if provider_lower not in cls.MODEL_CATALOG:
             # Unknown provider - treat as OpenAI-compatible with custom base_url
-            # This supports custom endpoints like "fincept", "local-llm", etc.
+            # This supports custom endpoints like "local-llm", etc.
             logger.info(f"Unknown provider '{provider}', treating as OpenAI-compatible endpoint")
             config = {
                 "class": "agno.models.openai.OpenAIChat",

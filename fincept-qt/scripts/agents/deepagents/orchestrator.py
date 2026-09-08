@@ -17,7 +17,6 @@ import logging
 import time
 from typing import Any
 
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +76,12 @@ class FinceptOrchestrator:
 
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key
-        self._session = requests.Session()
-        if api_key:
-            self._session.headers.update({"Authorization": f"Bearer {api_key}"})
+        # MarketLab: the requests.Session that used to live here — created with a
+        # bearer header for the hosted Fincept LLM — is gone with the endpoint it
+        # served (FINCEPT_FORK_PLAN.md §5.3, §6). _call_llm below raises, so the
+        # session never issued a request; carrying an authenticated HTTP client
+        # that nothing can use only kept a live network sink in the inventory for
+        # a route that no longer exists.
 
     # ------------------------------------------------------------------
     # Public API — matches cli.py expectations

@@ -82,11 +82,17 @@ void CandleCanvas::rebuild_cache() {
     const int start = qMax(0, total - MAX_VISIBLE);
     const int count = total - start;
 
-    // Price range over the visible window.
+    // Price range over the visible window. A bar whose low/high the provider
+    // did not return carries 0.0 in that slot, and folding that into the range
+    // would peg `lo` at zero and squash a year of prices into a few pixels
+    // under a plausible-looking axis ladder — so an absent extreme takes no
+    // part in the range at all.
     double lo = 1e18, hi = 0.0;
     for (int i = start; i < total; ++i) {
-        lo = std::min(lo, candles_[i].low);
-        hi = std::max(hi, candles_[i].high);
+        if (candles_[i].has_low)
+            lo = std::min(lo, candles_[i].low);
+        if (candles_[i].has_high)
+            hi = std::max(hi, candles_[i].high);
     }
     if (lo >= hi)
         return;
@@ -125,14 +131,30 @@ void CandleCanvas::rebuild_cache() {
     for (int i = 0; i < count; ++i) {
         const auto& c = candles_[start + i];
         const int cx = static_cast<int>((i + 0.5) * slot_w);
+
+        // An extreme the provider did not return has no position on the axis,
+        // so the wick stops at the close instead of running to a 0.0 that is
+        // not a price. Every bar here has a close — one without is dropped at
+        // the parse boundary (parse_history_point).
+        const int close_y = py(c.close);
+        const int high_y = c.has_high ? py(c.high) : close_y;
+        const int low_y = c.has_low ? py(c.low) : close_y;
+
+        if (!c.has_open) {
+            // With no open there is no direction to colour by, and the
+            // `close >= c.open` test below would read the absent 0.0 as a
+            // bearish body spanning the whole plot. Draw the wick alone, in the
+            // neutral text colour, so the gap reads as a gap.
+            p.setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1));
+            p.drawLine(cx, high_y, cx, low_y);
+            continue;
+        }
+
         const bool bull = c.close >= c.open;
         const QColor& col = bull ? bull_color : bear_color;
         const QColor& wcol = bull ? wick_bull : wick_bear;
 
         const int open_y = py(c.open);
-        const int close_y = py(c.close);
-        const int high_y = py(c.high);
-        const int low_y = py(c.low);
 
         const int body_top = std::min(open_y, close_y);
         const int body_bot = std::max(open_y, close_y);

@@ -2,6 +2,7 @@
 
 #include "core/logging/Logger.h"
 #include "network/http/DirectRouteGuard.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 
 #include <QJsonDocument>
 #include <QNetworkReply>
@@ -18,7 +19,12 @@ CloudClient& CloudClient::instance() {
 }
 
 CloudClient::CloudClient() {
-    nam_ = new QNetworkAccessManager(this);
+    // GuardedNetworkAccessManager, not a raw one. reject_hosted() still judges
+    // the composed base+endpoint before anything is issued — it rejects earlier
+    // and with the typed CloudResponse the callers already handle — but only
+    // the manager sees a redirect Qt follows by itself, which is the one hop
+    // the composed-URL check cannot possibly cover.
+    nam_ = new network::GuardedNetworkAccessManager(this);
     // Qt disables the transfer timeout by default: a half-open TCP connection
     // never emits finished(), so the callback never runs and there is no cancel
     // path — the only recovery is restarting the app. Matches HttpClient.

@@ -3,6 +3,7 @@
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
 #include "network/http/DirectRouteGuard.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/llm/ModelCatalog.h"
 #include "services/llm/ProviderCatalog.h"
 
@@ -19,7 +20,11 @@ using fincept::ai_chat::ModelCatalog;
 using fincept::ai_chat::ProviderCatalog;
 
 ArenaLlmClient::ArenaLlmClient(QObject* parent) : IArenaLlmClient(parent) {
-    nam_ = new QNetworkAccessManager(this);
+    // GuardedNetworkAccessManager, not a raw one. The DirectRouteGuard check in
+    // complete() still runs and still rejects first, with the better message;
+    // the manager covers the hop that check cannot see, a redirect Qt follows
+    // on its own from a provider base_url the user typed.
+    nam_ = new network::GuardedNetworkAccessManager(this);
 }
 
 QByteArray ArenaLlmClient::build_body(const ArenaLlmRequest& req) {

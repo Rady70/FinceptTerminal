@@ -92,6 +92,25 @@ struct HistoryPoint {
     double low = 0;
     double close = 0;
     qint64 volume = 0;
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // Same rule as QuoteData above: yfinance_data.py emits JSON null for an
+    // OHLCV cell the provider did not return, and toDouble() flattens null, an
+    // absent key and a genuine zero to the same 0.0. On a chart that is worse
+    // than on a table — one missing `low` read as 0.0 drags the whole price
+    // axis down to zero and squashes the series into a few pixels.
+    //
+    // `close` has no flag on purpose: a bar with no close is not a price point
+    // at all and never reaches this struct (see parse_history_point() in
+    // MarketQuoteParse.h), which mirrors equity's Candle.
+    //
+    // Appended after the existing members, like the two blocks above and for
+    // the same reason: no brace-init site has to change to keep compiling, and
+    // a reader that does not ask still sees 0.0 exactly as before.
+    bool has_open = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_volume = false;
 };
 
 struct TickerDef {

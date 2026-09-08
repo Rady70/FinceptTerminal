@@ -53,6 +53,8 @@ Exit code 1 = new/undispositioned matches, a sink count that no longer matches
 """
 
 import argparse
+import ast
+import collections
 import json
 import os
 import re
@@ -102,6 +104,8 @@ SINK_PATTERNS = [
                             r"|rundll32[^\n]*url\.dll")),
 ]
 SINK_KINDS = [name for name, _pat in SINK_PATTERNS]
+# Extended below with PY_SINK_KINDS once those are defined; the manifest
+# validates every disposition and every pinned count against this one list.
 
 SCAN_EXTS = {
     ".cpp", ".h", ".hpp", ".cc", ".cxx", ".qml", ".js", ".html", ".htm",
@@ -110,11 +114,52 @@ SCAN_EXTS = {
     ".xml", ".desktop", ".sh",
 }
 
-# The sink check scans the application sources only: C++ translation units and
-# headers under src/. Sinks are Qt/Win32 C++ APIs, and src/ is where a shipped
-# outbound path can live — a sink in tests/ or scripts/ is not in the product.
+# The C++ sink check scans the application sources only: translation units and
+# headers under src/. A sink in tests/ is not in the product.
+#
+# A previous revision of this comment also excluded scripts/, on the ground that
+# it "is not in the product". That was wrong, and it is the reason the inventory
+# was blind to half of this application's outbound surface: MarketLab launches
+# production Python as child processes. AgentService starts
+# scripts/agents/finagent_core/main.py, MarketDataService runs
+# scripts/yfinance_data.py, and two hundred more .py paths are named as argv from
+# src/. Those children do their own networking, through their own clients, and
+# FINCEPT_FORK_PLAN.md §5.3 names Python networking explicitly as one of the
+# bypass mechanisms that has to be accounted for. See PY_SINK_* below.
 SINK_EXTS = {".cpp", ".h", ".hpp", ".cc", ".cxx"}
 SINK_ROOT = "src"
+
+# ── Production-Python sinks ───────────────────────────────────────────────────
+#
+# Scope is "what the product can actually run", not "every .py in the tree".
+# scripts/ carries ~1,300 modules and nothing launches most of them;
+# dispositioning all of them would be the general networking framework §5.3 says
+# not to build. The reachable set is the transitive local-import closure of the
+# entry points named as string literals in src/ — 338 files, 72 with a sink.
+#
+# Honest limit, stated the way the header/impl pairing limit below is: the
+# closure follows static `import` / `from ... import` only. A module reached
+# solely through importlib, a plugin registry or an exec() string is not in it.
+# The literal-host scan still covers every file in scripts/ regardless, so a
+# Fincept host *written into* such a module is still caught; what this would miss
+# is a Fincept host reached from one purely through configuration.
+PY_SINK_PATTERNS = [
+    ("py_http_client", re.compile(
+        r"^[ \t]*(?:import|from)[ \t]+(?:httpx|requests|aiohttp)\b", re.MULTILINE)),
+    # urllib.request / urlopen only. urllib.parse is string manipulation, not a
+    # transport, and counting it would pad the inventory with non-sinks.
+    ("py_urllib", re.compile(
+        r"^[ \t]*(?:import|from)[ \t]+urllib.request\b|\burlopen\s*\(", re.MULTILINE)),
+    ("py_socket", re.compile(
+        r"^[ \t]*(?:import|from)[ \t]+socket\b", re.MULTILINE)),
+    ("py_websocket", re.compile(
+        r"^[ \t]*(?:import|from)[ \t]+websockets?\b", re.MULTILINE)),
+]
+PY_SINK_KINDS = [name for name, _pat in PY_SINK_PATTERNS]
+SINK_KINDS = SINK_KINDS + PY_SINK_KINDS
+PY_SINK_ROOT = "scripts"
+PY_ENTRY_ROOT = "src"
+PY_ENTRY_RE = re.compile(r'"([A-Za-z0-9_/.\-]+\.py)"')
 
 SKIP_DIRS = {
     "build", ".git", "third_party", "venv", "__pycache__", ".venv", "node_modules",
@@ -232,6 +277,112 @@ def match_patterns(text):
     return hits
 
 
+def python_entry_points(root):
+    """The .py paths named as string literals in C++ under src/.
+
+    These are the argv the application hands to its bundled interpreter, so they
+    are exactly the Python processes it is able to start.
+    """
+    entries = set()
+    for dirpath, dirnames, filenames in os.walk(os.path.join(root, PY_ENTRY_ROOT)):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fname in filenames:
+            if os.path.splitext(fname)[1].lower() not in SINK_EXTS:
+                continue
+            try:
+                with open(os.path.join(dirpath, fname), "r",
+                          encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            for hit in PY_ENTRY_RE.findall(text):
+                cand = hit.lstrip("/")
+                if os.path.isfile(os.path.join(root, PY_SINK_ROOT, cand)):
+                    entries.add(cand)
+    return entries
+
+
+def python_reachable(root, entries, unparsed):
+    """Transitive local-import closure of `entries`, as paths under scripts/."""
+    scripts_root = os.path.join(root, PY_SINK_ROOT)
+    by_rel = {}
+    by_base = {}
+    for dirpath, dirnames, filenames in os.walk(scripts_root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fname in filenames:
+            if not fname.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, scripts_root).replace(os.sep, "/")
+            by_rel[rel] = full
+            by_base.setdefault(os.path.splitext(fname)[0], []).append(rel)
+
+    def resolve(mod, cur_rel):
+        out = []
+        as_path = mod.replace(".", "/")
+        for cand in (as_path + ".py", as_path + "/__init__.py"):
+            if cand in by_rel:
+                out.append(cand)
+        parent = cur_rel.rsplit("/", 1)[0] if "/" in cur_rel else ""
+        sibling = (parent + "/" if parent else "") + mod.split(".")[-1] + ".py"
+        if sibling in by_rel:
+            out.append(sibling)
+        if not out:
+            # Unambiguous basename only. Two modules sharing a name would make
+            # this a guess, and a guess does not belong in an evidence control.
+            base = mod.split(".")[-1]
+            if len(by_base.get(base, [])) == 1:
+                out = list(by_base[base])
+        return out
+
+    seen = set()
+    queue = collections.deque(sorted(entries))
+    while queue:
+        rel = queue.popleft()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        full = by_rel.get(rel)
+        if not full:
+            continue
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                tree = ast.parse(f.read())
+        except (OSError, SyntaxError, ValueError):
+            # Reported, not skipped silently: a module the audit cannot parse is
+            # a module whose imports it cannot follow.
+            unparsed.add(rel)
+            continue
+        mods = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                mods.extend(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    base_parts = rel.split("/")[:-node.level]
+                    tail = (node.module or "").replace(".", "/")
+                    joined = "/".join([p for p in ["/".join(base_parts), tail] if p])
+                    if joined:
+                        mods.append(joined.replace("/", "."))
+                elif node.module:
+                    mods.append(node.module)
+        for mod in mods:
+            for cand in resolve(mod, rel):
+                if cand not in seen:
+                    queue.append(cand)
+    return seen
+
+
+def match_py_sinks(text):
+    """Occurrence count per Python sink kind for one file ({} when none)."""
+    counts = {}
+    for name, pat in PY_SINK_PATTERNS:
+        n = len(pat.findall(text))
+        if n:
+            counts[name] = n
+    return counts
+
+
 def match_sinks(text):
     """Occurrence count per sink kind for one file ({} when the file has none)."""
     counts = {}
@@ -257,6 +408,12 @@ def main():
 
     rules, sinks, sink_counts = load_manifest(manifest_path)
 
+    # The production-Python surface, resolved before the walk so the scan can ask
+    # "is this module something the application can actually run?" per file.
+    py_unparsed = set()
+    py_entries = python_entry_points(root)
+    py_reachable = python_reachable(root, py_entries, py_unparsed)
+
     problems = []
     sink_problems = []
     paired_problems = []
@@ -276,7 +433,11 @@ def main():
             if rel.startswith("marketlab/"):
                 continue  # the audit's own files (manifest documents itself)
             in_sink_scope = ext in SINK_EXTS and (rel == SINK_ROOT or rel.startswith(SINK_ROOT + "/"))
-            if ext not in SCAN_EXTS and not in_sink_scope:
+            in_py_sink_scope = (
+                ext == ".py"
+                and rel.startswith(PY_SINK_ROOT + "/")
+                and rel[len(PY_SINK_ROOT) + 1:] in py_reachable)
+            if ext not in SCAN_EXTS and not in_sink_scope and not in_py_sink_scope:
                 continue
             try:
                 with open(full, "r", encoding="utf-8", errors="replace") as f:
@@ -326,6 +487,27 @@ def main():
                     elif expected != count:
                         count_problems.append((rel, sink, count, expected))
 
+            if in_py_sink_scope:
+                # Same two questions as the C++ branch, same two failures: is
+                # this site judged, and is it still the same set of sites that
+                # was judged?
+                found = match_py_sinks(text)
+                if found:
+                    sink_files.add(rel)
+                expected_here = sink_counts.get(rel, {})
+                for sink, count in found.items():
+                    sink_totals[sink] += count
+                    disposed = any(selector_matches(file_sel, rel)
+                                   for file_sel, _disp, _note in sinks.get(sink, []))
+                    if not disposed:
+                        sink_problems.append((rel, sink, count))
+                    expected = expected_here.get(sink)
+                    seen_counts.add((rel, sink))
+                    if expected is None:
+                        count_problems.append((rel, sink, count, None))
+                    elif expected != count:
+                        count_problems.append((rel, sink, count, expected))
+
     # A manager declared as a member in the .h and *used* only in the .cpp leaves
     # no sink token in the .cpp at all: src/services/updater/UpdateService.cpp
     # issues three HTTP GETs through net_.get(req) while the string
@@ -359,6 +541,16 @@ def main():
                 count_problems.append((rel, sink, 0, expected))
 
     failed = False
+
+    if py_unparsed:
+        # Not a failure on its own — an unparsable module is usually a py2 file
+        # nothing runs — but it must be visible, because its imports were not
+        # followed and anything reachable only through it is outside the closure.
+        print(f"NOTE — {len(py_unparsed)} reachable Python module(s) could not be parsed, "
+              f"so their imports were not followed:")
+        for rel in sorted(py_unparsed):
+            print(f"  {PY_SINK_ROOT}/{rel}")
+        print("")
 
     if problems:
         failed = True
@@ -418,10 +610,17 @@ def main():
     if failed:
         return 1
 
-    sink_summary = ", ".join(f"{sink_totals[name]} {name}" for name in SINK_KINDS)
+    cpp_summary = ", ".join(f"{sink_totals[name]} {name}"
+                            for name in SINK_KINDS if name not in PY_SINK_KINDS)
+    py_summary = ", ".join(f"{sink_totals[name]} {name}" for name in PY_SINK_KINDS)
+    cpp_files = len([r for r in sink_files if not r.startswith(PY_SINK_ROOT + "/")])
+    py_files = len([r for r in sink_files if r.startswith(PY_SINK_ROOT + "/")])
     print(f"AUDIT OK — {scanned} files scanned; every Fincept-owned host reference "
           f"has an explicit disposition in hosted_path_inventory.json. "
-          f"Network sinks: {sink_summary} across {len(sink_files)} {SINK_ROOT}/ file(s) — "
+          f"C++ network sinks: {cpp_summary} across {cpp_files} {SINK_ROOT}/ file(s). "
+          f"Production-Python network sinks: {py_summary} across {py_files} "
+          f"{PY_SINK_ROOT}/ file(s), from a reachable set of {len(py_reachable)} module(s) "
+          f"behind {len(py_entries)} entry point(s) named in {PY_ENTRY_ROOT}/ — "
           f"every site has an explicit disposition and matches its pinned occurrence count.")
     return 0
 

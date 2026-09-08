@@ -314,6 +314,8 @@ void AuthManager::complete_auth_flow(std::function<void()> on_done) {
         if (!session_.api_key.isEmpty())
             session_.authenticated = true;
         save_session();
+        // Purges the stale plaintext api_key row (CR-08). It no longer creates
+        // an LLM provider — see auto_configure_fincept_llm() for why.
         auto_configure_fincept_llm();
         set_loading(false);
         if (on_done)
@@ -634,7 +636,7 @@ void AuthManager::refresh_user_data() {
     fetch_user_profile([this] { emit subscription_fetched(); });
 }
 
-// ── Auto-configure Fincept LLM provider ──────────────────────────────────────
+// ── Post-login LLM configuration ─────────────────────────────────────────────
 
 void AuthManager::auto_configure_fincept_llm() {
     if (session_.api_key.isEmpty())
@@ -646,34 +648,30 @@ void AuthManager::auto_configure_fincept_llm() {
     // AuthManager::fincept_api_key(). Defensively purge any stale plaintext row.
     fincept::SettingsRepository::instance().remove("fincept_api_key");
 
-    // Only create the fincept provider row if it doesn't already exist.
-    // This prevents overwriting the user's model/settings choice on every
-    // session revalidation (~30s interval).
-    auto providers = LlmConfigRepository::instance().list_providers();
-    bool fincept_exists = false;
-    if (providers.is_ok()) {
-        for (const auto& p : providers.value()) {
-            if (p.provider.toLower() == "fincept") {
-                fincept_exists = true;
-                break;
-            }
-        }
-    }
-
-    if (!fincept_exists) {
-        LlmConfig fincept_llm;
-        fincept_llm.provider = "fincept";
-        fincept_llm.model = "MiniMax-M2.7";
-        fincept_llm.base_url = {};
-        LlmConfigRepository::instance().save_provider(fincept_llm);
-        LOG_INFO("Auth", "Created fincept LLM provider config");
-    }
-
-    // Set as active if no other provider is currently active
-    auto active = LlmConfigRepository::instance().get_active_provider();
-    bool has_active = active.is_ok() && !active.value().provider.isEmpty();
-    if (!has_active)
-        LlmConfigRepository::instance().set_active("fincept");
+    // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). This function used to
+    // manufacture an LLM provider row literally named "fincept" (model
+    // "MiniMax-M2.7") and set it active when nothing else was, on every session
+    // revalidation. Blanking its base_url — the earlier fix — was not enough:
+    // the NAME is the credential path. AgentService::build_api_keys() exports
+    // every provider row's api_key keyed by its lowercased provider name, and
+    // the Python side treats a provider it does not recognise as
+    // OpenAI-compatible, so a row named "fincept" hands its key to OpenAIChat
+    // and it is POSTed to api.openai.com — a credential handed to an unrelated
+    // vendor, from a row this fork created by itself. The provider does not
+    // exist in this fork, so the honest fix is not to create it: there is no
+    // hosted Fincept LLM to configure, and a provider row is now something only
+    // the user creates in Data Sources → LLM providers.
+    //
+    // The seam is kept rather than deleted (matching orchestrator.py, which
+    // raises with an explanation instead of dropping its method) because the
+    // CR-08 purge above still has to run on this path, and because a reader
+    // arriving from the upstream tree needs to find the answer where the
+    // behaviour used to be. The complementary cleanup for an install that
+    // already has the row lives in clear_session(), which deletes it.
+    //
+    // Nothing replaces the set_active("fincept") call either: leaving no active
+    // provider is the correct state for an account with no configured LLM, and
+    // LlmService::is_configured() already reports that.
 }
 
 } // namespace fincept::auth

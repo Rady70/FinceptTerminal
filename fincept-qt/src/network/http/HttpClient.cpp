@@ -1,6 +1,7 @@
 #include "network/http/HttpClient.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HostedPathGuard.h"
 
 #include <QJsonArray>
@@ -136,7 +137,13 @@ HttpClient& HttpClient::instance() {
 }
 
 HttpClient::HttpClient() {
-    nam_ = new QNetworkAccessManager(this);
+    // GuardedNetworkAccessManager, not a raw one: reject_hosted_destination()
+    // below judges the URL each caller hands in, but only the manager sees a
+    // redirect Qt follows on its own — a permitted host answering
+    // "302 Location: https://api.fincept.in/..." is invisible at the call site.
+    // Both checks stay: the call-site one rejects earlier and reports through
+    // the JsonCallback with the URL the caller actually named.
+    nam_ = new network::GuardedNetworkAccessManager(this);
     // Qt disables the transfer timeout by default: a half-open TCP connection
     // never emits finished(), so the callback never runs, nothing is logged and
     // there is no cancel path — the only recovery is restarting the app. Every

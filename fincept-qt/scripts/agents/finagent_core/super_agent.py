@@ -407,7 +407,9 @@ class SuperAgent:
     def _resolve_model_config_from_keys(self, api_keys: Dict[str, Any]) -> Dict[str, Any]:
         """Derive provider + base_url from available api_keys instead of hardcoding openai."""
         keys = api_keys or {}
-        preferred = ["fincept", "ollama", "anthropic", "google", "groq",
+        # MarketLab: "fincept" is removed as a provider (FINCEPT_FORK_PLAN.md
+        # §5.3, §6) — excluded from the preference list and the catch-all scan.
+        preferred = ["ollama", "anthropic", "google", "groq",
                      "deepseek", "openai", "openrouter"]
         for provider in preferred:
             if keys.get(provider) or keys.get(f"{provider.upper()}_API_KEY"):
@@ -418,7 +420,7 @@ class SuperAgent:
                     config["base_url"] = base_url
                 return config
         for k, v in keys.items():
-            if k.endswith("_API_KEY") and v:
+            if k.endswith("_API_KEY") and v and k[:-8].lower() != "fincept":
                 provider = k[:-8].lower()
                 config = {"provider": provider}
                 base_url = keys.get(f"{provider}_base_url") or keys.get(f"{provider.upper()}_BASE_URL")

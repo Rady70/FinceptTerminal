@@ -1,6 +1,8 @@
 #include "core/telemetry/CloudTelemetryProvider.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
+#include "network/http/HostedPathGuard.h"
 #include "storage/repositories/SettingsRepository.h"
 
 #include <QDateTime>
@@ -30,8 +32,14 @@ CloudTelemetryProvider::~CloudTelemetryProvider() {
 void CloudTelemetryProvider::start() {
     if (started_)
         return;
-    if (!nam_)
-        nam_ = new QNetworkAccessManager(this);
+    if (!nam_) {
+        // GuardedNetworkAccessManager, not a raw one. read_config() below
+        // refuses a Fincept-owned endpoint outright, but the endpoint is a
+        // free-text setting: a host that is not on the deny-list can still
+        // answer a "302 Location:" that points at a Fincept-owned destination,
+        // and only the manager sees the hop Qt follows on its own.
+        nam_ = new network::GuardedNetworkAccessManager(this);
+    }
     if (!flush_timer_) {
         flush_timer_ = new QTimer(this);
         flush_timer_->setInterval(kFlushIntervalMs);
@@ -153,6 +161,38 @@ bool CloudTelemetryProvider::read_config(QString& endpoint_out, QString& api_key
     endpoint_out = endpoint_r.value().trimmed();
     if (!endpoint_out.startsWith("http://") && !endpoint_out.startsWith("https://"))
         return false; // bad config; refuse rather than silently use raw text
+
+    // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). This is the most
+    // easily missed hosted route in the fork: the destination is a setting
+    // (telemetry.cloud_endpoint) with a bearer key beside it, so no Fincept
+    // host ever appears as a literal in the tree, and TerminalShell activates
+    // the provider whenever telemetry.cloud_enabled is "true". A Fincept-owned
+    // URL configured there would therefore upload the event stream, and "the
+    // feature defaults to off" is not containment.
+    //
+    // Refusing HERE rather than in post_batch() is what keeps the failure sane:
+    // this is the one function that decides whether an upload is possible at
+    // all, and returning false leaves on_flush_tick() in its existing
+    // endpoint-unset branch — no batch is dequeued, so there is nothing to
+    // requeue, no backoff to grow and no retry loop to spin. Events keep
+    // buffering under the same kMaxBuffered FIFO cap as an unset endpoint, and
+    // the chained LocalTelemetrySink has already written every one of them to
+    // disk in record(), so nothing is lost that was ever durable.
+    //
+    // Logged once: read_config() runs on every kFlushIntervalMs tick and a
+    // repeating warning would be noise, not signal.
+    const QUrl endpoint_url(endpoint_out);
+    if (network::HostedPathGuard::is_fincept_destination(endpoint_url)) {
+        if (!hosted_refusal_logged_) {
+            hosted_refusal_logged_ = true;
+            LOG_WARN(kCloudTag, QString("Configured telemetry endpoint is a Fincept-owned destination; "
+                                        "no telemetry is uploaded (%1). Events remain buffered and are "
+                                        "still written locally by the chained sink.")
+                                    .arg(network::HostedPathGuard::unavailable_error(endpoint_url)));
+        }
+        return false;
+    }
+    hosted_refusal_logged_ = false; // endpoint changed to an allowed one; re-arm
 
     auto key_r = SettingsRepository::instance().get("telemetry.cloud_api_key");
     api_key_out = key_r.is_ok() ? key_r.value().trimmed() : QString{};

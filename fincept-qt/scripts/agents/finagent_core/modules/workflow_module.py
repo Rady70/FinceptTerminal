@@ -24,13 +24,15 @@ def _today() -> str:
 
 def _resolve_provider(api_keys: Dict[str, str]) -> str:
     """Pick first configured provider from api_keys."""
-    preferred = ["fincept", "ollama", "anthropic", "google", "groq",
+    # MarketLab: "fincept" is removed as a provider (FINCEPT_FORK_PLAN.md
+    # §5.3, §6) — excluded from the preference list and the catch-all scan.
+    preferred = ["ollama", "anthropic", "google", "groq",
                  "deepseek", "openai", "openrouter"]
     for p in preferred:
         if api_keys.get(p) or api_keys.get(f"{p.upper()}_API_KEY"):
             return p
     for k, v in api_keys.items():
-        if k.endswith("_API_KEY") and v:
+        if k.endswith("_API_KEY") and v and k[:-8].lower() != "fincept":
             return k[:-8].lower()
     return "openai"
 

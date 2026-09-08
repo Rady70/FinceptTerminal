@@ -353,12 +353,12 @@
     },
     {
       "sink": "network_access_manager",
-      "disposition": "disabled",
+      "disposition": "guarded",
       "files": [
         "src/core/telemetry/CloudTelemetryProvider.cpp",
         "src/core/telemetry/CloudTelemetryProvider.h"
       ],
-      "note": "Opt-in cloud telemetry, off by default. TerminalShell only calls start() — the sole place the QNetworkAccessManager is constructed — when the telemetry.cloud_enabled setting is \"true\", and the endpoint it POSTs to is the user's own telemetry.cloud_endpoint setting, which has no Fincept default."
+      "note": "Opt-in cloud telemetry. Guarded, not merely off. The endpoint is the user's own telemetry.cloud_endpoint setting, so it is a configuration-derived route: no literal-host scan can see where it points, and §5.3 requires such a route to be contained rather than assumed safe because the feature defaults off. Two containments now apply. The manager is a GuardedNetworkAccessManager, so every request — and, since Qt does not re-enter createRequest() on a redirect, every redirect hop — is judged by HostedPathGuard before a connection is made. And read_config() refuses a Fincept-owned telemetry.cloud_endpoint outright, logging the refusal once per configuration and leaving the uploader idle; the chained LocalTelemetrySink still persists every event to disk. The earlier \"disabled\" disposition described the default, not the guarantee — an operator who set the endpoint to a Fincept host and flipped telemetry.cloud_enabled would have reached it."
     },
     {
       "sink": "network_access_manager",
@@ -584,6 +584,154 @@
         "src/network/http/HostedPathGuard.cpp"
       ],
       "note": "No socket is created in any of these. ProbeGuard is the single decision the four Data Sources connector probes make before opening one, and it names connectToHost in its doc comments to say exactly which argument it judges; HostedPathGuard.cpp mentions QTcpSocket once, in the comment explaining that a trailing-dot FQDN is dialled happily by QTcpSocket and QNAM and therefore has to be normalised away in the predicate."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/adb_data.py",
+        "scripts/akshare_index.py",
+        "scripts/alphavantage_data.py",
+        "scripts/bcb_data.py",
+        "scripts/bea_data.py",
+        "scripts/bis_data.py",
+        "scripts/bls_data.py",
+        "scripts/bnm_data.py",
+        "scripts/bnr_data.py",
+        "scripts/boc_data.py",
+        "scripts/boe_data.py",
+        "scripts/boi_data.py",
+        "scripts/canada_gov_api.py",
+        "scripts/census_data.py",
+        "scripts/cftc_data.py",
+        "scripts/cnb_data.py",
+        "scripts/congress_gov_data.py",
+        "scripts/data_gov_hk_api.py",
+        "scripts/datagov_au_api.py",
+        "scripts/datagovuk_api.py",
+        "scripts/ecb_sdmx_data.py",
+        "scripts/econdb_data.py",
+        "scripts/economic_calendar.py",
+        "scripts/eia_data.py",
+        "scripts/eodhd_data.py",
+        "scripts/eurostat_extra_data.py",
+        "scripts/federal_reserve_data.py",
+        "scripts/fiscal_data.py",
+        "scripts/fred_data.py",
+        "scripts/fred_economic_data.py",
+        "scripts/french_gov_api.py",
+        "scripts/government_us_data.py",
+        "scripts/hnb_data.py",
+        "scripts/ilostat_data.py",
+        "scripts/imf_datamapper_data.py",
+        "scripts/mnb_data.py",
+        "scripts/nber_data.py",
+        "scripts/nbp_data.py",
+        "scripts/norges_bank_data.py",
+        "scripts/oecd_data.py",
+        "scripts/ons_data.py",
+        "scripts/openafrica_api.py",
+        "scripts/owid_data.py",
+        "scripts/polymarket.py",
+        "scripts/prediction_kalshi.py",
+        "scripts/prediction_polymarket.py",
+        "scripts/rba_data.py",
+        "scripts/riksbank_data.py",
+        "scripts/snb_data.py",
+        "scripts/spreadsheet.py",
+        "scripts/statcan_data.py",
+        "scripts/swiss_gov_api.py",
+        "scripts/tcmb_data.py",
+        "scripts/trading_economics_data.py",
+        "scripts/un_comtrade_data.py",
+        "scripts/unesco_data.py",
+        "scripts/worldbank_data.py",
+        "scripts/worldbank_health_data.py",
+        "scripts/wto_data.py"
+      ],
+      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source — a central bank, a statistics agency, a government open-data portal or a market-data vendor — and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/hdx_data.py",
+        "scripts/news_geolocation.py",
+        "scripts/strategies/fincept_engine/algorithm.py"
+      ],
+      "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source — a central bank, a statistics agency, a government open-data portal or a market-data vendor — and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py"
+      ],
+      "note": "SEC EDGAR full-text search and submissions endpoints, fixed in the source and sent with the SEC-required User-Agent. Public filings data, not a Fincept-owned route."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/agents/finagent_core/tools/terminal_toolkit.py"
+      ],
+      "note": "The agent child's callback into its own host: POSTs to http://127.0.0.1:{port}/tool, the loopback MCP bridge the C++ process opened for it. The port is passed in on the command line by the parent; the host is loopback in the source and is not configuration-derived. It reaches the terminal that launched it, never the internet."
+    },
+    {
+      "sink": "py_socket",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/agents/rdagents/cli.py"
+      ],
+      "note": "A loopback port-availability probe (socket against 127.0.0.1) used to find a free port for the local MCP server before starting it. Destination is loopback in the source and it transfers no data."
+    },
+    {
+      "sink": "py_socket",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/agents/rdagents/mcp_tools.py"
+      ],
+      "note": "The same loopback port probe as rdagents/cli.py, in the module that starts the local MCP server. Destination is loopback in the source."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/exchange/broker_ws_bridge.py"
+      ],
+      "note": "Downloads Angel One's public instrument master (margincalculator.angelbroking.com/OpenAPI_File/...). The URL is a literal in the source, pinned to the broker whose feed this bridge exists to speak, and is not derived from Fincept configuration."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/exchange/ws_stream.py"
+      ],
+      "note": "aiohttp, imported inside the broker websocket streamer to reach the configured broker's own feed. The destination is the user's broker connector, never a Fincept host, and no order route is enabled in this fork."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/voice/deepgram_tts.py"
+      ],
+      "note": "Deepgram text-to-speech. The host is api.deepgram.com, fixed in the source, reached only when the user has configured a Deepgram key. Not a Fincept-owned route."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/voice/deepgram_tts.py"
+      ],
+      "note": "The urllib fallback for the same Deepgram request, kept so the script runs when requests is absent. Same fixed third-party host."
+    },
+    {
+      "sink": "py_urllib",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/yfinance_data.py"
+      ],
+      "note": "The public-quote and history producer this fork's representative task depends on. Yahoo Finance via yfinance; the host is the library's, fixed in the source, with no key and no Fincept account. This is the single most-exercised Python network path in the product and it is deliberately pinned on its own rather than folded into the bulk rule."
     }
   ],
   "sink_counts_note": "Pinned occurrence count of every (file, sink) pair under src/, exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included — editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
@@ -608,7 +756,7 @@
       "tcp_socket": 3
     },
     "src/core/telemetry/CloudTelemetryProvider.cpp": {
-      "network_access_manager": 3
+      "network_access_manager": 5
     },
     "src/core/telemetry/CloudTelemetryProvider.h": {
       "network_access_manager": 3
@@ -629,7 +777,7 @@
       "network_access_manager": 1
     },
     "src/network/cloud/CloudClient.cpp": {
-      "network_access_manager": 1
+      "network_access_manager": 3
     },
     "src/network/cloud/CloudClient.h": {
       "network_access_manager": 2
@@ -641,7 +789,7 @@
       "open_url": 2
     },
     "src/network/http/GuardedNetworkAccessManager.cpp": {
-      "network_access_manager": 9
+      "network_access_manager": 11
     },
     "src/network/http/GuardedNetworkAccessManager.h": {
       "network_access_manager": 6
@@ -653,7 +801,7 @@
       "websocket": 1
     },
     "src/network/http/HttpClient.cpp": {
-      "network_access_manager": 1
+      "network_access_manager": 3
     },
     "src/network/http/HttpClient.h": {
       "network_access_manager": 3
@@ -773,7 +921,7 @@
       "network_access_manager": 3
     },
     "src/services/alpha_arena/ArenaLlmClient.cpp": {
-      "network_access_manager": 2
+      "network_access_manager": 4
     },
     "src/services/alpha_arena/ArenaLlmClient.h": {
       "network_access_manager": 2
@@ -868,7 +1016,7 @@
       "network_access_manager": 3
     },
     "src/services/quantlib/QuantLibClient.cpp": {
-      "network_access_manager": 4
+      "network_access_manager": 6
     },
     "src/services/updater/UpdateService.cpp": {
       "open_url": 2
@@ -991,6 +1139,217 @@
     },
     "src/ui/widgets/WorldMapWidget.cpp": {
       "network_access_manager": 3
+    },
+    "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py": {
+      "py_urllib": 3
+    },
+    "scripts/adb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/agents/finagent_core/tools/terminal_toolkit.py": {
+      "py_urllib": 2
+    },
+    "scripts/agents/rdagents/cli.py": {
+      "py_socket": 1
+    },
+    "scripts/agents/rdagents/mcp_tools.py": {
+      "py_socket": 1
+    },
+    "scripts/akshare_index.py": {
+      "py_http_client": 1
+    },
+    "scripts/alphavantage_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bcb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bea_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bis_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bls_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/bnm_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/bnr_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/boc_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/boe_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/boi_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/canada_gov_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/census_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/cftc_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/cnb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/congress_gov_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/data_gov_hk_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/datagov_au_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/datagovuk_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/ecb_sdmx_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/econdb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/economic_calendar.py": {
+      "py_http_client": 1
+    },
+    "scripts/eia_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/eodhd_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/eurostat_extra_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/exchange/broker_ws_bridge.py": {
+      "py_urllib": 2
+    },
+    "scripts/exchange/ws_stream.py": {
+      "py_http_client": 1
+    },
+    "scripts/federal_reserve_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/fiscal_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/fred_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/fred_economic_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/french_gov_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/government_us_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/hdx_data.py": {
+      "py_urllib": 2
+    },
+    "scripts/hnb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/ilostat_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/imf_datamapper_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/mnb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/nber_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/nbp_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/news_geolocation.py": {
+      "py_urllib": 2
+    },
+    "scripts/norges_bank_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/oecd_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/ons_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/openafrica_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/owid_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/polymarket.py": {
+      "py_http_client": 1
+    },
+    "scripts/prediction_kalshi.py": {
+      "py_http_client": 2
+    },
+    "scripts/prediction_polymarket.py": {
+      "py_http_client": 2
+    },
+    "scripts/rba_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/riksbank_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/snb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/spreadsheet.py": {
+      "py_http_client": 1
+    },
+    "scripts/statcan_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/strategies/fincept_engine/algorithm.py": {
+      "py_urllib": 2
+    },
+    "scripts/swiss_gov_api.py": {
+      "py_http_client": 1
+    },
+    "scripts/tcmb_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/trading_economics_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/un_comtrade_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/unesco_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/voice/deepgram_tts.py": {
+      "py_http_client": 1,
+      "py_urllib": 2
+    },
+    "scripts/worldbank_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/worldbank_health_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/wto_data.py": {
+      "py_http_client": 1
+    },
+    "scripts/yfinance_data.py": {
+      "py_urllib": 2
     }
   }
 }

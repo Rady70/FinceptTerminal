@@ -222,8 +222,17 @@ void TstEquityParse::provenance_rides_on_the_result() {
 
     // The same payload out of the cache is the same observation from a
     // different source, and it keeps the ORIGINAL retrieval time.
-    const QuoteData cached = parse_quote_json(o, QStringLiteral("cache"));
-    QCOMPARE(cached.source, QStringLiteral("cache"));
+    //
+    // A bare "cache" names the shelf and loses the provider, which is what the
+    // retrieval-meta sidecar exists to prevent: cache_source_label() is the one
+    // rule that turns the recorded origin into the label, and both services
+    // apply it. Only an entry written before the sidecar existed has no origin
+    // to report, and then "cache" is the whole truth available.
+    QCOMPARE(cache_source_label(QStringLiteral("yfinance")), QStringLiteral("cache (yfinance)"));
+    QCOMPARE(cache_source_label(QString()), QStringLiteral("cache"));
+
+    const QuoteData cached = parse_quote_json(o, cache_source_label(QStringLiteral("yfinance")));
+    QCOMPARE(cached.source, QStringLiteral("cache (yfinance)"));
     QCOMPARE(cached.retrieved_at, fresh.retrieved_at);
 
     // A provider error envelope is a failed retrieval, not a quote of zeroes.

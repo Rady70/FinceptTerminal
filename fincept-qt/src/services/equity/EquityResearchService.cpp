@@ -181,11 +181,6 @@ bool get_retrieval_meta(const QString& cache_key, QString& source, qint64& retri
     return !source.isEmpty();
 }
 
-/// "cache" on its own hides who actually produced the prices, so name both.
-QString cache_source_label(const QString& origin) {
-    return origin.isEmpty() ? QStringLiteral("cache") : QStringLiteral("cache (%1)").arg(origin);
-}
-
 } // namespace
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
@@ -252,12 +247,19 @@ void EquityResearchService::load_quote_only(const QString& symbol) {
         return;
     const QVariant qcv = fincept::CacheManager::instance().get("equity:quote:" + symbol);
     if (!qcv.isNull()) {
-        // Source branch 1 — the local cache. retrieved_at comes out of the
-        // payload's own "timestamp", stamped by the Python layer when the
-        // provider answered, so a cache hit reports when the *price* was
-        // retrieved and not when the row was read back.
-        QuoteData q =
-            parse_quote_json(QJsonDocument::fromJson(qcv.toString().toUtf8()).object(), QStringLiteral("cache"));
+        // Source branch 1 — the local cache, over whichever provider originally
+        // filled it: the sidecar remembers which, so a cached quote still names
+        // its provider instead of implying the cache produced the price.
+        // retrieved_at comes out of the payload's own "timestamp", stamped by
+        // the Python layer when the provider answered, so a cache hit reports
+        // when the *price* was retrieved and not when the row was read back.
+        QString origin;
+        qint64 sidecar_at = 0; // written, but deliberately not read: a quote
+                               // payload carries the provider's own fetch
+                               // timestamp, which is the better answer.
+        get_retrieval_meta("equity:quote:" + symbol, origin, sidecar_at);
+        QuoteData q = parse_quote_json(QJsonDocument::fromJson(qcv.toString().toUtf8()).object(),
+                                       cache_source_label(origin));
         if (q.retrieved_at > 0 && now_epoch_sec() - q.retrieved_at > kQuoteTtlSec)
             q.status = RetrievalStatus::Stale;
         emit quote_loaded(q);
@@ -273,9 +275,14 @@ void EquityResearchService::load_quote_only(const QString& symbol) {
             emit error_occurred("Quote", obj["error"].toString());
             return;
         }
+        const qint64 at = now_epoch_sec();
         fincept::CacheManager::instance().put(
             "equity:quote:" + symbol, QVariant(QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact))),
             kQuoteTtlSec, "equity");
+        // Who produced this payload, parked beside it — otherwise the cache-hit
+        // branch above can only say "cache" and the provider is lost on the
+        // first re-read. Same sidecar the historical paths use.
+        put_retrieval_meta("equity:quote:" + symbol, QStringLiteral("yfinance"), at, kQuoteTtlSec);
         // Source branch 3 — yfinance answered directly. (Branch 2, a connected
         // region-matched broker, streams quotes straight into the research
         // screen via the DataHub and is stamped there.)

@@ -6,6 +6,7 @@
 #include "datahub/TopicPolicy.h"
 #include "python/PythonRunner.h"
 #include "python/PythonWorker.h"
+#include "services/markets/MarketQuoteParse.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/SettingsRepository.h"
 
@@ -20,74 +21,11 @@
 
 namespace fincept::services {
 
-namespace {
-
-/// Read one numeric quote field, recording whether the payload actually carried
-/// it. QJsonValue::toDouble() answers 0.0 for an absent key, for the JSON null
-/// yfinance_data.py emits for a cell the provider did not return, and for a
-/// genuine zero alike; isDouble() is true for only the last of the three.
-///
-/// Deliberately a local twin of services/equity/EquityQuoteParse.h's take_num
-/// rather than a shared include: that header is the equity domain's model
-/// boundary and pulls EquityResearchModels.h with it, which the markets service
-/// has no other reason to know about. Same rule, stated once per boundary.
-bool take_num(const QJsonObject& o, const char* key, double& out, bool& has) {
-    const QJsonValue v = o.value(QLatin1String(key));
-    has = v.isDouble();
-    if (has)
-        out = v.toDouble();
-    // `out` otherwise keeps its 0.0 default, so a reader that ignores the flag
-    // sees exactly what it always saw.
-    return has;
-}
-
-/// One numeric field on its way *into* the cache envelope. Null rather than 0
-/// for an absent reading, so a later cache hit cannot resurrect the fabricated
-/// zero the flags exist to prevent.
-QJsonValue num_or_null(double v, bool has) {
-    return has ? QJsonValue(v) : QJsonValue(QJsonValue::Null);
-}
-
-/// "OK" unless something is missing. STALE outranks PARTIAL: a row served after
-/// a failed refresh is first of all not current.
-const char* quote_status(int missing, bool stale) {
-    if (stale)
-        return kQuoteStatusStale;
-    return missing > 0 ? kQuoteStatusPartial : kQuoteStatusOk;
-}
-
-/// Rebuild a QuoteData from a cached envelope, carrying its provenance back out.
-///
-/// The cache is the immediate source, but it is not what produced the prices, so
-/// name both. `retrieved_at` comes out of the envelope rather than the read time:
-/// CacheManager exposes no insert time (its unified_cache row has a created_at,
-/// but nothing reads it back, and ON CONFLICT keeps the *first* insert rather
-/// than the latest refresh), so an envelope written before this change simply
-/// reports an unknown retrieval time instead of a fabricated one.
-QuoteData quote_from_cache(const QJsonObject& o, bool stale) {
-    QuoteData q;
-    q.symbol = o["symbol"].toString();
-    q.name = o["name"].toString();
-
-    // An envelope written before num_or_null existed carries a plain double in
-    // every slot, so every flag comes back true and the row reads exactly as it
-    // did before. One written since round-trips the gap as a gap.
-    int missing = 0;
-    missing += take_num(o, "price", q.price, q.has_price) ? 0 : 1;
-    missing += take_num(o, "change", q.change, q.has_change) ? 0 : 1;
-    missing += take_num(o, "change_pct", q.change_pct, q.has_change_pct) ? 0 : 1;
-    missing += take_num(o, "high", q.high, q.has_high) ? 0 : 1;
-    missing += take_num(o, "low", q.low, q.has_low) ? 0 : 1;
-    missing += take_num(o, "volume", q.volume, q.has_volume) ? 0 : 1;
-
-    const QString origin = o["source"].toString();
-    q.source = origin.isEmpty() ? QStringLiteral("cache") : QStringLiteral("cache (%1)").arg(origin);
-    q.retrieved_at = static_cast<qint64>(o["retrieved_at"].toDouble());
-    q.status = QLatin1String(quote_status(missing, stale));
-    return q;
-}
-
-} // namespace
+// The JSON → model boundary (take_num, num_or_null, quote_status, the quote
+// cache round trip, parse_history_point, parse_sparkline_prices) lives in
+// services/markets/MarketQuoteParse.h so it can be unit-tested without the
+// Python runner, the cache, the settings repository and the hub that this file
+// links against — see the HARD RULE at the top of tests/CMakeLists.txt.
 
 MarketDataService& MarketDataService::instance() {
     static MarketDataService s;
@@ -243,40 +181,14 @@ void MarketDataService::refresh(const QStringList& topics) {
                     }
                     continue;
                 }
-                QuoteData qd;
-                qd.symbol = sym;
-                qd.name = q["name"].toString(sym);
                 // Presence-checked: get_batch_quotes emits JSON null for a cell
                 // yfinance did not return, and toDouble() would report it as a
                 // traded zero.
-                int missing = 0;
-                missing += take_num(q, "price", qd.price, qd.has_price) ? 0 : 1;
-                missing += take_num(q, "change", qd.change, qd.has_change) ? 0 : 1;
-                missing += take_num(q, "change_percent", qd.change_pct, qd.has_change_pct) ? 0 : 1;
-                missing += take_num(q, "high", qd.high, qd.has_high) ? 0 : 1;
-                missing += take_num(q, "low", qd.low, qd.has_low) ? 0 : 1;
-                missing += take_num(q, "volume", qd.volume, qd.has_volume) ? 0 : 1;
-                // Provenance, stamped at the branch that actually produced the
-                // row rather than assumed later from a log line.
-                qd.source = QStringLiteral("yfinance");
-                qd.retrieved_at = QDateTime::currentSecsSinceEpoch();
-                qd.status = QLatin1String(quote_status(missing, /*stale=*/false));
+                const QuoteData qd =
+                    parse_quote_object(q, QStringLiteral("yfinance"), QDateTime::currentSecsSinceEpoch());
 
                 // Cache write — mirrors store_quote() in flush_batch.
-                QJsonObject co;
-                co["symbol"] = qd.symbol;
-                co["name"] = qd.name;
-                co["price"] = num_or_null(qd.price, qd.has_price);
-                co["change"] = num_or_null(qd.change, qd.has_change);
-                co["change_pct"] = num_or_null(qd.change_pct, qd.has_change_pct);
-                co["high"] = num_or_null(qd.high, qd.has_high);
-                co["low"] = num_or_null(qd.low, qd.has_low);
-                co["volume"] = num_or_null(qd.volume, qd.has_volume);
-                // CacheManager exposes no insert time, so the retrieval time
-                // rides in the envelope; without it a cache hit could only ever
-                // report when it was read back, which is a different fact.
-                co["source"] = qd.source;
-                co["retrieved_at"] = static_cast<double>(qd.retrieved_at);
+                const QJsonObject co = quote_to_cache(qd);
                 fincept::CacheManager::instance().put(
                     "market:" + qd.symbol,
                     QVariant(QString::fromUtf8(QJsonDocument(co).toJson(QJsonDocument::Compact))), kQuoteCacheTtlSec,
@@ -304,10 +216,7 @@ void MarketDataService::refresh(const QStringList& topics) {
                     hub.publish_error(QStringLiteral("market:sparkline:") + it.key(), QStringLiteral("no data"));
                     continue;
                 }
-                QVector<double> prices;
-                prices.reserve(closes.size());
-                for (const auto& c : closes)
-                    prices.append(c.toDouble());
+                const QVector<double> prices = parse_sparkline_prices(closes);
                 self->publish_sparkline_to_hub(it.key(), prices);
                 ++sparks_ok;
             }
@@ -339,15 +248,12 @@ void MarketDataService::refresh(const QStringList& topics) {
                 QVector<HistoryPoint> points;
                 points.reserve(pts.size());
                 for (const auto& pv : pts) {
-                    const QJsonObject p = pv.toObject();
+                    // A bar with no close is not a price point and is skipped;
+                    // a missing open/high/low/volume is kept and marked absent,
+                    // because 0.0 on a chart is a price, not a gap.
                     HistoryPoint pt;
-                    pt.timestamp = static_cast<qint64>(p["timestamp"].toDouble());
-                    pt.open = p["open"].toDouble();
-                    pt.high = p["high"].toDouble();
-                    pt.low = p["low"].toDouble();
-                    pt.close = p["close"].toDouble();
-                    pt.volume = static_cast<qint64>(p["volume"].toDouble());
-                    points.append(pt);
+                    if (parse_history_point(pv.toObject(), pt))
+                        points.append(pt);
                 }
                 self->publish_history_to_hub(sym, per, ivl, points);
                 ++hists_ok;
@@ -501,39 +407,16 @@ void MarketDataService::flush_batch() {
                 auto doc = QJsonDocument::fromJson(result.output.toUtf8());
 
                 auto parse_quote = [](const QJsonObject& q) -> QuoteData {
-                    QuoteData out;
-                    out.symbol = q["symbol"].toString();
-                    out.name = q["name"].toString(out.symbol);
                     // Same presence-checked reads as the batch_all path above:
-                    // a null cell is an absent reading, not a zero one.
-                    int missing = 0;
-                    missing += take_num(q, "price", out.price, out.has_price) ? 0 : 1;
-                    missing += take_num(q, "change", out.change, out.has_change) ? 0 : 1;
-                    missing += take_num(q, "change_percent", out.change_pct, out.has_change_pct) ? 0 : 1;
-                    missing += take_num(q, "high", out.high, out.has_high) ? 0 : 1;
-                    missing += take_num(q, "low", out.low, out.has_low) ? 0 : 1;
-                    missing += take_num(q, "volume", out.volume, out.has_volume) ? 0 : 1;
-                    // Stamped here, at the branch that actually produced it.
-                    out.source = QStringLiteral("yfinance");
-                    out.retrieved_at = QDateTime::currentSecsSinceEpoch();
-                    out.status = QLatin1String(quote_status(missing, /*stale=*/false));
-                    return out;
+                    // a null cell is an absent reading, not a zero one, and the
+                    // source is stamped at the branch that actually produced it.
+                    return parse_quote_object(q, QStringLiteral("yfinance"), QDateTime::currentSecsSinceEpoch());
                 };
 
                 auto store_quote = [](const QuoteData& q) {
-                    QJsonObject o;
-                    o["symbol"] = q.symbol;
-                    o["name"] = q.name;
-                    o["price"] = num_or_null(q.price, q.has_price);
-                    o["change"] = num_or_null(q.change, q.has_change);
-                    o["change_pct"] = num_or_null(q.change_pct, q.has_change_pct);
-                    o["high"] = num_or_null(q.high, q.has_high);
-                    o["low"] = num_or_null(q.low, q.has_low);
-                    o["volume"] = num_or_null(q.volume, q.has_volume);
                     // Provenance rides in the envelope so a later cache hit can
                     // still name the provider and the original retrieval time.
-                    o["source"] = q.source;
-                    o["retrieved_at"] = static_cast<double>(q.retrieved_at);
+                    const QJsonObject o = quote_to_cache(q);
                     fincept::CacheManager::instance().put(
                         "market:" + q.symbol,
                         QVariant(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))), kQuoteCacheTtlSec,
@@ -669,12 +552,21 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                              shared->info.industry = o["industry"].toString();
                                              shared->info.country = o["country"].toString();
                                              shared->info.currency = o["currency"].toString("USD");
-                                             shared->info.market_cap = o["market_cap"].toDouble();
-                                             shared->info.beta = o["beta"].toDouble();
-                                             shared->info.week52_high = o["fifty_two_week_high"].toDouble();
-                                             shared->info.week52_low = o["fifty_two_week_low"].toDouble();
-                                             shared->info.avg_volume = o["average_volume"].toDouble();
-                                             shared->info.eps = o["revenue_per_share"].toDouble();
+                                             // get_info emits JSON null for a
+                                             // field yfinance did not return
+                                             // ("market_cap": info.get(...)),
+                                             // and toDouble() would report that
+                                             // as a market cap of zero. take_num
+                                             // leaves the field at its default
+                                             // instead of writing a fabricated
+                                             // reading over it.
+                                             bool present = false;
+                                             take_num(o, "market_cap", shared->info.market_cap, present);
+                                             take_num(o, "beta", shared->info.beta, present);
+                                             take_num(o, "fifty_two_week_high", shared->info.week52_high, present);
+                                             take_num(o, "fifty_two_week_low", shared->info.week52_low, present);
+                                             take_num(o, "average_volume", shared->info.avg_volume, present);
+                                             take_num(o, "revenue_per_share", shared->info.eps, present);
                                              shared->info_ok = true;
                                              try_complete();
                                          });
@@ -696,15 +588,24 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                                  return;
                                              }
                                              QJsonObject o = doc.object();
-                                             shared->info.pe_ratio = o["peRatio"].toDouble();
-                                             shared->info.forward_pe = o["forwardPE"].toDouble();
-                                             shared->info.price_to_book = o["priceToBook"].toDouble();
-                                             shared->info.dividend_yield = o["dividendYield"].toDouble();
-                                             shared->info.roe = o["returnOnEquity"].toDouble();
-                                             shared->info.profit_margin = o["profitMargin"].toDouble();
-                                             shared->info.debt_to_equity = o["debtToEquity"].toDouble();
-                                             shared->info.current_ratio = o["currentRatio"].toDouble();
-                                             shared->info.eps = o["revenuePerShare"].toDouble();
+                                             // get_financial_ratios emits JSON
+                                             // null for a ratio yfinance did not
+                                             // report. take_num leaves the field
+                                             // alone rather than writing 0.0 —
+                                             // which also stops a missing
+                                             // revenuePerShare here from
+                                             // clobbering the revenue_per_share
+                                             // get_info already supplied above.
+                                             bool present = false;
+                                             take_num(o, "peRatio", shared->info.pe_ratio, present);
+                                             take_num(o, "forwardPE", shared->info.forward_pe, present);
+                                             take_num(o, "priceToBook", shared->info.price_to_book, present);
+                                             take_num(o, "dividendYield", shared->info.dividend_yield, present);
+                                             take_num(o, "returnOnEquity", shared->info.roe, present);
+                                             take_num(o, "profitMargin", shared->info.profit_margin, present);
+                                             take_num(o, "debtToEquity", shared->info.debt_to_equity, present);
+                                             take_num(o, "currentRatio", shared->info.current_ratio, present);
+                                             take_num(o, "revenuePerShare", shared->info.eps, present);
                                              shared->ratios_ok = true;
                                              try_complete();
                                          });
@@ -733,15 +634,13 @@ void MarketDataService::fetch_history(const QString& symbol, const QString& peri
 
         QVector<HistoryPoint> history;
         for (const auto& v : doc.array()) {
-            QJsonObject o = v.toObject();
+            // Same rule as the batch_all path: a closeless bar is dropped, a
+            // bar missing open/high/low/volume is kept and marked absent. This
+            // series is handed to MCP tools, so a fabricated 0.00 here reaches
+            // a model as a real print.
             HistoryPoint pt;
-            pt.timestamp = static_cast<qint64>(o["timestamp"].toDouble());
-            pt.open = o["open"].toDouble();
-            pt.high = o["high"].toDouble();
-            pt.low = o["low"].toDouble();
-            pt.close = o["close"].toDouble();
-            pt.volume = static_cast<qint64>(o["volume"].toDouble());
-            history.append(pt);
+            if (parse_history_point(v.toObject(), pt))
+                history.append(pt);
         }
 
         LOG_INFO("MarketData", QString("Fetched %1 history points for %2").arg(history.size()).arg(symbol));
@@ -869,9 +768,7 @@ void MarketDataService::fetch_sparklines(const QStringList& symbols, SparklineCa
         QHash<QString, QVector<double>> out;
         const auto obj = doc.object();
         for (auto it = obj.begin(); it != obj.end(); ++it) {
-            QVector<double> prices;
-            for (const auto& v : it.value().toArray())
-                prices.append(v.toDouble());
+            const QVector<double> prices = parse_sparkline_prices(it.value().toArray());
             if (!prices.isEmpty())
                 out[it.key()] = prices;
         }

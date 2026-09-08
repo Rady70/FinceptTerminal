@@ -104,6 +104,17 @@ class AgentFactory:
         # api_key passed directly takes priority; fall back to env-var lookup
         api_key     = model_config.get("api_key") or self._get_api_key(provider) or ""
 
+        # MarketLab: the removed Fincept provider is refused here, before any
+        # dispatch below (FINCEPT_FORK_PLAN.md §5.3, §6). This is the second
+        # model-construction path (ModelsRegistry.create_model is the other) and
+        # it ends in the same generic OpenAI-compatible fallback, so a "fincept"
+        # row reaching it would send a Fincept credential to api.openai.com.
+        if provider == "fincept":
+            raise RuntimeError(
+                "Fincept hosted LLM is unavailable in MarketLab Terminal — "
+                "configure a local or user-owned LLM provider instead."
+            )
+
         # ── Custom base_url → OpenAI-compatible endpoint ──────────────────────
         # Any provider configured with a custom base_url (e.g. minimax served
         # on an Anthropic-compatible endpoint, OpenRouter, LM Studio, etc.)

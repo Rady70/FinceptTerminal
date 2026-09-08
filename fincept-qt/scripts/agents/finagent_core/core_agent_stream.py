@@ -80,13 +80,16 @@ class StreamingCoreAgent:
     def _resolve_provider_from_keys(self) -> str:
         """Derive provider from api_keys instead of defaulting to openai."""
         keys = self.api_keys or {}
-        preferred = ["fincept", "ollama", "anthropic", "google", "groq",
+        # MarketLab: "fincept" is removed as a provider (FINCEPT_FORK_PLAN.md
+        # §5.3, §6) and is excluded from both the preference list and the
+        # catch-all scan below, exactly as in CoreAgent._resolve_model_config.
+        preferred = ["ollama", "anthropic", "google", "groq",
                      "deepseek", "openai", "openrouter"]
         for provider in preferred:
             if keys.get(provider) or keys.get(f"{provider.upper()}_API_KEY"):
                 return provider
         for k, v in keys.items():
-            if k.endswith("_API_KEY") and v:
+            if k.endswith("_API_KEY") and v and k[:-8].lower() != "fincept":
                 return k[:-8].lower()
         return "openai"
 
@@ -114,8 +117,10 @@ class StreamingCoreAgent:
         provider = model_config.get("provider") or self._resolve_provider_from_keys()
 
         # Providers that support native streaming
+        # MarketLab: "fincept" removed — it can no longer be resolved as a
+        # provider, so listing it as stream-capable would be dead and misleading.
         streaming_providers = ["openai", "anthropic", "groq", "together", "fireworks", "ollama",
-                               "fincept", "google", "deepseek", "openrouter"]
+                               "google", "deepseek", "openrouter"]
 
         if provider in streaming_providers:
             # Use native streaming

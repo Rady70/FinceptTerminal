@@ -255,7 +255,24 @@ QJsonObject AgentService::build_api_keys() const {
         for (const auto& p : providers.value()) {
             if (p.api_key.isEmpty())
                 continue;
-            const QString lower = p.provider.toLower();
+            const QString lower = p.provider.toLower().trimmed();
+
+            // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3): a provider row
+            // NAMED "fincept" is skipped whole — no lowercase key, no env-var
+            // form, no alias, no base_url. The name is the credential path.
+            // Python's ModelsRegistry has no "fincept" provider in this fork,
+            // and a provider it does not recognise is treated as
+            // OpenAI-compatible: the row's api_key would be handed to OpenAIChat
+            // and POSTed to api.openai.com, leaking a credential to an unrelated
+            // vendor. Guarding base_url alone (below) does not cover that, since
+            // this row's damage is done by its key with no base_url at all.
+            if (lower == QLatin1String("fincept")) {
+                LOG_WARN("AgentService", QStringLiteral("Provider row named 'fincept' is not sent to the agent "
+                                                        "runtime — that provider does not exist in this fork and "
+                                                        "its key would be dialled as an OpenAI-compatible one"));
+                continue;
+            }
+
             keys[lower] = p.api_key; // lowercase form
             const QString env_name = kEnvVarNames.value(lower);
             if (!env_name.isEmpty())
@@ -299,10 +316,11 @@ QJsonObject AgentService::build_api_keys() const {
     // MarketLab: no Fincept session key is injected here. This fork has no
     // Fincept session — there is no login, so the upstream "always add the
     // session api_key under `fincept`" block had nothing to read and only kept
-    // the agent payload coupled to AuthManager. A `fincept` provider key, if
-    // ever wanted, arrives the same way every other provider's does: the user
-    // configures it in Data Sources / LLM providers and it comes out of
-    // LlmConfigRepository in the loop above.
+    // the agent payload coupled to AuthManager. Nor can one arrive by the back
+    // door: a provider row a user types with the name `fincept` is dropped by
+    // the loop above, because the payload keys api_keys BY PROVIDER NAME and
+    // the Python side would dial an unrecognised name as an OpenAI-compatible
+    // endpoint. There is no `fincept` key in this payload by any route.
 
     return keys;
 }
@@ -338,9 +356,30 @@ QJsonObject AgentService::build_payload(const QString& action, const QJsonObject
             return profile;
         };
 
+        // active_llm also carries `provider` and `api_key`, and both routes
+        // below can produce provider == "fincept" — the embedded per-agent
+        // profile is assembled elsewhere, and LlmService::active_provider()
+        // reports whatever row is active, including one an old install still
+        // has. That name is the same credential path build_api_keys() refuses:
+        // Python resolves an unknown provider as OpenAI-compatible and would
+        // send the key to api.openai.com. Drop the whole profile rather than
+        // just its base_url — a profile with no usable provider is not worth
+        // sending, and Python falls back to its own model resolution.
+        auto is_removed_provider = [](const QJsonObject& profile) {
+            if (profile.value(QStringLiteral("provider")).toString().trimmed().toLower() !=
+                QLatin1String("fincept"))
+                return false;
+            LOG_WARN("AgentService", QStringLiteral("active_llm names the 'fincept' provider, which does not "
+                                                    "exist in this fork; the profile is omitted from the agent "
+                                                    "payload"));
+            return true;
+        };
+
         if (config.contains("model") && !config["model"].toObject()["provider"].toString().isEmpty()) {
             // Use the per-agent resolved profile already embedded in the config
-            payload["active_llm"] = strip_hosted_base_url(config["model"].toObject());
+            const QJsonObject profile = config["model"].toObject();
+            if (!is_removed_provider(profile))
+                payload["active_llm"] = strip_hosted_base_url(profile);
         } else {
             auto& llm = ai_chat::LlmService::instance();
             if (llm.is_configured()) {
@@ -351,7 +390,8 @@ QJsonObject AgentService::build_payload(const QString& action, const QJsonObject
                 active_llm["base_url"] = llm.active_base_url();
                 active_llm["temperature"] = llm.active_temperature();
                 active_llm["max_tokens"] = llm.active_max_tokens();
-                payload["active_llm"] = strip_hosted_base_url(active_llm);
+                if (!is_removed_provider(active_llm))
+                    payload["active_llm"] = strip_hosted_base_url(active_llm);
             }
         }
     }

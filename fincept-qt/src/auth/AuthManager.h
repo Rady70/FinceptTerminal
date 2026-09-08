@@ -94,6 +94,10 @@ class AuthManager : public QObject {
     /// Inject a redeemed desktop-handoff session (api_key + session_token) and
     /// run the shared post-login flow. Shared by login_with_google().
     void complete_desktop_login(const QString& api_key, const QString& session_token);
+    /// Post-login LLM configuration. MarketLab: this no longer creates the
+    /// "fincept" LLM provider row or makes it active — that provider identity
+    /// is a credential path out of this fork (see the .cpp). All it still does
+    /// is purge the stale plaintext api_key setting (CR-08).
     void auto_configure_fincept_llm();
     QString generate_device_id() const;
     QJsonObject unwrap_data(const QJsonObject& raw) const;

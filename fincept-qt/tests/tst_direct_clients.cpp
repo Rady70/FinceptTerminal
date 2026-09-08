@@ -35,13 +35,21 @@
 // `if (route.rejected) { ...; return; }` block from ArenaLlmClient::complete(),
 // QuantLibClient::call() or CloudClient::reject_hosted() still compiles and
 // every assertion here still passes — this file links DirectRouteGuard, not the
-// clients. Nothing else covers that either: MarketLabBoundarySelftest exercises
-// the shared HttpClient end-to-end but never these three. The call sites are
-// held today by code review plus the network-sink inventory in
-// marketlab/hosted_path_inventory.json, which pins the occurrence count of
-// every outbound sink per file; closing the gap properly needs the clients to
-// be constructible in a test, which is the refactor tests/CMakeLists.txt is
-// asking for and which nobody has done yet.
+// clients. Closing that properly needs the clients to be constructible in a
+// test, which is the refactor tests/CMakeLists.txt is asking for and which
+// nobody has done yet.
+//
+// What has changed since that paragraph was first written is where the
+// containment lives, not what this file proves. All three clients used to own a
+// raw QNetworkAccessManager, so a deleted guard call was a hosted route. They
+// now own a GuardedNetworkAccessManager, which applies HostedPathGuard inside
+// createRequest() — on the initial URL and on every redirect hop — so deleting
+// the DirectRouteGuard call above would cost the earlier, better-worded
+// rejection but would not open a route. Two other controls cover the linkage:
+// tst_redirect_guard drives a real GuardedNetworkAccessManager over a real
+// socket, and the sink inventory in marketlab/hosted_path_inventory.json pins
+// the per-file occurrence count of every outbound sink, so swapping the guarded
+// manager back for a raw one changes a pinned count and fails the audit.
 //
 // These are also not regression tests for a bug that was fixed. Before
 // DirectRouteGuard was extracted, all three clients already rejected Fincept

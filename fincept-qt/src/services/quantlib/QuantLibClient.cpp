@@ -6,6 +6,7 @@
 #include "core/config/AppConfig.h"
 #include "core/logging/Logger.h"
 #include "network/http/DirectRouteGuard.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -170,7 +171,10 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
             return;
         }
 
-        auto* nam = new QNetworkAccessManager(this);
+        // GuardedNetworkAccessManager, not a raw one: the DirectRouteGuard
+        // check above judges the composed URL and still rejects first, but a
+        // redirect Qt follows by itself never passes through it.
+        auto* nam = new network::GuardedNetworkAccessManager(this);
         QNetworkReply* reply = nullptr;
         if (is_get_endpoint(endpoint)) {
             reply = nam->get(build_request(endpoint));
@@ -210,8 +214,9 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
         return;
     }
 
-    // Non-cacheable POST endpoints
-    auto* nam = new QNetworkAccessManager(this);
+    // Non-cacheable POST endpoints. Guarded manager for the same reason as the
+    // cacheable branch above.
+    auto* nam = new network::GuardedNetworkAccessManager(this);
     auto req = build_request(endpoint);
     QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
     auto* reply = nam->post(req, data);

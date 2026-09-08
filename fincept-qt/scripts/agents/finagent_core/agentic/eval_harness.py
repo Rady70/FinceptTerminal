@@ -215,7 +215,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "openai": os.environ.get("OPENAI_API_KEY", ""),
         "anthropic": os.environ.get("ANTHROPIC_API_KEY", ""),
         "google": os.environ.get("GOOGLE_API_KEY", ""),
-        "fincept": os.environ.get("FINCEPT_API_KEY", ""),
+        # MarketLab: no "fincept" key is exported — the provider is removed
+        # (FINCEPT_FORK_PLAN.md §5.3, §6) and model construction refuses it.
     }
 
     results = run_suite(cases, api_keys, args.db)

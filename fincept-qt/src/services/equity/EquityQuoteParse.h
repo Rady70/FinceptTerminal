@@ -63,6 +63,18 @@ inline bool take_num(const QJsonObject& o, const char* key, double& out, bool& h
 
 } // namespace detail
 
+/// Label for a result served out of the local cache. "cache" on its own hides
+/// who actually produced the prices, so name both. `origin` is what the cache
+/// sidecar (or envelope) recorded; it is empty for an entry written before the
+/// sidecar existed, and then "cache" is the whole truth that is available.
+///
+/// Not domain-specific — the markets service applies the same rule to its own
+/// quote envelopes — but it is a pure string transform with no model in its
+/// signature, which is what this header is for.
+inline QString cache_source_label(const QString& origin) {
+    return origin.isEmpty() ? QStringLiteral("cache") : QStringLiteral("cache (%1)").arg(origin);
+}
+
 /// yfinance quote object → QuoteData with per-field presence preserved.
 ///
 /// `source` is the branch that actually produced the bytes ("cache", a broker

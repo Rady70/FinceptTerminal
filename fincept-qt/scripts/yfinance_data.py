@@ -636,24 +636,30 @@ def get_financial_ratios(symbol):
         shares_outstanding = info.get("sharesOutstanding", 1)
         fcf_per_share = free_cashflow / shares_outstanding if shares_outstanding else 0
 
+        # No `, 0` default on any of these: a ratio yfinance did not report is
+        # missing, not zero, and a defaulted 0 is indistinguishable from a real
+        # one by the time it reaches a screen or an LLM tool payload. JSON null
+        # says "no reading"; the C++ side reads these through take_num and
+        # leaves the field alone rather than writing a fabricated 0.0.
+        # Missing stays missing all the way to the display.
         ratios = {
             "symbol": symbol,
-            "peRatio": info.get("trailingPE", 0),
-            "forwardPE": info.get("forwardPE", 0),
-            "priceToBook": info.get("priceToBook", 0),
-            "priceToSales": info.get("priceToSalesTrailing12Months", 0),
-            "pegRatio": info.get("trailingPegRatio", 0),
-            "debtToEquity": info.get("debtToEquity", 0),
-            "returnOnEquity": info.get("returnOnEquity", 0),
-            "returnOnAssets": info.get("returnOnAssets", 0),
-            "profitMargin": info.get("profitMargins", 0),
-            "operatingMargin": info.get("operatingMargins", 0),
-            "grossMargin": info.get("grossMargins", 0),
-            "currentRatio": info.get("currentRatio", 0),
-            "quickRatio": info.get("quickRatio", 0),
-            "dividendYield": info.get("dividendYield", 0),
-            "revenuePerShare": info.get("revenuePerShare", 0),
-            "bookValuePerShare": info.get("bookValue", 0),
+            "peRatio": info.get("trailingPE"),
+            "forwardPE": info.get("forwardPE"),
+            "priceToBook": info.get("priceToBook"),
+            "priceToSales": info.get("priceToSalesTrailing12Months"),
+            "pegRatio": info.get("trailingPegRatio"),
+            "debtToEquity": info.get("debtToEquity"),
+            "returnOnEquity": info.get("returnOnEquity"),
+            "returnOnAssets": info.get("returnOnAssets"),
+            "profitMargin": info.get("profitMargins"),
+            "operatingMargin": info.get("operatingMargins"),
+            "grossMargin": info.get("grossMargins"),
+            "currentRatio": info.get("currentRatio"),
+            "quickRatio": info.get("quickRatio"),
+            "dividendYield": info.get("dividendYield"),
+            "revenuePerShare": info.get("revenuePerShare"),
+            "bookValuePerShare": info.get("bookValue"),
             "freeCashFlowPerShare": fcf_per_share,
         }
 

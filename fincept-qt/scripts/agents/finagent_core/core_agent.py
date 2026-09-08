@@ -218,13 +218,21 @@ class CoreAgent:
     def _resolve_model_config(self) -> Dict[str, Any]:
         """Derive provider from api_keys passed at runtime instead of hardcoding openai."""
         keys = self.api_keys or {}
-        preferred = ["fincept", "ollama", "anthropic", "google", "groq",
+        # MarketLab: "fincept" is removed as a provider (FINCEPT_FORK_PLAN.md
+        # §5.3, §6) and must not be preferred — or selected at all. It used to
+        # head this list, so a stray fincept key was chosen ahead of every
+        # user-owned provider and then constructed through the generic
+        # OpenAI-compatible fallback.
+        preferred = ["ollama", "anthropic", "google", "groq",
                      "deepseek", "openai", "openrouter"]
         for provider in preferred:
             if keys.get(provider) or keys.get(f"{provider.upper()}_API_KEY"):
                 return {"provider": provider}
+        # The catch-all below scans whatever keys were shipped, so it needs the
+        # same exclusion: dropping "fincept" from `preferred` alone would let it
+        # back in here.
         for k, v in keys.items():
-            if k.endswith("_API_KEY") and v:
+            if k.endswith("_API_KEY") and v and k[:-8].lower() != "fincept":
                 return {"provider": k[:-8].lower()}
         return {"provider": "openai"}
 
