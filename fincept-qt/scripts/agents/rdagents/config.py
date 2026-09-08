@@ -1,15 +1,29 @@
 """
 config.py — LiteLLM / rdagent LLM config wiring for Fincept rdagents.
 
-rdagent uses environment variables for its LLM backend (LiteLLMAPIBackend).
-This module translates the Fincept LLM config dict into the correct env vars
-so any provider (OpenAI, Anthropic, MiniMax, DeepSeek, Azure, etc.) works.
+rdagent 0.8.0's LiteLLM backend (rdagent.oai.backend.litellm) reads its
+settings from a pydantic BaseSettings object with env prefix `LITELLM_`
+(LITELLM_CHAT_MODEL, LITELLM_EMBEDDING_MODEL, LITELLM_CHAT_OPENAI_API_KEY,
+LITELLM_CHAT_OPENAI_BASE_URL, …), instantiated at MODULE IMPORT TIME —
+callers must run apply_llm_config() BEFORE the first rdagent import, which is
+exactly what the cli.py handlers do.
 
-Key env vars rdagent reads:
-  CHAT_MODEL              — model name passed to litellm
-  OPENAI_API_KEY          — API key (used for all providers via litellm)
-  CHAT_OPENAI_BASE_URL    — custom base URL for OpenAI-compatible endpoints
-  EMBEDDING_MODEL         — embedding model (optional)
+The endpoint is then read by litellm itself, which does not consult the
+rdagent settings object for it: litellm's OpenAI-protocol transformation
+resolves the API base from its own environment (OPENAI_BASE_URL /
+OPENAI_API_BASE), so the guarded base URL is exported under BOTH contract
+names — the rdagent settings name for parity and the names litellm actually
+dials. Without this, a configured custom endpoint was silently ignored and
+every request went to api.openai.com with the default chat_model.
+
+Key env vars read:
+  LITELLM_CHAT_MODEL            — rdagent settings: the model litellm calls
+  LITELLM_EMBEDDING_MODEL       — rdagent settings: the embedding model
+  LITELLM_CHAT_OPENAI_API_KEY   — rdagent settings: chat API key
+  LITELLM_CHAT_OPENAI_BASE_URL  — rdagent settings: base URL (parity)
+  OPENAI_API_KEY                — read by litellm directly for its clients
+  OPENAI_API_BASE / OPENAI_BASE_URL — read by litellm's get_api_base()
+  ANTHROPIC_API_KEY             — read by litellm for anthropic-prefixed models
 """
 
 from __future__ import annotations
@@ -73,7 +87,7 @@ def apply_llm_config(config: dict[str, Any]) -> dict[str, str]:
     base_url   = config.get("llm_base_url", "")
 
     # MarketLab: refuse a configured base_url that NAMES a Fincept-owned
-    # destination before it is exported to litellm's environment
+    # destination before it is exported to the environment
     # (FINCEPT_FORK_PLAN.md §5.3). litellm builds its own HTTP clients
     # internally, so the configuration layer is the guard this path has;
     # the C++ AIQuantLabService forwarder performs no host check of its own.
@@ -95,36 +109,56 @@ def apply_llm_config(config: dict[str, Any]) -> dict[str, str]:
     if provider in _CUSTOM_BASE_PROVIDERS and base_url:
         litellm_model = model  # use raw model name
 
-    env_vars["CHAT_MODEL"] = litellm_model
-    os.environ["CHAT_MODEL"] = litellm_model
+    # rdagent 0.8.0 settings names (env_prefix LITELLM_, read at import time)
+    env_vars["LITELLM_CHAT_MODEL"] = litellm_model
+    os.environ["LITELLM_CHAT_MODEL"] = litellm_model
 
     # --- API key ---
+    # litellm reads OPENAI_API_KEY directly for its OpenAI-protocol clients,
+    # and rdagent's settings carry LITELLM_CHAT_OPENAI_API_KEY as the parallel
+    # contract name. Both are set so neither layer can miss it.
     env_vars["OPENAI_API_KEY"] = api_key
     os.environ["OPENAI_API_KEY"] = api_key
+    env_vars["LITELLM_CHAT_OPENAI_API_KEY"] = api_key
+    os.environ["LITELLM_CHAT_OPENAI_API_KEY"] = api_key
 
-    # Anthropic also reads its own env var
+    # Anthropic also reads its own env var (litellm reads it for
+    # anthropic-prefixed models).
     if provider == "anthropic":
         env_vars["ANTHROPIC_API_KEY"] = api_key
         os.environ["ANTHROPIC_API_KEY"] = api_key
 
     # --- Base URL (OpenAI-compatible custom endpoints) ---
+    # Written under every name a layer actually reads: the rdagent settings
+    # name (LITELLM_CHAT_OPENAI_BASE_URL, parity), and the names litellm's
+    # OpenAI-protocol transformation resolves the endpoint from
+    # (OPENAI_BASE_URL / OPENAI_API_BASE). Without the litellm names the
+    # configured endpoint is silently ignored and every completion goes to
+    # api.openai.com.
     if base_url:
-        env_vars["CHAT_OPENAI_BASE_URL"] = base_url
-        os.environ["CHAT_OPENAI_BASE_URL"] = base_url
-    elif "CHAT_OPENAI_BASE_URL" in os.environ:
-        # Clear stale base URL from previous call
-        del os.environ["CHAT_OPENAI_BASE_URL"]
+        env_vars["LITELLM_CHAT_OPENAI_BASE_URL"] = base_url
+        os.environ["LITELLM_CHAT_OPENAI_BASE_URL"] = base_url
+        env_vars["OPENAI_API_BASE"] = base_url
+        os.environ["OPENAI_API_BASE"] = base_url
+        env_vars["OPENAI_BASE_URL"] = base_url
+        os.environ["OPENAI_BASE_URL"] = base_url
+    else:
+        for key in ("LITELLM_CHAT_OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE_URL"):
+            env_vars.pop(key, None)
+            os.environ.pop(key, None)
 
     # --- Embedding model ---
     embedding_model = config.get("llm_embedding_model", _DEFAULT_EMBEDDING)
-    env_vars["EMBEDDING_MODEL"] = embedding_model
-    os.environ["EMBEDDING_MODEL"] = embedding_model
+    env_vars["LITELLM_EMBEDDING_MODEL"] = embedding_model
+    os.environ["LITELLM_EMBEDDING_MODEL"] = embedding_model
 
     return env_vars
 
 
 def clear_llm_config() -> None:
     """Remove rdagent LLM env vars (call between tasks if needed)."""
-    for key in ("CHAT_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                "CHAT_OPENAI_BASE_URL", "EMBEDDING_MODEL"):
+    for key in ("LITELLM_CHAT_MODEL", "LITELLM_EMBEDDING_MODEL",
+                "LITELLM_CHAT_OPENAI_API_KEY", "LITELLM_CHAT_OPENAI_BASE_URL",
+                "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_BASE_URL",
+                "ANTHROPIC_API_KEY"):
         os.environ.pop(key, None)

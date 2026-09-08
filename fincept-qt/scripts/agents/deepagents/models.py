@@ -85,12 +85,26 @@ def create_model(config: dict[str, Any]):
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
+        # MarketLab containment (§5.3): langchain_anthropic builds its own
+        # httpx clients internally and exposes no http_client seam, and the
+        # Anthropic SDK defaults to follow_redirects=True — so a custom
+        # anthropic_api_url cannot be put on a guardable transport. The
+        # configuration-derived route is therefore refused outright rather
+        # than left to a transport we cannot vet; the default Anthropic
+        # endpoint (a fixed vendor destination) still works. Configure an
+        # OpenAI-compatible provider for custom endpoints.
+        if base_url:
+            raise ValueError(
+                "Custom anthropic base URLs are unavailable in MarketLab "
+                "Terminal: langchain_anthropic provides no guardable HTTP "
+                "client seam (FINCEPT_FORK_PLAN.md §5.3). Configure an "
+                "OpenAI-compatible provider for custom endpoints, or use the "
+                "default Anthropic endpoint without llm_base_url."
+            )
         kwargs: dict[str, Any] = {
             "api_key":    api_key,
             "model_name": model or "claude-sonnet-4-5-20250514",
         }
-        if base_url:
-            kwargs["anthropic_api_url"] = base_url
         return ChatAnthropic(**kwargs)
 
     if provider == "openai":

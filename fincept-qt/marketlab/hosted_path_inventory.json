@@ -821,7 +821,7 @@
         "scripts/agents/finagent_core/agent_factory.py",
         "scripts/agents/finagent_core/registries/models_registry.py"
       ],
-      "note": "The two agno model-construction paths with a user-configurable base_url. Every OpenAIChat built from a custom base_url is pre-vetted by marketlab_net_guard.reject_if_fincept (refuses a base_url that NAMES a Fincept-owned destination) and receives guarded sync AND async OpenAI SDK clients (client=/async_client=) whose transports refuse Fincept-owned request URLs on every dial, redirect hops included. Native provider SDKs (agno Claude/Gemini/... wrappers) have no client-injection seam and take no user base_url; their configuration-layer guard is the same reject_if_fincept call."
+      "note": "The agno model-construction path with a user-configurable base_url, guarded by CAPABILITY not class name: every resolved class is checked with issubclass against OpenAIChat, so OpenAIChat and all OpenAILike subclasses (DeepSeek, LMStudio, vLLM, xAI, Together, Fireworks, OpenRouter, Perplexity, AzureOpenAI, Nvidia, DeepInfra, Vercel V0, Portkey, SambaNova, LlamaCpp, \u2026) built with a custom base_url receive guarded sync AND async OpenAI SDK clients (client=/async_client=), whose transports refuse Fincept-owned request URLs on every dial, redirect hops included. Every non-OpenAI-protocol class (anthropic, google, groq, huggingface, mistral, cohere, \u2026) never receives a user base_url natively: a custom base_url routes the provider to the guarded OpenAIChat path instead. Ollama is the one exception \u2014 its host is configuration-guarded by reject_if_fincept (local-first default). A literal class-name check (a previous revision) skipped every subclass and left DeepSeek on the SDK default client with follow_redirects=True; the registry integration tests (scripts/agents/tests/test_registry_guarded_clients.py) pin the subclass case explicitly. Catalog entries whose class or SDK is not importable in the pinned agno/runtime (vertexai, and the uninstalled groq/mistral/cohere/portkey SDKs) fail closed at import \u2014 no client is built, no network occurs; every constructible OpenAI-protocol class is guarded as described."
     },
     {
       "sink": "py_sdk_client",
@@ -829,7 +829,7 @@
       "files": [
         "scripts/agents/deepagents/models.py"
       ],
-      "note": "LangChain model construction for the deepagent path (launched by AIQuantLabService with the user's LLM config). Every configured base_url is pre-vetted by marketlab_net_guard.reject_if_fincept; the ChatOpenAI constructions additionally receive guarded sync+async httpx clients (http_client=/http_async_client=) so the OpenAI SDK cannot follow a redirect into a Fincept-owned destination. The anthropic/google/groq/cohere SDK paths have no supported client-injection seam and are covered by the configuration-layer guard; their redirect handling is the vendor SDK's."
+      "note": "LangChain model construction for the deepagent path (launched by AIQuantLabService with the user\u2019s LLM config). Every configured base_url is pre-vetted by marketlab_net_guard.reject_if_fincept; the ChatOpenAI constructions additionally receive guarded sync+async httpx clients (http_client=/http_async_client=) so the OpenAI SDK cannot follow a redirect into a Fincept-owned destination. The anthropic path refuses a custom base_url outright: langchain_anthropic builds its httpx clients internally with no injection seam and the Anthropic SDK follows redirects by default, so that configuration-derived route is removed rather than left on an unguardable transport (the default Anthropic endpoint still works). The google/groq/cohere paths take no base_url at all."
     },
     {
       "sink": "py_sdk_client",
@@ -838,7 +838,7 @@
         "scripts/agents/finagent_core/registries/embedder_registry.py",
         "scripts/agents/finagent_core/modules/knowledge_module.py"
       ],
-      "note": "Embedder construction (catalog strings + importlib) and the knowledge readers (url/website/arxiv/github fetch the user-configured source). The embedder base_url is refused by marketlab_net_guard.reject_if_fincept before any client is built, and add_documents() applies the same guard to network reader sources before the reader fetches them. The readers' own HTTP stacks (including redirect handling) are agno's, exactly as the C++ guard accepts redirects to hosts it does not know."
+      "note": "The knowledge reader catalog (agno.knowledge.reader.PDFReader / URLReader / WebsiteReader / ArxivReader / GithubReader \u2026) plus the source guard. Honest current state: the pinned agno package exports only Reader and ReaderFactory from agno.knowledge.reader, so the catalog names fail with AttributeError (which _get_reader does not even catch) before any reader exists \u2014 the network route is NOT constructible today, which is why the guard itself is first-line defense rather than the working boundary. The source guard (reject_if_fincept on url/website/arxiv/github sources, github slugs expanded to github.com before judging) is pinned by scripts/agents/tests/test_marketlab_net_guard.py. Repairing the reader mapping or switching to agno\u2019s ReaderFactory is Phase 4 work; until then the feature is dispositioned unavailable, not \u201cworking guarded\u201d."
     },
     {
       "sink": "py_sdk_client",
@@ -889,7 +889,7 @@
       "py_sdk_client": 17
     },
     "scripts/agents/finagent_core/registries/models_registry.py": {
-      "py_sdk_client": 36
+      "py_sdk_client": 37
     },
     "scripts/agents/finagent_core/tools/terminal_toolkit.py": {
       "py_urllib": 2

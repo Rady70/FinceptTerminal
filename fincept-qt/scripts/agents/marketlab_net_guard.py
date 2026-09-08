@@ -187,7 +187,8 @@ def guarded_async_http_client(*, timeout: httpx.Timeout | None = None,
 
 
 def guarded_openai_clients(
-    api_key: str | None, base_url: str | None, *, timeout: httpx.Timeout | None = None
+    api_key: str | None, base_url: str | None, *, timeout: httpx.Timeout | None = None,
+    deny=None,
 ):
     """Guarded sync + async OpenAI SDK clients for one model-construction site.
 
@@ -198,6 +199,11 @@ def guarded_openai_clients(
     parameters and for any other construction site that accepts prebuilt
     clients.
 
+    `deny` defaults to is_fincept_url and is a parameter only so the hermetic
+    integration tests can exercise the refusal path against a reserved
+    .invalid name instead of a real Fincept host (the same seam the C++ manager
+    exposes as setDeniedDestination).
+
     A missing credential aborts construction here (the SDK raises the same
     failure a first request would have, but with no endpoint named) — the
     error is re-raised with the base_url attached so the caller can report
@@ -206,8 +212,8 @@ def guarded_openai_clients(
     from openai import AsyncOpenAI, OpenAI
 
     common: dict = {"base_url": base_url or None}
-    sync_kwargs = {"http_client": guarded_http_client(timeout=timeout), **common}
-    async_kwargs = {"http_client": guarded_async_http_client(timeout=timeout), **common}
+    sync_kwargs = {"http_client": guarded_http_client(timeout=timeout, deny=deny), **common}
+    async_kwargs = {"http_client": guarded_async_http_client(timeout=timeout, deny=deny), **common}
     if api_key:
         sync_kwargs["api_key"] = api_key
         async_kwargs["api_key"] = api_key

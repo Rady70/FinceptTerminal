@@ -137,11 +137,6 @@ def cmd_get_capabilities(_params: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_start_factor_mining(params: dict[str, Any]) -> dict[str, Any]:
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_factor_loop, FACTOR_LOOP_AVAILABLE
-
-    if not FACTOR_LOOP_AVAILABLE:
-        return {"success": False, "error": "FactorRDLoop not available. Install rdagent with qlib extras."}
 
     task_description = params.get("task_description", "Discover alpha factors for equity trading")
     target_market    = params.get("target_market", "US")
@@ -149,7 +144,15 @@ def cmd_start_factor_mining(params: dict[str, Any]) -> dict[str, Any]:
     target_ic        = float(params.get("target_ic", 0.05))
     llm_config       = params.get("config", {})
 
+    # rdagent's LITELLM_SETTINGS singleton reads its env at MODULE IMPORT
+    # TIME, so the LLM config must be applied before the first rdagent import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_factor_loop, FACTOR_LOOP_AVAILABLE
+
+    if not FACTOR_LOOP_AVAILABLE:
+        return {"success": False, "error": "FactorRDLoop not available. Install rdagent with qlib extras."}
 
     task_id = f"factor_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -187,18 +190,20 @@ def cmd_start_factor_mining(params: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_start_model_optimization(params: dict[str, Any]) -> dict[str, Any]:
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_model_loop, MODEL_LOOP_AVAILABLE
-
-    if not MODEL_LOOP_AVAILABLE:
-        return {"success": False, "error": "ModelRDLoop not available. Install rdagent with qlib extras."}
 
     model_type           = params.get("model_type", "lightgbm")
     optimization_target  = params.get("optimization_target", "sharpe")
     max_iterations       = int(params.get("max_iterations", 10))
     llm_config           = params.get("config", {})
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_model_loop, MODEL_LOOP_AVAILABLE
+
+    if not MODEL_LOOP_AVAILABLE:
+        return {"success": False, "error": "ModelRDLoop not available. Install rdagent with qlib extras."}
 
     task_id = f"model_{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -235,18 +240,20 @@ def cmd_start_model_optimization(params: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_start_quant_research(params: dict[str, Any]) -> dict[str, Any]:
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_quant_loop, QUANT_LOOP_AVAILABLE
-
-    if not QUANT_LOOP_AVAILABLE:
-        return {"success": False, "error": "QuantRDLoop not available. Check rdagent installation."}
 
     research_goal  = params.get("research_goal", params.get("task_description", "Quantitative research"))
     target_market  = params.get("target_market", "US")
     max_iterations = int(params.get("iterations", params.get("max_iterations", 10)))
     llm_config     = params.get("config", {})
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_quant_loop, QUANT_LOOP_AVAILABLE
+
+    if not QUANT_LOOP_AVAILABLE:
+        return {"success": False, "error": "QuantRDLoop not available. Check rdagent installation."}
 
     task_id = f"quant_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -426,12 +433,14 @@ def cmd_export_factor(params: dict[str, Any]) -> dict[str, Any]:
 def cmd_resume_task(params: dict[str, Any]) -> dict[str, Any]:
     """Task 12 — Resume a checkpointed task."""
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_factor_loop, build_model_loop, load_checkpoint
 
     task_id = params.get("task_id", "")
     llm_config = params.get("config", {})
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_factor_loop, build_model_loop, load_checkpoint
 
     tm = get_task_manager()
     task = tm.get(task_id)
@@ -475,11 +484,6 @@ def cmd_resume_task(params: dict[str, Any]) -> dict[str, Any]:
 def cmd_extract_factors_from_pdf(params: dict[str, Any]) -> dict[str, Any]:
     """Task 13 — Extract factors from research PDFs using FactorReportLoop."""
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_report_loop, REPORT_LOOP_AVAILABLE
-
-    if not REPORT_LOOP_AVAILABLE:
-        return {"success": False, "error": "FactorReportLoop not available. Install rdagent report extras."}
 
     pdf_paths  = params.get("pdf_paths", [])
     llm_config = params.get("config", {})
@@ -487,7 +491,14 @@ def cmd_extract_factors_from_pdf(params: dict[str, Any]) -> dict[str, Any]:
     if not pdf_paths:
         return {"success": False, "error": "pdf_paths is required"}
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_report_loop, REPORT_LOOP_AVAILABLE
+
+    if not REPORT_LOOP_AVAILABLE:
+        return {"success": False, "error": "FactorReportLoop not available. Install rdagent report extras."}
 
     task_id = f"pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -517,11 +528,6 @@ def cmd_extract_factors_from_pdf(params: dict[str, Any]) -> dict[str, Any]:
 def cmd_start_kaggle_task(params: dict[str, Any]) -> dict[str, Any]:
     """Task 14 — Run KaggleRDLoop for a competition."""
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_kaggle_loop, KAGGLE_LOOP_AVAILABLE
-
-    if not KAGGLE_LOOP_AVAILABLE:
-        return {"success": False, "error": "KaggleRDLoop not available. Install rdagent with kaggle extras."}
 
     competition    = params.get("competition", "")
     auto_submit    = bool(params.get("auto_submit", False))
@@ -531,7 +537,14 @@ def cmd_start_kaggle_task(params: dict[str, Any]) -> dict[str, Any]:
     if not competition:
         return {"success": False, "error": "competition name is required"}
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_kaggle_loop, KAGGLE_LOOP_AVAILABLE
+
+    if not KAGGLE_LOOP_AVAILABLE:
+        return {"success": False, "error": "KaggleRDLoop not available. Install rdagent with kaggle extras."}
 
     task_id = f"kaggle_{competition}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -563,11 +576,6 @@ def cmd_start_kaggle_task(params: dict[str, Any]) -> dict[str, Any]:
 def cmd_start_ds_task(params: dict[str, Any]) -> dict[str, Any]:
     """Task 14 — Run DataScienceRDLoop for a general DS task."""
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_ds_loop, DS_LOOP_AVAILABLE
-
-    if not DS_LOOP_AVAILABLE:
-        return {"success": False, "error": "DataScienceRDLoop not available. Check rdagent installation."}
 
     task_description = params.get("task_description", "")
     dataset_path     = params.get("dataset_path")
@@ -579,7 +587,14 @@ def cmd_start_ds_task(params: dict[str, Any]) -> dict[str, Any]:
     if not task_description:
         return {"success": False, "error": "task_description is required"}
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_ds_loop, DS_LOOP_AVAILABLE
+
+    if not DS_LOOP_AVAILABLE:
+        return {"success": False, "error": "DataScienceRDLoop not available. Check rdagent installation."}
 
     task_id = f"ds_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)
@@ -612,11 +627,6 @@ def cmd_start_ds_task(params: dict[str, Any]) -> dict[str, Any]:
 def cmd_start_multitrace_research(params: dict[str, Any]) -> dict[str, Any]:
     """Task 15 — Multi-trace MCTS parallel exploration."""
     from config import apply_llm_config
-    from task_manager import get_task_manager, TaskExecutor, register_executor
-    from loops import build_multitrace_loop, DS_LOOP_AVAILABLE
-
-    if not DS_LOOP_AVAILABLE:
-        return {"success": False, "error": "DataScienceRDLoop (multi-trace) not available."}
 
     task_description = params.get("task_description", params.get("research_goal", ""))
     trace_scheduler  = params.get("trace_scheduler", "mcts")
@@ -628,7 +638,14 @@ def cmd_start_multitrace_research(params: dict[str, Any]) -> dict[str, Any]:
     if not task_description:
         return {"success": False, "error": "task_description is required"}
 
+    # Before the first rdagent import: LITELLM_SETTINGS reads env at import.
     apply_llm_config(llm_config)
+    from task_manager import get_task_manager, TaskExecutor, register_executor
+
+    from loops import build_multitrace_loop, DS_LOOP_AVAILABLE
+
+    if not DS_LOOP_AVAILABLE:
+        return {"success": False, "error": "DataScienceRDLoop (multi-trace) not available."}
 
     task_id = f"mcts_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     workspace = str(Path(__file__).parent / "workspaces" / task_id)

@@ -99,7 +99,7 @@ class ModelsRegistry:
             "default_model": None,
         },
         "vllm": {
-            "class": "agno.models.vllm.vLLM",
+            "class": "agno.models.vllm.VLLM",
             "models": [],
             "api_key_env": None,
             "default_model": None,
@@ -195,7 +195,7 @@ class ModelsRegistry:
 
         # SambaNova
         "sambanova": {
-            "class": "agno.models.sambanova.SambaNova",
+            "class": "agno.models.sambanova.Sambanova",
             "models": ["Meta-Llama-3.1-405B-Instruct"],
             "api_key_env": "SAMBANOVA_API_KEY",
             "default_model": "Meta-Llama-3.1-405B-Instruct",
@@ -243,7 +243,7 @@ class ModelsRegistry:
 
         # SiliconFlow
         "siliconflow": {
-            "class": "agno.models.siliconflow.SiliconFlow",
+            "class": "agno.models.siliconflow.Siliconflow",
             "models": [],
             "api_key_env": "SILICONFLOW_API_KEY",
             "default_model": None,
@@ -251,7 +251,7 @@ class ModelsRegistry:
 
         # Vercel AI SDK
         "vercel": {
-            "class": "agno.models.vercel.Vercel",
+            "class": "agno.models.vercel.V0",
             "models": [],
             "api_key_env": "VERCEL_API_KEY",
             "default_model": None,
@@ -377,6 +377,28 @@ class ModelsRegistry:
             module = importlib.import_module(module_path)
             model_class = getattr(module, class_name)
 
+            # MarketLab containment (§5.3): decide by CAPABILITY, not by class
+            # name. agno ships its OpenAI-protocol models as a family —
+            # OpenAIChat and every OpenAILike subclass (DeepSeek, LMStudio,
+            # vLLm/VLLM, xAI, Together, Fireworks, OpenRouter, Perplexity,
+            # AzureOpenAI, Nvidia, DeepInfra, Vercel V0, Portkey, SambaNova/
+            # Sambanova, LlamaCpp, …). All of them accept `client`/`async_
+            # client`, so all of them can receive the guarded sync+async OpenAI
+            # SDK clients. A literal class_name == "OpenAIChat" check (as a
+            # previous revision used) silently skipped every subclass: DeepSeek
+            # with a user base_url then built a default OpenAI SDK client with
+            # follow_redirects=True, and a 302 from an allowed endpoint reached
+            # whatever host it pointed at.
+            #
+            # Catalog entries whose class or SDK cannot even be imported in the
+            # pinned agno/runtime (vertexai's VertexAI no longer exists in agno
+            # 2.x; the groq/mistral/cohere/portkey SDKs are not installed in
+            # the app runtime) fail closed at the import below — no client is
+            # built and no network occurs — rather than falling back to
+            # anything.
+            from agno.models.openai import OpenAIChat as _OpenAIChatBase
+            _openai_protocol = issubclass(model_class, _OpenAIChatBase)
+
             # Build constructor arguments
             # Agno models use 'id' for model identifier
             model_kwargs = {}
@@ -385,13 +407,6 @@ class ModelsRegistry:
 
             if final_api_key:
                 model_kwargs["api_key"] = final_api_key
-
-            # Providers whose SDK constructors do NOT accept base_url
-            NO_BASE_URL_PROVIDERS = {
-                "google", "vertexai", "anthropic", "aws", "ibm",
-                "cohere", "meta", "cerebras", "sambanova", "nebius",
-                "internlm", "dashscope", "siliconflow",
-            }
 
             # Providers whose SDK constructor names the endpoint `host` rather than
             # `base_url`. agno.models.ollama.Ollama takes host=... — passing base_url
@@ -416,11 +431,17 @@ class ModelsRegistry:
             if effective_base_url:
                 reject_if_fincept(effective_base_url)
 
-            # If a custom base_url is set for a provider that normally doesn't
-            # accept one (e.g. anthropic with a MiniMax/OpenRouter-compatible
-            # endpoint), redirect to OpenAIChat — the custom endpoint speaks
-            # the OpenAI-compatible protocol, not the native SDK protocol.
-            if effective_base_url and provider_lower in NO_BASE_URL_PROVIDERS:
+            # A custom base_url on a provider whose native class is NOT
+            # OpenAI-protocol (anthropic, google, groq, huggingface, mistral,
+            # cohere, …) is routed to OpenAIChat — the custom endpoint speaks
+            # the OpenAI-compatible protocol, not the native SDK protocol, and
+            # OpenAIChat is the class that receives the guarded clients. This
+            # is what keeps EVERY user-configurable base_url on a guarded
+            # transport: either the class is OpenAI-protocol and gets guarded
+            # clients natively, or it is routed to the guarded OpenAIChat
+            # path. (Ollama's `host` is the one configuration-guarded
+            # exception, below.)
+            if effective_base_url and not _openai_protocol and provider_lower not in HOST_NOT_BASE_URL_PROVIDERS:
                 from agno.models.openai import OpenAIChat as _OAI
                 import re as _re
                 # Strip trailing provider-name path segments that were added by the
@@ -468,19 +489,20 @@ class ModelsRegistry:
                 )
                 return _OAI(**{k: v for k, v in oai_kwargs.items() if v is not None})
 
-            if provider_lower not in NO_BASE_URL_PROVIDERS:
-                if effective_base_url:
-                    if provider_lower in HOST_NOT_BASE_URL_PROVIDERS:
-                        model_kwargs["host"] = effective_base_url
-                    else:
-                        model_kwargs["base_url"] = effective_base_url
+            if effective_base_url:
+                if provider_lower in HOST_NOT_BASE_URL_PROVIDERS:
+                    model_kwargs["host"] = effective_base_url
+                else:
+                    model_kwargs["base_url"] = effective_base_url
 
-            # MarketLab: an OpenAIChat constructed with a user-configurable
-            # base_url (unknown provider, openai, deepseek-compatible, …) must
-            # not hand the OpenAI SDK's redirect-following default client an
-            # unvetted endpoint. Guarded sync+async clients cover both call
-            # paths; the transports refuse Fincept-owned redirect targets.
-            if class_name == "OpenAIChat" and effective_base_url:
+            # MarketLab: an OpenAI-protocol agno class constructed with a
+            # user-configurable base_url must not hand the OpenAI SDK's
+            # redirect-following default client an unvetted endpoint. Guarded
+            # sync+async clients cover both call paths; the transports refuse
+            # Fincept-owned redirect targets. Inheritance-detected (see the
+            # capability note above), so DeepSeek and every other OpenAILike
+            # subclass receive them too.
+            if _openai_protocol and effective_base_url:
                 _client, _async_client = guarded_openai_clients(
                     final_api_key, effective_base_url)
                 model_kwargs["client"] = _client

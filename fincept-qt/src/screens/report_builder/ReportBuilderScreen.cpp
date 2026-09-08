@@ -15,6 +15,7 @@
 #include "core/session/ScreenStateManager.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/report_builder/ReportQuoteFormat.h"
 #include "services/cloud/CloudSyncEngine.h"
 #include "services/file_manager/FileManagerService.h"
 #include "services/markets/MarketDataService.h"
@@ -319,14 +320,14 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                             return;
                         auto comps2 = s.components();
                         auto cfg2 = comps2[idx2].config;
-                        cfg2["price"] = QString::number(q.price, 'f', 2);
-                        cfg2["change"] = QString::number(q.change, 'f', 2);
-                        cfg2["change_pct"] = QString::number(q.change_pct, 'f', 2);
-                        cfg2["name"] = q.name;
-                        cfg2["high"] = q.high > 0 ? QString::number(q.high, 'f', 2) : "";
-                        cfg2["low"] = q.low > 0 ? QString::number(q.low, 'f', 2) : "";
-                        cfg2["volume"] = q.volume > 0 ? QString::number(q.volume, 'f', 0) : "";
-                        cfg2["status"] = "ok";
+                        // Presence-flag-driven rendering (§4): a missing cell
+                        // becomes an empty config value the canvas skips, a
+                        // genuine zero stays a number, and the row's real
+                        // retrieval status is propagated instead of being
+                        // flattened to "ok". See ReportQuoteFormat.h.
+                        const QMap<QString, QString> qc = quote_report_config(q);
+                        for (auto it = qc.cbegin(); it != qc.cend(); ++it)
+                            cfg2[it.key()] = it.value();
                         s.update_component(comp_id, comps2[idx2].content, cfg2);
                     };
 

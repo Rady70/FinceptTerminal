@@ -21,6 +21,7 @@
 // drags a candlestick chart's price axis to zero behind a plausible-looking
 // axis ladder.
 
+#include "screens/report_builder/ReportQuoteFormat.h"
 #include "services/markets/MarketQuoteParse.h"
 
 #include <QJsonArray>
@@ -73,6 +74,7 @@ class TstMarketParse : public QObject {
     void ratios_partial_nulls_keep_their_presence_flags();
     void eps_reading_survives_across_both_payloads();
     void eps_reading_survives_the_opposite_arrival_order();
+    void report_quote_keeps_missing_and_zero_apart();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -345,6 +347,42 @@ void TstMarketParse::eps_reading_survives_the_opposite_arrival_order() {
     parse_info_object(obj_from(R"({"revenue_per_share": null})"), none);
     QVERIFY(!none.has_eps);
     QCOMPARE(none.eps, 0.0);
+}
+
+// ── Report builder quote config ──────────────────────────────────────────────
+
+void TstMarketParse::report_quote_keeps_missing_and_zero_apart() {
+    // The market_data component's config must carry the same missing-vs-zero
+    // distinction the live surfaces do (§4): a missing cell is an empty config
+    // value the canvas skips, a genuine zero stays a formatted number, and the
+    // row's real retrieval status is propagated instead of being flattened to
+    // "ok".
+    const QuoteData partial = parse_quote_object(obj_from(R"({
+        "symbol": "AAPL", "name": "Apple Inc.", "price": null, "change": -1.31,
+        "change_percent": -0.68, "high": null, "low": null, "volume": null
+    })"),
+                                                  QStringLiteral("yfinance"), 1757340000);
+    const QMap<QString, QString> pc = fincept::screens::quote_report_config(partial);
+    QVERIFY2(pc.value(QStringLiteral("price")).isEmpty(),
+             "a missing price is not a price of \"0.00\"");
+    QCOMPARE(pc.value(QStringLiteral("change")), QStringLiteral("-1.31"));
+    QCOMPARE(pc.value(QStringLiteral("change_pct")), QStringLiteral("-0.68"));
+    QVERIFY(pc.value(QStringLiteral("high")).isEmpty());
+    QVERIFY(pc.value(QStringLiteral("low")).isEmpty());
+    QVERIFY(pc.value(QStringLiteral("volume")).isEmpty());
+    QCOMPARE(pc.value(QStringLiteral("status")), QString::fromLatin1(kQuoteStatusPartial));
+
+    // A genuine zero is a reading and renders as one.
+    const QuoteData zeroed = parse_quote_object(obj_from(R"({
+        "symbol": "HALT", "price": 0, "change": 0, "change_percent": 0,
+        "high": 0, "low": 0, "volume": 0
+    })"),
+                                                QStringLiteral("yfinance"), 1757340000);
+    const QMap<QString, QString> zc = fincept::screens::quote_report_config(zeroed);
+    QCOMPARE(zc.value(QStringLiteral("price")), QStringLiteral("0.00"));
+    QCOMPARE(zc.value(QStringLiteral("high")), QStringLiteral("0.00"));
+    QCOMPARE(zc.value(QStringLiteral("volume")), QStringLiteral("0"));
+    QCOMPARE(zc.value(QStringLiteral("status")), QString::fromLatin1(kQuoteStatusOk));
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)
