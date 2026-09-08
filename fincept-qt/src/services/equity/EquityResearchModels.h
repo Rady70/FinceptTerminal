@@ -16,6 +16,52 @@ struct SearchResult {
     QString industry;
 };
 
+// ── Retrieval provenance ──────────────────────────────────────────────────────
+// FINCEPT_FORK_PLAN.md §4 requires that "the displayed or retained result
+// identifies its source and retrieval status". Recovering that afterwards from
+// a log file and the Data Sources screen is not the same claim: it says what the
+// application *usually* does, not what produced the number on screen. So the
+// provenance rides on the result itself, set at the branch that actually
+// produced it.
+enum class RetrievalStatus {
+    Ok,      ///< every requested field came back
+    Partial, ///< at least one requested field was missing from the payload
+    Stale,   ///< served from cache after its TTL had already elapsed
+    Error    ///< the provider reported a failure instead of data
+};
+
+/// Short uppercase token for a status line or tooltip. Deliberately not
+/// translated: it is a provenance token that has to read the same in a bug
+/// report as it does on screen.
+inline QString retrieval_status_text(RetrievalStatus s) {
+    switch (s) {
+        case RetrievalStatus::Ok:
+            return QStringLiteral("OK");
+        case RetrievalStatus::Partial:
+            return QStringLiteral("PARTIAL");
+        case RetrievalStatus::Stale:
+            return QStringLiteral("STALE");
+        case RetrievalStatus::Error:
+            return QStringLiteral("ERROR");
+    }
+    return QStringLiteral("UNKNOWN");
+}
+
+/// Provenance for a result that is a series rather than a single struct.
+/// Carried alongside QVector<Candle>, which cannot hold it per element.
+struct RetrievalMeta {
+    QString symbol;
+    /// Who actually produced this: "cache", a broker id ("zerodha", "fyers", …),
+    /// or "yfinance". Never a guess — set at the branch that returned the data.
+    QString source;
+    /// Epoch seconds at which the *provider* produced the data. For a cache hit
+    /// this is the original retrieval time, not the time the cache was read.
+    qint64 retrieved_at = 0;
+    RetrievalStatus status = RetrievalStatus::Ok;
+    int point_count = 0;   ///< observations retained
+    int dropped_count = 0; ///< bars discarded for carrying no close
+};
+
 // ── Real-time quote ───────────────────────────────────────────────────────────
 struct QuoteData {
     QString symbol;
@@ -29,6 +75,33 @@ struct QuoteData {
     double volume = 0.0;
     QString exchange;
     qint64 timestamp = 0;
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // The Python layer emits JSON null for a cell yfinance did not return
+    // (halted session, thin book, a ticker with no previousClose). A null and a
+    // genuine 0 are different observations and a bare `double` cannot tell them
+    // apart, so every numeric field above is paired with the flag that says
+    // whether it was actually present.
+    //
+    // Parallel flags rather than std::optional<double>: these fields are read
+    // directly — `q.price`, `q.volume` — by consumers outside this change's
+    // reach (src/mcp/tools/EquityResearchTools.cpp), and optional would break
+    // every one of them. Flags are additive: existing readers keep compiling and
+    // keep seeing 0.0, which is exactly the old behaviour, while readers that
+    // care can ask.
+    bool has_price = false;
+    bool has_change = false;
+    bool has_change_pct = false;
+    bool has_open = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_prev_close = false;
+    bool has_volume = false;
+
+    // ── Provenance ───────────────────────────────────────────────────────────
+    QString source;          ///< "cache" | broker id | "yfinance"
+    qint64 retrieved_at = 0; ///< epoch seconds the provider produced this
+    RetrievalStatus status = RetrievalStatus::Ok;
 };
 
 // ── Company fundamentals ──────────────────────────────────────────────────────
@@ -109,6 +182,14 @@ struct Candle {
     double low = 0.0;
     double close = 0.0;
     qint64 volume = 0;
+
+    // Same reasoning as QuoteData: a bar with no volume print is not a bar that
+    // traded nothing. `close` has no flag — a bar without a close is not a price
+    // point at all and never reaches this struct (see parse_candles_json).
+    bool has_open = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_volume = false;
 };
 
 // ── Financial statements ──────────────────────────────────────────────────────

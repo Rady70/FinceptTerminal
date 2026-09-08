@@ -1,7 +1,7 @@
 #include "network/cloud/CloudClient.h"
 
 #include "core/logging/Logger.h"
-#include "network/http/HostedPathGuard.h"
+#include "network/http/DirectRouteGuard.h"
 
 #include <QJsonDocument>
 #include <QNetworkReply>
@@ -40,7 +40,9 @@ void CloudClient::set_base_url(const QString& base) {
 }
 
 QNetworkRequest CloudClient::build_request(const QString& endpoint) const {
-    const QString full = endpoint.startsWith("http") ? endpoint : (base_url_ + endpoint);
+    // Same composition DirectRouteGuard judged in reject_hosted() — one rule,
+    // so the URL that was cleared is exactly the URL that gets requested.
+    const QString full = network::DirectRouteGuard::compose(base_url_, endpoint);
     QNetworkRequest req{QUrl(full)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setHeader(QNetworkRequest::UserAgentHeader, "MarketLabTerminal/0.1.0");
@@ -52,14 +54,16 @@ QNetworkRequest CloudClient::build_request(const QString& endpoint) const {
 }
 
 bool CloudClient::reject_hosted(const QString& endpoint, const Callback& cb, const QObject* context) {
-    const QString full = endpoint.startsWith("http") ? endpoint : (base_url_ + endpoint);
-    const QUrl qurl(full);
-    if (!network::HostedPathGuard::is_fincept_destination(qurl))
+    // The decision (compose base+endpoint, judge, produce the typed error) is
+    // DirectRouteGuard's, shared with ArenaLlmClient and QuantLibClient and
+    // covered by tests/tst_direct_clients.cpp.
+    const auto route = network::DirectRouteGuard::check_route(base_url_, endpoint);
+    if (!route.rejected)
         return false;
-    const QString err = network::HostedPathGuard::unavailable_error(qurl);
+    const QString err = route.error;
     LOG_WARN("CloudSync",
              QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
-                 .arg(qurl.host()));
+                 .arg(route.url.host()));
     const QObject* receiver = context;
     QTimer::singleShot(0, receiver, [cb, err]() {
         CloudResponse out;

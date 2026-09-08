@@ -1,4 +1,5 @@
 // src/ui/widgets/WorldMapWidget.cpp
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "ui/widgets/WorldMapWidget.h"
 
 #include "core/config/AppPaths.h"
@@ -239,7 +240,7 @@ static void ensure_network_manager() {
     if (QGV::getNetworkManager())
         return;
 
-    auto* nam = new QNetworkAccessManager(qApp);
+    auto* nam = new network::GuardedNetworkAccessManager(qApp);
     auto* cache = new QNetworkDiskCache(nam);
     QString cache_dir = fincept::AppPaths::cache() + "/map_tiles";
     cache->setCacheDirectory(cache_dir);

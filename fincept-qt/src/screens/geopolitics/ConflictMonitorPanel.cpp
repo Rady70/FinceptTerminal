@@ -2,11 +2,11 @@
 #include "screens/geopolitics/ConflictMonitorPanel.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "ui/theme/Theme.h"
 #include "ui/widgets/WorldMapWidget.h"
 
 #include <QComboBox>
-#include <QDesktopServices>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -157,7 +157,7 @@ void ConflictMonitorPanel::build_ui() {
         if (auto* it = events_table_->item(row, 3)) {
             const QString url = it->data(Qt::UserRole + 1).toString();
             if (!url.isEmpty())
-                QDesktopServices::openUrl(QUrl(url));
+                network::ExternalUrlGuard::open_external(QUrl(url));
         }
     });
 
@@ -550,7 +550,7 @@ QWidget* ConflictMonitorPanel::build_event_details_section(QWidget* parent) {
     }
     connect(detail_open_btn_, &QPushButton::clicked, this, [this]() {
         if (!current_url_.isEmpty())
-            QDesktopServices::openUrl(QUrl(current_url_));
+            network::ExternalUrlGuard::open_external(QUrl(current_url_));
     });
     dvl->addWidget(detail_open_btn_);
 

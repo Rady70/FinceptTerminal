@@ -59,6 +59,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 namespace fincept::screens {
 
+// Style for the quote bar's provenance strip; %1 is the text colour. Same shape
+// as the other quote bar labels, one size down so it reads as an annotation on
+// the numbers rather than as another number.
+constexpr const char* kSrcLabelStyle = "font-size:11px; font-weight:600; color:%1;";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTRUCTOR
 // This runs once when EquityResearchScreen is first created.
@@ -89,9 +94,23 @@ EquityResearchScreen::EquityResearchScreen(QWidget* parent) : QWidget(parent) {
     // Reset the quote bar off "Loading…" when the quote fetch fails (it's otherwise
     // updated only on the success path, so a failed symbol shows "Loading…" forever).
     connect(&svc, &services::equity::EquityResearchService::error_occurred, this,
-            [this](const QString& ctx, const QString&) {
-                if (ctx == "Quote" && price_label_)
+            [this](const QString& ctx, const QString& message) {
+                if (ctx != QLatin1String("Quote"))
+                    return;
+                if (price_label_)
                     price_label_->setText(tr("Unavailable"));
+                // A failed retrieval is a retrieval status too — say so on the
+                // provenance strip instead of leaving the previous symbol's
+                // "SRC: yfinance · OK" standing over an unavailable price.
+                if (source_label_) {
+                    source_label_->setText(
+                        tr("SRC: %1 · %2")
+                            .arg(tr("unavailable"),
+                                 services::equity::retrieval_status_text(services::equity::RetrievalStatus::Error)));
+                    source_label_->setToolTip(message.trimmed().isEmpty() ? tr("The quote provider returned no data.")
+                                                                          : message.trimmed());
+                    source_label_->setStyleSheet(QString(kSrcLabelStyle).arg(ui::colors::NEGATIVE()));
+                }
             });
 
     // Keep the BUY/SELL buttons in sync as broker accounts connect/disconnect or
@@ -352,6 +371,13 @@ QWidget* EquityResearchScreen::build_quote_bar() {
     rec_label_ = make_label(QStringLiteral("—"));
     hl->addStretch();
 
+    // Provenance strip, pinned to the right of the bar. FINCEPT_FORK_PLAN.md §4
+    // requires the displayed result to identify its source and retrieval status;
+    // recovering that afterwards from a log file and the Data Sources screen
+    // describes what the app usually does, not what produced this print.
+    source_label_ = make_label(QStringLiteral("—"), ui::colors::TEXT_TERTIARY());
+    source_label_->setStyleSheet(QString(kSrcLabelStyle).arg(ui::colors::TEXT_TERTIARY()));
+
     return bar;
 }
 
@@ -500,23 +526,35 @@ void EquityResearchScreen::update_quote_bar(const services::equity::QuoteData& q
 
     // Cache the freshest price (both the yfinance poll and the live broker stream
     // funnel through here) so a BUY/SELL ticket can seed it for paper market fills.
-    if (q.price > 0.0)
+    if (q.has_price && q.price > 0.0)
         last_price_ = q.price;
 
     const QString cs = EquityOverviewTab::currency_symbol(current_currency_.isEmpty() ? "USD" : current_currency_);
 
-    sym_label_->setText(q.symbol);
-    price_label_->setText(QString("%1%2").arg(cs).arg(q.price, 0, 'f', 2));
+    // A field yfinance did not return is not a reading of zero. The bar already
+    // starts life showing "—" for exactly this reason; keep saying it rather
+    // than printing a 0.00 the market never traded at.
+    const QString na = QStringLiteral("—");
 
-    bool up = q.change_pct >= 0;
-    QString arrow = up ? "\xe2\x96\xb2" : "\xe2\x96\xbc"; // ▲ or ▼
-    QString chg_color = up ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
-    change_label_->setText(QString("%1%2  %3%4%")
-                               .arg(up ? "+" : "")
-                               .arg(q.change, 0, 'f', 2)
-                               .arg(arrow)
-                               .arg(qAbs(q.change_pct), 0, 'f', 2));
-    change_label_->setStyleSheet(QString("font-size:13px; font-weight:600; color:%1;").arg(chg_color));
+    sym_label_->setText(q.symbol);
+    price_label_->setText(q.has_price ? QString("%1%2").arg(cs).arg(q.price, 0, 'f', 2) : na);
+
+    if (q.has_change || q.has_change_pct) {
+        bool up = q.has_change_pct ? q.change_pct >= 0 : q.change >= 0;
+        QString arrow = up ? "\xe2\x96\xb2" : "\xe2\x96\xbc"; // ▲ or ▼
+        QString chg_color = up ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
+        const QString abs_part = q.has_change ? QString("%1%2").arg(up ? "+" : "").arg(q.change, 0, 'f', 2) : na;
+        const QString pct_part =
+            q.has_change_pct ? QString("%1%2%").arg(arrow).arg(qAbs(q.change_pct), 0, 'f', 2) : arrow + na;
+        change_label_->setText(QString("%1  %2").arg(abs_part, pct_part));
+        change_label_->setStyleSheet(QString("font-size:13px; font-weight:600; color:%1;").arg(chg_color));
+    } else {
+        // No previousClose came back, so there is no move to report — neither
+        // direction nor magnitude. Say so instead of drawing a green 0.00.
+        change_label_->setText(na);
+        change_label_->setStyleSheet(
+            QString("font-size:13px; font-weight:600; color:%1;").arg(ui::colors::TEXT_SECONDARY()));
+    }
 
     // Format volume: show 1.2B, 450M, 12K instead of raw numbers
     auto fmt_vol = [](double v) -> QString {
@@ -529,8 +567,45 @@ void EquityResearchScreen::update_quote_bar(const services::equity::QuoteData& q
         return QString::number(static_cast<qint64>(v));
     };
 
-    vol_label_->setText(tr("VOL: %1").arg(fmt_vol(q.volume)));
-    hl_label_->setText(tr("H:%1%2  L:%1%3").arg(cs).arg(q.high, 0, 'f', 2).arg(q.low, 0, 'f', 2));
+    vol_label_->setText(tr("VOL: %1").arg(q.has_volume ? fmt_vol(q.volume) : na));
+    hl_label_->setText(tr("H:%1  L:%2")
+                           .arg(q.has_high ? QString("%1%2").arg(cs).arg(q.high, 0, 'f', 2) : na,
+                                q.has_low ? QString("%1%2").arg(cs).arg(q.low, 0, 'f', 2) : na));
+
+    update_source_label(q);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// update_source_label(q)
+// Who produced the numbers above, when, and did they arrive whole.
+// ═══════════════════════════════════════════════════════════════════════════════
+void EquityResearchScreen::update_source_label(const services::equity::QuoteData& q) {
+    if (!source_label_)
+        return;
+
+    const QString source = q.source.isEmpty() ? tr("unknown") : q.source;
+    const QString status = services::equity::retrieval_status_text(q.status);
+    const QDateTime at = q.retrieved_at > 0 ? QDateTime::fromSecsSinceEpoch(q.retrieved_at) : QDateTime();
+
+    source_label_->setText(
+        at.isValid() ? tr("SRC: %1 · %2 · %3").arg(source, at.toString(QStringLiteral("hh:mm:ss")), status)
+                     : tr("SRC: %1 · %2").arg(source, status));
+
+    QString detail = tr("Source: %1").arg(source);
+    detail += QLatin1Char('\n') +
+              (at.isValid() ? tr("Retrieved: %1").arg(at.toString(Qt::ISODate)) : tr("Retrieved: unknown"));
+    detail += QLatin1Char('\n') + tr("Status: %1").arg(status);
+    if (q.status == services::equity::RetrievalStatus::Partial)
+        detail += QLatin1Char('\n') + tr("At least one field was not returned by the provider and reads \"—\".");
+    else if (q.status == services::equity::RetrievalStatus::Stale)
+        detail += QLatin1Char('\n') + tr("Served from cache past its refresh interval.");
+    source_label_->setToolTip(detail);
+
+    // .get() rather than the ColorToken itself: the token converts to both
+    // const char* and QString, which makes QString(token) ambiguous.
+    const char* tone = q.status == services::equity::RetrievalStatus::Ok ? ui::colors::TEXT_TERTIARY.get()
+                                                                        : ui::colors::AMBER.get();
+    source_label_->setStyleSheet(QString(kSrcLabelStyle).arg(tone));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -783,7 +858,7 @@ void EquityResearchScreen::hub_subscribe_broker_quote() {
     const QString topic = trading::broker_topic(quote_broker_id, quote_account_id, QStringLiteral("quote"), broker_sym);
     const QString sym = current_symbol_;
 
-    datahub::DataHub::instance().subscribe(this, topic, [this, sym](const QVariant& v) {
+    datahub::DataHub::instance().subscribe(this, topic, [this, sym, quote_broker_id](const QVariant& v) {
         if (!v.canConvert<trading::BrokerQuote>())
             return;
         const auto bq = v.value<trading::BrokerQuote>();
@@ -796,6 +871,25 @@ void EquityResearchScreen::hub_subscribe_broker_quote() {
         qd.low = bq.low;
         qd.volume = bq.volume;
         qd.timestamp = bq.timestamp;
+        // BrokerQuote is a fixed-shape struct: every field above is genuinely
+        // populated by the stream, so all of them are present readings. `open`
+        // and `previous_close` are not part of this feed and stay missing rather
+        // than being reported as 0.00 — the same distinction the yfinance path
+        // now preserves.
+        qd.has_price = qd.has_change = qd.has_change_pct = true;
+        qd.has_high = qd.has_low = qd.has_volume = true;
+
+        // Source branch 2 — a live, region-matched connected broker. Name the
+        // broker that is actually streaming, never a generic "broker".
+        qd.source = quote_broker_id;
+        // Some brokers stamp milliseconds (Fyers), some seconds; normalise the
+        // way broker_candles_to_json already does, and fall back to "now" when
+        // the feed carries no usable stamp rather than claiming the epoch.
+        qint64 at = bq.timestamp;
+        if (at > 1000000000000LL)
+            at /= 1000;
+        qd.retrieved_at = at > 0 ? at : QDateTime::currentSecsSinceEpoch();
+        qd.status = services::equity::RetrievalStatus::Partial; // no open / prev close on this feed
         update_quote_bar(qd);
     });
 

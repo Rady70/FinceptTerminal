@@ -27,6 +27,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QObject>
 
 namespace fincept::mcp::tools {
@@ -38,19 +39,32 @@ static constexpr const char* TAG = "EquityResearchTools";
 // Most calls hit yfinance via Python; 90s default covers slow paths.
 static constexpr int kDefaultTimeoutMs = 90000;
 
+// A field the provider did not return is emitted as JSON null, never as 0.
+// This payload is *retained* and handed to an LLM agent, which is the one
+// consumer that will silently reason over a fabricated zero — "volume 0" reads
+// as a halted session rather than as "no reading" (FINCEPT_FORK_PLAN.md §4).
+QJsonValue num_or_null(double v, bool present) {
+    return present ? QJsonValue(v) : QJsonValue(QJsonValue::Null);
+}
+
 QJsonObject quote_to_json(const services::equity::QuoteData& q) {
     return QJsonObject{
         {"symbol", q.symbol},
-        {"price", q.price},
-        {"change", q.change},
-        {"change_pct", q.change_pct},
-        {"open", q.open},
-        {"high", q.high},
-        {"low", q.low},
-        {"prev_close", q.prev_close},
-        {"volume", q.volume},
+        {"price", num_or_null(q.price, q.has_price)},
+        {"change", num_or_null(q.change, q.has_change)},
+        {"change_pct", num_or_null(q.change_pct, q.has_change_pct)},
+        {"open", num_or_null(q.open, q.has_open)},
+        {"high", num_or_null(q.high, q.has_high)},
+        {"low", num_or_null(q.low, q.has_low)},
+        {"prev_close", num_or_null(q.prev_close, q.has_prev_close)},
+        {"volume", num_or_null(q.volume, q.has_volume)},
         {"exchange", q.exchange},
         {"timestamp", q.timestamp},
+        // §4: "the displayed or retained result identifies its source and
+        // retrieval status". This is a retained result, so it carries both.
+        {"source", q.source},
+        {"retrieved_at", static_cast<double>(q.retrieved_at)},
+        {"retrieval_status", services::equity::retrieval_status_text(q.status)},
     };
 }
 
@@ -116,11 +130,13 @@ QJsonArray candles_to_json(const QVector<services::equity::Candle>& cs) {
     for (const auto& c : cs) {
         arr.append(QJsonObject{
             {"timestamp", c.timestamp},
-            {"open", c.open},
-            {"high", c.high},
-            {"low", c.low},
+            {"open", num_or_null(c.open, c.has_open)},
+            {"high", num_or_null(c.high, c.has_high)},
+            {"low", num_or_null(c.low, c.has_low)},
+            // close is never absent: parse_candles_json drops a bar without one,
+            // because a bar with no close is not a price point.
             {"close", c.close},
-            {"volume", static_cast<double>(c.volume)},
+            {"volume", num_or_null(static_cast<double>(c.volume), c.has_volume)},
         });
     }
     return arr;

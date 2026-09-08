@@ -9,6 +9,7 @@
 // Part of the partial-class split of QuantModulePanel.cpp.
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "screens/ai_quant_lab/QuantModulePanel.h"
 #include "screens/ai_quant_lab/QuantModulePanel_Common.h"
 #include "screens/ai_quant_lab/QuantModulePanel_GsHelpers.h"
@@ -24,7 +25,6 @@
 #include <QChartView>
 #include <QDateTime>
 #include <QDateTimeAxis>
-#include <QDesktopServices>
 #include <QFile>
 #include <QFileInfo>
 #include <QFrame>
@@ -402,7 +402,10 @@ void QuantModulePanel::on_result(const QString& module_id, const QString& comman
         auto url = payload["url"].toString();
         if (!url.isEmpty()) {
             status_label_->setText(tr("Log viewer: %1").arg(url));
-            QDesktopServices::openUrl(QUrl(url));
+            // MarketLab containment (FINCEPT_FORK_PLAN.md §11.2). The URL is
+            // whatever the RD-Agent module reported back in its result payload,
+            // so nothing in this fork fixes the destination.
+            network::ExternalUrlGuard::open_external(QUrl(url), this);
         }
         return;
     }

@@ -5,7 +5,7 @@
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
 #include "core/logging/Logger.h"
-#include "network/http/HostedPathGuard.h"
+#include "network/http/DirectRouteGuard.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -140,14 +140,16 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
     // QNetworkAccessManager, so the shared-client deny-list cannot see it).
     // The composed URL is rejected here before any network access; the local
     // derivatives calculator is the retained alternative.
+    // The decision is DirectRouteGuard's, shared with ArenaLlmClient and
+    // CloudClient and covered by tests/tst_direct_clients.cpp.
     {
-        const QString full_url = fincept::AppConfig::instance().api_base_url() + "/quantlib/" + endpoint;
-        const QUrl qurl(full_url);
-        if (network::HostedPathGuard::is_fincept_destination(qurl)) {
-            const QString err = network::HostedPathGuard::unavailable_error(qurl);
+        const auto route =
+            network::DirectRouteGuard::check_route(fincept::AppConfig::instance().api_base_url(),
+                                                   QStringLiteral("/quantlib/") + endpoint);
+        if (route.rejected) {
             LOG_WARN("QuantLib", QString("Hosted QuantLib call rejected for '%1' — %2")
-                                      .arg(endpoint, err));
-            callback(mcp::ToolResult::fail(err));
+                                      .arg(endpoint, route.error));
+            callback(mcp::ToolResult::fail(route.error));
             return;
         }
     }

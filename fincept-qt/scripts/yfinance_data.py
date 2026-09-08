@@ -86,21 +86,45 @@ def get_quote(symbol):
         if hist.empty:
             return {"error": "No data available", "symbol": symbol}
 
-        current_price = hist['Close'].iloc[-1]
-        previous_close = info.get('previousClose', current_price)
-        change = current_price - previous_close
-        change_percent = (change / previous_close) * 100 if previous_close else 0
+        # `.empty` asks whether a whole column is empty, which it never is once
+        # `hist` is non-empty — it cannot see a NaN in the *last* cell, and
+        # int(nan) raises rather than returning a bad number, so a single halted
+        # volume print used to turn this entire quote into {"error": ...}.
+        # _num/_int answer the question actually being asked per cell: is this a
+        # reading, or a gap? A gap stays None and serialises as JSON null.
+        raw_close = hist['Close'].iloc[-1]
+        current_price = _num(raw_close)
+        if current_price is None:
+            return {"error": "No usable close price", "symbol": symbol}
+
+        # previousClose is genuinely absent for freshly listed and thinly
+        # covered tickers. Defaulting it to the current price manufactured a
+        # 0.00 / 0.00% move — a reading, not a gap — which is the same falsehood
+        # the NaN guards above exist to prevent. Leave it missing and let the
+        # display say so. A zero previous close makes the percentage undefined,
+        # not zero, so that stays missing too.
+        #
+        # Both derived from the *unrounded* closes and rounded once at the end:
+        # differencing two already-rounded prices, then taking a percentage of
+        # that already-rounded difference, can land a digit away from the prices
+        # printed beside it.
+        raw_prev = info.get('previousClose')
+        previous_close = _num(raw_prev)
+        raw_change = float(raw_close) - float(raw_prev) if previous_close is not None else None
+        change = _num(raw_change)
+        change_percent = (_num(raw_change / float(raw_prev) * 100)
+                          if raw_change is not None and previous_close else None)
 
         quote_data = {
             "symbol": symbol,
-            "price": round(float(current_price), 2),
-            "change": round(float(change), 2),
-            "change_percent": round(float(change_percent), 2),
-            "volume": int(hist['Volume'].iloc[-1]) if not hist['Volume'].empty else None,
-            "high": round(float(hist['High'].iloc[-1]), 2) if not hist['High'].empty else None,
-            "low": round(float(hist['Low'].iloc[-1]), 2) if not hist['Low'].empty else None,
-            "open": round(float(hist['Open'].iloc[-1]), 2) if not hist['Open'].empty else None,
-            "previous_close": round(float(previous_close), 2),
+            "price": current_price,
+            "change": change,
+            "change_percent": change_percent,
+            "volume": _int(hist['Volume'].iloc[-1]),
+            "high": _num(hist['High'].iloc[-1]),
+            "low": _num(hist['Low'].iloc[-1]),
+            "open": _num(hist['Open'].iloc[-1]),
+            "previous_close": previous_close,
             "timestamp": int(datetime.now().timestamp()),
             "exchange": info.get('exchange', '')
         }
@@ -133,7 +157,11 @@ def get_historical(symbol, start_date, end_date, interval='1d'):
         historical_data = []
         for index, row in hist.iterrows():
             # Guard every conversion the way get_batch_quotes already does — a
-            # single NaN bar must not take the whole series with it.
+            # single NaN bar must not take the whole series with it. The same
+            # reasoning applies one level down: _int's default is None for a
+            # reason. Passing 0 here reported "zero shares traded" for a bar
+            # yfinance never returned a volume for, which is a claim about the
+            # session, not an admission that the cell is absent.
             close = _num(row['Close'])
             if close is None:
                 continue  # a bar with no close is not a price point
@@ -144,7 +172,7 @@ def get_historical(symbol, start_date, end_date, interval='1d'):
                 "high": _num(row['High']),
                 "low": _num(row['Low']),
                 "close": close,
-                "volume": _int(row['Volume'], 0),
+                "volume": _int(row['Volume']),
                 "adj_close": close
             })
 
@@ -349,27 +377,37 @@ def get_batch_quotes(symbols):
                     continue
 
                 hist = hist.dropna(how='all')
-                raw_price = hist['Close'].iloc[-1]
-                if pd.isna(raw_price):
+                raw_close = hist['Close'].iloc[-1]
+                current_price = _num(raw_close)
+                if current_price is None:
                     continue
-                current_price = float(raw_price)
-                # Use previous trading day close for accurate daily change.
-                # With period="5d" we always have >= 2 rows for normally-traded instruments.
-                raw_prev = hist['Close'].iloc[-2] if len(hist) >= 2 else raw_price
-                previous_close = float(raw_prev) if not pd.isna(raw_prev) else current_price
-                change = current_price - previous_close
-                change_percent = (change / previous_close) * 100 if previous_close else 0
+                # Previous trading day close, for the daily change. period="5d"
+                # normally leaves >= 2 rows, but a freshly listed or freshly
+                # rolled instrument arrives with one -- and one row is no prior
+                # close, not a prior close that happens to equal today's.
+                # Substituting the current price manufactured a 0.00 / 0.00%
+                # move; see get_quote for why that, and a zero previous close,
+                # are gaps rather than readings. Same rounding discipline too:
+                # derive from the unrounded closes, round once.
+                raw_prev = hist['Close'].iloc[-2] if len(hist) >= 2 else None
+                previous_close = _num(raw_prev)
+                raw_change = float(raw_close) - float(raw_prev) if previous_close is not None else None
+                change = _num(raw_change)
+                change_percent = (_num(raw_change / float(raw_prev) * 100)
+                                  if raw_change is not None and previous_close else None)
 
                 results.append({
                     "symbol": symbol,
-                    "price": round(current_price, 2),
-                    "change": round(change, 2),
-                    "change_percent": round(change_percent, 2),
-                    "volume": int(hist['Volume'].iloc[-1]) if not pd.isna(hist['Volume'].iloc[-1]) else 0,
-                    "high": round(float(hist['High'].iloc[-1]), 2) if not pd.isna(hist['High'].iloc[-1]) else None,
-                    "low": round(float(hist['Low'].iloc[-1]), 2) if not pd.isna(hist['Low'].iloc[-1]) else None,
-                    "open": round(float(hist['Open'].iloc[-1]), 2) if not pd.isna(hist['Open'].iloc[-1]) else None,
-                    "previous_close": round(previous_close, 2),
+                    "price": current_price,
+                    "change": change,
+                    "change_percent": change_percent,
+                    # None, not 0, throughout: a cell yfinance did not return is
+                    # an absent reading, and the host renders it as such.
+                    "volume": _int(hist['Volume'].iloc[-1]),
+                    "high": _num(hist['High'].iloc[-1]),
+                    "low": _num(hist['Low'].iloc[-1]),
+                    "open": _num(hist['Open'].iloc[-1]),
+                    "previous_close": previous_close,
                     "timestamp": int(datetime.now().timestamp()),
                     "exchange": ""
                 })
@@ -1060,7 +1098,9 @@ def get_historical_period(symbol, period='6mo', interval='1d'):
         historical_data = []
         for index, row in hist.iterrows():
             # Same NaN guard as get_historical — this is the chart path, where
-            # one halted bar previously blanked the entire series.
+            # one halted bar previously blanked the entire series, and where a
+            # defaulted 0 volume drew a real zero-volume bar in the volume pane.
+            # Missing stays missing all the way to the display.
             close = _num(row['Close'])
             if close is None:
                 continue
@@ -1070,7 +1110,7 @@ def get_historical_period(symbol, period='6mo', interval='1d'):
                 "high": _num(row['High']),
                 "low": _num(row['Low']),
                 "close": close,
-                "volume": _int(row['Volume'], 0)
+                "volume": _int(row['Volume'])
             })
 
         return historical_data

@@ -1,3 +1,4 @@
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/equity/MarketSentimentService.h"
 
 #include "core/logging/Logger.h"
@@ -46,7 +47,7 @@ MarketSentimentService& MarketSentimentService::instance() {
 }
 
 MarketSentimentService::MarketSentimentService(QObject* parent) : QObject(parent) {
-    nam_ = new QNetworkAccessManager(this);
+    nam_ = new network::GuardedNetworkAccessManager(this);
 }
 
 bool MarketSentimentService::is_configured() const {

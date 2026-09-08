@@ -11,13 +11,13 @@
 //   - AgentService_Repositories.cpp — memory, sessions, paper trading
 #include "services/agents/AgentService.h"
 
-#include "auth/AuthManager.h"
 #include "core/logging/Logger.h"
 #include "datahub/DataHub.h"
 #include "datahub/TopicPolicy.h"
 #include "mcp/McpProvider.h"
 #include "mcp/McpTypes.h"
 #include "mcp/TerminalMcpBridge.h"
+#include "network/http/HostedPathGuard.h"
 #include "python/PythonRunner.h"
 #include "services/llm/LlmService.h"
 #include "storage/cache/CacheManager.h"
@@ -29,6 +29,7 @@
 #include <QJsonDocument>
 #include <QPointer>
 #include <QProcess>
+#include <QUrl>
 #include <QTimer>
 #include <QUuid>
 #include <QVariant>
@@ -270,22 +271,38 @@ QJsonObject AgentService::build_api_keys() const {
                 keys[alias] = p.api_key;
             // Also ship base_url so super_agent/_llm_classify can use the right
             // endpoint (e.g. MiniMax OpenAI-compat behind "anthropic" provider).
+            //
+            // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). This is a
+            // configuration-derived hosted route, and the most easily missed one
+            // in the fork: the row is typed by the user, the value never appears
+            // as a literal in the source (so the static host audit cannot see
+            // it), and the request is issued by Python (so the C++ sink audit
+            // cannot see it either). Python's ModelsRegistry treats an unknown
+            // provider as OpenAI-compatible with a custom base_url and POSTs
+            // straight there, so a row named anything at all with a Fincept
+            // base_url would reach api.fincept.in from a child process. Judge it
+            // here, where the value crosses the boundary into the payload.
             if (!p.base_url.isEmpty()) {
-                keys[lower + "_base_url"] = p.base_url;
-                keys[lower.toUpper() + "_BASE_URL"] = p.base_url;
+                if (network::HostedPathGuard::is_fincept_destination(QUrl(p.base_url))) {
+                    LOG_WARN("AgentService", QString("Provider '%1' has a Fincept-owned base_url; it is not "
+                                          "sent to the agent runtime (%2)")
+                                      .arg(p.provider,
+                                           network::HostedPathGuard::unavailable_error(QUrl(p.base_url))));
+                } else {
+                    keys[lower + "_base_url"] = p.base_url;
+                    keys[lower.toUpper() + "_BASE_URL"] = p.base_url;
+                }
             }
         }
     }
 
-    // Always include Fincept session API key (from login) so agents can use
-    // the fincept provider even if user hasn't manually configured it in Settings.
-    if (!keys.contains("fincept")) {
-        const auto& session = auth::AuthManager::instance().session();
-        if (!session.api_key.isEmpty()) {
-            keys["fincept"] = session.api_key;
-            keys["FINCEPT_API_KEY"] = session.api_key;
-        }
-    }
+    // MarketLab: no Fincept session key is injected here. This fork has no
+    // Fincept session — there is no login, so the upstream "always add the
+    // session api_key under `fincept`" block had nothing to read and only kept
+    // the agent payload coupled to AuthManager. A `fincept` provider key, if
+    // ever wanted, arrives the same way every other provider's does: the user
+    // configures it in Data Sources / LLM providers and it comes out of
+    // LlmConfigRepository in the loop above.
 
     return keys;
 }
@@ -304,9 +321,26 @@ QJsonObject AgentService::build_payload(const QString& action, const QJsonObject
     // This means: if the caller already embedded a resolved profile in config["model"]
     // (as build_config_from_editor() now does), Python gets the right per-agent creds.
     {
+        // MarketLab containment (§5.3): active_llm carries a base_url too, by
+        // both routes below, and Python dials whatever it is given. Strip a
+        // Fincept-owned endpoint here rather than trusting the two producers —
+        // the embedded config["model"] profile is assembled elsewhere and this
+        // is the single point every variant passes through.
+        auto strip_hosted_base_url = [](QJsonObject profile) {
+            const QString base = profile.value(QStringLiteral("base_url")).toString();
+            if (!base.isEmpty() && network::HostedPathGuard::is_fincept_destination(QUrl(base))) {
+                LOG_WARN("AgentService",
+                         QString("active_llm base_url is Fincept-owned; removed before the agent "
+                                 "payload (%1)")
+                             .arg(network::HostedPathGuard::unavailable_error(QUrl(base))));
+                profile.remove(QStringLiteral("base_url"));
+            }
+            return profile;
+        };
+
         if (config.contains("model") && !config["model"].toObject()["provider"].toString().isEmpty()) {
             // Use the per-agent resolved profile already embedded in the config
-            payload["active_llm"] = config["model"].toObject();
+            payload["active_llm"] = strip_hosted_base_url(config["model"].toObject());
         } else {
             auto& llm = ai_chat::LlmService::instance();
             if (llm.is_configured()) {
@@ -317,23 +351,24 @@ QJsonObject AgentService::build_payload(const QString& action, const QJsonObject
                 active_llm["base_url"] = llm.active_base_url();
                 active_llm["temperature"] = llm.active_temperature();
                 active_llm["max_tokens"] = llm.active_max_tokens();
-                payload["active_llm"] = active_llm;
+                payload["active_llm"] = strip_hosted_base_url(active_llm);
             }
         }
     }
 
     // Resolve user_id for per-persona SQLite isolation on the Python side.
-    // Priority: params["user_id"] (caller override) > config["user_id"] > session-derived.
-    // Session: user_info.id > 0 → QString::number(id); id == 0 (guest/unauth) → "guest".
+    // Priority: params["user_id"] (caller override) > config["user_id"] > "guest".
+    //
+    // MarketLab: the third branch used to read the Fincept session's numeric
+    // user_info.id. This fork has no Fincept session, so that branch always
+    // produced "guest" anyway; it is dropped rather than kept as dead coupling
+    // to AuthManager. The Python side still gets a stable per-persona id from
+    // an explicit params/config override.
     QJsonObject enriched_params = params;
     if (!enriched_params.contains("user_id") || enriched_params["user_id"].toString().isEmpty()) {
-        QString uid;
-        if (config.contains("user_id") && !config["user_id"].toString().isEmpty()) {
+        QString uid = QStringLiteral("guest");
+        if (config.contains("user_id") && !config["user_id"].toString().isEmpty())
             uid = config["user_id"].toString();
-        } else {
-            const auto& session = auth::AuthManager::instance().session();
-            uid = session.user_info.id > 0 ? QString::number(session.user_info.id) : QStringLiteral("guest");
-        }
         enriched_params["user_id"] = uid;
     }
 
@@ -397,10 +432,10 @@ void AgentService::run_python_light(const QString& action, const QJsonObject& pa
                                     std::function<void(bool, QJsonObject)> on_result) {
     // SECURITY: this used to hand the payload to PythonRunner::run() as a
     // command-line argument. That payload is not "light" — build_payload()
-    // embeds every configured LLM provider API key, the Fincept session key,
-    // the MCP bridge token, the destructive-capability token, and the whole
-    // terminal_tools catalog. As argv it is readable by any process running as
-    // the same user (Win32_Process.CommandLine via WMI on Windows, no
+    // embeds every configured LLM provider API key, the MCP bridge token, the
+    // destructive-capability token, and the whole terminal_tools catalog. As
+    // argv it is readable by any process running as the same user
+    // (Win32_Process.CommandLine via WMI on Windows, no
     // elevation; /proc/<pid>/cmdline on Linux) and it is captured by crash
     // dumps and EDR telemetry. Worse, the catalog pushes it past PythonRunner's
     // 8 KB argv-spill threshold, so it was written to a temp file in

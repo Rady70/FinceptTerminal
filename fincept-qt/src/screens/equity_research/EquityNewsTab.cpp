@@ -1,4 +1,5 @@
 // src/screens/equity_research/EquityNewsTab.cpp
+#include "network/http/ExternalUrlGuard.h"
 #include "screens/equity_research/EquityNewsTab.h"
 
 #include "services/equity/EquityResearchService.h"
@@ -280,7 +281,10 @@ bool EquityNewsTab::eventFilter(QObject* obj, QEvent* event) {
     if (event->type() == QEvent::MouseButtonRelease) {
         QString url = obj->property("url").toString();
         if (!url.isEmpty()) {
-            QDesktopServices::openUrl(QUrl(url));
+            // MarketLab (§11.2): the link comes from a fetched news item, so the
+            // destination is not known statically and a Fincept-owned article
+            // link would otherwise open in the user's browser.
+            network::ExternalUrlGuard::open_external(QUrl(url), this);
             return true;
         }
     }

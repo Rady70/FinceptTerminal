@@ -1,3 +1,4 @@
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/workflow/adapters/ServiceBridges.h"
 
 #include "core/logging/Logger.h"
@@ -1696,7 +1697,7 @@ static void wire_utility_bridges(NodeRegistry& registry) {
 
             static QNetworkAccessManager* rss_nam = nullptr;
             if (!rss_nam)
-                rss_nam = new QNetworkAccessManager;
+                rss_nam = new network::GuardedNetworkAccessManager;
 
             QNetworkRequest request{QUrl{url}};
             request.setRawHeader("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml");
@@ -1938,7 +1939,7 @@ static void wire_utility_bridges(NodeRegistry& registry) {
         execute_request = [](std::shared_ptr<ApiCallState> state) {
             static QNetworkAccessManager* api_nam = nullptr;
             if (!api_nam)
-                api_nam = new QNetworkAccessManager;
+                api_nam = new network::GuardedNetworkAccessManager;
 
             QNetworkReply* reply = nullptr;
             if (state->method == "POST")

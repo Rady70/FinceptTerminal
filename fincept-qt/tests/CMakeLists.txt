@@ -126,4 +126,25 @@ fincept_add_test(tst_marketlab_boundary
     "${PROJECT_SOURCE_DIR}/src/core/capability/CapabilityManager.cpp"
     "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary")
+# MarketLab: the rejection the three direct clients (ArenaLlmClient,
+# QuantLibClient, CloudClient) share. Those clients own their own
+# QNetworkAccessManager, so the shared HttpClient deny-list never sees them and
+# each has to reject for itself — the decision they all call lives in the
+# DirectRouteGuard leaf so it can be linked here against Qt Core alone.
+# Deliberately NOT Qt6::Network: a binary with no network stack in it cannot
+# initiate I/O, which is half of what this suite asserts.
+fincept_add_test(tst_direct_clients
+    tst_direct_clients.cpp
+    "${PROJECT_SOURCE_DIR}/src/network/http/DirectRouteGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/ProbeGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
+
+# MarketLab: quote / candle parsing — the missing-vs-zero decision, and the
+# source / retrieval-time / status the result carries (FINCEPT_FORK_PLAN.md §4).
+# src/services/equity/EquityQuoteParse.h is header-only and depends only on Qt
+# Core plus EquityResearchModels.h (also header-only), so this adds one TU and
+# no app sources at all.
+fincept_add_test(tst_equity_parse
+    tst_equity_parse.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse")

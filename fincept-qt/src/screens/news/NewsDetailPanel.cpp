@@ -1,6 +1,7 @@
 #include "screens/news/NewsDetailPanel.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "services/file_manager/FileManagerService.h"
 #include "storage/repositories/NewsArticleRepository.h"
 #include "ui/theme/Theme.h"
@@ -9,7 +10,6 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QFile>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -219,8 +219,10 @@ QWidget* NewsDetailPanel::build_content_view() {
     layout->addWidget(actions);
 
     connect(open_btn_, &QPushButton::clicked, this, [this]() {
+        // MarketLab (§11.2): the link comes from a fetched feed item, so a
+        // Fincept-owned article link would otherwise open in the user's browser.
         if (has_article_)
-            QDesktopServices::openUrl(QUrl(current_article_.link));
+            network::ExternalUrlGuard::open_external(QUrl(current_article_.link), this);
     });
     connect(copy_btn_, &QPushButton::clicked, this, [this]() {
         if (has_article_)

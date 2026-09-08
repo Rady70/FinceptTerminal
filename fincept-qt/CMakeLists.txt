@@ -881,6 +881,24 @@ set(CORE_SOURCES
 set(NETWORK_SOURCES
     src/network/http/HttpClient.cpp
     src/network/http/HostedPathGuard.cpp
+    # MarketLab: the rejection decision the three direct clients (ArenaLlmClient,
+    # QuantLibClient, CloudClient) share. A leaf TU on purpose — Qt Core only,
+    # so tests/tst_direct_clients.cpp can link the real production decision
+    # without dragging a service graph or Qt Network into a test binary.
+    src/network/http/DirectRouteGuard.cpp
+    # MarketLab: the one decision the four Data Sources connector probes make
+    # before opening a raw socket (§5.3). A leaf TU for the same reason as
+    # DirectRouteGuard — the probe sites live in screens/, mcp/ and workflow/,
+    # none of which a unit test can link.
+    src/network/http/ProbeGuard.cpp
+    # MarketLab: the guard for the surfaces that own their own manager and
+    # fetch a configuration-derived URL (§5.3). Guards createRequest(), the
+    # one function every get/post/put passes through.
+    src/network/http/GuardedNetworkAccessManager.cpp
+    # MarketLab: the single external-browser handoff (§11.2). Every screen that
+    # opens an item link goes through it, so the deny-list is consulted once
+    # instead of at a dozen call sites that could each forget.
+    src/network/http/ExternalUrlGuard.cpp
     src/network/cloud/CloudClient.cpp
 )
 # WebSocketClient is always compiled; it stubs out when HAS_QT_WEBSOCKETS is not defined
@@ -4250,6 +4268,34 @@ endif()
 # `marketlab-audit` target and (with tests on) as a CTest named
 # `marketlab_audit`.
 find_package(Python3 COMPONENTS Interpreter QUIET)
+
+# The FINCEPT_BUILD_TESTS branch of this guard is load-bearing, and it is the
+# reason the interpreter check is not simply QUIET-and-skip. The audit is a
+# MANDATORY control, not an optional convenience: it is what turns a newly
+# added Fincept-owned host or an undispositioned network sink into a build
+# failure. When it is only registered `if(Python3_Interpreter_FOUND)`, a
+# machine without a python3 on PATH configures cleanly, runs ctest, reports
+# every test passing — and never runs the audit at all. The control does not
+# announce its own absence, so the evidence trail records a green test run
+# that proves strictly less than it claims. A test configuration therefore
+# fails CLOSED here, at configure time, naming the control and the fix.
+#
+# With tests OFF the soft behaviour is kept deliberately: `marketlab-audit` is
+# then only a developer convenience target, nothing consumes its result as
+# evidence, and a missing interpreter should not break an ordinary app build.
+if(FINCEPT_BUILD_TESTS AND NOT Python3_Interpreter_FOUND)
+    message(FATAL_ERROR
+        "FINCEPT_BUILD_TESTS=ON but no Python 3 interpreter was found, so the "
+        "MarketLab hosted-path audit (marketlab/audit_hosted_paths.py, registered as "
+        "the CTest `marketlab_audit`) cannot be registered. That audit is a required "
+        "boundary control (FINCEPT_FORK_PLAN.md §5.3) — omitting it silently would let "
+        "a test run pass while the control never executed.\n"
+        "Fix: install Python 3 and put it on PATH, or point CMake at one with "
+        "-DPython3_EXECUTABLE=/path/to/python3. The script is pure stdlib — no pip "
+        "install, no virtualenv. If you genuinely want a build with no audit, "
+        "configure with -DFINCEPT_BUILD_TESTS=OFF.")
+endif()
+
 if(Python3_Interpreter_FOUND)
     add_custom_target(marketlab-audit
         COMMAND ${Python3_EXECUTABLE}

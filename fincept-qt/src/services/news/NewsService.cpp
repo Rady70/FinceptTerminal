@@ -8,6 +8,7 @@
 //   - NewsService_Parsing.cpp        — RSS/Atom parsing + article enrichment
 //   - NewsService_Classification.cpp — threat classification + source flags
 //   - NewsService_Feeds.cpp          — static catalog of default RSS feeds
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/news/NewsService.h"
 
 #include "core/logging/Logger.h"
@@ -51,7 +52,7 @@ NewsService& NewsService::instance() {
 }
 
 NewsService::NewsService() {
-    nam_ = new QNetworkAccessManager(this);
+    nam_ = new network::GuardedNetworkAccessManager(this);
     refresh_timer_ = new QTimer(this);
     refresh_timer_->setInterval(kArticleCacheTtlSec * 1000);
     connect(refresh_timer_, &QTimer::timeout, this,

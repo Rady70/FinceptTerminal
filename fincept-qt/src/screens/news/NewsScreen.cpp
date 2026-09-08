@@ -5,6 +5,7 @@
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
 #include "core/symbol/SymbolDragSource.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "screens/news/NewsCommandBar.h"
 #include "screens/news/NewsDetailPanel.h"
 #include "screens/news/NewsFeedPanel.h"
@@ -21,7 +22,6 @@
 #include "ui/theme/Theme.h"
 
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSettings>
@@ -310,8 +310,10 @@ void NewsScreen::connect_signals() {
         auto idx = feed_panel_->list_view()->currentIndex();
         if (idx.isValid()) {
             auto article = feed_panel_->model()->article_at(idx.row());
+            // MarketLab (§11.2): same fetched-content link, reached by shortcut
+            // rather than by click.
             if (!article.link.isEmpty())
-                QDesktopServices::openUrl(QUrl(article.link));
+                network::ExternalUrlGuard::open_external(QUrl(article.link), this);
         }
     });
 

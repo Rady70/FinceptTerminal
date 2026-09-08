@@ -21,7 +21,46 @@ struct QuoteData {
     double high = 0;
     double low = 0;
     double volume = 0;
+
+    // ── Provenance ───────────────────────────────────────────────────────────
+    // FINCEPT_FORK_PLAN.md §4: "the displayed or retained result identifies its
+    // source and retrieval status". Appended after the existing members on
+    // purpose — every brace-init site in MarketDataService.cpp lists only the
+    // eight above, which stays valid aggregate initialisation, so no consumer of
+    // this struct has to change to keep compiling.
+    QString source;          ///< "yfinance", or "cache (yfinance)" on a cache hit
+    qint64 retrieved_at = 0; ///< epoch seconds at which the provider answered
+    QString status;          ///< "OK" | "PARTIAL" | "STALE" — see kQuoteStatus* below
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // yfinance_data.py emits JSON null for a cell the provider did not return,
+    // and QJsonValue::toDouble() flattens null, an absent key and a genuine zero
+    // to the same 0.0 — which is how a halted session reached the watchlist as a
+    // volume of "0". A bare `double` cannot carry that difference, so every
+    // numeric field above is paired with the flag that says whether it arrived.
+    //
+    // Appended after the existing members, like the provenance block above and
+    // for the same reason: every brace-init site lists only the eight leading
+    // fields, so those stay valid aggregate initialisation and no consumer has
+    // to change to keep compiling. A reader that does not ask still sees 0.0,
+    // exactly as before; a reader that asks is told the truth.
+    bool has_price = false;
+    bool has_change = false;
+    bool has_change_pct = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_volume = false;
 };
+
+/// Retrieval status tokens for QuoteData::status. Deliberately untranslated:
+/// they are provenance, and have to read the same in a bug report as on screen.
+/// "PARTIAL" means at least one has_* flag above came back false, so that value
+/// renders as its widget's missing-value placeholder rather than as a number.
+/// "STALE" outranks it — a row served after a failed refresh is first of all
+/// not current.
+inline constexpr const char* kQuoteStatusOk = "OK";
+inline constexpr const char* kQuoteStatusPartial = "PARTIAL";
+inline constexpr const char* kQuoteStatusStale = "STALE";
 
 struct InfoData {
     QString symbol;

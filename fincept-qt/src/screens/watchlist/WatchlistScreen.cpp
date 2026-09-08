@@ -13,6 +13,8 @@
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -33,6 +35,32 @@
 namespace fincept::screens {
 
 using namespace fincept::ui;
+
+namespace {
+
+/// One row's provenance, for the row tooltip. FINCEPT_FORK_PLAN.md §4 requires
+/// the displayed result to identify its source and retrieval status; the table
+/// has no spare column for it, so it rides on the row itself.
+QString quote_provenance_tooltip(const services::QuoteData& q) {
+    const QString source = q.source.isEmpty() ? QCoreApplication::translate("WatchlistScreen", "unknown") : q.source;
+    QString text = QCoreApplication::translate("WatchlistScreen", "Source: %1").arg(source);
+    text += QLatin1Char('\n');
+    text += q.retrieved_at > 0
+                ? QCoreApplication::translate("WatchlistScreen", "Retrieved: %1")
+                      .arg(QDateTime::fromSecsSinceEpoch(q.retrieved_at).toString(Qt::ISODate))
+                : QCoreApplication::translate("WatchlistScreen", "Retrieved: unknown");
+    text += QLatin1Char('\n');
+    text += QCoreApplication::translate("WatchlistScreen", "Status: %1")
+                .arg(q.status.isEmpty() ? QStringLiteral("UNKNOWN") : q.status);
+    if (q.status == QLatin1String(services::kQuoteStatusStale)) {
+        text += QLatin1Char('\n');
+        text += QCoreApplication::translate("WatchlistScreen",
+                                            "The refresh failed; this row is the last cached value.");
+    }
+    return text;
+}
+
+} // namespace
 
 // ── Style builders (read live theme tokens) ─────────────────────────────────
 
@@ -732,11 +760,24 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         auto it = quote_map.find(s.symbol);
         if (it != quote_map.end()) {
             const auto& q = it.value();
-            table_->add_row({q.symbol, q.name.isEmpty() ? s.name : q.name, QString("$%1").arg(q.price, 0, 'f', 2),
-                             QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2),
-                             QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2),
-                             QString("$%1").arg(q.high, 0, 'f', 2), QString("$%1").arg(q.low, 0, 'f', 2),
-                             fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))});
+            // A field the provider did not return is shown as the same "--" this
+            // table already uses for a symbol with no quote at all. Formatting a
+            // 0.0 default would print "$0.00" / "+0.00%" / "0" — a reading, and
+            // an alarming one, for a value that was simply never received
+            // (FINCEPT_FORK_PLAN.md §4).
+            const QString kNA = QStringLiteral("--");
+            table_->add_row({q.symbol, q.name.isEmpty() ? s.name : q.name,
+                             q.has_price ? QString("$%1").arg(q.price, 0, 'f', 2) : kNA,
+                             q.has_change ? QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2)
+                                          : kNA,
+                             q.has_change_pct
+                                 ? QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
+                                 : kNA,
+                             q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
+                             q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
+                             q.has_volume
+                                 ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
+                                 : kNA});
 
             int row = table_->rowCount() - 1;
 
@@ -753,8 +794,26 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             QString chg_color = q.change_pct >= 0 ? colors::POSITIVE : colors::NEGATIVE;
             table_->set_cell_color(row, 3, chg_color);
             table_->set_cell_color(row, 4, chg_color);
+
+            // Provenance for this row — which provider produced these numbers,
+            // when, and whether it is a live print or the last cached one.
+            // Hover anywhere on the row rather than only on one cell.
+            const QString provenance = quote_provenance_tooltip(q);
+            for (int c = 0; c < table_->columnCount(); ++c) {
+                if (auto* cell = table_->item(row, c))
+                    cell->setToolTip(provenance);
+            }
+            // A stale row is not a fresh one: mark it so the difference is
+            // visible without having to hover.
+            if (q.status == QLatin1String(services::kQuoteStatusStale))
+                table_->set_cell_color(row, 0, colors::AMBER());
         } else {
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
+            const int row = table_->rowCount() - 1;
+            for (int c = 0; c < table_->columnCount(); ++c) {
+                if (auto* cell = table_->item(row, c))
+                    cell->setToolTip(tr("No quote has been retrieved for this symbol yet."));
+            }
         }
     }
 
@@ -920,11 +979,17 @@ void WatchlistScreen::on_export_csv() {
             continue;
         }
         const auto& q = it.value();
+        // Missing exports as an empty field, exactly like the no-quote row above.
+        // A spreadsheet reading "0.00" cannot tell a halted session from a gap,
+        // and this file outlives the screen that produced it.
+        const auto num = [](double v, bool present) { return present ? QString::number(v, 'f', 2) : QString(); };
         out << csv_escape(q.symbol) << ',' << csv_escape(q.name.isEmpty() ? s.name : q.name) << ','
-            << QString::number(q.price, 'f', 2) << ',' << QString::number(q.change, 'f', 2) << ','
-            << QString::number(q.change_pct, 'f', 2) << ',' << QString::number(q.high, 'f', 2) << ','
-            << QString::number(q.low, 'f', 2) << ','
-            << fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)) << '\n';
+            << num(q.price, q.has_price) << ',' << num(q.change, q.has_change) << ','
+            << num(q.change_pct, q.has_change_pct) << ',' << num(q.high, q.has_high) << ','
+            << num(q.low, q.has_low) << ','
+            << (q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
+                             : QString())
+            << '\n';
     }
 }
 

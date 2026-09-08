@@ -7,6 +7,7 @@
 #include "screens/data_sources/ConnectionTester.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ProbeGuard.h"
 #include "screens/data_sources/DataSourcesHelpers.h"
 #include "storage/repositories/DataSourceRepository.h"
 #include "ui/theme/Theme.h"
@@ -598,6 +599,27 @@ void test_connection(QWidget* parent, const QString& conn_id, const TestResultCa
         return;
     }
 
+    // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). The probe below opens
+    // a raw TCP socket to whatever the *saved* connector config names, so
+    // hiding the hosted connectors in the UI does not close this route: a
+    // connection saved (or imported) with a Fincept host still reaches DNS and
+    // the wire from here.
+    //
+    // This is the EARLY rejection — it exists so no thread and no socket object
+    // is created for the common case. It is not the guarantee; the guarantee is
+    // the ProbeGuard::check_host() call inside tcp_probe() below, at the socket
+    // itself. See the comment there for why.
+    {
+        const auto probe = network::ProbeGuard::check(test_url, host);
+        if (probe.rejected) {
+            LOG_WARN(TAG, QString("Test %1: Fincept-owned destination refused — no connection attempted").arg(display));
+            if (on_result)
+                on_result(conn_id, false, probe.error);
+            show_result_dialog(parent, display, false, probe.error);
+            return;
+        }
+    }
+
     QPointer<QWidget> parent_guard = parent;
     const QString captured_test_url = test_url;
     const QString captured_host = host;
@@ -612,6 +634,25 @@ void test_connection(QWidget* parent, const QString& conn_id, const TestResultCa
         QString message = QObject::tr("No testable endpoint found");
 
         auto tcp_probe = [](const QString& h, int p, int timeout_ms) -> std::pair<bool, QString> {
+            // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3) — AUTHORITATIVE.
+            //
+            // The guard lives HERE, at the socket, and not only at the caller,
+            // because the caller resolves several candidate hosts — cfg "host",
+            // then "serverHostname"/"server"/"account", then "zkQuorum", then
+            // the host distilled from test_url — and the one it judged was not
+            // always the one it dialled. A connector saved or imported with
+            // {"host":"example.com","serviceRoot":"//api.fincept.in/svc"} was
+            // judged on "example.com" and then this lambda was handed
+            // QUrl(test_url).host() == "api.fincept.in". Judged here, the value
+            // that is judged is by construction the value passed to
+            // connectToHost() one line below.
+            //
+            // A bare host carries no path, so the path-scoped Fincept GitHub-org
+            // rules cannot be decided here; those stay with the caller's
+            // ProbeGuard::check() over the full URL.
+            if (const auto probe = network::ProbeGuard::check_host(h); probe.rejected)
+                return {false, probe.error};
+
             QTcpSocket socket;
             socket.connectToHost(h, static_cast<quint16>(p));
             if (socket.waitForConnected(timeout_ms)) {

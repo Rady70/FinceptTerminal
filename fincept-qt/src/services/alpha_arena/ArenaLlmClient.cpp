@@ -2,7 +2,7 @@
 
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
-#include "network/http/HostedPathGuard.h"
+#include "network/http/DirectRouteGuard.h"
 #include "services/llm/ModelCatalog.h"
 #include "services/llm/ProviderCatalog.h"
 
@@ -118,10 +118,12 @@ void ArenaLlmClient::complete(const ArenaLlmRequest& req, std::function<void(Are
 
     // MarketLab: this client owns its QNetworkAccessManager, so the shared
     // deny-list cannot see its requests — reject Fincept-owned destinations
-    // here before any network access (FINCEPT_FORK_PLAN.md §5.3).
-    if (network::HostedPathGuard::is_fincept_destination(QUrl(url))) {
+    // here before any network access (FINCEPT_FORK_PLAN.md §5.3). The decision
+    // is DirectRouteGuard's, shared with QuantLibClient and CloudClient and
+    // covered by tests/tst_direct_clients.cpp.
+    if (const auto route = network::DirectRouteGuard::check_url(url); route.rejected) {
         ArenaLlmResult r;
-        r.error = network::HostedPathGuard::unavailable_error(QUrl(url));
+        r.error = route.error;
         cb(r);
         return;
     }

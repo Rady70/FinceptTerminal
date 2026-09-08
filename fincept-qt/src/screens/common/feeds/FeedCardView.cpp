@@ -1,9 +1,9 @@
 #include "screens/common/feeds/FeedCardView.h"
 
+#include "network/http/ExternalUrlGuard.h"
 #include "ui/theme/Theme.h"
 
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QFrame>
 #include <QLabel>
 #include <QMouseEvent>
@@ -39,8 +39,11 @@ class ClickableCard : public QFrame {
 
   protected:
     void mousePressEvent(QMouseEvent* e) override {
+        // MarketLab containment (FINCEPT_FORK_PLAN.md §11.2). The card's URL is
+        // the link of a fetched feed item, so a subscribed feed decides the
+        // destination, not this fork.
         if (e->button() == Qt::LeftButton && !url_.isEmpty())
-            QDesktopServices::openUrl(QUrl(url_));
+            network::ExternalUrlGuard::open_external(QUrl(url_), this);
         QFrame::mousePressEvent(e);
     }
 

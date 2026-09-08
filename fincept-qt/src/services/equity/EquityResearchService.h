@@ -51,6 +51,16 @@ class EquityResearchService : public QObject {
     void quote_loaded(fincept::services::equity::QuoteData quote);
     void info_loaded(fincept::services::equity::StockInfo info);
     void historical_loaded(QString symbol, QVector<fincept::services::equity::Candle> candles);
+    /// Provenance for the series `historical_loaded` is about to deliver —
+    /// emitted immediately before it, so a receiver has the source, the
+    /// retrieval time and the status in hand when the candles land.
+    ///
+    /// A separate signal rather than an extra argument or a same-name overload:
+    /// `historical_loaded` is connected by member-pointer address in
+    /// src/mcp/tools/EquityResearchTools.cpp (two sites), which an overload
+    /// would make ambiguous and which this change may not touch. This way no
+    /// existing connect() moves.
+    void historical_meta_loaded(QString symbol, fincept::services::equity::RetrievalMeta meta);
     void financials_loaded(fincept::services::equity::FinancialsData data);
     void technicals_loaded(fincept::services::equity::TechnicalsData data);
     void peers_loaded(QVector<fincept::services::equity::PeerData> peers);
@@ -65,8 +75,11 @@ class EquityResearchService : public QObject {
     void run_python(const QString& script, const QStringList& args, std::function<void(bool, const QString&)> cb);
 
     // Candle source: cache → region-matched connected broker → yfinance
-    // fallback. done(ok, hist_json) is invoked on the main thread.
-    void ensure_candles(const QString& symbol, const QString& period, std::function<void(bool, const QString&)> done);
+    // fallback. done(ok, hist_json, meta) is invoked on the main thread; `meta`
+    // names which of those three branches actually answered, so no caller has to
+    // reconstruct it from the logs.
+    void ensure_candles(const QString& symbol, const QString& period,
+                        std::function<void(bool, const QString&, const RetrievalMeta&)> done);
 
     // yfinance news path — the fallback fetch_news() uses when Google News
     // (fetch_company_news.py) is unavailable or returns no articles.
@@ -79,9 +92,11 @@ class EquityResearchService : public QObject {
     void fetch_news_newsapi(const QString& symbol, int count, const QString& api_key);
 
     // ── Parsers ───────────────────────────────────────────────────────────────
-    QuoteData parse_quote(const QJsonObject& obj) const;
+    // Quote and candle parsing lives in services/equity/EquityQuoteParse.h: it is
+    // pure, it is where the missing-vs-zero decision is made, and keeping it out
+    // of this class is what lets tst_equity_parse cover it without linking the
+    // Python runner, the cache and the network.
     StockInfo parse_info(const QJsonObject& obj) const;
-    QVector<Candle> parse_candles(const QJsonArray& arr) const;
     FinancialsData parse_financials(const QJsonObject& obj) const;
     TechnicalsData parse_technicals(const QString& symbol, const QJsonArray& rows) const;
     TechSignal score_indicator(const QString& name, double value, double sma20, double sma50) const;

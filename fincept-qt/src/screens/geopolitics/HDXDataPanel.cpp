@@ -1,10 +1,10 @@
 // src/screens/geopolitics/HDXDataPanel.cpp
 #include "screens/geopolitics/HDXDataPanel.h"
 
+#include "network/http/ExternalUrlGuard.h"
 #include "services/geopolitics/GeopoliticsService.h"
 #include "ui/theme/Theme.h"
 
-#include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QScrollArea>
@@ -185,7 +185,7 @@ void HDXDataPanel::build_ui() {
             return;
         const QString url = it->data(Qt::UserRole).toString();
         if (!url.isEmpty())
-            QDesktopServices::openUrl(QUrl(url));
+            network::ExternalUrlGuard::open_external(QUrl(url));
     });
 
     // Loading overlay

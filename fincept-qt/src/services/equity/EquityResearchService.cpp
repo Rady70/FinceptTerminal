@@ -1,8 +1,10 @@
 // src/services/equity/EquityResearchService.cpp
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/equity/EquityResearchService.h"
 
 #include "core/logging/Logger.h"
 #include "python/PythonRunner.h"
+#include "services/equity/EquityQuoteParse.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/DataSourceRepository.h"
 #include "trading/AccountManager.h"
@@ -11,6 +13,7 @@
 #include "trading/HistoricalDataService.h"
 
 #include <QDate>
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -135,6 +138,54 @@ QString broker_candles_to_json(const QVector<fincept::trading::BrokerCandle>& ca
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
 
+// ── Retrieval provenance helpers ─────────────────────────────────────────────
+// FINCEPT_FORK_PLAN.md §4 wants the *result* to identify its source and
+// retrieval status. Reconstructing that from a log line and the Data Sources
+// screen describes what the app usually does, not what produced the number on
+// screen.
+
+qint64 now_epoch_sec() {
+    return QDateTime::currentSecsSinceEpoch();
+}
+
+// CacheManager hands back a value and nothing else. Its unified_cache row does
+// have a created_at column, but no accessor exposes it, and the ON CONFLICT
+// clause deliberately preserves the *first* insert rather than the latest
+// refresh — so it could not answer "when was this retrieved?" even if it did.
+// Park the answer in a sidecar entry beside the payload rather than reshaping
+// the payload: the candle JSON is handed verbatim to compute_technicals.py and
+// is also read back by cache entries written before this change.
+QString meta_cache_key(const QString& cache_key) {
+    return cache_key + QStringLiteral(":meta");
+}
+
+void put_retrieval_meta(const QString& cache_key, const QString& source, qint64 retrieved_at, int ttl_sec) {
+    QJsonObject m;
+    m[QStringLiteral("source")] = source;
+    m[QStringLiteral("retrieved_at")] = static_cast<double>(retrieved_at);
+    fincept::CacheManager::instance().put(meta_cache_key(cache_key),
+                                          QVariant(QString::fromUtf8(QJsonDocument(m).toJson(QJsonDocument::Compact))),
+                                          ttl_sec, "equity");
+}
+
+/// Who originally produced a cached payload, and when. False for an entry
+/// written before the sidecar existed — the caller then says "cache" with an
+/// unknown retrieval time instead of inventing one.
+bool get_retrieval_meta(const QString& cache_key, QString& source, qint64& retrieved_at) {
+    const QVariant v = fincept::CacheManager::instance().get(meta_cache_key(cache_key));
+    if (v.isNull())
+        return false;
+    const QJsonObject m = QJsonDocument::fromJson(v.toString().toUtf8()).object();
+    source = m.value(QLatin1String("source")).toString();
+    retrieved_at = static_cast<qint64>(m.value(QLatin1String("retrieved_at")).toDouble());
+    return !source.isEmpty();
+}
+
+/// "cache" on its own hides who actually produced the prices, so name both.
+QString cache_source_label(const QString& origin) {
+    return origin.isEmpty() ? QStringLiteral("cache") : QStringLiteral("cache (%1)").arg(origin);
+}
+
 } // namespace
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
@@ -201,7 +252,15 @@ void EquityResearchService::load_quote_only(const QString& symbol) {
         return;
     const QVariant qcv = fincept::CacheManager::instance().get("equity:quote:" + symbol);
     if (!qcv.isNull()) {
-        emit quote_loaded(parse_quote(QJsonDocument::fromJson(qcv.toString().toUtf8()).object()));
+        // Source branch 1 — the local cache. retrieved_at comes out of the
+        // payload's own "timestamp", stamped by the Python layer when the
+        // provider answered, so a cache hit reports when the *price* was
+        // retrieved and not when the row was read back.
+        QuoteData q =
+            parse_quote_json(QJsonDocument::fromJson(qcv.toString().toUtf8()).object(), QStringLiteral("cache"));
+        if (q.retrieved_at > 0 && now_epoch_sec() - q.retrieved_at > kQuoteTtlSec)
+            q.status = RetrievalStatus::Stale;
+        emit quote_loaded(q);
         return;
     }
     run_python("yfinance_data.py", {"quote", symbol}, [this, symbol](bool ok, const QString& out) {
@@ -217,7 +276,10 @@ void EquityResearchService::load_quote_only(const QString& symbol) {
         fincept::CacheManager::instance().put(
             "equity:quote:" + symbol, QVariant(QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact))),
             kQuoteTtlSec, "equity");
-        emit quote_loaded(parse_quote(obj));
+        // Source branch 3 — yfinance answered directly. (Branch 2, a connected
+        // region-matched broker, streams quotes straight into the research
+        // screen via the DataHub and is stamped there.)
+        emit quote_loaded(parse_quote_json(obj, QStringLiteral("yfinance")));
     });
 }
 
@@ -254,7 +316,20 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
     if (!hcv.isNull()) {
         auto arr = QJsonDocument::fromJson(hcv.toString().toUtf8()).array();
         if (!arr.isEmpty()) {
-            emit historical_loaded(symbol, parse_candles(arr));
+            // Source branch 1 — the local cache. The sidecar remembers who
+            // originally answered and when, so a cached series still names its
+            // provider rather than implying the cache produced the prices.
+            CandleParseStats stats;
+            const auto candles = parse_candles_json(arr, &stats);
+            QString origin;
+            qint64 at = 0;
+            get_retrieval_meta(cache_key, origin, at);
+            RetrievalMeta meta =
+                candles_meta(symbol, cache_source_label(origin), at, static_cast<int>(candles.size()), stats);
+            if (at > 0 && now_epoch_sec() - at > kHistoricalTtlSec)
+                meta.status = RetrievalStatus::Stale;
+            emit historical_meta_loaded(symbol, meta);
+            emit historical_loaded(symbol, candles);
             return;
         }
     }
@@ -265,12 +340,22 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                        return;
                    }
                    auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
+                   // Source branch 2 — yfinance. This loader has no broker leg;
+                   // only ensure_candles (the indicator path) routes through a
+                   // connected broker.
+                   const qint64 at = now_epoch_sec();
                    if (!arr.isEmpty()) {
                        fincept::CacheManager::instance().put(
                            cache_key, QVariant(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact))),
                            kHistoricalTtlSec, "equity");
+                       put_retrieval_meta(cache_key, QStringLiteral("yfinance"), at, kHistoricalTtlSec);
                    }
-                   emit historical_loaded(symbol, parse_candles(arr));
+                   CandleParseStats stats;
+                   const auto candles = parse_candles_json(arr, &stats);
+                   emit historical_meta_loaded(
+                       symbol,
+                       candles_meta(symbol, QStringLiteral("yfinance"), at, static_cast<int>(candles.size()), stats));
+                   emit historical_loaded(symbol, candles);
                });
 }
 
@@ -318,15 +403,22 @@ void EquityResearchService::fetch_technicals(const QString& symbol, const QStrin
     };
 
     QPointer<EquityResearchService> self = this;
-    ensure_candles(symbol, period, [self, run_compute](bool ok, const QString& hist_json) {
-        if (!self)
-            return;
-        if (!ok || hist_json.trimmed().isEmpty()) {
-            emit self->error_occurred("Technicals", "Failed historical fetch");
-            return;
-        }
-        run_compute(hist_json);
-    });
+    ensure_candles(symbol, period,
+                   [self, symbol, run_compute](bool ok, const QString& hist_json, const RetrievalMeta& meta) {
+                       if (!self)
+                           return;
+                       if (!ok || hist_json.trimmed().isEmpty()) {
+                           emit self->error_occurred("Technicals", "Failed historical fetch");
+                           return;
+                       }
+                       // The indicators are only as attributable as the bars they
+                       // were computed from, so record which provider supplied them.
+                       LOG_INFO("EquityResearch", QString("Technicals for %1: %2 bars from %3 (%4)")
+                                                      .arg(symbol)
+                                                      .arg(meta.point_count)
+                                                      .arg(meta.source, retrieval_status_text(meta.status)));
+                       run_compute(hist_json);
+                   });
 }
 
 // ── Peers ─────────────────────────────────────────────────────────────────────
@@ -515,7 +607,7 @@ QString EquityResearchService::configured_newsapi_key() const {
 // falls back to the default Auto chain so the tab always shows news.
 void EquityResearchService::fetch_news_newsapi(const QString& symbol, int count, const QString& api_key) {
     if (!news_nam_)
-        news_nam_ = new QNetworkAccessManager(this);
+        news_nam_ = new network::GuardedNetworkAccessManager(this);
 
     QUrl url(QStringLiteral("https://newsapi.org/v2/everything"));
     QUrlQuery params;
@@ -584,43 +676,73 @@ void EquityResearchService::fetch_news_newsapi(const QString& symbol, int count,
 //   1. cache hit                                 → return immediately
 //   2. region-matched *connected* broker         → broker get_history (live, reliable)
 //   3. yfinance                                  → fallback (no broker, or broker empty/failed)
-// The result is cached under "equity:candles:<symbol>". done(ok, hist_json) is
-// always invoked on the main thread.
+// The result is cached under "equity:candles:<symbol>", with its provenance in a
+// sidecar entry beside it. done(ok, hist_json, meta) is always invoked on the
+// main thread, and `meta` names whichever of the three branches answered.
 void EquityResearchService::ensure_candles(const QString& symbol, const QString& period,
-                                           std::function<void(bool, const QString&)> done) {
+                                           std::function<void(bool, const QString&, const RetrievalMeta&)> done) {
     const QString cache_key = "equity:candles:" + symbol;
+
+    // One meta builder for all three branches, so nothing below can report a
+    // source it did not actually use.
+    auto make_meta = [symbol](const QString& source, qint64 at, int points, RetrievalStatus status) {
+        RetrievalMeta m;
+        m.symbol = symbol;
+        m.source = source;
+        m.retrieved_at = at;
+        m.point_count = points;
+        m.status = status;
+        return m;
+    };
+
     const QVariant cached = fincept::CacheManager::instance().get(cache_key);
     if (!cached.isNull()) {
         // Reject a cached empty payload ("" or "[]") — a stale rate-limited
         // result would otherwise wedge the tab on "No data returned".
         const QString c = cached.toString().trimmed();
         if (!c.isEmpty() && c != QLatin1String("[]")) {
-            done(true, cached.toString());
+            // Source branch 1 — the local cache, over whichever provider
+            // originally filled it.
+            QString origin;
+            qint64 at = 0;
+            get_retrieval_meta(cache_key, origin, at);
+            const int points = static_cast<int>(QJsonDocument::fromJson(c.toUtf8()).array().size());
+            const bool past_ttl = at > 0 && now_epoch_sec() - at > kHistoricalTtlSec;
+            done(true, cached.toString(),
+                 make_meta(cache_source_label(origin), at, points,
+                           past_ttl ? RetrievalStatus::Stale : RetrievalStatus::Ok));
             return;
         }
     }
 
     QPointer<EquityResearchService> self = this;
-    auto run_yfinance = [self, symbol, period, cache_key, done]() {
+    auto run_yfinance = [self, symbol, period, cache_key, done, make_meta]() {
         if (!self) {
-            done(false, {});
+            done(false, {}, make_meta(QStringLiteral("yfinance"), 0, 0, RetrievalStatus::Error));
             return;
         }
         self->run_python("yfinance_data.py", {"historical_period", symbol, period, "1d"},
-                         [cache_key, done](bool ok, const QString& out) {
+                         [cache_key, done, make_meta](bool ok, const QString& out) {
+                             // Source branch 3 — yfinance.
                              if (!ok) {
-                                 done(false, {});
+                                 done(false, {}, make_meta(QStringLiteral("yfinance"), 0, 0, RetrievalStatus::Error));
                                  return;
                              }
                              const QString raw = python::extract_json(out);
                              const QString trimmed = raw.trimmed();
                              if (trimmed.isEmpty() || trimmed == QLatin1String("[]")) {
-                                 done(false, {}); // yfinance rate-limited / unknown symbol
+                                 // yfinance rate-limited / unknown symbol
+                                 done(false, {}, make_meta(QStringLiteral("yfinance"), 0, 0, RetrievalStatus::Error));
                                  return;
                              }
+                             const qint64 at = now_epoch_sec();
                              fincept::CacheManager::instance().put(cache_key, QVariant(raw), kHistoricalTtlSec,
                                                                    "equity");
-                             done(true, raw);
+                             put_retrieval_meta(cache_key, QStringLiteral("yfinance"), at, kHistoricalTtlSec);
+                             done(true, raw,
+                                  make_meta(QStringLiteral("yfinance"), at,
+                                            static_cast<int>(QJsonDocument::fromJson(raw.toUtf8()).array().size()),
+                                            RetrievalStatus::Ok));
                          });
     };
 
@@ -631,13 +753,20 @@ void EquityResearchService::ensure_candles(const QString& symbol, const QString&
         LOG_INFO("EquityResearch", QString("Candles for %1 via broker %2").arg(symbol, broker_id));
         fincept::trading::HistoricalDataService::instance().fetch(
             bare, QStringLiteral("1d"), lookback, broker_id, account_id,
-            [cache_key, done, run_yfinance](bool ok, const QVector<fincept::trading::BrokerCandle>& candles,
-                                            const QString& /*err*/) {
+            [cache_key, done, run_yfinance, make_meta, broker_id](
+                bool ok, const QVector<fincept::trading::BrokerCandle>& candles, const QString& /*err*/) {
                 if (ok && !candles.isEmpty()) {
                     const QString json = broker_candles_to_json(candles);
                     if (!json.isEmpty() && json != QLatin1String("[]")) {
+                        // Source branch 2 — the connected, region-matched broker,
+                        // named by its own id rather than a generic "broker".
+                        const qint64 at = now_epoch_sec();
                         fincept::CacheManager::instance().put(cache_key, QVariant(json), kHistoricalTtlSec, "equity");
-                        done(true, json);
+                        put_retrieval_meta(cache_key, broker_id, at, kHistoricalTtlSec);
+                        done(true, json,
+                             make_meta(broker_id, at,
+                                       static_cast<int>(QJsonDocument::fromJson(json.toUtf8()).array().size()),
+                                       RetrievalStatus::Ok));
                         return;
                     }
                 }
@@ -650,21 +779,10 @@ void EquityResearchService::ensure_candles(const QString& symbol, const QString&
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
-QuoteData EquityResearchService::parse_quote(const QJsonObject& o) const {
-    QuoteData q;
-    q.symbol = o["symbol"].toString();
-    q.price = o["price"].toDouble();
-    q.change = o["change"].toDouble();
-    q.change_pct = o["change_percent"].toDouble();
-    q.open = o["open"].toDouble();
-    q.high = o["high"].toDouble();
-    q.low = o["low"].toDouble();
-    q.prev_close = o["previous_close"].toDouble();
-    q.volume = o["volume"].toDouble();
-    q.exchange = o["exchange"].toString();
-    q.timestamp = static_cast<qint64>(o["timestamp"].toDouble());
-    return q;
-}
+// parse_quote / parse_candles now live in services/equity/EquityQuoteParse.h as
+// free functions: they are pure, they are where missing-vs-zero is decided, and
+// keeping them out of this class lets tst_equity_parse cover them without
+// linking the Python runner, the cache and the network.
 
 StockInfo EquityResearchService::parse_info(const QJsonObject& o) const {
     StockInfo s;
@@ -728,23 +846,6 @@ StockInfo EquityResearchService::parse_info(const QJsonObject& o) const {
     s.recommendation_key = o["recommendation_key"].toString();
     s.analyst_count = o["number_of_analyst_opinions"].toInt();
     return s;
-}
-
-QVector<Candle> EquityResearchService::parse_candles(const QJsonArray& arr) const {
-    QVector<Candle> candles;
-    candles.reserve(arr.size());
-    for (const auto& v : arr) {
-        auto o = v.toObject();
-        Candle c;
-        c.timestamp = static_cast<qint64>(o["timestamp"].toDouble());
-        c.open = o["open"].toDouble();
-        c.high = o["high"].toDouble();
-        c.low = o["low"].toDouble();
-        c.close = o["close"].toDouble();
-        c.volume = static_cast<qint64>(o["volume"].toDouble());
-        candles.append(c);
-    }
-    return candles;
 }
 
 FinancialsData EquityResearchService::parse_financials(const QJsonObject& obj) const {

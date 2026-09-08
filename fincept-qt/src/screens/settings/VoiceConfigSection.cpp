@@ -5,6 +5,7 @@
 // using Deepgram. STT/TTS-specific tunables are only shown when their
 // respective provider is set to Deepgram.
 
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/settings/VoiceConfigSection.h"
 
 #include "core/config/AppConfig.h"
@@ -479,7 +480,7 @@ void VoiceConfigSection::on_test() {
     // Lightweight verification: GET /v1/projects — succeeds iff the key is
     // valid. No audio sent, no billing impact. Same key authorises both
     // /v1/listen (STT) and /v1/speak (TTS).
-    auto* nam = new QNetworkAccessManager(this);
+    auto* nam = new network::GuardedNetworkAccessManager(this);
     QNetworkRequest req(QUrl("https://api.deepgram.com/v1/projects"));
     req.setRawHeader("Authorization", ("Token " + api_key).toUtf8());
     req.setRawHeader("Accept", "application/json");

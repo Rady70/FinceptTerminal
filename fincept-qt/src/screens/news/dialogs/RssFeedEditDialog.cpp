@@ -1,3 +1,4 @@
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/news/dialogs/RssFeedEditDialog.h"
 
 #include "core/logging/Logger.h"
@@ -87,7 +88,7 @@ QNetworkAccessManager* RssFeedEditDialog::nam() {
     // P10 — one manager per dialog, not one per request. Parented to the
     // dialog so it dies with it.
     if (!nam_)
-        nam_ = new QNetworkAccessManager(this);
+        nam_ = new network::GuardedNetworkAccessManager(this);
     return nam_;
 }
 

@@ -26,6 +26,7 @@ class TstMarketlabBoundary : public QObject {
     void capability_defaults();
     void screen_availability();
     void hosted_path_guard();
+    void hosted_host_predicate();
 };
 
 void TstMarketlabBoundary::capability_defaults() {
@@ -125,6 +126,55 @@ void TstMarketlabBoundary::hosted_path_guard() {
     QCOMPARE(err, QStringLiteral("HOSTED_SERVICE_UNAVAILABLE: api.fincept.in"));
     QVERIFY(HostedPathGuard::is_hosted_unavailable_error(err));
     QVERIFY(!HostedPathGuard::is_hosted_unavailable_error(QStringLiteral("HTTP_500")));
+}
+
+// The bare-host predicate exists for the raw host:port probes in the Data
+// Sources connection tester, the ds_test_connection MCP tool, the live-status
+// poller and the data-source workflow node: those take a host straight out of a
+// saved connector config, so there is no URL and therefore no path to judge
+// (FINCEPT_FORK_PLAN.md §5.3).
+void TstMarketlabBoundary::hosted_host_predicate() {
+    // Fincept-owned hostnames, with and without subdomains, any case, and with
+    // stray whitespace from a config field.
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("api.fincept.in")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("fincept.in")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("sub.fincept.in")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("markets.fincept.in")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("FINCEPT.COM")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("fincept.app")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("fincept.ai")));
+    QVERIFY(HostedPathGuard::is_fincept_host(QStringLiteral("  api.fincept.in  ")));
+
+    // An absent (or whitespace-only) host is not a destination.
+    QVERIFY(!HostedPathGuard::is_fincept_host(QString()));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("   ")));
+
+    // Third-party and look-alike hostnames stay reachable.
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("query1.finance.yahoo.com")));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("notfincept.in")));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("fincept-in.example.com")));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("localhost")));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("127.0.0.1")));
+
+    // GitHub is Fincept-owned only under /Fincept-Corporation/ paths, and a
+    // bare host carries no path — denying the host alone would block unrelated
+    // third-party GitHub endpoints.
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("github.com")));
+    QVERIFY(!HostedPathGuard::is_fincept_host(QStringLiteral("raw.githubusercontent.com")));
+
+    // …so the path-scoped rules must still be decided by the URL predicate,
+    // which is why every probe site checks both forms.
+    QVERIFY(HostedPathGuard::is_fincept_destination(
+        QUrl(QStringLiteral("https://github.com/Fincept-Corporation/FinceptTerminal"))));
+    QVERIFY(HostedPathGuard::is_fincept_destination(
+        QUrl(QStringLiteral("https://raw.githubusercontent.com/Fincept-Corporation/x/updates.json"))));
+    QVERIFY(!HostedPathGuard::is_fincept_destination(QUrl(QStringLiteral("https://github.com/QuantConnect/Lean"))));
+
+    // Typed error for the bare-host form matches the URL form's wording and is
+    // recognised by the same detector.
+    const QString err = HostedPathGuard::unavailable_error(QStringLiteral("api.fincept.in"));
+    QCOMPARE(err, QStringLiteral("HOSTED_SERVICE_UNAVAILABLE: api.fincept.in"));
+    QVERIFY(HostedPathGuard::is_hosted_unavailable_error(err));
 }
 
 QTEST_GUILESS_MAIN(TstMarketlabBoundary)

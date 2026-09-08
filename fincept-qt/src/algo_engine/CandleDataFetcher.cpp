@@ -1,4 +1,5 @@
 // src/algo_engine/CandleDataFetcher.cpp
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "algo_engine/CandleDataFetcher.h"
 
 #include "core/logging/Logger.h"
@@ -311,7 +312,7 @@ void CandleDataFetcher::fetch_from_yahoo(const QStringList& symbols, const QStri
         return;
     }
     if (!yahoo_nam_)
-        yahoo_nam_ = new QNetworkAccessManager(this);
+        yahoo_nam_ = new network::GuardedNetworkAccessManager(this);
 
     const YahooInterval yi = yahoo_interval(timeframe);
     const int max_days = yahoo_max_lookback_days(yi.interval);

@@ -1,3 +1,4 @@
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/feeds/FeedMonitor.h"
 
 #include "services/feeds/FeedParseUtil.h"
@@ -44,7 +45,7 @@ FeedMonitor::FeedMonitor() : QObject(nullptr) {
     qRegisterMetaType<fincept::feeds::FeedItem>("fincept::feeds::FeedItem");
     qRegisterMetaType<QVector<fincept::feeds::FeedItem>>("QVector<fincept::feeds::FeedItem>");
     qRegisterMetaType<fincept::feeds::FeedStatus>("fincept::feeds::FeedStatus");
-    nam_ = new QNetworkAccessManager(this);
+    nam_ = new network::GuardedNetworkAccessManager(this);
 }
 
 void FeedMonitor::ensure_loaded() {
