@@ -836,7 +836,7 @@ void FileManagerScreen::render_files() {
             grid->setContentsMargins(0, 0, 0, 0);
             grid->setSpacing(8);
 
-            for (int i = 0; i < 11; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 const auto& s = sources[i];
                 auto* card = new QWidget(this);
                 card->setStyleSheet(panel_ss());

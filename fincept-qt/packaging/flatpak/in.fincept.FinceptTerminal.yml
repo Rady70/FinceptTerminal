@@ -57,6 +57,8 @@ modules:
       # Pinned to the latest *released* tag. Bump both fields together on each
       # release; a tag that does not exist fails the build at source fetch,
       # which is what v4.5.0 did here before it was ever tagged.
+      # MarketLab fork: this manifest carries the fork's version 0.1.0; the
+      # tag/commit below pin the upstream base it was built from.
       - type: git
         url: https://github.com/Fincept-Corporation/FinceptTerminal.git
         tag: v4.4.1
