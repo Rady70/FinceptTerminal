@@ -10,9 +10,9 @@ name: PR Build (compile + self-test gate)
 #   `v*` tag push, on three platforms at once, in release.yml. Every release
 #   was a blind roll.
 #
-#   This job builds the same configuration release.yml builds, on the same
-#   three platforms, and runs the headless self-tests. It is the gate that
-#   makes a tag push boring.
+#   This job builds the same configuration release.yml builds, on Windows and
+#   Linux, and runs the headless self-tests. It is the gate that
+#   makes a tag push boring. (macOS is not part of the fork's PR CI.)
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -46,7 +46,9 @@ env:
   # Mirrors release.yml — qtserialport is required because the qtpositioning
   # NMEA plugin links Qt6SerialPort.
   QT_MODULES: "qtcharts qtwebsockets qtmultimedia qtwebengine qtwebchannel qtpositioning qtserialport"
-  APP_NAME: FinceptTerminal
+  # MarketLab fork: the fork's CMake sets OUTPUT_NAME "MarketLabTerminal", so
+  # the CI gates must exercise the fork binary, not the upstream name.
+  APP_NAME: MarketLabTerminal
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -76,9 +78,6 @@ jobs:
           - os: ubuntu-22.04
             platform: Linux
             qt_arch: linux_gcc_64
-          - os: macos-15
-            platform: macOS
-            qt_arch: clang_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
 
@@ -152,10 +151,6 @@ jobs:
           echo "CC=gcc-12"  >> "$GITHUB_ENV"
           echo "CXX=g++-12" >> "$GITHUB_ENV"
 
-      - name: Install build tools (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ninja cmake || brew upgrade ninja cmake || true
-
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
@@ -222,21 +217,6 @@ jobs:
             -DFINCEPT_DEV_BUILD=OFF \
             -DFINCEPT_BUILD_INSTALLER=OFF
 
-      - name: Configure (macOS)
-        if: runner.os == 'macOS'
-        working-directory: fincept-qt
-        run: |
-          set -euo pipefail
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DFINCEPT_DEV_BUILD=OFF \
-            -DFINCEPT_BUILD_INSTALLER=OFF
-
       # Guard against someone "fixing" a slow PR build by flipping the preset
       # to the dev configuration — that would quietly delete the unity-batch
       # coverage this workflow exists to provide. The build dir is always
@@ -273,8 +253,6 @@ jobs:
           set -euo pipefail
           if [ "${{ runner.os }}" = "Windows" ]; then
             BINARY="build/Release/${{ env.APP_NAME }}.exe"
-          elif [ -f "build/${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}" ]; then
-            BINARY="build/${{ env.APP_NAME }}.app/Contents/MacOS/${{ env.APP_NAME }}"
           else
             BINARY="build/${{ env.APP_NAME }}"
           fi

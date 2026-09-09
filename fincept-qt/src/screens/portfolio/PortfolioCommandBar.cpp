@@ -345,16 +345,7 @@ void PortfolioCommandBar::build_detail_tabs(QHBoxLayout* layout) {
 }
 
 void PortfolioCommandBar::build_tools_cluster(QHBoxLayout* layout) {
-    auto make_tool_btn = [&](QPushButton*& out, const QString& text, const char* accent, auto signal) {
-        out = new QPushButton(text);
-        out->setFixedHeight(22);
-        out->setMinimumWidth(52);
-        out->setCursor(Qt::PointingHandCursor);
-        out->setProperty("accent", QString(accent));
-        out->setObjectName("pfToolBtn");
-        connect(out, &QPushButton::clicked, this, signal);
-        layout->addWidget(out);
-    };
+    (void)layout;
 }
 
 // ── Styling ──────────────────────────────────────────────────────────────────
@@ -411,14 +402,6 @@ void PortfolioCommandBar::apply_row2_styles() {
     for (auto* btn : detail_btns_) {
         btn->setStyleSheet(tab_qss);
     }
-
-    auto tool_style = [](QPushButton* btn, const char* accent) {
-        btn->setStyleSheet(QString("QPushButton#pfToolBtn { background:transparent; color:%1; border:1px solid %1;"
-                                   "  padding:0 10px; font-size:11px; font-weight:700;"
-                                   "  letter-spacing:0.5px; }"
-                                   "QPushButton#pfToolBtn:hover { background:%1; color:#000; }")
-                               .arg(accent));
-    };
 }
 
 // ── Dropdown ─────────────────────────────────────────────────────────────────

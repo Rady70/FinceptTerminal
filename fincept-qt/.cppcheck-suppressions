@@ -5,3 +5,8 @@ unknownMacro
 missingIncludeSystem
 # unusedFunction is noisy in a large Qt project (slots are "unused" from cppcheck's view)
 unusedFunction
+# MarketLab fork: inherited upstream findings baselined at the fork point
+# (untouched upstream code; the runner-image cppcheck build exits 1 on them).
+# See the Phase 2+3 finalization record in Rady70/Market_Lab.
+src/auth/GoogleDesktopLogin.cpp:38:publicAllocationError
+src/services/sectors/SectorResolver.cpp:231:identicalConditionAfterEarlyExit
