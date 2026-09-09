@@ -75,7 +75,7 @@ std::vector<EvalCase> corpus() {
         // ── news ──
         {"show me the latest market news", {"get_news", "get_top_news"}},
         {"search for recent news about Tesla", {"search_news", "get_equity_news"}},
-        {"summarize today's top headlines", {"summarize_news_headlines", "get_news_summary"}},
+        {"summarize today's top headlines", {"get_news_summary", "get_top_news"}},
         {"alert me when there is breaking news about oil prices", {"add_news_monitor"}},
 
         // ── notes ──

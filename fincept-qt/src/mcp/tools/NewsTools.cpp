@@ -285,8 +285,8 @@ std::vector<ToolDef> get_news_tools() {
     {
         ToolDef t;
         t.name = "get_news_summary";
-        t.description = "Get a breakdown of current news: article count and sentiment per category. "
-                        "Useful for a quick market intelligence overview.";
+        t.description = "Get a summary breakdown of current news headlines: article count and sentiment per "
+                        "category. Useful for a quick market intelligence overview.";
         t.category = "news";
         t.input_schema.properties =
             QJsonObject{{"time_range", QJsonObject{{"type", "string"}, {"description", "Time window (default: 24H)"}}}};

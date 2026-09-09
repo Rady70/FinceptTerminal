@@ -327,7 +327,7 @@ std::vector<ToolDef> get_data_sources_tools() {
     {
         ToolDef t;
         t.name = "ds_list_connectors";
-        t.description = "List all available connector types with their ID, name, category, "
+        t.description = "List all available data-source connector types with their ID, name, category, "
                         "auth requirement, and testability. Use this to discover valid provider IDs.";
         t.category = "data-sources";
         t.input_schema.properties = QJsonObject{};
@@ -416,7 +416,7 @@ std::vector<ToolDef> get_data_sources_tools() {
     {
         ToolDef t;
         t.name = "ds_connectors_by_category";
-        t.description = "List connector types filtered by category. "
+        t.description = "List available data-source connector types filtered by category. "
                         "Valid categories: database, api, file, streaming, cloud, "
                         "timeseries, market-data, search, warehouse, alt-data, open-banking.";
         t.category = "data-sources";
