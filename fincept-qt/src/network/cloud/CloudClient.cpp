@@ -67,9 +67,8 @@ bool CloudClient::reject_hosted(const QString& endpoint, const Callback& cb, con
     if (!route.rejected)
         return false;
     const QString err = route.error;
-    LOG_WARN("CloudSync",
-             QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
-                 .arg(route.url.host()));
+    LOG_WARN("CloudSync", QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
+                              .arg(route.url.host()));
     const QObject* receiver = context;
     QTimer::singleShot(0, receiver, [cb, err]() {
         CloudResponse out;

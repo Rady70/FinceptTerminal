@@ -403,8 +403,7 @@ void SecuritySection::build_ui() {
     sec_allow_destructive_ = new QCheckBox(tr("Allow MCP tools to modify files, workspaces and data"));
     sec_allow_destructive_->setStyleSheet(check_ss());
     sec_allow_destructive_->setAccessibleName(tr("Allow MCP tools to modify files, workspaces and data"));
-    auto* row_destructive =
-        make_row(tr("Destructive MCP Tools"), sec_allow_destructive_, destructive_tools_desc());
+    auto* row_destructive = make_row(tr("Destructive MCP Tools"), sec_allow_destructive_, destructive_tools_desc());
     capture_row_labels(row_destructive, &row_destructive_lbl_, &row_destructive_desc_);
     vl->addWidget(row_destructive);
 

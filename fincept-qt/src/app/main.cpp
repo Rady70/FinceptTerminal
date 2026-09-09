@@ -85,6 +85,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -777,8 +778,7 @@ int main(int argc, char* argv[]) {
     {
         bool tools_needed_synchronously = false;
         for (int i = 1; i < argc; ++i) {
-            if (qstrcmp(argv[i], "--selftest-tools") == 0 ||
-                qstrcmp(argv[i], "--dump-tools") == 0 ||
+            if (qstrcmp(argv[i], "--selftest-tools") == 0 || qstrcmp(argv[i], "--dump-tools") == 0 ||
                 // MarketLab boundary selftest asserts the SHIPPED MCP tool set
                 // (no live-trading/forum/profile tools), so the real registry
                 // must be populated before it runs.

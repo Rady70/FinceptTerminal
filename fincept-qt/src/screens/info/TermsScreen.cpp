@@ -159,7 +159,8 @@ QWidget* TermsScreen::build_page() {
 
     // Section 10
     pvl->addWidget(section_heading("10", tr("CONTACT INFORMATION")));
-    pvl->addWidget(body_text(tr("For questions about these Terms in the context of this fork, see the bundled Help and Contact screens.")));
+    pvl->addWidget(body_text(
+        tr("For questions about these Terms in the context of this fork, see the bundled Help and Contact screens.")));
 
     vl->addWidget(panel);
 

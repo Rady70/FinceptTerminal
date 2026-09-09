@@ -15,7 +15,6 @@ NewsCommandBar::NewsCommandBar(QWidget* parent) : QWidget(parent) {
 
     build_command_row(root);
     build_intel_row(root);
-
 }
 
 void NewsCommandBar::changeEvent(QEvent* event) {
@@ -286,8 +285,8 @@ void NewsCommandBar::build_command_row(QVBoxLayout* root) {
     for (QWidget* w : {static_cast<QWidget*>(sort_relevance_), static_cast<QWidget*>(sort_newest_),
                        static_cast<QWidget*>(view_wire_), static_cast<QWidget*>(view_clusters_),
                        static_cast<QWidget*>(lang_filter_combo_), static_cast<QWidget*>(variant_combo_),
-                       static_cast<QWidget*>(refresh_combo_),
-                       static_cast<QWidget*>(sources_btn_), static_cast<QWidget*>(refresh_btn_)}) {
+                       static_cast<QWidget*>(refresh_combo_), static_cast<QWidget*>(sources_btn_),
+                       static_cast<QWidget*>(refresh_btn_)}) {
         if (w) {
             QWidget::setTabOrder(prev, w);
             prev = w;

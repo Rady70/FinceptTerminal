@@ -171,8 +171,8 @@ bool WindowFrame::apply_layout(const layout::FrameLayout& fl) {
         // MarketLab: a saved layout must never reopen a screen that is
         // Unavailable in this build (FINCEPT_FORK_PLAN.md §5.2).
         if (!capability::CapabilityManager::instance().is_screen_allowed(ps.type_id)) {
-            LOG_WARN("WindowFrame", QString("apply_layout: dropping panel '%1' — unavailable in this build")
-                                        .arg(ps.type_id));
+            LOG_WARN("WindowFrame",
+                     QString("apply_layout: dropping panel '%1' — unavailable in this build").arg(ps.type_id));
             continue;
         }
         QString id = ps.type_id;

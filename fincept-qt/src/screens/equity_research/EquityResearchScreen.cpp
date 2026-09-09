@@ -103,10 +103,9 @@ EquityResearchScreen::EquityResearchScreen(QWidget* parent) : QWidget(parent) {
                 // provenance strip instead of leaving the previous symbol's
                 // "SRC: yfinance · OK" standing over an unavailable price.
                 if (source_label_) {
-                    source_label_->setText(
-                        tr("SRC: %1 · %2")
-                            .arg(tr("unavailable"),
-                                 services::equity::retrieval_status_text(services::equity::RetrievalStatus::Error)));
+                    source_label_->setText(tr("SRC: %1 · %2")
+                                               .arg(tr("unavailable"), services::equity::retrieval_status_text(
+                                                                           services::equity::RetrievalStatus::Error)));
                     source_label_->setToolTip(message.trimmed().isEmpty() ? tr("The quote provider returned no data.")
                                                                           : message.trimmed());
                     source_label_->setStyleSheet(QString(kSrcLabelStyle).arg(ui::colors::NEGATIVE()));
@@ -587,9 +586,9 @@ void EquityResearchScreen::update_source_label(const services::equity::QuoteData
     const QString status = services::equity::retrieval_status_text(q.status);
     const QDateTime at = q.retrieved_at > 0 ? QDateTime::fromSecsSinceEpoch(q.retrieved_at) : QDateTime();
 
-    source_label_->setText(
-        at.isValid() ? tr("SRC: %1 · %2 · %3").arg(source, at.toString(QStringLiteral("hh:mm:ss")), status)
-                     : tr("SRC: %1 · %2").arg(source, status));
+    source_label_->setText(at.isValid()
+                               ? tr("SRC: %1 · %2 · %3").arg(source, at.toString(QStringLiteral("hh:mm:ss")), status)
+                               : tr("SRC: %1 · %2").arg(source, status));
 
     QString detail = tr("Source: %1").arg(source);
     detail += QLatin1Char('\n') +
@@ -603,8 +602,8 @@ void EquityResearchScreen::update_source_label(const services::equity::QuoteData
 
     // .get() rather than the ColorToken itself: the token converts to both
     // const char* and QString, which makes QString(token) ambiguous.
-    const char* tone = q.status == services::equity::RetrievalStatus::Ok ? ui::colors::TEXT_TERTIARY.get()
-                                                                        : ui::colors::AMBER.get();
+    const char* tone =
+        q.status == services::equity::RetrievalStatus::Ok ? ui::colors::TEXT_TERTIARY.get() : ui::colors::AMBER.get();
     source_label_->setStyleSheet(QString(kSrcLabelStyle).arg(tone));
 }
 

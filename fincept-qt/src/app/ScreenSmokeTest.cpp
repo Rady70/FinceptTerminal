@@ -95,13 +95,11 @@ int run_screen_smoke_test(DockScreenRouter* router) {
         else
             skipped << id;
     }
-    std::fprintf(stderr, "[Smoke] walking %d screens (skipping %d Unavailable: %s)\n",
-                 static_cast<int>(ids.size()), static_cast<int>(skipped.size()),
-                 qUtf8Printable(skipped.join(QStringLiteral(", "))));
+    std::fprintf(stderr, "[Smoke] walking %d screens (skipping %d Unavailable: %s)\n", static_cast<int>(ids.size()),
+                 static_cast<int>(skipped.size()), qUtf8Printable(skipped.join(QStringLiteral(", "))));
     std::fflush(stderr);
-    LOG_INFO("Smoke", QString("Screen smoke test: %1 screens (%2 Unavailable skipped)")
-                          .arg(ids.size())
-                          .arg(skipped.size()));
+    LOG_INFO("Smoke",
+             QString("Screen smoke test: %1 screens (%2 Unavailable skipped)").arg(ids.size()).arg(skipped.size()));
 
     QStringList failures;
     for (const QString& id : ids) {

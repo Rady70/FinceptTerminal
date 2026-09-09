@@ -32,8 +32,8 @@ class HostedRefusedReply : public QNetworkReply {
   public:
     // Operation is nested in QNetworkAccessManager, not in QNetworkReply, so it
     // has to be named in full here even though the manager passes it straight in.
-    HostedRefusedReply(QObject* parent, const QNetworkRequest& request,
-                       QNetworkAccessManager::Operation op, const QString& text)
+    HostedRefusedReply(QObject* parent, const QNetworkRequest& request, QNetworkAccessManager::Operation op,
+                       const QString& text)
         : QNetworkReply(parent) {
         setRequest(request);
         setUrl(request.url());
@@ -53,12 +53,10 @@ class HostedRefusedReply : public QNetworkReply {
 } // namespace
 
 GuardedNetworkAccessManager::GuardedNetworkAccessManager(QObject* parent)
-    : QNetworkAccessManager(parent),
-      denied_destination_(&HostedPathGuard::is_fincept_destination) {}
+    : QNetworkAccessManager(parent), denied_destination_(&HostedPathGuard::is_fincept_destination) {}
 
 void GuardedNetworkAccessManager::setDeniedDestination(DestinationDeny deny) {
-    denied_destination_ = deny ? std::move(deny)
-                               : DestinationDeny(&HostedPathGuard::is_fincept_destination);
+    denied_destination_ = deny ? std::move(deny) : DestinationDeny(&HostedPathGuard::is_fincept_destination);
 }
 
 // This predicate exists because createRequest() replaces whatever policy the
@@ -127,8 +125,7 @@ QNetworkReply* GuardedNetworkAccessManager::createRequest(Operation op, const QN
         return QNetworkAccessManager::createRequest(op, request, outgoing_data);
 
     QNetworkRequest vetted(request);
-    vetted.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                        QNetworkRequest::UserVerifiedRedirectPolicy);
+    vetted.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::UserVerifiedRedirectPolicy);
 
     QNetworkReply* reply = QNetworkAccessManager::createRequest(op, vetted, outgoing_data);
     if (!reply)
@@ -142,16 +139,14 @@ QNetworkReply* GuardedNetworkAccessManager::createRequest(Operation op, const QN
         if (denied_destination_(target)) {
             LOG_WARN(TAG, QStringLiteral("Refused a redirect to a Fincept-owned destination before any "
                                          "connection was made: %1 -> %2")
-                              .arg(current->toString(QUrl::RemoveQuery),
-                                   HostedPathGuard::unavailable_error(target)));
+                              .arg(current->toString(QUrl::RemoveQuery), HostedPathGuard::unavailable_error(target)));
             reply->abort();
             return;
         }
         if (redirect_is_less_safe(*current, target)) {
             LOG_WARN(TAG, QStringLiteral("Refused a redirect that weakens the transport before any "
                                          "connection was made: %1 -> %2")
-                              .arg(current->toString(QUrl::RemoveQuery),
-                                   target.toString(QUrl::RemoveQuery)));
+                              .arg(current->toString(QUrl::RemoveQuery), target.toString(QUrl::RemoveQuery)));
             reply->abort();
             return;
         }

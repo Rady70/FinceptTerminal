@@ -1,8 +1,8 @@
 // src/services/equity/EquityResearchService.cpp
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/equity/EquityResearchService.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "python/PythonRunner.h"
 #include "services/equity/EquityQuoteParse.h"
 #include "storage/cache/CacheManager.h"
@@ -258,8 +258,8 @@ void EquityResearchService::load_quote_only(const QString& symbol) {
                                // payload carries the provider's own fetch
                                // timestamp, which is the better answer.
         get_retrieval_meta("equity:quote:" + symbol, origin, sidecar_at);
-        QuoteData q = parse_quote_json(QJsonDocument::fromJson(qcv.toString().toUtf8()).object(),
-                                       cache_source_label(origin));
+        QuoteData q =
+            parse_quote_json(QJsonDocument::fromJson(qcv.toString().toUtf8()).object(), cache_source_label(origin));
         if (q.retrieved_at > 0 && now_epoch_sec() - q.retrieved_at > kQuoteTtlSec)
             q.status = RetrievalStatus::Stale;
         emit quote_loaded(q);
@@ -359,9 +359,8 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                    }
                    CandleParseStats stats;
                    const auto candles = parse_candles_json(arr, &stats);
-                   emit historical_meta_loaded(
-                       symbol,
-                       candles_meta(symbol, QStringLiteral("yfinance"), at, static_cast<int>(candles.size()), stats));
+                   emit historical_meta_loaded(symbol, candles_meta(symbol, QStringLiteral("yfinance"), at,
+                                                                    static_cast<int>(candles.size()), stats));
                    emit historical_loaded(symbol, candles);
                });
 }
@@ -760,8 +759,8 @@ void EquityResearchService::ensure_candles(const QString& symbol, const QString&
         LOG_INFO("EquityResearch", QString("Candles for %1 via broker %2").arg(symbol, broker_id));
         fincept::trading::HistoricalDataService::instance().fetch(
             bare, QStringLiteral("1d"), lookback, broker_id, account_id,
-            [cache_key, done, run_yfinance, make_meta, broker_id](
-                bool ok, const QVector<fincept::trading::BrokerCandle>& candles, const QString& /*err*/) {
+            [cache_key, done, run_yfinance, make_meta,
+             broker_id](bool ok, const QVector<fincept::trading::BrokerCandle>& candles, const QString& /*err*/) {
                 if (ok && !candles.isEmpty()) {
                     const QString json = broker_candles_to_json(candles);
                     if (!json.isEmpty() && json != QLatin1String("[]")) {

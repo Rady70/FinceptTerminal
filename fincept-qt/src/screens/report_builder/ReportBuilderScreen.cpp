@@ -211,13 +211,15 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                                         lines << "P/E Ratio: " + fmt_dbl(info.pe_ratio, info.has_pe_ratio);
                                         lines << "Forward P/E: " + fmt_dbl(info.forward_pe, info.has_forward_pe);
                                         lines << "Price/Book: " + fmt_dbl(info.price_to_book, info.has_price_to_book);
-                                        lines << "Dividend Yield: " + fmt_pct(info.dividend_yield, info.has_dividend_yield);
+                                        lines << "Dividend Yield: " +
+                                                     fmt_pct(info.dividend_yield, info.has_dividend_yield);
                                         lines << "Beta: " + fmt_dbl(info.beta, info.has_beta);
                                         lines << "52W High: " + fmt_dbl(info.week52_high, info.has_week52_high);
                                         lines << "52W Low: " + fmt_dbl(info.week52_low, info.has_week52_low);
                                         lines << "Avg Volume: " + fmt_vol(info.avg_volume, info.has_avg_volume);
                                         lines << "ROE: " + fmt_pct(info.roe, info.has_roe);
-                                        lines << "Profit Margin: " + fmt_pct(info.profit_margin, info.has_profit_margin);
+                                        lines
+                                            << "Profit Margin: " + fmt_pct(info.profit_margin, info.has_profit_margin);
                                         if (info.has_debt_to_equity && info.debt_to_equity != 0)
                                             lines << "Debt/Equity: " + fmt_dbl(info.debt_to_equity, true);
                                         if (info.has_current_ratio && info.current_ratio != 0)

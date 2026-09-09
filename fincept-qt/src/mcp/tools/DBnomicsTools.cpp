@@ -89,7 +89,8 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "list_dbnomics_datasets";
-        t.description = "List economic datasets within a DBnomics provider (paginated). Returns code + name + pagination info.";
+        t.description =
+            "List economic datasets within a DBnomics provider (paginated). Returns code + name + pagination info.";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()
@@ -237,7 +238,8 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "search_dbnomics";
-        t.description = "Global search for economic time-series data across all DBnomics providers and datasets (paginated).";
+        t.description =
+            "Global search for economic time-series data across all DBnomics providers and datasets (paginated).";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()

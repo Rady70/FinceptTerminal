@@ -1,6 +1,6 @@
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/feeds/FeedMonitor.h"
 
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/feeds/FeedParseUtil.h"
 #include "services/feeds/FeedScraper.h"
 #include "storage/repositories/FeedItemRepository.h"

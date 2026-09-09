@@ -98,9 +98,9 @@ bool reject_hosted_destination(const QString& base_url, const QString& url, cons
     if (!network::HostedPathGuard::is_fincept_destination(qurl))
         return false;
     const QString err = network::HostedPathGuard::unavailable_error(qurl);
-    LOG_WARN("HTTP",
-             QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
-                 .arg(qurl.host()));
+    LOG_WARN(
+        "HTTP",
+        QString("Rejected request to Fincept-owned destination (%1) — no network access attempted").arg(qurl.host()));
     const QObject* receiver = context ? context : nullptr;
     // Deliver on the event loop like handle_reply() would; no network call is
     // made. context-scoped lifetime mirrors handle_reply()'s contract.

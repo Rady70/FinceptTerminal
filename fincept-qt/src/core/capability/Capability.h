@@ -22,11 +22,7 @@ enum class Capability {
     BrokerExecution
 };
 
-enum class AvailabilityState {
-    Available,
-    Conditional,
-    Unavailable
-};
+enum class AvailabilityState { Available, Conditional, Unavailable };
 
 struct ComponentAvailability {
     AvailabilityState state = AvailabilityState::Unavailable;

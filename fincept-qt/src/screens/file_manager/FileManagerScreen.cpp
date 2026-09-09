@@ -308,9 +308,9 @@ void FileManagerScreen::build_filter_bar(QVBoxLayout* root) {
                               "QPushButton:hover:!checked{border-color:%4;}")
                           .arg(colors::TEXT_SECONDARY(), colors::BORDER_DIM(), MF, colors::AMBER());
 
-    static const QStringList screens = {"All",          "portfolio",    "backtesting", "news",        "equity_research",
-                                        "algo_trading", "notes",        "code_editor", "report_builder",
-                                        "data_sources", "excel"};
+    static const QStringList screens = {"All",          "portfolio", "backtesting", "news",           "equity_research",
+                                        "algo_trading", "notes",     "code_editor", "report_builder", "data_sources",
+                                        "excel"};
     for (const QString& s : screens) {
         const QString filter_val = (s == "All") ? QString() : s;
         QString label = (s == "All") ? tr("All") : QString(s).replace('_', ' ').toUpper();

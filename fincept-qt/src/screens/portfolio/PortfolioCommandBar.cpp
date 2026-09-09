@@ -1,7 +1,7 @@
 // src/screens/portfolio/PortfolioCommandBar.cpp
-#include "core/capability/CapabilityManager.h"
 #include "screens/portfolio/PortfolioCommandBar.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "ui/theme/Theme.h"
 
 #include <QAction>
@@ -355,7 +355,6 @@ void PortfolioCommandBar::build_tools_cluster(QHBoxLayout* layout) {
         connect(out, &QPushButton::clicked, this, signal);
         layout->addWidget(out);
     };
-
 }
 
 // ── Styling ──────────────────────────────────────────────────────────────────

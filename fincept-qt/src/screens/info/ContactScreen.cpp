@@ -144,9 +144,9 @@ QWidget* ContactScreen::build_page() {
         grid->addWidget(make_contact_card(tr("UPSTREAM"), tr("Fincept Terminal v4.5.0 (ec88590)"),
                                           tr("Released application-code baseline, AGPL-3.0-or-later")),
                         0, 1);
-        grid->addWidget(make_contact_card(tr("DOCUMENTATION"), tr("Docs screen"),
-                                          tr("Bundled documentation inside the terminal")),
-                        1, 0);
+        grid->addWidget(
+            make_contact_card(tr("DOCUMENTATION"), tr("Docs screen"), tr("Bundled documentation inside the terminal")),
+            1, 0);
         grid->addWidget(make_contact_card(tr("DIAGNOSTICS"), tr("About → Diagnostics"),
                                           tr("Crash dumps and state locations are listed in the About screen")),
                         1, 1);
@@ -177,8 +177,8 @@ QWidget* ContactScreen::build_page() {
                                    "Terminal. It is not affiliated with Fincept Corporation, offers no support "
                                    "channel, and opens no external contact links."));
         note->setWordWrap(true);
-        note->setStyleSheet(QString("color: %1; font-size: 12px; background: transparent; %2")
-                                .arg(colors::TEXT_SECONDARY(), MF));
+        note->setStyleSheet(
+            QString("color: %1; font-size: 12px; background: transparent; %2").arg(colors::TEXT_SECONDARY(), MF));
         hl->addWidget(note, 1);
 
         pvl->addWidget(body);

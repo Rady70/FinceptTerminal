@@ -182,7 +182,8 @@ QWidget* HelpScreen::build_page() {
                                     .arg(color));
             return chip;
         };
-        chips_vl->addWidget(make_chip("", tr("No account, subscription, or hosted service required"), colors::POSITIVE));
+        chips_vl->addWidget(
+            make_chip("", tr("No account, subscription, or hosted service required"), colors::POSITIVE));
         chips_vl->addWidget(
             make_chip("", tr("Fork repository: github.com/Rady70/FinceptTerminal"), colors::TEXT_TERTIARY));
         chips_vl->addWidget(
@@ -432,8 +433,8 @@ QWidget* HelpScreen::build_page() {
 
             auto* val = new QLabel(c.value);
             val->setWordWrap(true);
-            val->setStyleSheet(QString("color: %1; font-size: 11px; background: transparent; %2")
-                                   .arg(colors::CYAN(), MF));
+            val->setStyleSheet(
+                QString("color: %1; font-size: 11px; background: transparent; %2").arg(colors::CYAN(), MF));
 
             tvl->addWidget(lbl);
             tvl->addWidget(val);

@@ -8,12 +8,12 @@
 //   - NewsService_Parsing.cpp        — RSS/Atom parsing + article enrichment
 //   - NewsService_Classification.cpp — threat classification + source flags
 //   - NewsService_Feeds.cpp          — static catalog of default RSS feeds
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/news/NewsService.h"
 
 #include "core/logging/Logger.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HttpClient.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/NewsArticleRepository.h"

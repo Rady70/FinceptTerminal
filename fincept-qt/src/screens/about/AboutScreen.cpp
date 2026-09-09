@@ -161,8 +161,8 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
 #ifndef FINCEPT_UPSTREAM_BASE_VERSION
 #    define FINCEPT_UPSTREAM_BASE_VERSION "4.5.0"
 #endif
-        auto* base = new QLabel(QStringLiteral("upstream base: Fincept Terminal v" FINCEPT_UPSTREAM_BASE_VERSION
-                                               " (ec88590)"));
+        auto* base =
+            new QLabel(QStringLiteral("upstream base: Fincept Terminal v" FINCEPT_UPSTREAM_BASE_VERSION " (ec88590)"));
         base->setStyleSheet(MUTED());
         base->setAlignment(Qt::AlignRight);
         right->addWidget(base);
@@ -173,7 +173,8 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
         pvl->addWidget(body);
 
         // Footer bar
-        copyright_ = new QLabel(tr("© 2026 MarketLab Terminal — personal fork. Upstream © 2024-2026 Fincept Corporation."));
+        copyright_ =
+            new QLabel(tr("© 2026 MarketLab Terminal — personal fork. Upstream © 2024-2026 Fincept Corporation."));
         copyright_->setStyleSheet(
             QString("color: %1; font-size: 11px; background: %2; "
                     "padding: 6px 14px; border-top: 1px solid %3; "
@@ -243,16 +244,17 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
             const auto avail = [](capability::Capability c) {
                 return capability::CapabilityManager::instance().availability(c);
             };
-            auto bullet_for = [](capability::AvailabilityState s) { return s == capability::AvailabilityState::Available ? "✓ " : "— "; };
-            enterprise_bullets_ = {
-                makeBullet(bullet_for(avail(capability::Capability::LocalWorkspace).state) +
-                           tr("Local workspace — no account or subscription")),
-                makeBullet(bullet_for(avail(capability::Capability::PublicData).state) +
-                           tr("Public market data from independently configured providers")),
-                makeBullet(bullet_for(avail(capability::Capability::LocalAnalytics).state) +
-                           tr("Local analytics and historical simulation")),
-                makeBullet(bullet_for(avail(capability::Capability::BrokerExecution).state) +
-                           tr("External broker/exchange execution — not exposed"))};
+            auto bullet_for = [](capability::AvailabilityState s) {
+                return s == capability::AvailabilityState::Available ? "✓ " : "— ";
+            };
+            enterprise_bullets_ = {makeBullet(bullet_for(avail(capability::Capability::LocalWorkspace).state) +
+                                              tr("Local workspace — no account or subscription")),
+                                   makeBullet(bullet_for(avail(capability::Capability::PublicData).state) +
+                                              tr("Public market data from independently configured providers")),
+                                   makeBullet(bullet_for(avail(capability::Capability::LocalAnalytics).state) +
+                                              tr("Local analytics and historical simulation")),
+                                   makeBullet(bullet_for(avail(capability::Capability::BrokerExecution).state) +
+                                              tr("External broker/exchange execution — not exposed"))};
             for (auto* b : enterprise_bullets_)
                 bvl->addWidget(b);
             pvl->addWidget(body);
@@ -360,11 +362,11 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
         bvl->setContentsMargins(14, 10, 14, 12);
         bvl->setSpacing(6);
 
-        auto* fork_info = new QLabel(
-            tr("Fork repository: github.com/Rady70/FinceptTerminal\n"
-               "Upstream: github.com/Fincept-Corporation/FinceptTerminal (v4.5.0, commit ec88590)\n"
-               "License: AGPL-3.0-or-later\n"
-               "Local documentation: Docs screen and the bundled help pages."));
+        auto* fork_info =
+            new QLabel(tr("Fork repository: github.com/Rady70/FinceptTerminal\n"
+                          "Upstream: github.com/Fincept-Corporation/FinceptTerminal (v4.5.0, commit ec88590)\n"
+                          "License: AGPL-3.0-or-later\n"
+                          "Local documentation: Docs screen and the bundled help pages."));
         fork_info->setStyleSheet(BODY());
         fork_info->setTextInteractionFlags(Qt::TextSelectableByMouse);
         fork_info->setWordWrap(true);
@@ -391,10 +393,10 @@ AboutScreen::AboutScreen(QWidget* parent) : QWidget(parent) {
         bvl->setContentsMargins(14, 10, 14, 12);
         bvl->setSpacing(6);
 
-        auto* contact_info = new QLabel(
-            tr("MarketLab Terminal is a personal, local-first research build of Fincept Terminal. "
-               "It is not affiliated with Fincept Corporation and has no commercial support. "
-               "See the bundled Help and Docs screens for usage notes."));
+        auto* contact_info =
+            new QLabel(tr("MarketLab Terminal is a personal, local-first research build of Fincept Terminal. "
+                          "It is not affiliated with Fincept Corporation and has no commercial support. "
+                          "See the bundled Help and Docs screens for usage notes."));
         contact_info->setStyleSheet(BODY());
         contact_info->setWordWrap(true);
         bvl->addWidget(contact_info);
@@ -433,11 +435,13 @@ void AboutScreen::retranslateUi() {
     // Capabilities (replaces the upstream Enterprise panel)
     setPanelHeaderText(enterprise_header_, "✓", tr("CAPABILITIES"));
     if (enterprise_bullets_.size() == 4) {
-        setBulletText(enterprise_bullets_[0], QStringLiteral("✓  ") + tr("Local workspace — no account or subscription"));
+        setBulletText(enterprise_bullets_[0],
+                      QStringLiteral("✓  ") + tr("Local workspace — no account or subscription"));
         setBulletText(enterprise_bullets_[1],
                       QStringLiteral("✓  ") + tr("Public market data from independently configured providers"));
         setBulletText(enterprise_bullets_[2], QStringLiteral("✓  ") + tr("Local analytics and historical simulation"));
-        setBulletText(enterprise_bullets_[3], QStringLiteral("—  ") + tr("External broker/exchange execution — not exposed"));
+        setBulletText(enterprise_bullets_[3],
+                      QStringLiteral("—  ") + tr("External broker/exchange execution — not exposed"));
     }
 
     // Diagnostics

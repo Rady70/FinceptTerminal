@@ -197,7 +197,6 @@ void AuthManager::clear_session() {
     // sessions. The only path that should reset the PIN is the max-attempts
     // re-auth flow (LockScreen → reauth_requested), and that path should call
     // PinManager::clear_pin() explicitly before invoking logout().
-
 }
 
 bool AuthManager::needs_pin_setup() const {

@@ -75,8 +75,7 @@ class GuardedNetworkAccessManager : public QNetworkAccessManager {
     static bool redirect_is_less_safe(const QUrl& from, const QUrl& to);
 
   protected:
-    QNetworkReply* createRequest(Operation op, const QNetworkRequest& request,
-                                 QIODevice* outgoing_data) override;
+    QNetworkReply* createRequest(Operation op, const QNetworkRequest& request, QIODevice* outgoing_data) override;
 
   private:
     DestinationDeny denied_destination_;

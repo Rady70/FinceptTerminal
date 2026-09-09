@@ -1,7 +1,7 @@
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/news/dialogs/RssFeedManagerDialog.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/news/dialogs/RssFeedEditDialog.h"
 
 #include <QHBoxLayout>

@@ -633,7 +633,8 @@ void GovDataProviderPanel::populate_resources(const QJsonArray& json) {
             open_btn->setFlat(true);
             open_btn->setAccessibleName(tr("Open resource %1 in browser").arg(name));
             open_btn->setToolTip(url);
-            connect(open_btn, &QPushButton::clicked, this, [url]() { network::ExternalUrlGuard::open_external(QUrl(url)); });
+            connect(open_btn, &QPushButton::clicked, this,
+                    [url]() { network::ExternalUrlGuard::open_external(QUrl(url)); });
             resources_table_->setCellWidget(i, 4, open_btn);
         }
     }

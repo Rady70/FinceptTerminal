@@ -45,17 +45,16 @@ QString quote_provenance_tooltip(const services::QuoteData& q) {
     const QString source = q.source.isEmpty() ? QCoreApplication::translate("WatchlistScreen", "unknown") : q.source;
     QString text = QCoreApplication::translate("WatchlistScreen", "Source: %1").arg(source);
     text += QLatin1Char('\n');
-    text += q.retrieved_at > 0
-                ? QCoreApplication::translate("WatchlistScreen", "Retrieved: %1")
-                      .arg(QDateTime::fromSecsSinceEpoch(q.retrieved_at).toString(Qt::ISODate))
-                : QCoreApplication::translate("WatchlistScreen", "Retrieved: unknown");
+    text += q.retrieved_at > 0 ? QCoreApplication::translate("WatchlistScreen", "Retrieved: %1")
+                                     .arg(QDateTime::fromSecsSinceEpoch(q.retrieved_at).toString(Qt::ISODate))
+                               : QCoreApplication::translate("WatchlistScreen", "Retrieved: unknown");
     text += QLatin1Char('\n');
     text += QCoreApplication::translate("WatchlistScreen", "Status: %1")
                 .arg(q.status.isEmpty() ? QStringLiteral("UNKNOWN") : q.status);
     if (q.status == QLatin1String(services::kQuoteStatusStale)) {
         text += QLatin1Char('\n');
-        text += QCoreApplication::translate("WatchlistScreen",
-                                            "The refresh failed; this row is the last cached value.");
+        text +=
+            QCoreApplication::translate("WatchlistScreen", "The refresh failed; this row is the last cached value.");
     }
     return text;
 }
@@ -766,18 +765,15 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             // an alarming one, for a value that was simply never received
             // (FINCEPT_FORK_PLAN.md §4).
             const QString kNA = QStringLiteral("--");
-            table_->add_row({q.symbol, q.name.isEmpty() ? s.name : q.name,
-                             q.has_price ? QString("$%1").arg(q.price, 0, 'f', 2) : kNA,
-                             q.has_change ? QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2)
-                                          : kNA,
-                             q.has_change_pct
-                                 ? QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
-                                 : kNA,
-                             q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
-                             q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
-                             q.has_volume
-                                 ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
-                                 : kNA});
+            table_->add_row(
+                {q.symbol, q.name.isEmpty() ? s.name : q.name,
+                 q.has_price ? QString("$%1").arg(q.price, 0, 'f', 2) : kNA,
+                 q.has_change ? QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2) : kNA,
+                 q.has_change_pct ? QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
+                                  : kNA,
+                 q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
+                 q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
+                 q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)) : kNA});
 
             int row = table_->rowCount() - 1;
 
@@ -985,8 +981,8 @@ void WatchlistScreen::on_export_csv() {
         const auto num = [](double v, bool present) { return present ? QString::number(v, 'f', 2) : QString(); };
         out << csv_escape(q.symbol) << ',' << csv_escape(q.name.isEmpty() ? s.name : q.name) << ','
             << num(q.price, q.has_price) << ',' << num(q.change, q.has_change) << ','
-            << num(q.change_pct, q.has_change_pct) << ',' << num(q.high, q.has_high) << ','
-            << num(q.low, q.has_low) << ','
+            << num(q.change_pct, q.has_change_pct) << ',' << num(q.high, q.has_high) << ',' << num(q.low, q.has_low)
+            << ','
             << (q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
                              : QString())
             << '\n';

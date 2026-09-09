@@ -788,8 +788,9 @@ void NodeEditorScreen::on_execute() {
     }
 
     if (current_workflow_read_only_) {
-        QMessageBox::warning(this, tr("Read-Only Workflow"),
-                             tr("This workflow contains unavailable node types and cannot be executed as a partial graph."));
+        QMessageBox::warning(
+            this, tr("Read-Only Workflow"),
+            tr("This workflow contains unavailable node types and cannot be executed as a partial graph."));
         return;
     }
 

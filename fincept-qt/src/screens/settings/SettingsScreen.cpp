@@ -120,10 +120,11 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     // The keyword strings are search aliases only — never displayed, so they
     // stay in English (the filter also matches the translated label text).
     add_scope_header(QStringLiteral("SHELL"));
-    auto* first = make_btn(QStringLiteral("General"), 12,
-                           QStringLiteral("language locale currency window close launchpad quit"));
-    make_btn(QStringLiteral("Appearance"), 1, QStringLiteral("theme font size family density ticker "
-                                                             "animation typography interface"));
+    auto* first =
+        make_btn(QStringLiteral("General"), 12, QStringLiteral("language locale currency window close launchpad quit"));
+    make_btn(QStringLiteral("Appearance"), 1,
+             QStringLiteral("theme font size family density ticker "
+                            "animation typography interface"));
     make_btn(QStringLiteral("Notifications"), 2,
              QStringLiteral("telegram discord slack email smtp whatsapp twilio pushover ntfy pushbullet gotify "
                             "mattermost teams webhook pagerduty opsgenie sms alerts price news order fill"));

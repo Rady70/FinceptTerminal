@@ -1,7 +1,7 @@
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/equity/MarketSentimentService.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/equity/MarketSentimentSupport.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/DataSourceRepository.h"

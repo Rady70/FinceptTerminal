@@ -1,8 +1,8 @@
 // src/ui/widgets/WorldMapWidget.cpp
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "ui/widgets/WorldMapWidget.h"
 
 #include "core/config/AppPaths.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 
 #include <QGeoView/QGVCamera.h>
 #include <QGeoView/QGVDrawItem.h>

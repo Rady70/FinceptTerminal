@@ -552,18 +552,18 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                              shared->info.industry = o["industry"].toString();
                                              shared->info.country = o["country"].toString();
                                              shared->info.currency = o["currency"].toString("USD");
-                                              // get_info emits JSON null for a
-                                              // field yfinance did not return
-                                              // ("market_cap": info.get(...)),
-                                              // and toDouble() would report that
-                                              // as a market cap of zero. The
-                                              // shared parser records per-field
-                                              // presence in InfoData's has_*
-                                              // flags instead of writing a
-                                              // fabricated reading over the
-                                              // default.
-                                              parse_info_object(o, shared->info);
-                                              shared->info_ok = true;
+                                             // get_info emits JSON null for a
+                                             // field yfinance did not return
+                                             // ("market_cap": info.get(...)),
+                                             // and toDouble() would report that
+                                             // as a market cap of zero. The
+                                             // shared parser records per-field
+                                             // presence in InfoData's has_*
+                                             // flags instead of writing a
+                                             // fabricated reading over the
+                                             // default.
+                                             parse_info_object(o, shared->info);
+                                             shared->info_ok = true;
                                              try_complete();
                                          });
 
@@ -584,18 +584,18 @@ void MarketDataService::fetch_info(const QString& symbol, InfoCallback cb) {
                                                  return;
                                              }
                                              QJsonObject o = doc.object();
-                                              // get_financial_ratios emits JSON
-                                              // null for a ratio yfinance did
-                                              // not report. The shared parser
-                                              // records presence in the has_*
-                                              // flags and leaves the field
-                                              // alone rather than writing 0.0 —
-                                              // which also stops a missing
-                                              // revenuePerShare here from
-                                              // clobbering the revenue_per_share
-                                              // get_info already supplied above.
-                                              parse_ratios_object(o, shared->info);
-                                              shared->ratios_ok = true;
+                                             // get_financial_ratios emits JSON
+                                             // null for a ratio yfinance did
+                                             // not report. The shared parser
+                                             // records presence in the has_*
+                                             // flags and leaves the field
+                                             // alone rather than writing 0.0 —
+                                             // which also stops a missing
+                                             // revenuePerShare here from
+                                             // clobbering the revenue_per_share
+                                             // get_info already supplied above.
+                                             parse_ratios_object(o, shared->info);
+                                             shared->ratios_ok = true;
                                              try_complete();
                                          });
 }

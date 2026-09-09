@@ -67,7 +67,6 @@ NewsDetailPanel::NewsDetailPanel(QWidget* parent) : QWidget(parent) {
     stack_->setCurrentIndex(0);
 
     root->addWidget(stack_, 1);
-
 }
 
 QWidget* NewsDetailPanel::build_empty_state() {
@@ -189,8 +188,7 @@ QWidget* NewsDetailPanel::build_content_view() {
 
     // All action buttons share a uniform height and expand to fill their grid
     // cell — no fixed widths, so nothing can overflow the panel.
-    for (QPushButton* b :
-         {open_btn_, copy_btn_, copy_title_btn_, save_btn_, bookmark_btn_, translate_btn_}) {
+    for (QPushButton* b : {open_btn_, copy_btn_, copy_title_btn_, save_btn_, bookmark_btn_, translate_btn_}) {
         b->setFixedHeight(24);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }

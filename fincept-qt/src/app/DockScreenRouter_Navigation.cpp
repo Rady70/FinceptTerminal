@@ -60,8 +60,7 @@ void DockScreenRouter::navigate(const QString& id, bool exclusive) {
     // layouts, direct routing) — see FINCEPT_FORK_PLAN.md §5.2.
     if (!capability::CapabilityManager::instance().is_screen_allowed(id)) {
         const auto avail = capability::CapabilityManager::instance().screen_availability(id);
-        LOG_WARN("DockRouter",
-                 QString("navigate('%1') denied — unavailable in this build: %2").arg(id, avail.reason));
+        LOG_WARN("DockRouter", QString("navigate('%1') denied — unavailable in this build: %2").arg(id, avail.reason));
         return;
     }
 
@@ -253,8 +252,8 @@ void DockScreenRouter::add_alongside(const QString& primary, const QString& seco
     // MarketLab: capability gate — both ids must be available in this build.
     if (!capability::CapabilityManager::instance().is_screen_allowed(primary) ||
         !capability::CapabilityManager::instance().is_screen_allowed(secondary)) {
-        LOG_WARN("DockRouter", QString("add_alongside('%1','%2') denied — screen unavailable in this build")
-                                   .arg(primary, secondary));
+        LOG_WARN("DockRouter",
+                 QString("add_alongside('%1','%2') denied — screen unavailable in this build").arg(primary, secondary));
         return;
     }
     // If primary is already open, just add secondary into the next grid slot

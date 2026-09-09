@@ -186,7 +186,7 @@ WidgetRegistry::WidgetRegistry() {
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
                                        "Configurable sparkline strip — subscribes to market:sparkline:*"),
-                      4, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::SparklineStripWidget(cfg); }});
+                     4, 5, 3, 3, [](const QJsonObject& cfg) { return new widgets::SparklineStripWidget(cfg); }});
 
     register_widget({"news_category", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "News — Category"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),

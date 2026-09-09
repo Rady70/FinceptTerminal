@@ -24,15 +24,15 @@ namespace {
 
 int failures = 0;
 
-#define CHECK(cond, what)                                                                                       \
-    do {                                                                                                        \
-        if (!(cond)) {                                                                                          \
-            ++failures;                                                                                         \
-            std::fprintf(stderr, "[marketlab-boundary] FAIL: %s\n", what);                                      \
-            LOG_ERROR("MarketLabBoundary", QStringLiteral("FAIL: %1").arg(QString::fromUtf8(what)));            \
-        } else {                                                                                                \
-            LOG_INFO("MarketLabBoundary", QStringLiteral("ok: %1").arg(QString::fromUtf8(what)));               \
-        }                                                                                                       \
+#define CHECK(cond, what)                                                                                              \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            ++failures;                                                                                                \
+            std::fprintf(stderr, "[marketlab-boundary] FAIL: %s\n", what);                                             \
+            LOG_ERROR("MarketLabBoundary", QStringLiteral("FAIL: %1").arg(QString::fromUtf8(what)));                   \
+        } else {                                                                                                       \
+            LOG_INFO("MarketLabBoundary", QStringLiteral("ok: %1").arg(QString::fromUtf8(what)));                      \
+        }                                                                                                              \
     } while (0)
 
 } // namespace
@@ -74,8 +74,8 @@ int run_marketlab_boundary_selftest() {
     // ── MCP registration set (plan §5.4) ──────────────────────────────────
     {
         const QStringList forbidden = {
-            QStringLiteral("live_place_order"),      QStringLiteral("live_cancel_order"),
-            QStringLiteral("live_close_position"),   QStringLiteral("live_close_all_positions"),
+            QStringLiteral("live_place_order"),       QStringLiteral("live_cancel_order"),
+            QStringLiteral("live_close_position"),    QStringLiteral("live_close_all_positions"),
             QStringLiteral("live_cancel_all_orders"), QStringLiteral("live_smart_order"),
         };
         for (const QString& name : forbidden) {
@@ -85,15 +85,20 @@ int run_marketlab_boundary_selftest() {
         CHECK(!mcp::McpProvider::instance().has_tool(QStringLiteral("forum_get_posts")),
               "MCP forum tool not registered");
         for (const QString& name : {
-                 QStringLiteral("create_chat_session"), QStringLiteral("get_chat_sessions"),
-                 QStringLiteral("get_llm_configs"), QStringLiteral("set_active_llm"),
-                 QStringLiteral("list_agents"), QStringLiteral("discover_agents"),
-                 QStringLiteral("run_agent"), QStringLiteral("execute_multi_agent_query"),
-                 QStringLiteral("archival_memory_save"), QStringLiteral("archival_memory_search"),
-                 QStringLiteral("list_quant_modules"), QStringLiteral("run_quant_module"),
+                 QStringLiteral("create_chat_session"),
+                 QStringLiteral("get_chat_sessions"),
+                 QStringLiteral("get_llm_configs"),
+                 QStringLiteral("set_active_llm"),
+                 QStringLiteral("list_agents"),
+                 QStringLiteral("discover_agents"),
+                 QStringLiteral("run_agent"),
+                 QStringLiteral("execute_multi_agent_query"),
+                 QStringLiteral("archival_memory_save"),
+                 QStringLiteral("archival_memory_search"),
+                 QStringLiteral("list_quant_modules"),
+                 QStringLiteral("run_quant_module"),
              }) {
-            CHECK(!mcp::McpProvider::instance().has_tool(name),
-                  ("AI MCP tool removed: " + name).toUtf8().constData());
+            CHECK(!mcp::McpProvider::instance().has_tool(name), ("AI MCP tool removed: " + name).toUtf8().constData());
         }
     }
 
@@ -117,14 +122,15 @@ int run_marketlab_boundary_selftest() {
         QString err_text;
         QEventLoop loop;
         QTimer::singleShot(5000, &loop, &QEventLoop::quit); // safety: never wait forever
-        HttpClient::instance().get(QStringLiteral("https://api.fincept.in/user/profile"),
-                                   [&](Result<QJsonDocument> r) {
-                                       called = true;
-                                       if (r.is_err())
-                                           err_text = QString::fromStdString(r.error());
-                                       loop.quit();
-                                   },
-                                   qApp);
+        HttpClient::instance().get(
+            QStringLiteral("https://api.fincept.in/user/profile"),
+            [&](Result<QJsonDocument> r) {
+                called = true;
+                if (r.is_err())
+                    err_text = QString::fromStdString(r.error());
+                loop.quit();
+            },
+            qApp);
         loop.exec();
         CHECK(called, "HttpClient callback delivered for rejected host");
         CHECK(network::HostedPathGuard::is_hosted_unavailable_error(err_text),
@@ -144,12 +150,15 @@ int run_marketlab_boundary_selftest() {
         QString err_text;
         QEventLoop loop;
         QTimer::singleShot(5000, &loop, &QEventLoop::quit);
-        HttpClient::instance().get(QStringLiteral("/user/subscriptions"), [&](Result<QJsonDocument> r) {
-            called = true;
-            if (r.is_err())
-                err_text = QString::fromStdString(r.error());
-            loop.quit();
-        }, qApp);
+        HttpClient::instance().get(
+            QStringLiteral("/user/subscriptions"),
+            [&](Result<QJsonDocument> r) {
+                called = true;
+                if (r.is_err())
+                    err_text = QString::fromStdString(r.error());
+                loop.quit();
+            },
+            qApp);
         loop.exec();
         CHECK(called, "relative Fincept-API path rejected");
         CHECK(network::HostedPathGuard::is_hosted_unavailable_error(err_text), "relative path typed error");
@@ -160,10 +169,8 @@ int run_marketlab_boundary_selftest() {
     CHECK(QCoreApplication::applicationName() == QStringLiteral("MarketLabTerminal"),
           "application name is MarketLabTerminal");
     CHECK(QCoreApplication::applicationVersion() == QStringLiteral("0.1.0"), "fork version 0.1.0");
-    CHECK(AppPaths::root().contains(QStringLiteral("com.marketlab.terminal")),
-          "state root is com.marketlab.terminal");
-    CHECK(!AppPaths::root().contains(QStringLiteral("com.fincept.terminal")),
-          "state root is not the Fincept root");
+    CHECK(AppPaths::root().contains(QStringLiteral("com.marketlab.terminal")), "state root is com.marketlab.terminal");
+    CHECK(!AppPaths::root().contains(QStringLiteral("com.fincept.terminal")), "state root is not the Fincept root");
 
     if (failures == 0) {
         LOG_INFO("MarketLabBoundary", "MarketLab boundary self-test PASSED");

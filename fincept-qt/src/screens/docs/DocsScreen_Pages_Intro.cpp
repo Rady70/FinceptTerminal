@@ -47,16 +47,16 @@ QWidget* DocsScreen::page_welcome() {
     sep->setStyleSheet(QString("color: %1;").arg(ui::colors::BORDER_DIM()));
     vl->addWidget(sep);
 
-    vl->addWidget(
-        make_section_panel("■", tr("WHAT IS MARKETLAB TERMINAL?"),
-                           tr("MarketLab Terminal is a local-first fork of Fincept Terminal, a professional-grade desktop financial intelligence platform "
-                              "built in native C++ with Qt6. It provides public market data, "
-                              "quantitative research tools and reproducible analytics — "
-                              "all in a single unified terminal interface.\n\n"
-                              "With embedded Python analytics and public-data providers, "
-                              "MarketLab Terminal bridges the gap between "
-                              "retail and institutional tooling."),
-                           ui::colors::AMBER));
+    vl->addWidget(make_section_panel("■", tr("WHAT IS MARKETLAB TERMINAL?"),
+                                     tr("MarketLab Terminal is a local-first fork of Fincept Terminal, a "
+                                        "professional-grade desktop financial intelligence platform "
+                                        "built in native C++ with Qt6. It provides public market data, "
+                                        "quantitative research tools and reproducible analytics — "
+                                        "all in a single unified terminal interface.\n\n"
+                                        "With embedded Python analytics and public-data providers, "
+                                        "MarketLab Terminal bridges the gap between "
+                                        "retail and institutional tooling."),
+                                     ui::colors::AMBER));
 
     vl->addWidget(make_section_panel("■", tr("KEY CAPABILITIES"),
                                      tr("■  Public market data across equities, crypto, forex, commodities\n"
@@ -144,11 +144,10 @@ QWidget* DocsScreen::page_getting_started() {
                                         "■  NO EXECUTION — no external broker or exchange order route"),
                                      ui::colors::AMBER));
 
-    vl->addWidget(
-        make_skill_panel(tr("Explore the Dashboard, set up a watchlist, browse market data"),
-                         tr("Run historical simulations in Backtesting, explore analytics"),
-                         tr("Build workflows in the node editor, write notebooks"),
-                         tr("Custom MCP servers, backtesting, report building, node editor automation")));
+    vl->addWidget(make_skill_panel(tr("Explore the Dashboard, set up a watchlist, browse market data"),
+                                   tr("Run historical simulations in Backtesting, explore analytics"),
+                                   tr("Build workflows in the node editor, write notebooks"),
+                                   tr("Custom MCP servers, backtesting, report building, node editor automation")));
 
     vl->addStretch();
     scroll->setWidget(page);

@@ -1,7 +1,7 @@
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/dashboard/widgets/WebScraperWidget.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "ui/tables/DataTable.h"
 #include "ui/theme/Theme.h"
 

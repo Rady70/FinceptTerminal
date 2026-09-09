@@ -370,27 +370,26 @@ QWidget* DocsScreen::page_data_mapping() {
 // ============================================================================
 
 QWidget* DocsScreen::page_settings() {
-    return make_page(
-        tr("SETTINGS"), tr("Application configuration and preferences"),
-        {
-            {tr("OVERVIEW"), tr("The Settings screen provides comprehensive application configuration "
-                                "including display preferences, data sources, MCP servers, "
-                                "and integration settings.")},
-            {tr("KEY FEATURES"), tr("■  Display preferences — Theme, font size, layout options\n"
-                                    "■  Data configuration — API keys, refresh intervals, cache settings\n"
-                                    "■  MCP Servers — Server management and configuration\n"
-                                    "■  Notification preferences\n"
-                                    "■  Keyboard shortcut customization")},
-            {tr("SECTIONS"), tr("■  General — Language, timezone, display density\n"
-                                "■  Trading — Default exchange, order confirmations, risk limits\n"
-                                "■  Data — API keys for market data providers\n"
-                                "■  MCP — Server endpoints and tool access\n"
-                                "■  Notifications — Alert channels and thresholds")},
-            {tr("SKILL LEVELS"), tr("BEGINNER: Set your timezone and preferred market\n"
-                                    "INTERMEDIATE: Configure API keys for data providers\n"
-                                    "ADVANCED: Set up MCP servers and local integrations\n"
-                                    "PRO: Full infrastructure configuration, custom integrations")},
-        });
+    return make_page(tr("SETTINGS"), tr("Application configuration and preferences"),
+                     {
+                         {tr("OVERVIEW"), tr("The Settings screen provides comprehensive application configuration "
+                                             "including display preferences, data sources, MCP servers, "
+                                             "and integration settings.")},
+                         {tr("KEY FEATURES"), tr("■  Display preferences — Theme, font size, layout options\n"
+                                                 "■  Data configuration — API keys, refresh intervals, cache settings\n"
+                                                 "■  MCP Servers — Server management and configuration\n"
+                                                 "■  Notification preferences\n"
+                                                 "■  Keyboard shortcut customization")},
+                         {tr("SECTIONS"), tr("■  General — Language, timezone, display density\n"
+                                             "■  Trading — Default exchange, order confirmations, risk limits\n"
+                                             "■  Data — API keys for market data providers\n"
+                                             "■  MCP — Server endpoints and tool access\n"
+                                             "■  Notifications — Alert channels and thresholds")},
+                         {tr("SKILL LEVELS"), tr("BEGINNER: Set your timezone and preferred market\n"
+                                                 "INTERMEDIATE: Configure API keys for data providers\n"
+                                                 "ADVANCED: Set up MCP servers and local integrations\n"
+                                                 "PRO: Full infrastructure configuration, custom integrations")},
+                     });
 }
 
 QWidget* DocsScreen::page_profile() {

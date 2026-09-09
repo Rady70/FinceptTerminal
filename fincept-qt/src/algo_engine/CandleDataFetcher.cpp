@@ -1,8 +1,8 @@
 // src/algo_engine/CandleDataFetcher.cpp
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "algo_engine/CandleDataFetcher.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "trading/AccountManager.h"
 #include "trading/BrokerRegistry.h"
 #include "trading/HistoricalDataService.h"

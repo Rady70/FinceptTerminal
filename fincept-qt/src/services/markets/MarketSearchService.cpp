@@ -3,11 +3,11 @@
 #include "core/logging/Logger.h"
 #include "python/PythonRunner.h"
 
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
-#include <QHash>
 #include <QPointer>
 #include <QSet>
 
@@ -106,8 +106,7 @@ void MarketSearchService::search(const QString& query, const QString& type, int 
 
     QPointer<MarketSearchService> self = this;
     fincept::python::PythonRunner::instance().run(
-        QString::fromLatin1(kScript),
-        {QStringLiteral("search"), q, QString::number(clamped)},
+        QString::fromLatin1(kScript), {QStringLiteral("search"), q, QString::number(clamped)},
         [self, request_id, query, type](const fincept::python::PythonResult& result) {
             if (!self)
                 return;
@@ -122,10 +121,8 @@ void MarketSearchService::search(const QString& query, const QString& type, int 
             QJsonParseError err;
             const auto doc = QJsonDocument::fromJson(json_str.toUtf8(), &err);
             if (doc.isNull() || !doc.isObject()) {
-                LOG_WARN("MarketSearch",
-                         QString("local search returned invalid JSON: %1").arg(err.errorString()));
-                emit self->search_failed(request_id, query,
-                                         QStringLiteral("Local search returned invalid JSON"));
+                LOG_WARN("MarketSearch", QString("local search returned invalid JSON: %1").arg(err.errorString()));
+                emit self->search_failed(request_id, query, QStringLiteral("Local search returned invalid JSON"));
                 return;
             }
             const auto obj = doc.object();

@@ -119,8 +119,7 @@ ComponentAvailability CapabilityManager::availability(Capability cap) const {
                                    "destinations are rejected at the network boundary"),
                     QStringLiteral("local features and public providers")};
         case Capability::CloudSync:
-            return {S::Unavailable,
-                    QStringLiteral("Fincept cloud sync is removed"),
+            return {S::Unavailable, QStringLiteral("Fincept cloud sync is removed"),
                     QStringLiteral("local state plus an ordinary user-managed backup")};
         case Capability::BrokerReadOnly:
             return {S::Conditional,

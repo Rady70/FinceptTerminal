@@ -260,11 +260,10 @@ QWidget* DocsScreen::page_portfolio() {
                                         "■  Compare multiple portfolio strategies side by side\n"
                                         "■  Monitor sector allocation drift and rebalance\n"
                                         "■  Review factor exposure and performance attribution")},
-            {tr("SKILL LEVELS"),
-             tr("BEGINNER: Create a portfolio, add holdings, track basic P&L\n"
-                "INTERMEDIATE: Use sector heatmap for diversification, review trade blotter\n"
-                "ADVANCED: Multiple portfolios for different strategies, FFN analytics\n"
-                "PRO: Factor exposure analysis, performance attribution, risk budgeting")},
+            {tr("SKILL LEVELS"), tr("BEGINNER: Create a portfolio, add holdings, track basic P&L\n"
+                                    "INTERMEDIATE: Use sector heatmap for diversification, review trade blotter\n"
+                                    "ADVANCED: Multiple portfolios for different strategies, FFN analytics\n"
+                                    "PRO: Factor exposure analysis, performance attribution, risk budgeting")},
         });
 }
 

@@ -735,9 +735,9 @@ void EquityOverviewTab::render_hist_source() {
 
     const QDateTime at = m.retrieved_at > 0 ? QDateTime::fromSecsSinceEpoch(m.retrieved_at) : QDateTime();
     const QString status = services::equity::retrieval_status_text(m.status);
-    hist_source_label_->setText(at.isValid() ? tr("SRC: %1 · %2 · %3")
-                                                   .arg(m.source, at.toString(QStringLiteral("hh:mm:ss")), status)
-                                             : tr("SRC: %1 · %2").arg(m.source, status));
+    hist_source_label_->setText(
+        at.isValid() ? tr("SRC: %1 · %2 · %3").arg(m.source, at.toString(QStringLiteral("hh:mm:ss")), status)
+                     : tr("SRC: %1 · %2").arg(m.source, status));
 
     QString detail = tr("Source: %1").arg(m.source);
     detail += QLatin1Char('\n') +

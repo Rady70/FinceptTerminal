@@ -1,8 +1,8 @@
-#include "network/http/GuardedNetworkAccessManager.h"
 #include "services/workflow/adapters/ServiceBridges.h"
 
 #include "core/logging/Logger.h"
 #include "mcp/McpService.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HttpClient.h"
 #include "python/PythonRunner.h"
 #include "services/notifications/NotificationService.h"

@@ -34,8 +34,7 @@ class McpService {
                             bool allow_defer = false);
 
     /// Execute from the stable MCP wire name ("serverId__toolName").
-    ToolResult execute_wire_function(const QString& function_name, const QJsonObject& args,
-                                     bool allow_defer = false);
+    ToolResult execute_wire_function(const QString& function_name, const QJsonObject& args, bool allow_defer = false);
 
     // ── Validation ──────────────────────────────────────────────────────
     // Phase 3: removed. McpProvider::call_tool now invokes
@@ -67,7 +66,6 @@ class McpService {
     // must hold mutex_. Splitting this out lets filtered and unfiltered callers
     // reuse the cache without re-locking.
     const std::vector<UnifiedTool>& cached_tools_locked();
-
 };
 
 } // namespace fincept::mcp

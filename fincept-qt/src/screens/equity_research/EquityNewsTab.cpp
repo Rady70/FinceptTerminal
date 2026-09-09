@@ -1,7 +1,7 @@
 // src/screens/equity_research/EquityNewsTab.cpp
-#include "network/http/ExternalUrlGuard.h"
 #include "screens/equity_research/EquityNewsTab.h"
 
+#include "network/http/ExternalUrlGuard.h"
 #include "services/equity/EquityResearchService.h"
 #include "ui/theme/Theme.h"
 

@@ -161,7 +161,7 @@ void UpdateService::check_for_updates(bool silent) {
     return;
 }
 
-#if 0 // upstream update flow — disabled in MarketLab Terminal
+#if 0  // upstream update flow — disabled in MarketLab Terminal
 void UpdateService::check_for_updates_upstream(bool silent) {
     if (in_progress_) {
         LOG_INFO("UpdateService", "Check already in progress — ignoring duplicate call");

@@ -289,8 +289,8 @@ void DashboardStatusBar::ping_api() {
     if (feeds_label_)
         feeds_label_->setText(tr("LOCAL"));
     if (feeds_label_)
-        feeds_label_->setStyleSheet(QString("color:%1;font-weight:bold;background:transparent;")
-                                        .arg(ui::colors::POSITIVE()));
+        feeds_label_->setStyleSheet(
+            QString("color:%1;font-weight:bold;background:transparent;").arg(ui::colors::POSITIVE()));
 }
 
 void DashboardStatusBar::set_latency(int ms) {

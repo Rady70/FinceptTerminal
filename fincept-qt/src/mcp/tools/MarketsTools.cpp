@@ -83,21 +83,20 @@ std::vector<ToolDef> get_markets_tools() {
                 return ToolResult::fail("No quote data available for " + symbol);
             }
 
-            return ToolResult::ok_data(QJsonObject{
-                {"symbol", q.symbol},
-                {"name", q.name},
-                {"price", num_or_null(q.price, q.has_price)},
-                {"change", num_or_null(q.change, q.has_change)},
-                {"change_pct", num_or_null(q.change_pct, q.has_change_pct)},
-                {"high", num_or_null(q.high, q.has_high)},
-                {"low", num_or_null(q.low, q.has_low)},
-                {"volume", num_or_null(q.volume, q.has_volume)},
-                // §4: "the displayed or retained result identifies its source
-                // and retrieval status". This is a retained result, so it
-                // carries both — the service already stamps them.
-                {"source", q.source},
-                {"retrieved_at", static_cast<double>(q.retrieved_at)},
-                {"retrieval_status", q.status}});
+            return ToolResult::ok_data(QJsonObject{{"symbol", q.symbol},
+                                                   {"name", q.name},
+                                                   {"price", num_or_null(q.price, q.has_price)},
+                                                   {"change", num_or_null(q.change, q.has_change)},
+                                                   {"change_pct", num_or_null(q.change_pct, q.has_change_pct)},
+                                                   {"high", num_or_null(q.high, q.has_high)},
+                                                   {"low", num_or_null(q.low, q.has_low)},
+                                                   {"volume", num_or_null(q.volume, q.has_volume)},
+                                                   // §4: "the displayed or retained result identifies its source
+                                                   // and retrieval status". This is a retained result, so it
+                                                   // carries both — the service already stamps them.
+                                                   {"source", q.source},
+                                                   {"retrieved_at", static_cast<double>(q.retrieved_at)},
+                                                   {"retrieval_status", q.status}});
         };
         tools.push_back(std::move(t));
     }

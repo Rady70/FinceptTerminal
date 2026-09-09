@@ -3,13 +3,12 @@
 #include "mcp/ToolSelfTest.h"
 
 #include "mcp/JobRegistry.h"
-
 #include "mcp/McpProvider.h"
 #include "mcp/ToolRetriever.h"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
-#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>

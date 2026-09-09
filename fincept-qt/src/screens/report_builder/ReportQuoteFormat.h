@@ -27,8 +27,7 @@ inline QMap<QString, QString> quote_report_config(const fincept::services::Quote
     QMap<QString, QString> c;
     c[QStringLiteral("price")] = q.has_price ? QString::number(q.price, 'f', 2) : QString();
     c[QStringLiteral("change")] = q.has_change ? QString::number(q.change, 'f', 2) : QString();
-    c[QStringLiteral("change_pct")] =
-        q.has_change_pct ? QString::number(q.change_pct, 'f', 2) : QString();
+    c[QStringLiteral("change_pct")] = q.has_change_pct ? QString::number(q.change_pct, 'f', 2) : QString();
     c[QStringLiteral("name")] = q.name;
     c[QStringLiteral("high")] = q.has_high ? QString::number(q.high, 'f', 2) : QString();
     c[QStringLiteral("low")] = q.has_low ? QString::number(q.low, 'f', 2) : QString();

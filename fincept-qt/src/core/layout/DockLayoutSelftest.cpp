@@ -72,10 +72,10 @@ ads::CDockWidget* make_widget(ads::CDockManager* mgr, const QString& id) {
 // ensure_all_registered(). The bug is sensitive to the parking-area
 // population, so we mirror a representative mix.
 const QStringList& all_ids() {
-    static const QStringList ids = {"dashboard",      "markets",     "portfolio",    "news",        "report_builder",
-                                    "settings",       "profile",     "about",        "support",     "fno",
-                                    "watchlist",      "forum",       "economics",    "crypto_trading",
-                                    "equity_trading", "backtesting", "algo_trading", "node_editor", "code_editor"};
+    static const QStringList ids = {"dashboard",   "markets",      "portfolio",   "news",           "report_builder",
+                                    "settings",    "profile",      "about",       "support",        "fno",
+                                    "watchlist",   "forum",        "economics",   "crypto_trading", "equity_trading",
+                                    "backtesting", "algo_trading", "node_editor", "code_editor"};
     return ids;
 }
 

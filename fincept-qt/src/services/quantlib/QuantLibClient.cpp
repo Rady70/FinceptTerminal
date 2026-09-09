@@ -144,12 +144,10 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
     // The decision is DirectRouteGuard's, shared with ArenaLlmClient and
     // CloudClient and covered by tests/tst_direct_clients.cpp.
     {
-        const auto route =
-            network::DirectRouteGuard::check_route(fincept::AppConfig::instance().api_base_url(),
-                                                   QStringLiteral("/quantlib/") + endpoint);
+        const auto route = network::DirectRouteGuard::check_route(fincept::AppConfig::instance().api_base_url(),
+                                                                  QStringLiteral("/quantlib/") + endpoint);
         if (route.rejected) {
-            LOG_WARN("QuantLib", QString("Hosted QuantLib call rejected for '%1' — %2")
-                                      .arg(endpoint, route.error));
+            LOG_WARN("QuantLib", QString("Hosted QuantLib call rejected for '%1' — %2").arg(endpoint, route.error));
             callback(mcp::ToolResult::fail(route.error));
             return;
         }

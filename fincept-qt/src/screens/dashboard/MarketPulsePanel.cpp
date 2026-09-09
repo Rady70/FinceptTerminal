@@ -944,8 +944,7 @@ void MarketPulsePanel::rebuild_movers_from_cache() {
     }
     // Drop quotes with no change reading before ranking: a 0.0 default would
     // sort as "flat" and could take a mover row from a symbol that actually moved.
-    quotes.erase(std::remove_if(quotes.begin(), quotes.end(),
-                                [](const auto& q) { return !q.has_change_pct; }),
+    quotes.erase(std::remove_if(quotes.begin(), quotes.end(), [](const auto& q) { return !q.has_change_pct; }),
                  quotes.end());
     std::sort(quotes.begin(), quotes.end(), [](const auto& a, const auto& b) { return a.change_pct > b.change_pct; });
 

@@ -159,7 +159,8 @@ QWidget* TrademarksScreen::build_page() {
     pvl->addWidget(bullet("SQLite — public domain"));
 
     pvl->addWidget(heading("7", tr("REPORTING INFRINGEMENT")));
-    pvl->addWidget(body(tr("To report trademark infringement, contact Fincept Corporation through its own published channels.")));
+    pvl->addWidget(
+        body(tr("To report trademark infringement, contact Fincept Corporation through its own published channels.")));
 
     pvl->addWidget(heading("8", tr("LEGAL DEPARTMENT")));
     pvl->addWidget(body(tr("Fincept Corporation — Legal Department")));

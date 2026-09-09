@@ -122,10 +122,8 @@ bool HostedPathGuard::is_fincept_host(const QString& host) {
     // bare host:port probe carries no path to judge — denying them on the host
     // alone would block unrelated third-party GitHub endpoints. Callers that
     // do hold a URL must run it through is_fincept_destination() as well.
-    return host_is_or_under(h, QStringLiteral("fincept.in")) ||
-           host_is_or_under(h, QStringLiteral("fincept.com")) ||
-           host_is_or_under(h, QStringLiteral("fincept.app")) ||
-           host_is_or_under(h, QStringLiteral("fincept.ai"));
+    return host_is_or_under(h, QStringLiteral("fincept.in")) || host_is_or_under(h, QStringLiteral("fincept.com")) ||
+           host_is_or_under(h, QStringLiteral("fincept.app")) || host_is_or_under(h, QStringLiteral("fincept.ai"));
 }
 
 // The two error builders report the host AS IT WAS GIVEN, not normalized_host()'d:

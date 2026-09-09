@@ -222,7 +222,6 @@ void PortfolioScreen::refresh_theme() {
 void PortfolioScreen::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     reposition_order_panel();
-
 }
 
 const portfolio::HoldingWithQuote* PortfolioScreen::find_holding(const QString& symbol) const {
