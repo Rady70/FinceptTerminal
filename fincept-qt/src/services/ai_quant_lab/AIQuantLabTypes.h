@@ -32,8 +32,14 @@ inline QVector<QuantModule> all_quant_modules() {
          "Real-time trading signal generation"},
 
         // AI/ML
-        {"deep_agent", "Deep Agent", "DAGENT", "AI_ML", QColor("#9D4EDD"), "agents/rdagents/cli.py",
-         "Autonomous AI research agent (RD-Agent)"},
+        // REMOVED: the Deep Agent / RD-Agent module entry.
+        //
+        // MarketLab (reduced AI scope): the Deep Agent / RD-Agent module is
+        // disabled. Removing the entry here makes it disappear from the module
+        // sidebar, the MCP quant tool catalog (QuantLabTools) and the service
+        // dispatch, so no production entry point into the rdagents/deepagents
+        // Python subtrees exists (FINCEPT_FORK_PLAN.md §5.2). The service
+        // methods remain as fail-closed stubs in AIQuantLabService.cpp.
         {"rl_trading", "RL Trading", "RL", "AI_ML", QColor("#FF3B8E"), "ai_quant_lab/qlib_rl.py",
          "Reinforcement learning: PPO, DQN, A2C, SAC, TD3"},
         {"online_learning", "Online Learning", "ONLINE", "AI_ML", QColor("#00BCD4"),

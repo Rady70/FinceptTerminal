@@ -519,91 +519,16 @@ void AgentService::run_python_light(const QString& action, const QJsonObject& pa
 
 void AgentService::run_python_stdin(const QString& action, const QJsonObject& params, const QJsonObject& config,
                                     std::function<void(bool, QJsonObject)> on_result) {
-    auto& py = python::PythonRunner::instance();
-    if (!py.is_available()) {
-        on_result(false, QJsonObject{{"error", "Python not available"}});
-        return;
-    }
-
-    QJsonObject payload = build_payload(action, params, config);
-    QByteArray payload_bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-
-    // Bridge run scope opened by build_payload — retire it the moment the agent
-    // process is gone so its token stops authenticating. Empty (or a
-    // caller-supplied token, which the bridge never registered) makes end_run a
-    // no-op, so this is safe for every action including the non-agent ones.
-    const QString run_token = payload.value("config").toObject().value("terminal_mcp_token").toString();
-
-    QString python_path = py.python_path();
-    QString script_path = py.scripts_dir() + "/agents/finagent_core/main.py";
-
-    // Spawn QProcess directly for stdin writing (P4 exception like ExchangeService)
-    auto* proc = new QProcess(this);
-    // Share the standard Python env + cwd + Windows console suppression with
-    // PythonRunner so every finagent spawn sees the same FINCEPT_DATA_DIR,
-    // FINAGENT_DATA_DIR, and PYTHONPATH.
-    proc->setProcessEnvironment(py.build_python_env());
-    proc->setWorkingDirectory(py.scripts_dir());
-#ifdef _WIN32
-    proc->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* cpa) {
-        cpa->flags |= 0x08000000; // CREATE_NO_WINDOW
-    });
-#endif
-    QPointer<AgentService> self = this;
-    auto timer = std::make_shared<QElapsedTimer>();
-    timer->start();
-
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [self, proc, action, on_result, timer, run_token](int exit_code, QProcess::ExitStatus) {
-                mcp::TerminalMcpBridge::instance().end_run(run_token);
-                int elapsed = timer->elapsed();
-
-                QString stdout_str = QString::fromUtf8(proc->readAllStandardOutput());
-                QString stderr_str = QString::fromUtf8(proc->readAllStandardError());
-                proc->deleteLater();
-
-                if (!self)
-                    return;
-
-                // Extract JSON from output
-                QString json_str = python::extract_json(stdout_str);
-                if (json_str.isEmpty() && exit_code == 0) {
-                    json_str = stdout_str.trimmed();
-                }
-
-                QJsonDocument doc = QJsonDocument::fromJson(json_str.toUtf8());
-                if (exit_code != 0 || doc.isNull()) {
-                    LOG_ERROR("AgentService", QString("%1 failed (exit=%2, %3ms): %4")
-                                                  .arg(action)
-                                                  .arg(exit_code)
-                                                  .arg(elapsed)
-                                                  .arg(stderr_str.left(200)));
-                    QString err = stderr_str.isEmpty() ? "Agent execution failed" : stderr_str.left(500);
-                    on_result(false, QJsonObject{{"error", err}});
-                    return;
-                }
-
-                LOG_INFO("AgentService", QString("%1 completed in %2ms").arg(action).arg(elapsed));
-                QJsonObject result = doc.object();
-                result["execution_time_ms"] = elapsed;
-                on_result(true, result);
-            });
-
-    connect(proc, &QProcess::errorOccurred, this, [self, proc, action, on_result, timer,
-                                                   run_token](QProcess::ProcessError) {
-        mcp::TerminalMcpBridge::instance().end_run(run_token);
-        QString err = proc->errorString();
-        proc->deleteLater();
-        if (!self)
-            return;
-        LOG_ERROR("AgentService", QString("%1 process error: %2").arg(action, err));
-        on_result(false, QJsonObject{{"error", "Process error: " + err}});
-    });
-
-    LOG_INFO("AgentService", QString("Running %1 via stdin (%2 bytes)").arg(action).arg(payload_bytes.size()));
-    proc->start(python_path, {script_path, "--stdin"});
-    proc->write(payload_bytes);
-    proc->closeWriteChannel();
+    // MarketLab (reduced AI scope): the Agents surface is disabled and the
+    // finagent_core child is never launched (FINCEPT_FORK_PLAN.md §5.2).
+    // This service has no reachable instance() caller at runtime, and this
+    // fail-closed stub deliberately names no launch path, so no production
+    // entry point into the agent Python subtree exists.
+    Q_UNUSED(action);
+    Q_UNUSED(params);
+    Q_UNUSED(config);
+    LOG_WARN("AgentService", "Agents are disabled in this build");
+    on_result(false, QJsonObject{{"error", "Agents are disabled in this build"}});
 }
 
 // ── Agent discovery ──────────────────────────────────────────────────────────

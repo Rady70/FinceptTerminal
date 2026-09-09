@@ -34,7 +34,10 @@ void TstMarketlabBoundary::capability_defaults() {
 
     QVERIFY(mgr.is_available(Capability::LocalWorkspace));
     QVERIFY(mgr.is_available(Capability::PublicData));
-    QVERIFY(mgr.is_available(Capability::UserConfiguredProvider));
+    // MarketLab (reduced AI scope): custom remote LLM and embedder endpoints
+    // are rejected; only local Ollama remains.
+    QVERIFY(!mgr.is_available(Capability::UserConfiguredProvider));
+    QVERIFY(!mgr.availability(Capability::UserConfiguredProvider).reason.isEmpty());
     QVERIFY(mgr.is_available(Capability::LocalAnalytics));
 
     QVERIFY(!mgr.is_available(Capability::FinceptHosted));
@@ -63,8 +66,9 @@ void TstMarketlabBoundary::screen_availability() {
     QVERIFY(mgr.is_screen_allowed(QStringLiteral("about")));
 
     // Conditional screens stay reachable (they render their own conditional
-    // state) and report their condition truthfully.
-    for (const QString& id : {QStringLiteral("ai_chat"), QStringLiteral("ai_quant_lab"), QStringLiteral("agent_config"),
+    // state) and report their condition truthfully. agent_config is NOT among
+    // them — the Agents surface is disabled (reduced AI scope).
+    for (const QString& id : {QStringLiteral("ai_chat"), QStringLiteral("ai_quant_lab"),
                               QStringLiteral("surface_analytics")}) {
         QVERIFY(mgr.is_screen_allowed(id));
         QCOMPARE(mgr.screen_availability(id).state, AvailabilityState::Conditional);
@@ -72,10 +76,11 @@ void TstMarketlabBoundary::screen_availability() {
 
     // Execution and hosted screens must be denied with a reason.
     const QStringList denied = {
-        QStringLiteral("equity_trading"), QStringLiteral("algo_trading"),  QStringLiteral("crypto_trading"),
-        QStringLiteral("crypto_center"),  QStringLiteral("polymarket"),    QStringLiteral("alpha_arena"),
-        QStringLiteral("fno"),            QStringLiteral("quantlib"),      QStringLiteral("maritime"),
-        QStringLiteral("forum"),          QStringLiteral("support"),       QStringLiteral("profile"),
+        QStringLiteral("agent_config"),  QStringLiteral("equity_trading"), QStringLiteral("algo_trading"),
+        QStringLiteral("crypto_trading"), QStringLiteral("crypto_center"),  QStringLiteral("polymarket"),
+        QStringLiteral("alpha_arena"),    QStringLiteral("fno"),            QStringLiteral("quantlib"),
+        QStringLiteral("maritime"),       QStringLiteral("forum"),          QStringLiteral("support"),
+        QStringLiteral("profile"),
     };
     for (const QString& id : denied) {
         QVERIFY2(!mgr.is_screen_allowed(id), qPrintable("denied: " + id));

@@ -6,6 +6,7 @@
 //
 // Part of the partial-class split of PortfolioScreen.cpp.
 
+#include "core/capability/CapabilityManager.h"
 #include "core/events/EventBus.h"
 #include "core/session/ScreenStateManager.h"
 #include "core/symbol/SymbolContext.h"
@@ -192,8 +193,15 @@ void PortfolioScreen::build_ui() {
     insights_scrim_->setStyleSheet("#PortfolioInsightsScrim { background:rgba(0,0,0,0.45); }");
     insights_scrim_->hide();
 
-    insights_panel_ = new PortfolioInsightsPanel(this);
-    connect(insights_panel_, &PortfolioInsightsPanel::close_requested, this, [this]() { insights_scrim_->hide(); });
+    // MarketLab (reduced AI scope): the insights panel's AI and Agent tabs
+    // both run through the disabled Agents service, and its constructor
+    // instantiates AgentService (which starts the local MCP bridge). When
+    // agent_config is Unavailable the panel is not constructed at all, so no
+    // reachable code path instantiates the service.
+    if (capability::CapabilityManager::instance().is_screen_allowed(QStringLiteral("agent_config"))) {
+        insights_panel_ = new PortfolioInsightsPanel(this);
+        connect(insights_panel_, &PortfolioInsightsPanel::close_requested, this, [this]() { insights_scrim_->hide(); });
+    }
 
     // Wire export/import/AI/Agent signals from CommandBar
     connect(command_bar_, &PortfolioCommandBar::export_csv_requested, this, [this]() {
@@ -222,6 +230,10 @@ void PortfolioScreen::build_ui() {
         }
     });
     auto open_insights = [this](PortfolioInsightsPanel::Tab tab) {
+        // MarketLab (reduced AI scope): no panel is constructed while the
+        // Agents surface is disabled, so the trigger is a no-op.
+        if (!insights_panel_)
+            return;
         if (!summary_loaded_)
             return;
         insights_panel_->set_summary(current_summary_);

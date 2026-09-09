@@ -10,6 +10,7 @@
 #include "core/logging/Logger.h"
 #include "screens/settings/LlmConfigSection.h"
 #include "services/llm/LlmService.h"
+#include "services/llm/ProviderCatalog.h"
 #include "storage/repositories/LlmConfigRepository.h"
 #include "storage/repositories/LlmProfileRepository.h"
 #include "storage/repositories/SettingsRepository.h"
@@ -664,29 +665,32 @@ void LlmConfigSection::on_save_provider() {
         return;
     }
 
-    bool is_fincept = (provider == "fincept");
+    // MarketLab (reduced AI scope): only the local Ollama provider may be
+    // saved, and its base URL must stay on a loopback host. Custom remote LLM
+    // endpoints are rejected (FINCEPT_FORK_PLAN.md §5.2, §6).
+    if (provider != "ollama") {
+        show_status(tr("Only the local Ollama provider is enabled in this build — custom remote LLM "
+                       "providers are disabled."),
+                    true);
+        return;
+    }
+    if (!ai_chat::ProviderCatalog::is_loopback_base_url(base_url_edit_->text())) {
+        show_status(tr("Ollama base URL must be a loopback address (localhost / 127.0.0.1 / ::1) — "
+                       "remote endpoints are disabled."),
+                    true);
+        return;
+    }
 
     LlmConfig cfg;
     cfg.provider = provider;
-    cfg.api_key = is_fincept ? QString() : api_key_edit_->text().trimmed();
+    cfg.api_key = api_key_edit_->text().trimmed();
     cfg.model = model_combo_->currentText().trimmed();
     cfg.base_url = base_url_edit_->text().trimmed();
     cfg.is_active = true;
     cfg.tools_enabled = tools_check_->isChecked();
 
-    // Fincept defaults — endpoints are hardcoded in LlmService, base_url not needed
-    if (is_fincept) {
-        if (cfg.model.isEmpty())
-            cfg.model = "MiniMax-M2.7";
-        cfg.base_url = {}; // not used for fincept
-    }
-
     // Basic validation
-    if (!is_fincept && provider != "ollama" && cfg.api_key.isEmpty()) {
-        show_status(tr("API key is required for %1").arg(provider), true);
-        return;
-    }
-    if (!is_fincept && cfg.model.isEmpty()) {
+    if (cfg.model.isEmpty()) {
         show_status(tr("Model name is required"), true);
         return;
     }

@@ -258,46 +258,6 @@
         "scripts/agents/marketlab_net_guard.py"
       ],
       "note": "The Python-side deny-list itself: fincept.ai is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
-    },
-    {
-      "pattern": "Fincept-Corporation",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/tests/**"
-      ],
-      "note": "Pure classification vectors: these literals are the INPUT to is_fincept_url()/is_fincept_host() assertions in the guard tests (the GitHub path rule cases), never a dialed destination. Mirrors the tests/** entries for the C++ boundary suite."
-    },
-    {
-      "pattern": "fincept.in",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/tests/**"
-      ],
-      "note": "Pure classification vectors: these literals are the INPUT to is_fincept_url()/is_fincept_host() assertions in the guard tests (host rule, trailing-dot, userinfo and scheme cases), never a dialed destination. Mirrors the tests/** entries for the C++ boundary suite."
-    },
-    {
-      "pattern": "fincept.com",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/tests/**"
-      ],
-      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
-    },
-    {
-      "pattern": "fincept.app",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/tests/**"
-      ],
-      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
-    },
-    {
-      "pattern": "fincept.ai",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/tests/**"
-      ],
-      "note": "Pure classification vectors: the literal is the input to an is_fincept_host() assertion in the guard tests, never a destination."
     }
   ],
   "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). C++ sink scope is src/ only \u2014 a sink in tests/ is not in the product. The Python sink scope (py_http_client, py_urllib, py_socket, py_websocket, py_sdk_client) is the transitive local-import closure of the .py entry points named as string literals in src/ \u2014 the Python children the application actually launches, which do their own networking inside the child process. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
@@ -737,8 +697,7 @@
       "disposition": "no_hosted_route",
       "files": [
         "scripts/hdx_data.py",
-        "scripts/news_geolocation.py",
-        "scripts/strategies/fincept_engine/algorithm.py"
+        "scripts/news_geolocation.py"
       ],
       "note": "Public reference-data clients under scripts/, launched as child processes by the C++ layer. Each fetches from a third-party host fixed by the source \u2014 a central bank, a statistics agency, a government open-data portal or a market-data vendor \u2014 and none takes its host from Fincept configuration, so there is no Fincept-owned route here to guard. They are inventoried rather than ignored because they are production Python the application really runs: a previous revision of the audit declared scripts/ \"not in the product\", which was false and left this whole surface unmeasured. The literal-host scan covers each of these files too, so a Fincept host appearing in any of them fails the audit on the other check."
     },
@@ -749,30 +708,6 @@
         "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py"
       ],
       "note": "SEC EDGAR full-text search and submissions endpoints, fixed in the source and sent with the SEC-required User-Agent. Public filings data, not a Fincept-owned route."
-    },
-    {
-      "sink": "py_urllib",
-      "disposition": "no_hosted_route",
-      "files": [
-        "scripts/agents/finagent_core/tools/terminal_toolkit.py"
-      ],
-      "note": "The agent child's callback into its own host: POSTs to http://127.0.0.1:{port}/tool, the loopback MCP bridge the C++ process opened for it. The port is passed in on the command line by the parent; the host is loopback in the source and is not configuration-derived. It reaches the terminal that launched it, never the internet."
-    },
-    {
-      "sink": "py_socket",
-      "disposition": "no_hosted_route",
-      "files": [
-        "scripts/agents/rdagents/cli.py"
-      ],
-      "note": "A loopback port-availability probe (socket against 127.0.0.1) used to find a free port for the local MCP server before starting it. Destination is loopback in the source and it transfers no data."
-    },
-    {
-      "sink": "py_socket",
-      "disposition": "no_hosted_route",
-      "files": [
-        "scripts/agents/rdagents/mcp_tools.py"
-      ],
-      "note": "The same loopback port probe as rdagents/cli.py, in the module that starts the local MCP server. Destination is loopback in the source."
     },
     {
       "sink": "py_urllib",
@@ -815,48 +750,6 @@
       "note": "The public-quote and history producer this fork's representative task depends on. Yahoo Finance via yfinance; the host is the library's, fixed in the source, with no key and no Fincept account. This is the single most-exercised Python network path in the product and it is deliberately pinned on its own rather than folded into the bulk rule."
     },
     {
-      "sink": "py_sdk_client",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/finagent_core/agent_factory.py",
-        "scripts/agents/finagent_core/registries/models_registry.py"
-      ],
-      "note": "The agno model-construction path with a user-configurable base_url, guarded by CAPABILITY not class name: every resolved class is checked with issubclass against OpenAIChat, so OpenAIChat and all OpenAILike subclasses (DeepSeek, LMStudio, vLLM, xAI, Together, Fireworks, OpenRouter, Perplexity, AzureOpenAI, Nvidia, DeepInfra, Vercel V0, Portkey, SambaNova, LlamaCpp, \u2026) built with a custom base_url receive guarded sync AND async OpenAI SDK clients (client=/async_client=), whose transports refuse Fincept-owned request URLs on every dial, redirect hops included. Every non-OpenAI-protocol class (anthropic, google, groq, huggingface, mistral, cohere, \u2026) never receives a user base_url natively: a custom base_url routes the provider to the guarded OpenAIChat path instead. Ollama is the one exception \u2014 its host is configuration-guarded by reject_if_fincept (local-first default). A literal class-name check (a previous revision) skipped every subclass and left DeepSeek on the SDK default client with follow_redirects=True; the registry integration tests (scripts/agents/tests/test_registry_guarded_clients.py) pin the subclass case explicitly. Catalog entries whose class or SDK is not importable in the pinned agno/runtime (vertexai, and the uninstalled groq/mistral/cohere/portkey SDKs) fail closed at import \u2014 no client is built, no network occurs; every constructible OpenAI-protocol class is guarded as described."
-    },
-    {
-      "sink": "py_sdk_client",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/deepagents/models.py"
-      ],
-      "note": "LangChain model construction for the deepagent path (launched by AIQuantLabService with the user\u2019s LLM config). Every configured base_url is pre-vetted by marketlab_net_guard.reject_if_fincept; the ChatOpenAI constructions additionally receive guarded sync+async httpx clients (http_client=/http_async_client=) so the OpenAI SDK cannot follow a redirect into a Fincept-owned destination. The anthropic path refuses a custom base_url outright: langchain_anthropic builds its httpx clients internally with no injection seam and the Anthropic SDK follows redirects by default, so that configuration-derived route is removed rather than left on an unguardable transport (the default Anthropic endpoint still works). The google/groq/cohere paths take no base_url at all."
-    },
-    {
-      "sink": "py_sdk_client",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/finagent_core/registries/embedder_registry.py",
-        "scripts/agents/finagent_core/modules/knowledge_module.py"
-      ],
-      "note": "The knowledge reader catalog (agno.knowledge.reader.PDFReader / URLReader / WebsiteReader / ArxivReader / GithubReader \u2026) plus the source guard. Honest current state: the pinned agno package exports only Reader and ReaderFactory from agno.knowledge.reader, so the catalog names fail with AttributeError (which _get_reader does not even catch) before any reader exists \u2014 the network route is NOT constructible today, which is why the guard itself is first-line defense rather than the working boundary. The source guard (reject_if_fincept on url/website/arxiv/github sources, github slugs expanded to github.com before judging) is pinned by scripts/agents/tests/test_marketlab_net_guard.py. Repairing the reader mapping or switching to agno\u2019s ReaderFactory is Phase 4 work; until then the feature is dispositioned unavailable, not \u201cworking guarded\u201d."
-    },
-    {
-      "sink": "py_sdk_client",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The guard itself: the guarded_openai_clients() helper constructs the OpenAI/AsyncOpenAI SDK clients that are handed to the model construction sites above. Its own transports are the deny transports defined in the same file."
-    },
-    {
-      "sink": "py_http_client",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The guard itself: the httpx.Client / httpx.AsyncClient constructions whose _FinceptDenyTransport/_AsyncFinceptDenyTransport refuse Fincept-owned request URLs on every dial. This is the redirect-hop vetting seam, not an unguarded route."
-    },
-    {
       "sink": "py_http_client",
       "disposition": "no_hosted_route",
       "files": [
@@ -875,34 +768,6 @@
     },
     "scripts/adb_data.py": {
       "py_http_client": 2
-    },
-    "scripts/agents/deepagents/models.py": {
-      "py_sdk_client": 6
-    },
-    "scripts/agents/finagent_core/agent_factory.py": {
-      "py_sdk_client": 15
-    },
-    "scripts/agents/finagent_core/modules/knowledge_module.py": {
-      "py_sdk_client": 10
-    },
-    "scripts/agents/finagent_core/registries/embedder_registry.py": {
-      "py_sdk_client": 17
-    },
-    "scripts/agents/finagent_core/registries/models_registry.py": {
-      "py_sdk_client": 37
-    },
-    "scripts/agents/finagent_core/tools/terminal_toolkit.py": {
-      "py_urllib": 2
-    },
-    "scripts/agents/marketlab_net_guard.py": {
-      "py_http_client": 3,
-      "py_sdk_client": 2
-    },
-    "scripts/agents/rdagents/cli.py": {
-      "py_socket": 1
-    },
-    "scripts/agents/rdagents/mcp_tools.py": {
-      "py_socket": 1
     },
     "scripts/akshare_index.py": {
       "py_http_client": 2

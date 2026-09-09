@@ -2,6 +2,7 @@
 
 #include "app/DockScreenRouter.h"
 #include "auth/InactivityGuard.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/logging/Logger.h"
 
 #include <QCoreApplication>
@@ -83,10 +84,24 @@ int run_screen_smoke_test(DockScreenRouter* router) {
         return 3;
     }
 
-    const QStringList ids = router->all_screen_ids();
-    std::fprintf(stderr, "[Smoke] walking %d screens\n", static_cast<int>(ids.size()));
+    // MarketLab: Unavailable screens are denied by the capability gate — the
+    // smoke walk covers exactly the screens a user can reach, and reports the
+    // denied set so the exclusion is visible evidence rather than silence.
+    QStringList ids;
+    QStringList skipped;
+    for (const QString& id : router->all_screen_ids()) {
+        if (capability::CapabilityManager::instance().is_screen_allowed(id))
+            ids << id;
+        else
+            skipped << id;
+    }
+    std::fprintf(stderr, "[Smoke] walking %d screens (skipping %d Unavailable: %s)\n",
+                 static_cast<int>(ids.size()), static_cast<int>(skipped.size()),
+                 qUtf8Printable(skipped.join(QStringLiteral(", "))));
     std::fflush(stderr);
-    LOG_INFO("Smoke", QString("Screen smoke test: %1 screens").arg(ids.size()));
+    LOG_INFO("Smoke", QString("Screen smoke test: %1 screens (%2 Unavailable skipped)")
+                          .arg(ids.size())
+                          .arg(skipped.size()));
 
     QStringList failures;
     for (const QString& id : ids) {

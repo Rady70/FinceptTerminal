@@ -8,6 +8,7 @@
 #include "core/logging/Logger.h"
 #include "screens/settings/LlmConfigSection.h"
 #include "services/llm/LlmService.h"
+#include "services/llm/ProviderCatalog.h"
 #include "storage/repositories/LlmConfigRepository.h"
 #include "storage/repositories/LlmProfileRepository.h"
 #include "storage/repositories/SettingsRepository.h"
@@ -179,7 +180,7 @@ QWidget* LlmConfigSection::build_profile_form_panel() {
     profile_api_key_edit_->setStyleSheet(field_style());
     vl->addWidget(profile_api_key_edit_);
 
-    profile_base_url_field_lbl_ = lbl(tr("BASE URL (custom endpoint)"));
+    profile_base_url_field_lbl_ = lbl(tr("BASE URL (local Ollama endpoint)"));
     vl->addWidget(profile_base_url_field_lbl_);
     profile_base_url_edit_ = new QLineEdit;
     profile_base_url_edit_->setPlaceholderText(tr("Leave blank to use provider default"));
@@ -411,6 +412,22 @@ void LlmConfigSection::on_save_profile() {
     QString model = profile_model_combo_->currentText().trimmed();
     if (model.isEmpty()) {
         show_profile_status(tr("Model is required"), true);
+        return;
+    }
+
+    // MarketLab (reduced AI scope): profiles may only reference the local
+    // Ollama provider, and a profile base URL must stay on a loopback host —
+    // custom remote LLM endpoints are rejected (FINCEPT_FORK_PLAN.md §5.2, §6).
+    if (provider.toLower() != "ollama") {
+        show_profile_status(tr("Only the local Ollama provider is enabled in this build — custom remote LLM "
+                               "providers are disabled."),
+                            true);
+        return;
+    }
+    if (!ai_chat::ProviderCatalog::is_loopback_base_url(profile_base_url_edit_->text())) {
+        show_profile_status(tr("Profile base URL must be a loopback address (localhost / 127.0.0.1 / ::1) — "
+                               "remote endpoints are disabled."),
+                            true);
         return;
     }
 

@@ -1,4 +1,5 @@
 // src/screens/portfolio/PortfolioCommandBar.cpp
+#include "core/capability/CapabilityManager.h"
 #include "screens/portfolio/PortfolioCommandBar.h"
 
 #include "ui/theme/Theme.h"
@@ -358,6 +359,10 @@ void PortfolioCommandBar::build_tools_cluster(QHBoxLayout* layout) {
     // AI = AMBER (brand action). AGENT = CYAN (info-tier).
     // Custom hex colors (#9D4EDD purple, #00D4AA teal) violated DESIGN_SYSTEM
     // colour discipline — only AMBER/CYAN/POSITIVE/NEGATIVE/WARNING are allowed.
+    // MarketLab (reduced AI scope): both buttons drive the disabled Agents
+    // service, so they are not offered while agent_config is Unavailable.
+    const bool agents_enabled =
+        capability::CapabilityManager::instance().is_screen_allowed(QStringLiteral("agent_config"));
     make_tool_btn(ai_btn_, tr("AI"), ui::colors::AMBER(), &PortfolioCommandBar::ai_analyze_requested);
     make_tool_btn(agent_btn_, tr("AGENT"), ui::colors::CYAN(), &PortfolioCommandBar::agent_run_requested);
 
@@ -365,6 +370,8 @@ void PortfolioCommandBar::build_tools_cluster(QHBoxLayout* layout) {
     ai_btn_->setAccessibleName(ai_btn_->toolTip());
     agent_btn_->setToolTip(tr("Run a configured research agent against this portfolio"));
     agent_btn_->setAccessibleName(agent_btn_->toolTip());
+    ai_btn_->setVisible(agents_enabled);
+    agent_btn_->setVisible(agents_enabled);
 }
 
 // ── Styling ──────────────────────────────────────────────────────────────────

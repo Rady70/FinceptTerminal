@@ -39,7 +39,6 @@
 #include "screens/launchpad/LaunchpadScreen.h"
 #include "screens/recovery/CrashRecoveryDialog.h"
 #include "screens/setup/SetupScreen.h"
-#include "services/agents/AgentService.h"
 #include "services/alpha_arena/ArenaSelftest.h"
 #include "services/dbnomics/DBnomicsService.h"
 #include "services/economics/EconomicsService.h"
@@ -457,8 +456,6 @@ int main(int argc, char* argv[]) {
         // Specialized data sources.
         fincept::services::DBnomicsService::instance().ensure_registered_with_hub();
         fincept::services::GovDataService::instance().ensure_registered_with_hub();
-        // Agents — `agent:*` push-only producer.
-        fincept::services::AgentService::instance().ensure_registered_with_hub();
     };
 
     // ── Group 2: Fincept Cloud sync ─────────────────────────────────────────
@@ -961,9 +958,6 @@ int main(int argc, char* argv[]) {
                         "App",
                         "LLM provider not configured — AI chat will prompt user to configure Settings → LLM Config");
 
-                // Warm agent discovery cache (same reason as the main path).
-                QTimer::singleShot(0, &app, []() { fincept::services::AgentService::instance().discover_agents(); });
-
                 LOG_INFO("App", "Application ready (after setup)");
             });
 
@@ -1056,13 +1050,6 @@ int main(int argc, char* argv[]) {
             LOG_WARN("App",
                      "LLM provider not configured — AI chat will prompt user to configure Settings → LLM Config");
     });
-
-    // Warm the agent discovery cache on startup. This populates
-    // AgentService::cached_agents() so any screen that lists agents
-    // (Agent Config, Portfolio → Agent Runner, Node Editor) shows the
-    // full finagent_core set immediately instead of falling back to the
-    // much smaller DB-only list. Run deferred so Python is fully ready.
-    QTimer::singleShot(0, &app, []() { fincept::services::AgentService::instance().discover_agents(); });
 
     LOG_INFO("App", "Application ready");
     return app.exec();

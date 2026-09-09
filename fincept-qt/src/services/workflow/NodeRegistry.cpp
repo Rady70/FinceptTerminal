@@ -311,7 +311,10 @@ void NodeRegistry::register_builtin_nodes() {
     register_analytics_nodes(*this);
     register_safety_nodes(*this);
     register_notification_nodes(*this);
-    register_agent_nodes(*this);
+    // MarketLab (reduced AI scope): agent workflow nodes (agent.run,
+    // agent.tool_picker, and the legacy agent.* bridges) are NOT registered —
+    // the Agents surface is disabled (FINCEPT_FORK_PLAN.md §5.2).
+    // register_agent_nodes(*this);
     register_file_nodes(*this);
     register_data_format_nodes(*this);
     register_integration_nodes(*this);

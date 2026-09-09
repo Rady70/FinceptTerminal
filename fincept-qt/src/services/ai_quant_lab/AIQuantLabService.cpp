@@ -570,90 +570,128 @@ void AIQuantLabService::rolling_delete_schedule(const QJsonObject& params) {
 
 // ── Deep Agent (LangGraph multi-agent) ───────────────────────────────────────
 void AIQuantLabService::run_deep_agent(const QJsonObject& params) {
-    // Build the CLI payload: execute_task with task, agent_type, thread_id
-    QJsonObject payload;
-    payload["task"] = params["task"];
-    payload["agent_type"] = params.contains("agent_type") ? params["agent_type"] : QJsonValue("general");
-    if (params.contains("thread_id"))
-        payload["thread_id"] = params["thread_id"];
-    // The LLM credentials block MUST be forwarded. deepagents/cli.py reads
-    // `params.get("config", {})` in execute_task and hands it to create_model();
-    // dropping it here meant the agent always ran with an empty config even
-    // though the Deep Analysis panel refuses to start until the user picks an
-    // LLM profile. Symptom was a provider/credential error that looked like a
-    // Python fault rather than a plumbing bug.
-    if (params.contains("config"))
-        payload["config"] = params["config"];
-
-    auto json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    run_python("agents/deepagents/cli.py", {"execute_task", json}, "deep_agent", "execute_task");
+    // MarketLab (reduced AI scope): Deep Agent and RD-Agent are disabled — no
+    // child process is launched and no agent CLI entry point is ever named.
+    Q_UNUSED(params);
+    LOG_WARN("AIQuantLab", "Deep Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 // ── RD-Agent (autonomous factor/model research) ──────────────────────────────
 void AIQuantLabService::rd_agent_check_status() {
-    run_python("agents/rdagents/cli.py", {"check_status"}, "deep_agent", "check_status");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_start_factor_mining(const QJsonObject& params) {
-    auto json = QJsonDocument(params).toJson(QJsonDocument::Compact);
-    run_python("agents/rdagents/cli.py", {"start_factor_mining", json}, "deep_agent", "start_factor_mining");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(params);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_start_model_optimization(const QJsonObject& params) {
-    auto json = QJsonDocument(params).toJson(QJsonDocument::Compact);
-    run_python("agents/rdagents/cli.py", {"start_model_optimization", json}, "deep_agent", "start_model_optimization");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(params);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_start_quant_research(const QJsonObject& params) {
-    auto json = QJsonDocument(params).toJson(QJsonDocument::Compact);
-    run_python("agents/rdagents/cli.py", {"start_quant_research", json}, "deep_agent", "start_quant_research");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(params);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_get_task_status(const QString& task_id) {
-    auto json = QString("{\"task_id\":\"%1\"}").arg(task_id);
-    run_python("agents/rdagents/cli.py", {"get_task_status", json}, "deep_agent", "get_task_status");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(task_id);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_get_discovered_factors(const QString& task_id) {
-    auto json = QString("{\"task_id\":\"%1\"}").arg(task_id);
-    run_python("agents/rdagents/cli.py", {"get_discovered_factors", json}, "deep_agent", "get_discovered_factors");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(task_id);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_get_optimized_model(const QString& task_id) {
-    auto json = QString("{\"task_id\":\"%1\"}").arg(task_id);
-    run_python("agents/rdagents/cli.py", {"get_optimized_model", json}, "deep_agent", "get_optimized_model");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(task_id);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_list_tasks(const QString& status_filter) {
-    QString json = status_filter.isEmpty() ? QStringLiteral("{}") : QString("{\"status\":\"%1\"}").arg(status_filter);
-    run_python("agents/rdagents/cli.py", {"list_tasks", json}, "deep_agent", "list_tasks");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(status_filter);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_stop_task(const QString& task_id) {
-    auto json = QString("{\"task_id\":\"%1\"}").arg(task_id);
-    run_python("agents/rdagents/cli.py", {"stop_task", json}, "deep_agent", "stop_task");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(task_id);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_resume_task(const QString& task_id, const QJsonObject& config) {
-    QJsonObject params;
-    params["task_id"] = task_id;
-    if (!config.isEmpty())
-        params["config"] = config;
-    auto json = QJsonDocument(params).toJson(QJsonDocument::Compact);
-    run_python("agents/rdagents/cli.py", {"resume_task", json}, "deep_agent", "resume_task");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(task_id);
+    Q_UNUSED(config);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_start_ui() {
-    run_python("agents/rdagents/cli.py", {"start_ui"}, "deep_agent", "start_ui");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_start_mcp_server(int port) {
-    auto json = QString("{\"port\":%1}").arg(port);
-    run_python("agents/rdagents/cli.py", {"start_mcp_server", json}, "deep_agent", "start_mcp_server");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    Q_UNUSED(port);
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 void AIQuantLabService::rd_agent_mcp_status() {
-    run_python("agents/rdagents/cli.py", {"mcp_status"}, "deep_agent", "mcp_status");
+    // MarketLab (reduced AI scope): RD-Agent is disabled — no child
+    // process is launched and no RD-Agent CLI entry point is ever named.
+    LOG_WARN("AIQuantLab", "RD-Agent is disabled in this build");
+    emit error_occurred(QStringLiteral("deep_agent"),
+                        QStringLiteral("Deep Agent / RD-Agent are disabled in this build"));
 }
 
 // ── Feature Engineering ──────────────────────────────────────────────────────

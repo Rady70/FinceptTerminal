@@ -226,10 +226,6 @@ static bool script_supports_arg_spill(const QString& script, const QStringList& 
         QStringLiteral("Analytics/options/oi_tracker.py"),
         QStringLiteral("Analytics/options/straddle_simulator.py"),
         QStringLiteral("Analytics/options/strategy_chart.py"),
-        // scripts/agents/finagent_core/main.py — payload_str.startswith("@").
-        // AgentService reaches it via its own stdin QProcess, not through here,
-        // but the reader exists so the flag stays correct for any other caller.
-        QStringLiteral("agents/finagent_core/main.py"),
     };
     return kSpillCapableScripts.contains(script);
 }

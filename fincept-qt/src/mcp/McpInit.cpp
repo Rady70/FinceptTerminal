@@ -127,8 +127,10 @@ void initialize_all_tools() {
     // notes tab
     provider.register_tools(tools::get_notes_tools());
 
-    // agentic mode — Letta tier-3 archival memory (agent-callable mid-step)
-    provider.register_tools(tools::get_agentic_memory_tools());
+    // agentic mode — MarketLab (reduced AI scope): NOT registered. The agentic
+    // memory tools belong to the disabled Agents surface
+    // (FINCEPT_FORK_PLAN.md §5.2).
+    // provider.register_tools(tools::get_agentic_memory_tools());
 
     // ai chat tab
     provider.register_tools(tools::get_ai_chat_tools());
@@ -187,8 +189,10 @@ void initialize_all_tools() {
     // ai quant lab — 24-module quantitative research platform (96 specific + 3 generic)
     provider.register_tools(tools::get_quant_lab_tools());
 
-    // agent studio — discovery, execution, planner, memory, config CRUD
-    provider.register_tools(tools::get_agents_tools());
+    // agent studio — MarketLab (reduced AI scope): NOT registered. The Agents
+    // surface is disabled, so no agent discovery/execution/planning/config
+    // tools exist (FINCEPT_FORK_PLAN.md §5.2).
+    // provider.register_tools(tools::get_agents_tools());
 
     // dbnomics — economic data series (providers/datasets/series/observations/search)
     provider.register_tools(tools::get_dbnomics_tools());

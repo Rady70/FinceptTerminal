@@ -6,15 +6,16 @@
 
 #include <QHash>
 #include <QRegularExpression>
+#include <QUrl>
 
 namespace fincept::ai_chat {
 
+// MarketLab (reduced AI scope): the provider registry lists ONLY local Ollama.
+// Agents, RD-Agent and Deep Agent are disabled, custom remote LLM base URLs and
+// custom embedder endpoints are rejected, and no other provider may be added
+// from the Settings UI (FINCEPT_FORK_PLAN.md §5.2, §6).
 const QStringList& ProviderCatalog::known_providers() {
-    static const QStringList kProviders = {"openai",     "anthropic", "gemini",   "groq",    "deepseek",
-                                           "openrouter", "minimax",   "kimi",     "ollama",  "xai",
-                                           "astraflow",  "astraflow_cn", "aihubmix"};
-    // MarketLab: the "fincept" hosted LLM provider is removed
-    // (FINCEPT_FORK_PLAN.md §5.3, §6) — see is_blocked() for the base-URL guard.
+    static const QStringList kProviders = {"ollama"};
     return kProviders;
 }
 
@@ -25,16 +26,30 @@ const QStringList& ProviderCatalog::known_providers() {
 //
 // MarketLab: the same hard block covers the removed "fincept" provider and any
 // user-typed base URL pointing at a Fincept-owned host, because LlmService uses
-// its own network client for provider requests.
+// its own network client for provider requests. Reduced AI scope extends it to
+// every provider id other than "ollama": a stale config row for openai,
+// anthropic, deepseek, … is refused at the request chokepoint just like a
+// fresh one would be, even if it was stored before the scope change.
 bool ProviderCatalog::is_blocked(const QString& provider, const QString& base_url) {
-    if (provider.toLower() == "atlascloud")
-        return true;
-    if (provider.toLower() == "fincept")
+    const QString p = provider.toLower();
+    if (p != "ollama")
         return true;
     const QString u = base_url.toLower();
     return u.contains(QStringLiteral("atlascloud")) || u.contains(QStringLiteral("fincept.in")) ||
            u.contains(QStringLiteral("fincept.com")) || u.contains(QStringLiteral("fincept.app")) ||
            u.contains(QStringLiteral("fincept.ai"));
+}
+
+bool ProviderCatalog::is_loopback_base_url(const QString& base_url) {
+    const QString u = base_url.trimmed();
+    if (u.isEmpty())
+        return true; // nothing stored → the local default is used
+    const QUrl url(u);
+    const QString host = url.host().toLower();
+    if (host.isEmpty())
+        return false;
+    return host == QLatin1String("localhost") || host == QLatin1String("127.0.0.1") ||
+           host == QLatin1String("::1");
 }
 
 QString ProviderCatalog::display_name(const QString& provider_id) {

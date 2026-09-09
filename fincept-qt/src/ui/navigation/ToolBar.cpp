@@ -1,5 +1,6 @@
 #include "ui/navigation/ToolBar.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "ui/pushpins/PushpinBar.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
@@ -270,6 +271,11 @@ QMenu* ToolBar::build_navigate_menu() {
     };
 
     auto nav = [this](QMenu* menu, const QString& label, const QString& id) {
+        // MarketLab: menu entries respect the capability gate — an Unavailable
+        // screen (e.g. agent_config) is not offered from any navigation menu,
+        // matching the command palette and component browser filters.
+        if (!capability::CapabilityManager::instance().is_screen_allowed(id))
+            return;
         menu->addAction(label, this, [this, id]() { emit navigate_to(id); });
     };
 

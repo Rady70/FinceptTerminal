@@ -73,8 +73,17 @@ void LlmService::ensure_config() const {
 
     auto providers = LlmConfigRepository::instance().list_providers();
     if (providers.is_ok()) {
+        // MarketLab (reduced AI scope): only the local Ollama provider is
+        // enabled. Rows naming any other provider are ignored, and a stored
+        // base_url that is not loopback is ignored too (the local default is
+        // used instead), so a custom remote endpoint can never reach the
+        // network through this service — whatever a stale config row says.
+        auto usable = [](const auto& c) {
+            return c.provider.compare(QStringLiteral("ollama"), Qt::CaseInsensitive) == 0 &&
+                   ProviderCatalog::is_loopback_base_url(c.base_url);
+        };
         for (const auto& c : providers.value()) {
-            if (c.is_active) {
+            if (c.is_active && usable(c)) {
                 provider_ = c.provider.toLower();
                 api_key_ = c.api_key;
                 base_url_ = c.base_url;
@@ -83,26 +92,30 @@ void LlmService::ensure_config() const {
                 break;
             }
         }
-        // No active provider — pick the first one.
+        // No usable active provider — take the first usable row.
         if (provider_.isEmpty() && !providers.value().isEmpty()) {
-            const auto& c = providers.value().first();
-            provider_ = c.provider.toLower();
-            api_key_ = c.api_key;
-            base_url_ = c.base_url;
-            model_ = c.model;
-            tools_enabled_ = c.tools_enabled;
+            for (const auto& c : providers.value()) {
+                if (usable(c)) {
+                    provider_ = c.provider.toLower();
+                    api_key_ = c.api_key;
+                    base_url_ = c.base_url;
+                    model_ = c.model;
+                    tools_enabled_ = c.tools_enabled;
+                    break;
+                }
+            }
         }
     }
 
-    // MarketLab: nothing configured — default to the LOCAL Ollama provider
-    // (FINCEPT_FORK_PLAN.md §6: keep local or user-configured LLM providers;
-    // the hosted fincept provider is removed). AI chat prompts the user to
-    // configure a provider until one is set.
+    // MarketLab: nothing usable configured — default to the LOCAL Ollama
+    // provider (reduced AI scope: custom remote LLM endpoints are rejected;
+    // only local Ollama remains). AI chat prompts the user to configure a
+    // provider until one is set.
     if (provider_.isEmpty()) {
         provider_ = "ollama";
         model_ = {};
         base_url_ = ProviderCatalog::default_base_url(QStringLiteral("ollama"));
-        LOG_INFO(kLlmSvcTag, "No LLM provider configured — defaulting to local Ollama");
+        LOG_INFO(kLlmSvcTag, "No usable LLM provider configured — defaulting to local Ollama");
     }
 
     auto gs = LlmConfigRepository::instance().get_global_settings();

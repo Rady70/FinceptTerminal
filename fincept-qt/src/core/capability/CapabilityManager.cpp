@@ -59,15 +59,19 @@ ComponentAvailability screen_entry(const QString& id) {
         {"data_mapping", S::Available, "user-configured data destinations", ""},
         {"mcp_servers", S::Available, "local MCP server management", ""},
 
-        // Conditional — usable with a user-configured local provider.
-        {"ai_chat", S::Conditional, "needs a user-configured local or API LLM provider (e.g. Ollama)",
+        // Conditional — usable with the retained local AI path.
+        {"ai_chat", S::Conditional, "needs local Ollama (localhost:11434); custom remote LLM endpoints are disabled",
          "Settings \u2192 LLM Config"},
-        {"ai_quant_lab", S::Conditional, "needs user-configured local models and data", "Settings \u2192 LLM Config"},
-        {"agent_config", S::Conditional, "needs user-configured local models; execution tools removed",
+        {"ai_quant_lab", S::Conditional, "needs user-configured local models and data; the Deep Agent / RD-Agent "
+                                        "module is removed",
          "Settings \u2192 LLM Config"},
         {"surface_analytics", S::Conditional, "CSV and labelled demo modes; external providers optional", ""},
 
         // Unavailable — removed or disabled per plan §6.
+        {"agent_config", S::Unavailable,
+         "Agents, RD-Agent and Deep Agent are disabled in this build; custom remote LLM and embedder endpoints "
+         "are rejected; only local Ollama remains for AI Chat",
+         "AI Chat with local Ollama"},
         {"equity_trading", S::Unavailable, "external broker order entry is not exposed in this build",
          "Equity Research for public data; Backtesting for simulation"},
         {"algo_trading", S::Unavailable, "live/paper algo deployment is not exposed in this build",
@@ -118,7 +122,13 @@ ComponentAvailability CapabilityManager::availability(Capability cap) const {
         case Capability::PublicData:
             return {S::Available, QStringLiteral("public market data from independently configured providers"), {}};
         case Capability::UserConfiguredProvider:
-            return {S::Available, QStringLiteral("user-configured data and LLM providers"), {}};
+            // MarketLab (reduced AI scope): arbitrary/custom remote LLM base
+            // URLs and custom embedder endpoints are rejected; only the local
+            // Ollama provider is enabled (FINCEPT_FORK_PLAN.md §5.2, §6).
+            return {S::Unavailable,
+                    QStringLiteral("custom remote LLM and embedder endpoints are disabled; only the local "
+                                   "Ollama provider is enabled"),
+                    QStringLiteral("local Ollama (localhost:11434)")};
         case Capability::LocalAnalytics:
             return {S::Available, QStringLiteral("local analytics and historical simulation"), {}};
         case Capability::FinceptHosted:
@@ -151,10 +161,10 @@ ComponentAvailability CapabilityManager::screen_availability(const QString& scre
 }
 
 bool CapabilityManager::is_screen_allowed(const QString& screen_id) const {
-    // Registered Conditional screens (ai_chat, ai_quant_lab, agent_config,
-    // surface_analytics) stay reachable — they render their own conditional
-    // state (e.g. "configure a local LLM provider"). Only Unavailable screens
-    // are denied (FINCEPT_FORK_PLAN.md §5.2).
+    // Registered Conditional screens (ai_chat, ai_quant_lab, surface_analytics)
+    // stay reachable — they render their own conditional state (e.g. "start
+    // local Ollama"). Only Unavailable screens are denied (FINCEPT_FORK_PLAN.md
+    // §5.2); agent_config is Unavailable (Agents/RD-Agent/Deep Agent disabled).
     return screen_entry(screen_id).state != AvailabilityState::Unavailable;
 }
 

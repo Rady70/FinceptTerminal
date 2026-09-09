@@ -305,8 +305,6 @@ void QuantModulePanel::build_ui() {
         content = build_rl_trading_panel();
     else if (module_.id == "advanced_models")
         content = build_advanced_models_panel();
-    else if (module_.id == "deep_agent")
-        content = build_deep_agent_panel();
     else if (module_.id == "factor_discovery")
         content = build_factor_discovery_panel();
     else if (module_.id == "model_library")

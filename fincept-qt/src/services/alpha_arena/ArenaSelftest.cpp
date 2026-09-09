@@ -373,7 +373,9 @@ int run_arena_selftest() {
 
         // Browse layer (merge layer 4): every catalog provider with fallback
         // models is listed even with no llm_configs row, so the wizard can
-        // offer all providers.
+        // offer all providers. MarketLab reduced AI scope: the catalog lists
+        // only local Ollama, so the browse layer must contain ollama and no
+        // remote provider.
         const auto opts2 = reg.available_models();
         QSet<QString> providers_seen;
         bool ollama_ready = false;
@@ -382,10 +384,10 @@ int run_arena_selftest() {
             if (o.provider.toLower() == "ollama" && o.ready)
                 ollama_ready = true;
         }
-        check("registry: all known providers browsable",
-              providers_seen.contains("openai") && providers_seen.contains("anthropic") &&
-                  providers_seen.contains("gemini") && providers_seen.contains("deepseek") &&
-                  providers_seen.contains("xai"));
+        check("registry: no remote provider is browsable",
+              !providers_seen.contains("openai") && !providers_seen.contains("anthropic") &&
+                  !providers_seen.contains("gemini") && !providers_seen.contains("deepseek") &&
+                  !providers_seen.contains("xai"));
         // Ollama's fallback list is intentionally empty (models come from a
         // live /api/tags fetch the registry doesn't do), so it may be absent in
         // an unconfigured profile; whenever it IS listed it must be ready

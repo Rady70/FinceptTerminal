@@ -72,170 +72,18 @@ QString AgentService::run_agent(const QString& query, const QJsonObject& config)
 // ── Streaming agent execution ─────────────────────────────────────────────────
 
 QString AgentService::run_agent_streaming(const QString& query, const QJsonObject& config) {
-    const QString req_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    LOG_INFO("AgentService", QString("Streaming agent query [%1]: %2").arg(req_id.left(8), query.left(80)));
-
-    auto& py = python::PythonRunner::instance();
-    if (!py.is_available()) {
-        AgentExecutionResult r;
-        r.request_id = req_id;
-        r.success = false;
-        r.error = "Python not available";
-        emit agent_stream_done(r);
-        publish_agent_result(r, /*final=*/true);
-        return req_id;
-    }
-
-    QJsonObject params;
-    params["query"] = query;
-
-    QJsonObject payload = build_payload("run", params, config);
-    QByteArray payload_bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-
-    QString python_path = py.python_path();
-    QString script_path = py.scripts_dir() + "/agents/finagent_core/main.py";
-
-    auto* proc = new QProcess(this);
-    // Share the standard Python env + cwd + Windows console suppression with
-    // PythonRunner so every finagent spawn sees the same FINCEPT_DATA_DIR,
-    // FINAGENT_DATA_DIR, and PYTHONPATH.
-    proc->setProcessEnvironment(py.build_python_env());
-    proc->setWorkingDirectory(py.scripts_dir());
-#ifdef _WIN32
-    proc->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* cpa) {
-        cpa->flags |= 0x08000000; // CREATE_NO_WINDOW
-    });
-#endif
-    QPointer<AgentService> self = this;
-    auto timer = std::make_shared<QElapsedTimer>();
-    auto accumulated = std::make_shared<QString>();
-    auto final_json_line = std::make_shared<QString>();
-    auto done_emitted = std::make_shared<bool>(false);
-    timer->start();
-
-    // Read stdout line by line as process writes
-    connect(proc, &QProcess::readyReadStandardOutput, this,
-            [self, proc, accumulated, final_json_line, done_emitted, req_id]() {
-                if (!self)
-                    return;
-                while (proc->canReadLine()) {
-                    QString line = QString::fromUtf8(proc->readLine()).trimmed();
-                    if (line.isEmpty())
-                        continue;
-
-                    // Python emits "TOKEN: {content}" (stream_print adds a space after colon)
-                    auto extract = [](const QString& s, const QString& prefix) -> QString {
-                        QString rest = s.mid(prefix.length());
-                        // Strip one leading space if present
-                        if (rest.startsWith(' '))
-                            rest = rest.mid(1);
-                        // Unescape \n -> newline
-                        rest.replace("\\n", "\n").replace("\\\\", "\\");
-                        return rest;
-                    };
-
-                    if (line.startsWith('{')) {
-                        // Final JSON result line — capture it for the finished handler
-                        *final_json_line = line;
-                    } else if (line.startsWith("TOKEN:")) {
-                        QString token = extract(line, "TOKEN:");
-                        *accumulated += token;
-                        emit self->agent_stream_token(req_id, token);
-                        self->publish_agent_token(req_id, token);
-                    } else if (line.startsWith("THINKING:")) {
-                        QString status = extract(line, "THINKING:");
-                        emit self->agent_stream_thinking(req_id, status);
-                        self->publish_agent_status(req_id, status);
-                    } else if (line.startsWith("TOOL:")) {
-                        QString status = "Tool: " + extract(line, "TOOL:");
-                        emit self->agent_stream_thinking(req_id, status);
-                        self->publish_agent_status(req_id, status);
-                    } else if (line.startsWith("TOOL_RESULT:")) {
-                        QString status = "Result: " + extract(line, "TOOL_RESULT:");
-                        emit self->agent_stream_thinking(req_id, status);
-                        self->publish_agent_status(req_id, status);
-                    } else if (line.startsWith("DONE:")) {
-                        // DONE carries the full cleaned response — use it if accumulated is empty
-                        QString done_content = extract(line, "DONE:");
-                        if (accumulated->trimmed().isEmpty() && !done_content.isEmpty())
-                            *accumulated = done_content;
-                    } else if (line.startsWith("ERROR:")) {
-                        if (!*done_emitted) {
-                            *done_emitted = true;
-                            AgentExecutionResult r;
-                            r.request_id = req_id;
-                            r.success = false;
-                            r.error = extract(line, "ERROR:");
-                            emit self->agent_stream_done(r);
-                            self->publish_agent_result(r, /*final=*/true);
-                        }
-                    }
-                }
-            });
-
-    connect(
-        proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-        [self, proc, accumulated, final_json_line, done_emitted, timer, req_id](int exit_code, QProcess::ExitStatus) {
-            int elapsed = timer->elapsed();
-
-            // Drain any remaining stdout
-            QString remaining = QString::fromUtf8(proc->readAllStandardOutput());
-            QString stderr_str = QString::fromUtf8(proc->readAllStandardError());
-            proc->deleteLater();
-
-            if (!self || *done_emitted)
-                return;
-            *done_emitted = true;
-
-            // Scan remaining stdout for final JSON line (may not have been read yet)
-            for (const QString& line : remaining.split('\n')) {
-                QString t = line.trimmed();
-                if (t.startsWith('{'))
-                    *final_json_line = t;
-            }
-
-            AgentExecutionResult r;
-            r.request_id = req_id;
-            r.execution_time_ms = elapsed;
-
-            QJsonDocument doc = QJsonDocument::fromJson(final_json_line->toUtf8());
-            if (!doc.isNull() && doc.object()["success"].toBool()) {
-                QString json_response = doc.object()["response"].toString();
-                r.success = true;
-                r.response = json_response.isEmpty() ? accumulated->trimmed() : json_response;
-            } else if (!accumulated->trimmed().isEmpty()) {
-                r.success = true;
-                r.response = accumulated->trimmed();
-            } else {
-                r.success = false;
-                r.error = exit_code != 0 ? stderr_str.left(500) : "No response received";
-            }
-
-            LOG_INFO("AgentService", QString("Streaming completed in %1ms").arg(elapsed));
-            emit self->agent_stream_done(r);
-            self->publish_agent_result(r, /*final=*/true);
-        });
-
-    connect(proc, &QProcess::errorOccurred, this,
-            [self, proc, accumulated, final_json_line, done_emitted, timer, req_id](QProcess::ProcessError) {
-                QString err = proc->errorString();
-                proc->deleteLater();
-                if (!self || *done_emitted)
-                    return;
-                *done_emitted = true;
-                AgentExecutionResult r;
-                r.request_id = req_id;
-                r.success = false;
-                r.error = "Process error: " + err;
-                emit self->agent_stream_done(r);
-                self->publish_agent_result(r, /*final=*/true);
-            });
-
-    LOG_INFO("AgentService", QString("Starting streaming agent (%1 bytes payload)").arg(payload_bytes.size()));
-    proc->start(python_path, {script_path, "--stdin", "--stream"});
-    proc->write(payload_bytes);
-    proc->closeWriteChannel();
-    return req_id;
+    // MarketLab (reduced AI scope): the Agents surface is disabled — no child
+    // process is launched and the finagent_core entry point is never named.
+    Q_UNUSED(query);
+    Q_UNUSED(config);
+    LOG_WARN("AgentService", "Agents are disabled in this build");
+    AgentExecutionResult r;
+    r.request_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    r.success = false;
+    r.error = "Agents are disabled in this build";
+    emit agent_stream_done(r);
+    publish_agent_result(r, /*final=*/true);
+    return r.request_id;
 }
 
 // ── Query routing ────────────────────────────────────────────────────────────
@@ -272,163 +120,18 @@ QString AgentService::route_query(const QString& query) {
 // ── Team execution ───────────────────────────────────────────────────────────
 
 QString AgentService::run_team(const QString& query, const QJsonObject& team_config) {
-    const QString req_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    LOG_INFO("AgentService", QString("Running team query [%1]: %2").arg(req_id.left(8), query.left(80)));
-
-    auto& py = python::PythonRunner::instance();
-    if (!py.is_available()) {
-        AgentExecutionResult r;
-        r.request_id = req_id;
-        r.success = false;
-        r.error = "Python not available";
-        emit agent_stream_done(r);
-        publish_agent_result(r, /*final=*/true);
-        return req_id;
-    }
-
-    QJsonObject params;
-    params["query"] = query;
-    params["team_config"] = team_config;
-
-    // Promote coordinator model to active_llm so Python resolves it correctly
-    QJsonObject coord_config;
-    if (team_config.contains("model"))
-        coord_config["model"] = team_config["model"];
-
-    QJsonObject payload = build_payload("run_team", params, coord_config);
-    QByteArray payload_bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-
-    QString python_path = py.python_path();
-    QString script_path = py.scripts_dir() + "/agents/finagent_core/main.py";
-
-    auto* proc = new QProcess(this);
-    // Share the standard Python env + cwd + Windows console suppression with
-    // PythonRunner so every finagent spawn sees the same FINCEPT_DATA_DIR,
-    // FINAGENT_DATA_DIR, and PYTHONPATH.
-    proc->setProcessEnvironment(py.build_python_env());
-    proc->setWorkingDirectory(py.scripts_dir());
-#ifdef _WIN32
-    proc->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* cpa) {
-        cpa->flags |= 0x08000000; // CREATE_NO_WINDOW
-    });
-#endif
-    QPointer<AgentService> self = this;
-    auto timer = std::make_shared<QElapsedTimer>();
-    auto accumulated = std::make_shared<QString>();
-    auto final_json = std::make_shared<QString>();
-    auto done_emitted = std::make_shared<bool>(false);
-    timer->start();
-
-    connect(proc, &QProcess::readyReadStandardOutput, this,
-            [self, proc, accumulated, final_json, done_emitted, req_id]() {
-                if (!self)
-                    return;
-                while (proc->canReadLine()) {
-                    QString line = QString::fromUtf8(proc->readLine()).trimmed();
-                    if (line.isEmpty())
-                        continue;
-
-                    auto extract = [](const QString& s, const QString& prefix) -> QString {
-                        QString rest = s.mid(prefix.length());
-                        if (rest.startsWith(' '))
-                            rest = rest.mid(1);
-                        rest.replace("\\n", "\n").replace("\\\\", "\\");
-                        return rest;
-                    };
-
-                    if (line.startsWith('{')) {
-                        *final_json = line;
-                    } else if (line.startsWith("TOKEN:")) {
-                        QString token = extract(line, "TOKEN:");
-                        *accumulated += token;
-                        emit self->agent_stream_token(req_id, token);
-                        self->publish_agent_token(req_id, token);
-                    } else if (line.startsWith("THINKING:")) {
-                        QString status = extract(line, "THINKING:");
-                        emit self->agent_stream_thinking(req_id, status);
-                        self->publish_agent_status(req_id, status);
-                    } else if (line.startsWith("TOOL:")) {
-                        QString status = "Tool: " + extract(line, "TOOL:");
-                        emit self->agent_stream_thinking(req_id, status);
-                        self->publish_agent_status(req_id, status);
-                    } else if (line.startsWith("DONE:")) {
-                        QString done_content = extract(line, "DONE:");
-                        if (accumulated->trimmed().isEmpty() && !done_content.isEmpty())
-                            *accumulated = done_content;
-                    } else if (line.startsWith("ERROR:")) {
-                        if (!*done_emitted) {
-                            *done_emitted = true;
-                            AgentExecutionResult r;
-                            r.request_id = req_id;
-                            r.success = false;
-                            r.error = extract(line, "ERROR:");
-                            emit self->agent_stream_done(r);
-                            self->publish_agent_result(r, /*final=*/true);
-                        }
-                    }
-                }
-            });
-
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [self, proc, accumulated, final_json, done_emitted, timer, req_id](int exit_code, QProcess::ExitStatus) {
-                int elapsed = timer->elapsed();
-                QString remaining = QString::fromUtf8(proc->readAllStandardOutput());
-                QString stderr_str = QString::fromUtf8(proc->readAllStandardError());
-                proc->deleteLater();
-
-                if (!self || *done_emitted)
-                    return;
-                *done_emitted = true;
-
-                for (const QString& line : remaining.split('\n')) {
-                    QString t = line.trimmed();
-                    if (t.startsWith('{'))
-                        *final_json = t;
-                }
-
-                AgentExecutionResult r;
-                r.request_id = req_id;
-                r.execution_time_ms = elapsed;
-
-                QJsonDocument doc = QJsonDocument::fromJson(final_json->toUtf8());
-                if (!doc.isNull() && doc.object()["success"].toBool()) {
-                    QString json_response = doc.object()["response"].toString();
-                    r.success = true;
-                    r.response = json_response.isEmpty() ? accumulated->trimmed() : json_response;
-                } else if (!accumulated->trimmed().isEmpty()) {
-                    r.success = true;
-                    r.response = accumulated->trimmed();
-                } else {
-                    r.success = false;
-                    r.error = exit_code != 0 ? stderr_str.left(500) : "No response from team";
-                }
-
-                LOG_INFO("AgentService", QString("Team completed in %1ms").arg(elapsed));
-                emit self->agent_stream_done(r);
-                self->publish_agent_result(r, /*final=*/true);
-            });
-
-    connect(proc, &QProcess::errorOccurred, this, [self, proc, done_emitted, timer, req_id](QProcess::ProcessError) {
-        QString err = proc->errorString();
-        proc->deleteLater();
-        if (!self || *done_emitted)
-            return;
-        *done_emitted = true;
-        AgentExecutionResult r;
-        r.request_id = req_id;
-        r.success = false;
-        r.error = "Process error: " + err;
-        emit self->agent_stream_done(r);
-        self->publish_agent_result(r, /*final=*/true);
-    });
-
-    LOG_INFO("AgentService", QString("Starting team stream (%1 bytes payload, %2 members)")
-                                 .arg(payload_bytes.size())
-                                 .arg(team_config["members"].toArray().size()));
-    proc->start(python_path, {script_path, "--stdin", "--stream"});
-    proc->write(payload_bytes);
-    proc->closeWriteChannel();
-    return req_id;
+    // MarketLab (reduced AI scope): the Agents surface is disabled — no child
+    // process is launched and the finagent_core entry point is never named.
+    Q_UNUSED(query);
+    Q_UNUSED(team_config);
+    LOG_WARN("AgentService", "Agents are disabled in this build");
+    AgentExecutionResult r;
+    r.request_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    r.success = false;
+    r.error = "Agents are disabled in this build";
+    emit agent_stream_done(r);
+    publish_agent_result(r, /*final=*/true);
+    return r.request_id;
 }
 
 // ── Workflow execution ───────────────────────────────────────────────────────
@@ -511,132 +214,17 @@ void AgentService::execute_multi_query(const QString& query, bool aggregate, con
 
 QString AgentService::run_agentic_streaming(const QString& action, const QJsonObject& params, const QJsonObject& config,
                                             const QString& known_task_id) {
+    // MarketLab (reduced AI scope): the Agents surface is disabled — no child
+    // process is launched and the finagent_core entry point is never named.
+    Q_UNUSED(action);
+    Q_UNUSED(params);
+    Q_UNUSED(config);
+    Q_UNUSED(known_task_id);
+    LOG_WARN("AgentService", "Agents are disabled in this build");
     const QString req_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    LOG_INFO("AgentService",
-             QString("Agentic streaming [%1] action=%2 task=%3").arg(req_id.left(8), action, known_task_id.left(8)));
-
-    auto& py = python::PythonRunner::instance();
-    if (!py.is_available()) {
-        QJsonObject evt{{"kind", "error"}, {"task_id", known_task_id}, {"error", "Python not available"}};
-        publish_task_event(known_task_id, evt);
-        return req_id;
-    }
-
-    QJsonObject payload = build_payload(action, params, config);
-    QByteArray payload_bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-
-    QString python_path = py.python_path();
-    QString script_path = py.scripts_dir() + "/agents/finagent_core/main.py";
-
-    auto* proc = new QProcess(this);
-    proc->setProcessEnvironment(py.build_python_env());
-    proc->setWorkingDirectory(py.scripts_dir());
-#ifdef _WIN32
-    proc->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* cpa) {
-        cpa->flags |= 0x08000000; // CREATE_NO_WINDOW
-    });
-#endif
-
-    QPointer<AgentService> self = this;
-    auto resolved_task_id = std::make_shared<QString>(known_task_id);
-    auto done_emitted = std::make_shared<bool>(false);
-
-    // Streaming line reader: parse only AGENTIC_EVENT: <json>; ignore other
-    // lines (the Python wrapper still emits "thinking ..." / "done" via
-    // stream_print which we don't need to surface here).
-    connect(proc, &QProcess::readyReadStandardOutput, this, [self, proc, resolved_task_id, done_emitted, req_id]() {
-        if (!self)
-            return;
-        static const QString kPrefix = QStringLiteral("AGENTIC_EVENT:");
-        while (proc->canReadLine()) {
-            QString line = QString::fromUtf8(proc->readLine()).trimmed();
-            if (!line.startsWith(kPrefix))
-                continue;
-            QString rest = line.mid(kPrefix.length()).trimmed();
-            QJsonDocument doc = QJsonDocument::fromJson(rest.toUtf8());
-            if (!doc.isObject())
-                continue;
-            QJsonObject evt = doc.object();
-            // Adopt the task_id from the first event that carries one
-            // (start_task scenario; resume_task already has it).
-            QString tid = evt.value(QStringLiteral("task_id")).toString();
-            if (tid.isEmpty())
-                tid = *resolved_task_id;
-            else
-                *resolved_task_id = tid;
-            // Tag with the C++ correlator so UI panels can match.
-            evt["request_id"] = req_id;
-            self->publish_task_event(tid, evt);
-            const QString kind = evt.value(QStringLiteral("kind")).toString();
-            if (kind == QLatin1String("done") || kind == QLatin1String("error") || kind == QLatin1String("cancelled")) {
-                *done_emitted = true;
-            }
-        }
-    });
-
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [self, proc, resolved_task_id, done_emitted, req_id](int exit_code, QProcess::ExitStatus) {
-                QString stderr_str = QString::fromUtf8(proc->readAllStandardError());
-                // Drain any remaining stdout in case the last events arrived
-                // in the same chunk as exit.
-                QString remaining = QString::fromUtf8(proc->readAllStandardOutput());
-                static const QString kPrefix = QStringLiteral("AGENTIC_EVENT:");
-                for (const QString& raw : remaining.split('\n')) {
-                    QString line = raw.trimmed();
-                    if (!line.startsWith(kPrefix))
-                        continue;
-                    QString rest = line.mid(kPrefix.length()).trimmed();
-                    QJsonDocument doc = QJsonDocument::fromJson(rest.toUtf8());
-                    if (!doc.isObject())
-                        continue;
-                    QJsonObject evt = doc.object();
-                    QString tid = evt.value(QStringLiteral("task_id")).toString();
-                    if (tid.isEmpty())
-                        tid = *resolved_task_id;
-                    else
-                        *resolved_task_id = tid;
-                    evt["request_id"] = req_id;
-                    if (self)
-                        self->publish_task_event(tid, evt);
-                    const QString kind = evt.value(QStringLiteral("kind")).toString();
-                    if (kind == QLatin1String("done") || kind == QLatin1String("error") ||
-                        kind == QLatin1String("cancelled")) {
-                        *done_emitted = true;
-                    }
-                }
-                proc->deleteLater();
-                if (!self)
-                    return;
-                // If the subprocess died without emitting a terminal event,
-                // synthesise an error event so UI can clean up.
-                if (!*done_emitted) {
-                    QJsonObject evt{{"kind", "error"},
-                                    {"task_id", *resolved_task_id},
-                                    {"request_id", req_id},
-                                    {"error", exit_code != 0
-                                                  ? stderr_str.left(500)
-                                                  : QStringLiteral("Subprocess exited without terminal event")}};
-                    self->publish_task_event(*resolved_task_id, evt);
-                }
-            });
-
-    connect(proc, &QProcess::errorOccurred, this,
-            [self, proc, resolved_task_id, done_emitted, req_id](QProcess::ProcessError) {
-                QString err = proc->errorString();
-                proc->deleteLater();
-                if (!self || *done_emitted)
-                    return;
-                *done_emitted = true;
-                QJsonObject evt{{"kind", "error"},
-                                {"task_id", *resolved_task_id},
-                                {"request_id", req_id},
-                                {"error", QStringLiteral("Process error: ") + err}};
-                self->publish_task_event(*resolved_task_id, evt);
-            });
-
-    proc->start(python_path, {script_path, "--stdin", "--stream"});
-    proc->write(payload_bytes);
-    proc->closeWriteChannel();
+    publish_task_event(known_task_id,
+                       QJsonObject{{"kind", "error"}, {"task_id", known_task_id},
+                                   {"error", "Agents are disabled in this build"}});
     return req_id;
 }
 

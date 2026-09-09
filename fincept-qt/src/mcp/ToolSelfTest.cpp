@@ -120,9 +120,8 @@ std::vector<EvalCase> corpus() {
         {"compute the accretion dilution of the merger", {"ma_accretion_dilution"}},
 
         // ── agents ──
-        {"run an AI agent to analyze a stock for me",
-         {"run_stock_analysis_agent", "run_agent", "run_agent_structured"}},
-        {"list the available AI agents", {"list_agents", "list_agent_configs"}},
+        // MarketLab (reduced AI scope): agent MCP tools are NOT registered —
+        // the Agents surface is disabled (FINCEPT_FORK_PLAN.md §5.2).
 
         // ── excel ──
         {"set the value of cell B2 in my spreadsheet", {"set_excel_cell"}},

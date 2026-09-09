@@ -56,22 +56,9 @@ static const CatalogEntry kCatalog[] = {
      "Feature importance for live signal model."},
 
     // ── AI_ML ────────────────────────────────────────────────────────────
-    {"deep_agent", "execute_task", "quant_deep_agent_execute", "Run an autonomous research task with the deep agent."},
-    {"deep_agent", "check_status", "quant_rd_agent_status", "Check RD-Agent / deep-agent runtime status."},
-    {"deep_agent", "start_factor_mining", "quant_rd_start_factor_mining", "Start an RD-Agent factor mining task."},
-    {"deep_agent", "start_model_optimization", "quant_rd_start_model_opt",
-     "Start an RD-Agent model optimization task."},
-    {"deep_agent", "start_quant_research", "quant_rd_start_quant_research", "Start an RD-Agent quant research task."},
-    {"deep_agent", "get_task_status", "quant_rd_task_status", "Get status of an RD-Agent task by task_id."},
-    {"deep_agent", "get_discovered_factors", "quant_rd_get_factors", "Get factors discovered by an RD-Agent task."},
-    {"deep_agent", "get_optimized_model", "quant_rd_get_model",
-     "Get the optimized model produced by an RD-Agent task."},
-    {"deep_agent", "list_tasks", "quant_rd_list_tasks", "List RD-Agent tasks; optional status filter."},
-    {"deep_agent", "stop_task", "quant_rd_stop_task", "Stop a running RD-Agent task."},
-    {"deep_agent", "resume_task", "quant_rd_resume_task", "Resume a stopped RD-Agent task; optional config."},
-    {"deep_agent", "start_ui", "quant_rd_start_ui", "Launch the RD-Agent inspection UI."},
-    {"deep_agent", "start_mcp_server", "quant_rd_start_mcp", "Start the RD-Agent MCP server (default port 18765)."},
-    {"deep_agent", "mcp_status", "quant_rd_mcp_status", "Check the RD-Agent MCP server status."},
+    // MarketLab (reduced AI scope): the deep_agent / RD-Agent MCP tools are
+    // NOT registered — the module is removed from all_quant_modules() and its
+    // service methods are fail-closed stubs (FINCEPT_FORK_PLAN.md §5.2).
     {"rl_trading", "train", "quant_rl_train", "Train an RL trading agent (PPO/DQN/A2C/SAC/TD3). Streaming progress."},
     {"rl_trading", "evaluate", "quant_rl_evaluate", "Evaluate a trained RL trading agent."},
     {"online_learning", "create_model", "quant_online_create_model",

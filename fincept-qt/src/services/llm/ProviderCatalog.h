@@ -13,11 +13,17 @@ namespace fincept::ai_chat {
 class ProviderCatalog {
   public:
     static const QStringList& known_providers();
-    /// Hard block for retired/forbidden providers (currently AtlasCloud). Returns
-    /// true for the blocked provider id AND for any base_url pointing at its host,
-    /// so it can't be reached even by manually pointing an OpenAI-compatible
-    /// provider at the endpoint. Enforced at every request chokepoint in LlmService.
+    /// Hard block for retired/forbidden providers. Returns true for every
+    /// provider id other than "ollama" (MarketLab reduced AI scope: only the
+    /// local Ollama provider is enabled), for the retired "atlascloud" /
+    /// "fincept" ids, and for any base_url pointing at a retired/Fincept host,
+    /// so a stale config row or a hand-typed endpoint cannot be reached.
+    /// Enforced at every request chokepoint in LlmService.
     static bool is_blocked(const QString& provider, const QString& base_url = {});
+    /// True when a configured base_url is empty (use the local default) or
+    /// names a loopback host (localhost / 127.0.0.1 / ::1) — the only hosts a
+    /// local Ollama endpoint may live on. Remote hosts are rejected.
+    static bool is_loopback_base_url(const QString& base_url);
     static QString display_name(const QString& provider_id);
     static QStringList fallback_models(const QString& provider);
     static QString default_base_url(const QString& provider);

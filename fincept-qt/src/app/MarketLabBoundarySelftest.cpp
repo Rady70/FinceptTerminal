@@ -45,7 +45,9 @@ int run_marketlab_boundary_selftest() {
     auto& mgr = CapabilityManager::instance();
     CHECK(mgr.is_available(Capability::LocalWorkspace), "LocalWorkspace available");
     CHECK(mgr.is_available(Capability::PublicData), "PublicData available");
-    CHECK(mgr.is_available(Capability::UserConfiguredProvider), "UserConfiguredProvider available");
+    // MarketLab (reduced AI scope): custom remote LLM and embedder endpoints
+    // are rejected; only local Ollama remains.
+    CHECK(!mgr.is_available(Capability::UserConfiguredProvider), "UserConfiguredProvider unavailable");
     CHECK(mgr.is_available(Capability::LocalAnalytics), "LocalAnalytics available");
     CHECK(!mgr.is_available(Capability::FinceptHosted), "FinceptHosted unavailable");
     CHECK(!mgr.is_available(Capability::CloudSync), "CloudSync unavailable");
@@ -58,6 +60,7 @@ int run_marketlab_boundary_selftest() {
     CHECK(mgr.is_screen_allowed(QStringLiteral("markets")), "markets allowed");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("equity_trading")), "equity_trading denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("crypto_trading")), "crypto_trading denied");
+    CHECK(!mgr.is_screen_allowed(QStringLiteral("agent_config")), "agent_config denied (agents disabled)");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("forum")), "forum denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("profile")), "profile denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("quantlib")), "quantlib denied");
