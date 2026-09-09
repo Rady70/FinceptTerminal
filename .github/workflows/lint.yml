@@ -163,8 +163,16 @@ jobs:
           set -euo pipefail
           BASE="${{ github.event.pull_request.base.sha }}"
           CHECKS='-*,bugprone-*,concurrency-*,performance-move-const-arg,-bugprone-easily-swappable-parameters,-bugprone-narrowing-conversions,-bugprone-branch-clone'
-          git diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- 'fincept-qt/src/**/*.cpp' \
-            | sed 's|^fincept-qt/||' > /tmp/changed.txt || true
+          if ! git -C .. diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- 'fincept-qt/src/**/*.cpp' \
+            | sed 's|^fincept-qt/||' > /tmp/changed.txt; then
+            echo "::error::Unable to determine changed C++ files for clang-tidy."
+            exit 1
+          fi
+          CHANGED_COUNT=$(wc -l < /tmp/changed.txt | tr -d ' ')
+          if [ "${CHANGED_COUNT}" = "0" ]; then
+            echo "No changed existing .cpp files; clang-tidy is not applicable to this pull request."
+            exit 0
+          fi
           # Keep only files the compile database actually knows about (a brand
           # new .cpp not yet added to CMakeLists.txt has no compile command).
           : > /tmp/tidy_files.txt
@@ -176,8 +184,8 @@ jobs:
           done < /tmp/changed.txt
           COUNT=$(wc -l < /tmp/tidy_files.txt | tr -d ' ')
           if [ "${COUNT}" = "0" ]; then
-            echo "No changed .cpp files with compile commands — nothing to analyse."
-            exit 0
+            echo "::error::No existing, non-deleted changed .cpp files with compile commands were found; refusing to pass without analysing a changed compiled file."
+            exit 1
           fi
           echo "Analysing ${COUNT} changed file(s) with: ${CHECKS}"
           xargs -a /tmp/tidy_files.txt -P "$(nproc)" -n 1 \

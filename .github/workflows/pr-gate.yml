@@ -146,3 +146,11 @@ jobs:
               } catch (e) {}
               core.setOutput('blocked', 'false');
             }
+
+      # Fail closed: an explicit `blocked=false` is the only green outcome.
+      - name: Enforce scope decision
+        if: steps.check.outputs.blocked != 'false'
+        shell: bash
+        run: |
+          echo "::error::PR Scope Gate blocked or returned no approval decision."
+          exit 1

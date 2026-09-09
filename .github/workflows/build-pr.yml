@@ -10,9 +10,10 @@ name: PR Build (compile + self-test gate)
 #   `v*` tag push, on three platforms at once, in release.yml. Every release
 #   was a blind roll.
 #
-#   This job builds the same configuration release.yml builds, on Windows and
-#   Linux, and runs the headless self-tests. It is the gate that
-#   makes a tag push boring. (macOS is not part of the fork's PR CI.)
+#   This job builds the same configuration release.yml builds on Windows + Linux
+#   and runs the headless self-tests. It is the gate that
+#   makes a tag push boring. macOS PR CI is deferred; this workflow does not
+#   validate macOS.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
