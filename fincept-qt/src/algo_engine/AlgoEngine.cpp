@@ -727,3 +727,4 @@ services::algo::AlgoStrategy AlgoEngine::load_strategy(const QString& strategy_i
 }
 
 } // namespace fincept::algo
+// ci-baseline-probe: comment-only marker (diagnostic, to be deleted)
