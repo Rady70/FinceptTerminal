@@ -30,7 +30,6 @@ class PortfolioTxnPanel;
 class PortfolioOrderPanel;
 class PortfolioDetailWrapper;
 class PortfolioFFNView;
-class PortfolioInsightsPanel;
 
 class PortfolioScreen : public QWidget, public IStatefulScreen, public IGroupLinked {
     Q_OBJECT
@@ -111,8 +110,6 @@ class PortfolioScreen : public QWidget, public IStatefulScreen, public IGroupLin
     PortfolioOrderPanel* order_panel_ = nullptr;
     PortfolioDetailWrapper* detail_wrapper_ = nullptr;
     PortfolioFFNView* ffn_view_ = nullptr;
-    PortfolioInsightsPanel* insights_panel_ = nullptr;
-    QWidget* insights_scrim_ = nullptr;
 
     // State
     QVector<portfolio::Portfolio> portfolios_;

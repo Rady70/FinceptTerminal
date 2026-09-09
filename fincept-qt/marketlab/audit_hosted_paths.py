@@ -122,10 +122,9 @@ SCAN_EXTS = {
 # A previous revision of this comment also excluded scripts/, on the ground that
 # it "is not in the product". That was wrong, and it is the reason the inventory
 # was blind to half of this application's outbound surface: MarketLab launches
-# production Python as child processes. AgentService starts
-# scripts/agents/finagent_core/main.py, MarketDataService runs
-# scripts/yfinance_data.py, and two hundred more .py paths are named as argv from
-# src/. Those children do their own networking, through their own clients, and
+# production Python as child processes. MarketDataService runs
+# scripts/yfinance_data.py, and many more .py paths are named as argv from src/.
+# Those children do their own networking, through their own clients, and
 # FINCEPT_FORK_PLAN.md §5.3 names Python networking explicitly as one of the
 # bypass mechanisms that has to be accounted for. See PY_SINK_* below.
 SINK_EXTS = {".cpp", ".h", ".hpp", ".cc", ".cxx"}
@@ -139,13 +138,11 @@ SINK_ROOT = "src"
 # not to build. The reachable set is the transitive local-import closure of the
 # entry points named as string literals in src/.
 #
-# The patterns count actual outbound call sites and network-capable client/SDK
+# The patterns count actual outbound call sites and network-capable client
 # constructions, not merely library imports: a file that already imports
 # `requests` and gains a new `requests.get(config["base_url"])` must change its
-# pinned count, and a model-construction site (OpenAIChat / ChatOpenAI /
-# OpenAI / AsyncOpenAI / litellm.completion …) is a sink in its own right
-# because the SDKs behind those constructors do their own networking inside
-# the Python child, where the C++ guard cannot see it.
+# pinned count. These clients run inside the Python child, where the C++ guard
+# cannot see them.
 #
 # Honest limit, stated the way the header/impl pairing limit below is: the
 # closure follows static `import` / `from ... import` only. A module reached
@@ -170,21 +167,6 @@ PY_SINK_PATTERNS = [
         r"^[ \t]*(?:import|from)[ \t]+socket\b", re.MULTILINE)),
     ("py_websocket", re.compile(
         r"^[ \t]*(?:import|from)[ \t]+websockets?\b", re.MULTILINE)),
-    # Network-capable SDK constructions: the LLM-client factories reachable
-    # from production. These constructors build their own HTTP clients inside
-    # the Python child (openai/agno/litellm/langchain), which is exactly the
-    # class of route the C++ manager cannot see and the §5.3 finding on
-    # Python redirect-following was about. `agno.models.<x>` / `agno.knowledge.
-    # <x>` cover the catalog strings AND the import sites in one rule
-    # (models_registry / embedder_registry name their classes as strings and
-    # import them through importlib, so the catalog string is the only literal
-    # the audit can pin).
-    ("py_sdk_client", re.compile(
-        r"\bOpenAIChat\s*\(|\bChatOpenAI\s*\(|\bAsyncOpenAI\s*\(|\bOpenAI\s*\(|\bAzureOpenAI\s*\("
-        r"|\bChatAnthropic\s*\(|\bChatGoogleGenerativeAI\s*\(|\bChatGroq\s*\(|\bChatCohere\s*\("
-        r"|\bagno\.(?:models|knowledge)\.[a-zA-Z_]+"
-        r"|\blitellm\.(?:completion|acompletion|embedding|aembedding)\s*\(",
-        re.MULTILINE)),
 ]
 PY_SINK_KINDS = [name for name, _pat in PY_SINK_PATTERNS]
 SINK_KINDS = SINK_KINDS + PY_SINK_KINDS
@@ -354,13 +336,9 @@ def python_reachable(root, entries, unparsed):
                 out.append(cand)
         # Package-aware resolution: the importing module's own directory and
         # each ancestor directory act as sys.path entries, exactly how the
-        # application's Python children arrange sys.path (each cli.py inserts
-        # its own dir and scripts/agents). A dotted import such as
-        # "finagent_core.registries.models_registry" therefore resolves
-        # against scripts/agents/. Without this pass every package
-        # __init__.py — and every module reached only through one — was
-        # invisible to the closure, which is how the model-construction
-        # registries escaped the sink inventory.
+        # application's Python children arrange sys.path. Without this pass,
+        # package __init__.py files and modules reached only through one would
+        # be invisible to the closure.
         anc = cur_rel.rsplit("/", 1)[0] if "/" in cur_rel else ""
         parts = as_path.split("/")
         while True:
@@ -378,13 +356,13 @@ def python_reachable(root, entries, unparsed):
         if sibling in by_rel:
             out.append(sibling)
         # Deliberately no last-component basename fallback. A previous revision
-        # resolved "scipy.cluster.hierarchy" to the unrelated local
-        # hedgeFundAgents/.../organization/hierarchy.py because that basename
-        # happened to be unique, pulling a subtree the product cannot run into
-        # the sink inventory. A guess does not belong in an evidence control:
+        # can resolve a third-party import to an unrelated local module whose
+        # basename happens to be unique, pulling a subtree the product cannot
+        # run into the sink inventory. A guess does not belong in an evidence
+        # control:
         # the sys.path arrangements the children actually set up are the
-        # importer's own directory and its ancestors (covered above), scripts/
-        # and scripts/agents (also ancestors), and the direct dotted path
+        # importer's own directory and its ancestors (covered above), scripts/,
+        # and the direct dotted path
         # (covered at the top of this function). Anything else is importlib or
         # an exec/plugin registry, which the closure already states as its
         # documented limit.

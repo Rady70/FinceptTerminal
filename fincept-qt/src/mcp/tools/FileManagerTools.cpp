@@ -197,8 +197,8 @@ std::vector<ToolDef> get_file_manager_tools() {
              QJsonObject{{"type", "string"}, {"description", "Keyword to match against file name (case-insensitive)"}}},
             {"screen", QJsonObject{{"type", "string"},
                                    {"description", "Source screen: excel, portfolio, backtesting, news, "
-                                                   "equity_research, algo_trading, ai_quant_lab, notes, "
-                                                   "code_editor, report_builder, data_sources"}}},
+                                                    "equity_research, algo_trading, notes, "
+                                                    "code_editor, report_builder, data_sources"}}},
             {"mime", QJsonObject{{"type", "string"},
                                  {"description", "MIME type fragment to match, e.g. 'csv', 'json', 'pdf'"}}},
             {"after", QJsonObject{{"type", "string"},

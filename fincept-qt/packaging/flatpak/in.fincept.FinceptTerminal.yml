@@ -5,7 +5,7 @@ sdk: org.kde.Sdk
 command: FinceptTerminal
 
 finish-args:
-  # Network — market data, trading APIs, LLM providers, news feeds,
+  # Network — market data, configured APIs, news feeds,
   # WebSocket streams, and first-run Python runtime download.
   - --share=network
   # X11 / Wayland display
@@ -14,8 +14,6 @@ finish-args:
   - --socket=wayland
   # GPU acceleration for Qt rendering and charts
   - --device=dri
-  # Audio — voice commands / speech recognition
-  - --socket=pulseaudio
   # Persist app data across updates (Python runtime, databases, cache)
   - --persist=.local/share/com.fincept.terminal
 

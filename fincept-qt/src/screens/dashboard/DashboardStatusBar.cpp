@@ -148,7 +148,6 @@ DashboardStatusBar::DashboardStatusBar(QWidget* parent) : QWidget(parent) {
     uptime_timer_.setInterval(1000);
     connect(&uptime_timer_, &QTimer::timeout, this, &DashboardStatusBar::update_uptime);
 
-    nam_ = new QNetworkAccessManager(this);
     ping_timer_.setInterval(30000);
     connect(&ping_timer_, &QTimer::timeout, this, &DashboardStatusBar::ping_api);
 

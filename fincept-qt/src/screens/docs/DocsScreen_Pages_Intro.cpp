@@ -51,7 +51,7 @@ QWidget* DocsScreen::page_welcome() {
         make_section_panel("■", tr("WHAT IS MARKETLAB TERMINAL?"),
                            tr("MarketLab Terminal is a local-first fork of Fincept Terminal, a professional-grade desktop financial intelligence platform "
                               "built in native C++ with Qt6. It provides public market data, "
-                              "quantitative research tools, and AI-powered analytics — "
+                              "quantitative research tools and reproducible analytics — "
                               "all in a single unified terminal interface.\n\n"
                               "With embedded Python analytics and public-data providers, "
                               "MarketLab Terminal bridges the gap between "
@@ -62,8 +62,6 @@ QWidget* DocsScreen::page_welcome() {
                                      tr("■  Public market data across equities, crypto, forex, commodities\n"
                                         "■  Historical simulation (backtesting) — no live order routing\n"
                                         "■  Python analytics scripts (equity, portfolio, derivatives)\n"
-                                        "■  AI Quant Lab with local/user-configured models\n"
-                                        "■  AI agent frameworks (local or user-configured LLM)\n"
                                         "■  Visual node editor for workflow automation\n"
                                         "■  DBnomics access to 100+ data providers, 500K+ datasets\n"
                                         "■  Surface analytics for derivatives, fixed income, credit, risk\n"
@@ -150,7 +148,7 @@ QWidget* DocsScreen::page_getting_started() {
         make_skill_panel(tr("Explore the Dashboard, set up a watchlist, browse market data"),
                          tr("Run historical simulations in Backtesting, explore analytics"),
                          tr("Build workflows in the node editor, write notebooks"),
-                         tr("Multi-agent AI systems, custom MCP servers, backtesting, node editor automation")));
+                         tr("Custom MCP servers, backtesting, report building, node editor automation")));
 
     vl->addStretch();
     scroll->setWidget(page);

@@ -50,13 +50,6 @@ fincept-cpp/scripts/                   # 100+ Python scripts
 │   ├── finrl/                         # Reinforcement learning
 │   └── vnpy_wrapper/                  # VN.PY trading
 │
-├── agents/                            # AI agents
-│   ├── GeopoliticsAgents/             # Geopolitical analysis
-│   ├── finagent_core/                 # Core agent framework
-│   └── ...
-│
-├── agno_trading/                      # Trading agents
-├── ai_quant_lab/                      # AI/ML analytics
 ├── strategies/                        # Trading strategies
 ├── technicals/                        # Technical analysis
 │
@@ -199,7 +192,6 @@ python Analytics/quantstats_analytics.py metrics '{"returns":[0.01,0.02,-0.01]}'
 | `ta-lib` / `talipp` | Technical indicators |
 | `statsmodels` | Statistical models |
 | `scikit-learn` | Machine learning |
-| `langchain` | LLM integration |
 
 ---
 

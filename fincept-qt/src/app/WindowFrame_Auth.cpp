@@ -63,8 +63,6 @@ void WindowFrame::apply_lock_state(bool locked) {
         pin_gate_cleared_ = false;
         set_shell_visible(false);
         stack_->setCurrentIndex(1);
-        if (chat_bubble_)
-            chat_bubble_->setVisible(false);
 
         // Disable widgets behind the lock screen so keyboard shortcuts,
         // focus traversal, and dock-manager hit-testing cannot mutate state.
@@ -154,16 +152,6 @@ void WindowFrame::on_terminal_unlocked() {
     // MarketLab: no plan gate — the local workspace is always the next stop.
     set_shell_visible(true);
     stack_->setCurrentIndex(0);
-    // Restore chat bubble based on setting
-    if (chat_bubble_) {
-        auto r = SettingsRepository::instance().get("appearance.show_chat_bubble");
-        bool show = !r.is_ok() || r.value() != "false";
-        chat_bubble_->setVisible(show);
-        if (show) {
-            chat_bubble_->reposition();
-            chat_bubble_->raise();
-        }
-    }
     // Cold-boot restore via the new system (frame layouts, panels, dock
     // state, monitor variants).
     layout::WorkspaceShell::load_last_or_default();

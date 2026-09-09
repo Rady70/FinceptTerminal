@@ -20,7 +20,7 @@ namespace fincept::billing {
 ///   3. Republishes `billing:tier:<pubkey>` on every weight change.
 ///
 /// Cross-screen gating: emits `tier_changed(pubkey, tier)` so paid screens
-/// (AI Quant Lab, Alpha Arena, etc.) can react without polling the hub.
+/// can react without polling the hub.
 /// `get_cached_tier(pubkey)` provides a synchronous lookup for nav-level
 /// gating that runs before the hub has emitted.
 class TierService : public QObject, public fincept::datahub::Producer {

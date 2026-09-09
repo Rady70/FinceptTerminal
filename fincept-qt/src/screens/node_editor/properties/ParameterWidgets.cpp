@@ -1,11 +1,8 @@
 #include "screens/node_editor/properties/ParameterWidgets.h"
 
 #include "mcp/McpService.h"
-#include "services/agents/AgentService.h"
-#include "services/agents/AgentTypes.h"
 #include "services/file_manager/FileManagerService.h"
 #include "storage/repositories/DataSourceRepository.h"
-#include "storage/repositories/LlmProfileRepository.h"
 #include "ui/theme/Theme.h"
 
 #include <QCoreApplication>
@@ -249,118 +246,6 @@ QWidget* ParameterWidgetFactory::create(const ParamDef& param, const QJsonValue&
                 populate(full_path);
                 on_change(key, QJsonValue(full_path));
             });
-    } else if (param.type == "agent_select") {
-        auto* row = new QWidget(parent);
-        auto* rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        rl->setSpacing(4);
-
-        auto* combo = new QComboBox;
-        combo->setStyleSheet(
-            QString("QComboBox { %1 }"
-                    "QComboBox::drop-down { background:%2; border:1px solid %2; width:18px; }"
-                    "QComboBox QAbstractItemView { background:%3; color:%4;"
-                    "  border:1px solid %2; selection-background-color:#7c3aed;"
-                    "  font-family:Consolas; }")
-                .arg(input_style(), ui::colors::BORDER_MED(), ui::colors::BG_HOVER(), ui::colors::TEXT_PRIMARY()));
-
-        // Constrain combo so it never overflows the panel
-        combo->setMaximumWidth(260);
-        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-        auto populate_agents = [combo, current_value]() {
-            QString saved = current_value.toString();
-            if (combo->count() > 0)
-                saved = combo->currentData().toString();
-            combo->clear();
-            combo->addItem(QCoreApplication::translate("ParameterWidgetFactory", "— select agent —"), QString());
-
-            const auto agents = fincept::services::AgentService::instance().cached_agents();
-            for (const auto& a : agents) {
-                QString label = a.name;
-                if (!a.category.isEmpty())
-                    label += "  [" + a.category + "]";
-                combo->addItem(label, a.id);
-                if (a.id == saved)
-                    combo->setCurrentIndex(combo->count() - 1);
-            }
-        };
-
-        // Helper: wire one-shot discovery → populate
-        auto trigger_discovery = [populate_agents, combo]() {
-            auto& svc = fincept::services::AgentService::instance();
-            QObject::connect(&svc, &fincept::services::AgentService::agents_discovered, combo,
-                             [populate_agents, combo](const QVector<fincept::services::AgentInfo>&,
-                                                      const QVector<fincept::services::AgentCategory>&) {
-                                 populate_agents();
-                                 QObject::disconnect(&fincept::services::AgentService::instance(),
-                                                     &fincept::services::AgentService::agents_discovered, combo,
-                                                     nullptr);
-                             });
-            svc.discover_agents();
-        };
-
-        // Always auto-discover on widget creation — don't make user navigate elsewhere
-        auto& svc = fincept::services::AgentService::instance();
-        if (svc.cached_agent_count() > 0) {
-            populate_agents(); // cache hot — fill immediately
-        } else {
-            combo->addItem(QCoreApplication::translate("ParameterWidgetFactory", "Loading agents…"), QString());
-            trigger_discovery();
-        }
-
-        rl->addWidget(combo, 1);
-
-        auto* refresh_btn = new QPushButton("↻");
-        refresh_btn->setFixedSize(24, 24);
-        refresh_btn->setToolTip(QCoreApplication::translate("ParameterWidgetFactory", "Refresh agent list"));
-        refresh_btn->setStyleSheet(QString("QPushButton { background:%1; color:#7c3aed;"
-                                           " border:1px solid %1; font-size:13px; }"
-                                           "QPushButton:hover { background:%2; }")
-                                       .arg(ui::colors::BORDER_MED(), ui::colors::TEXT_DIM()));
-        rl->addWidget(refresh_btn);
-        layout->addWidget(row);
-
-        QObject::connect(combo, &QComboBox::currentIndexChanged, container,
-                         [key, on_change, combo](int) { on_change(key, QJsonValue(combo->currentData().toString())); });
-
-        QObject::connect(refresh_btn, &QPushButton::clicked, container, [trigger_discovery]() { trigger_discovery(); });
-
-    } else if (param.type == "llm_select") {
-        // Dropdown populated from LlmProfileRepository
-        auto* combo = new QComboBox;
-        combo->setMaximumWidth(260);
-        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        combo->setStyleSheet(
-            QString("QComboBox { %1 }"
-                    "QComboBox::drop-down { background:%2; border:1px solid %2; width:18px; }"
-                    "QComboBox QAbstractItemView { background:%3; color:%4;"
-                    "  border:1px solid %2; selection-background-color:#7c3aed;"
-                    "  font-family:Consolas; }")
-                .arg(input_style(), ui::colors::BORDER_MED(), ui::colors::BG_HOVER(), ui::colors::TEXT_PRIMARY()));
-        combo->addItem(QCoreApplication::translate("ParameterWidgetFactory", "— agent default —"), QString());
-
-        QString saved = current_value.toString();
-        auto res = fincept::LlmProfileRepository::instance().list_profiles();
-        if (res.is_ok()) {
-            for (const auto& p : res.value()) {
-                QString display = p.name + "  [" + p.provider + " / " + p.model_id + "]";
-                combo->addItem(display, p.id);
-                if (p.id == saved)
-                    combo->setCurrentIndex(combo->count() - 1);
-            }
-        }
-        layout->addWidget(combo);
-
-        auto* hint = new QLabel(QCoreApplication::translate(
-            "ParameterWidgetFactory", "Leave blank to use the LLM assigned to the agent in Agent Config"));
-        hint->setStyleSheet(
-            QString("color:%1; font-family:Consolas; font-size:10px;").arg(ui::colors::TEXT_TERTIARY()));
-        hint->setWordWrap(true);
-        layout->addWidget(hint);
-
-        QObject::connect(combo, &QComboBox::currentIndexChanged, container,
-                         [key, on_change, combo](int) { on_change(key, QJsonValue(combo->currentData().toString())); });
     } else if (param.type == "mcp_tool_select") {
         // Dropdown + refresh, populated from McpService::get_all_tools()
         // Displays: "Category / tool_name — description"

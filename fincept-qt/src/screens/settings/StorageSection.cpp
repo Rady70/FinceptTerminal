@@ -522,7 +522,7 @@ void StorageSection::build_ui() {
         irl->addWidget(sql_db_selector_);
 
         sql_input_ = new QLineEdit;
-        sql_input_->setPlaceholderText("SELECT * FROM chat_sessions LIMIT 10");
+        sql_input_->setPlaceholderText("SELECT * FROM news_articles LIMIT 10");
         sql_input_->setStyleSheet(input_ss());
         irl->addWidget(sql_input_, 1);
 
@@ -588,8 +588,8 @@ void StorageSection::build_ui() {
         sql_quick_lbl_->setStyleSheet(QString("color:%1;background:transparent;").arg(ui::colors::TEXT_DIM()));
         trhl->addWidget(sql_quick_lbl_);
 
-        static const QStringList QUICK_TABLES = {"chat_sessions", "news_articles", "financial_notes", "portfolios",
-                                                 "watchlists",    "pt_portfolios", "workflows",       "settings"};
+        static const QStringList QUICK_TABLES = {"news_articles", "financial_notes", "portfolios", "watchlists",
+                                                 "pt_portfolios", "workflows",       "settings"};
         for (const QString& tbl : QUICK_TABLES) {
             auto* btn = new QPushButton(tbl);
             btn->setFixedHeight(18);
@@ -813,12 +813,11 @@ void StorageSection::build_ui() {
         connect(nuke_btn_, &QPushButton::clicked, this, [this]() {
             auto a1 = QMessageBox::critical(this, tr("Clear ALL User Data"),
                                             tr("WARNING: This will permanently delete ALL data:\n\n"
-                                               "  Chat history, notes, reports, watchlists\n"
+                                               "  Notes, reports, watchlists\n"
                                                "  Portfolios, transactions, paper trades\n"
                                                "  Workflows, dashboard layouts\n"
                                                "  News articles, RSS feeds, monitors\n"
                                                "  Data sources, MCP servers\n"
-                                               "  Agent configs, LLM configs & profiles\n"
                                                "  App settings, credentials, key-value storage\n"
                                                "  All cache, log files, workspaces, UI state\n\n"
                                                "OS keychain credentials are NOT affected.\n"

@@ -1,11 +1,10 @@
-// SettingsTools.cpp — Settings and LLM config management (Qt port)
+// SettingsTools.cpp — generic application settings management.
 
 #include "mcp/tools/SettingsTools.h"
 
 #include "core/events/EventBus.h"
 #include "core/logging/Logger.h"
 #include "mcp/ToolSchemaBuilder.h"
-#include "storage/repositories/LlmConfigRepository.h"
 #include "storage/repositories/SettingsRepository.h"
 
 #include <QVariantMap>
@@ -96,61 +95,6 @@ std::vector<ToolDef> get_settings_tools() {
                 }
             }
             return ToolResult::ok_data(result);
-        };
-        tools.push_back(std::move(t));
-    }
-
-    // ── get_llm_configs ─────────────────────────────────────────────────
-    {
-        ToolDef t;
-        t.name = "get_llm_configs";
-        t.description = "Get all configured LLM providers and their settings (API keys are not exposed).";
-        t.category = "settings";
-        t.handler = [](const QJsonObject&) -> ToolResult {
-            auto configs = LlmConfigRepository::instance().list_providers();
-            if (configs.is_err())
-                return ToolResult::fail("Failed to load LLM configs: " + QString::fromStdString(configs.error()));
-
-            QJsonArray result;
-            for (const auto& c : configs.value()) {
-                result.append(QJsonObject{{"provider", c.provider},
-                                          {"model", c.model},
-                                          {"is_active", c.is_active},
-                                          {"has_api_key", !c.api_key.isEmpty()},
-                                          {"base_url", c.base_url}});
-            }
-            return ToolResult::ok_data(result);
-        };
-        tools.push_back(std::move(t));
-    }
-
-    // ── set_active_llm ──────────────────────────────────────────────────
-    {
-        ToolDef t;
-        t.name = "set_active_llm";
-        t.description = "Set the active LLM provider. Must be one of the supported providers.";
-        t.category = "settings";
-        // Phase 6.3: switching LLM provider mid-conversation is surprising;
-        // requires explicit confirmation.
-        t.auth_required = AuthLevel::Authenticated;
-        t.is_destructive = true;
-        t.input_schema = ToolSchemaBuilder()
-                             .string("provider", "Provider id (openai, anthropic, ollama, groq, google, fincept)")
-                             .required()
-                             .enums({"openai", "anthropic", "ollama", "groq", "google", "fincept"})
-                             .build();
-        t.handler = [](const QJsonObject& args) -> ToolResult {
-            QString provider = args["provider"].toString();
-            if (provider.isEmpty())
-                return ToolResult::fail("Missing 'provider'");
-
-            auto r = LlmConfigRepository::instance().set_active(provider);
-            if (r.is_err())
-                return ToolResult::fail("Failed to set active LLM: " + QString::fromStdString(r.error()));
-
-            EventBus::instance().publish("llm.provider_changed", QVariantMap{{"provider", provider}});
-
-            return ToolResult::ok("Active LLM set to: " + provider);
         };
         tools.push_back(std::move(t));
     }

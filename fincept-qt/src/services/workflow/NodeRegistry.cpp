@@ -2,7 +2,6 @@
 
 #include "services/workflow/ExpressionEngine.h"
 #include "services/workflow/adapters/ServiceBridges.h"
-#include "services/workflow/nodes/AgentNodes.h"
 #include "services/workflow/nodes/AnalyticsNodes.h"
 #include "services/workflow/nodes/ControlFlowNodes.h"
 #include "services/workflow/nodes/DataFormatNodes.h"
@@ -311,10 +310,9 @@ void NodeRegistry::register_builtin_nodes() {
     register_analytics_nodes(*this);
     register_safety_nodes(*this);
     register_notification_nodes(*this);
-    // MarketLab (reduced AI scope): agent workflow nodes (agent.run,
-    // agent.tool_picker, and the legacy agent.* bridges) are NOT registered —
-    // the Agents surface is disabled (FINCEPT_FORK_PLAN.md §5.2).
-    // register_agent_nodes(*this);
+    // Removed node types are intentionally not registered. Legacy saved
+    // workflows that contain them are opened read-only so their stored JSON is
+    // not truncated by auto-save.
     register_file_nodes(*this);
     register_data_format_nodes(*this);
     register_integration_nodes(*this);

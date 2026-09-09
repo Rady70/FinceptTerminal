@@ -18,14 +18,6 @@ class AuthManager : public QObject {
     bool is_authenticated() const { return session_.authenticated; }
     bool is_loading() const { return is_loading_; }
 
-    /// Resolve the Fincept api_key for LLM/service callers WITHOUT touching the
-    /// plaintext SQLite settings table. Prefers the live in-memory session;
-    /// falls back to the encrypted SecureStorage copy (which load_session also
-    /// restores into the session at startup). Returns empty if no key is known.
-    /// This is the single supported resolver — callers must NOT read the legacy
-    /// plaintext "fincept_api_key" settings row.
-    QString fincept_api_key() const;
-
     // Auth flows
     void login(const QString& email, const QString& password, bool force_login = false);
 
@@ -94,11 +86,8 @@ class AuthManager : public QObject {
     /// Inject a redeemed desktop-handoff session (api_key + session_token) and
     /// run the shared post-login flow. Shared by login_with_google().
     void complete_desktop_login(const QString& api_key, const QString& session_token);
-    /// Post-login LLM configuration. MarketLab: this no longer creates the
-    /// "fincept" LLM provider row or makes it active — that provider identity
-    /// is a credential path out of this fork (see the .cpp). All it still does
-    /// is purge the stale plaintext api_key setting (CR-08).
-    void auto_configure_fincept_llm();
+    /// Remove the obsolete plaintext API-key setting after session restoration.
+    void purge_legacy_plaintext_api_key();
     QString generate_device_id() const;
     QJsonObject unwrap_data(const QJsonObject& raw) const;
 

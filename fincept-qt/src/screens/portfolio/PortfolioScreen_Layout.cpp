@@ -17,7 +17,6 @@
 #include "screens/portfolio/PortfolioDialogs.h"
 #include "screens/portfolio/PortfolioFFNView.h"
 #include "screens/portfolio/PortfolioHeatmap.h"
-#include "screens/portfolio/PortfolioInsightsPanel.h"
 #include "screens/portfolio/PortfolioOrderPanel.h"
 #include "screens/portfolio/PortfolioPanelHeader.h"
 #include "screens/portfolio/PortfolioPerfChart.h"
@@ -184,26 +183,7 @@ void PortfolioScreen::build_ui() {
     status_bar_ = new PortfolioStatusBar(this);
     layout->addWidget(status_bar_);
 
-    // ── Insights dock (unified AI + Agent right-hand panel) ─────────────────
-    // Sits above all other widgets as a child overlay, positioned in
-    // resizeEvent so it tracks window size. A scrim behind it dims the rest
-    // of the screen so the user knows focus has moved.
-    insights_scrim_ = new QWidget(this);
-    insights_scrim_->setObjectName("PortfolioInsightsScrim");
-    insights_scrim_->setStyleSheet("#PortfolioInsightsScrim { background:rgba(0,0,0,0.45); }");
-    insights_scrim_->hide();
-
-    // MarketLab (reduced AI scope): the insights panel's AI and Agent tabs
-    // both run through the disabled Agents service, and its constructor
-    // instantiates AgentService (which starts the local MCP bridge). When
-    // agent_config is Unavailable the panel is not constructed at all, so no
-    // reachable code path instantiates the service.
-    if (capability::CapabilityManager::instance().is_screen_allowed(QStringLiteral("agent_config"))) {
-        insights_panel_ = new PortfolioInsightsPanel(this);
-        connect(insights_panel_, &PortfolioInsightsPanel::close_requested, this, [this]() { insights_scrim_->hide(); });
-    }
-
-    // Wire export/import/AI/Agent signals from CommandBar
+    // Wire export/import signals from CommandBar.
     connect(command_bar_, &PortfolioCommandBar::export_csv_requested, this, [this]() {
         if (selected_id_.isEmpty())
             return;
@@ -229,30 +209,6 @@ void PortfolioScreen::build_ui() {
             services::PortfolioService::instance().import_json(dlg.file_path(), dlg.mode(), dlg.merge_target_id());
         }
     });
-    auto open_insights = [this](PortfolioInsightsPanel::Tab tab) {
-        // MarketLab (reduced AI scope): no panel is constructed while the
-        // Agents surface is disabled, so the trigger is a no-op.
-        if (!insights_panel_)
-            return;
-        if (!summary_loaded_)
-            return;
-        insights_panel_->set_summary(current_summary_);
-        const int top = command_bar_->height();
-        const int bottom_reserve = status_bar_ ? status_bar_->height() : 0;
-        const int h = qMax(200, height() - top - bottom_reserve);
-        insights_scrim_->setGeometry(0, top, width(), h);
-        insights_scrim_->show();
-        insights_scrim_->raise();
-        insights_panel_->setFixedHeight(h);
-        insights_panel_->move(width() - insights_panel_->width(), top);
-        insights_panel_->raise();
-        insights_panel_->open_tab(tab);
-    };
-    connect(command_bar_, &PortfolioCommandBar::ai_analyze_requested, this,
-            [open_insights]() { open_insights(PortfolioInsightsPanel::Tab::AI); });
-    connect(command_bar_, &PortfolioCommandBar::agent_run_requested, this,
-            [open_insights]() { open_insights(PortfolioInsightsPanel::Tab::Agent); });
-
     // Wire import completion
     connect(&services::PortfolioService::instance(), &services::PortfolioService::import_complete, this,
             [this](portfolio::ImportResult result) {

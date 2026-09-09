@@ -244,18 +244,13 @@ static constexpr int kDefaultTimeoutMs = 300'000;  //  5 min — ordinary fetch/
 static constexpr int kLongRunTimeoutMs = 3'600'000; // 60 min — training / backtests
 
 static int default_timeout_for_script(const QString& script) {
-    // Prefix match on the script's directory. These trees train models, build
-    // FAISS indexes, run multi-year backtests or drive multi-step LLM agents —
-    // minutes is normal for them and 5 min would kill real work.
+    // Prefix match on the script's directory. These retained trees build
+    // FAISS indexes or run multi-year backtests, where minutes is normal and
+    // a 5 min limit would kill real work.
     //   vision_quant/setup_index.py  — CNN training + index build
-    //   ai_quant_lab/qlib_rl.py      — RL training (streams progress for ages)
-    //   ai_quant_lab/qlib_rolling_retraining.py
     //   Analytics/backtesting/*      — full backtests / walk-forward / optimise
-    //   agents/*                     — LLM agent chains
     static const QStringList kLongRunPrefixes = {
         QStringLiteral("vision_quant/"),
-        QStringLiteral("ai_quant_lab/"),
-        QStringLiteral("agents/"),
         QStringLiteral("Analytics/backtesting/"),
     };
     for (const QString& p : kLongRunPrefixes) {
@@ -342,10 +337,9 @@ QString PythonRunner::scripts_dir() const {
 }
 
 // ── Standard Python environment ──────────────────────────────────────────────
-// Shared by PythonRunner::run() and external direct-QProcess callers
-// (e.g., AgentService's stdin/stream paths). Anything every Python spawn needs
-// — encoding pins, FINCEPT_DATA_DIR, FINAGENT_DATA_DIR, base PYTHONPATH — lives
-// here. Script-specific path additions (parent-of-pkg) stay in run().
+// Shared by PythonRunner::run() and direct-QProcess callers. Anything every
+// Python spawn needs — encoding pins, FINCEPT_DATA_DIR and base PYTHONPATH —
+// lives here. Script-specific path additions stay in run().
 QProcessEnvironment PythonRunner::build_python_env() const {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert("PYTHONIOENCODING", "utf-8");
@@ -354,15 +348,6 @@ QProcessEnvironment PythonRunner::build_python_env() const {
 
     const QString install_dir = PythonSetupManager::instance().install_dir();
     env.insert("FINCEPT_DATA_DIR", install_dir);
-
-    // FINAGENT_DATA_DIR: default to <FINCEPT_DATA_DIR>/finagent. Always overwrite
-    // so we match what resources.py expects regardless of what the user shell
-    // inherited — the app owns its own per-persona storage root.
-    env.insert("FINAGENT_DATA_DIR", install_dir + "/finagent");
-
-    // FINAGENT_RUNTIME_CACHE_SIZE: respect user override if already set; otherwise
-    // leave unset so persona_registry.py uses its own default (8).
-    // (No insert here by design.)
 
     // Base PYTHONPATH: scripts_dir on front, preserve whatever the user had.
 #ifdef _WIN32
@@ -692,7 +677,7 @@ void PythonRunner::start_next() {
         // so Python can resolve relative imports (from .core import ...). This
         // only works if every directory along the path has an `__init__.py` —
         // otherwise the package's `__init__.py` may rely on absolute imports
-        // (e.g. `from finagent_core.x import ...`) that resolve against the
+        // that resolve against the
         // top-level `sys.path` entry the bare-script invocation sets up via
         // its own `sys.path.insert(...)` bootstrap. When any ancestor dir is
         // missing `__init__.py`, fall back to direct script invocation so the
@@ -772,8 +757,8 @@ void PythonRunner::start_next() {
             }
         }
 
-        // Start from the shared base env (encoding pins, FINCEPT_DATA_DIR,
-        // FINAGENT_DATA_DIR, base PYTHONPATH = scripts_dir_).
+        // Start from the shared base env (encoding pins, FINCEPT_DATA_DIR and
+        // base PYTHONPATH = scripts_dir_).
         QProcessEnvironment env = build_python_env();
 
         // NOTE: do NOT prepend parent-of-pkg (e.g. <scripts>/mcp) to PYTHONPATH
@@ -992,7 +977,8 @@ void PythonRunner::start_next() {
         // Runaway-kill watchdog.
         //
         // This used to be deliberately absent, on the reasoning that several
-        // scripts legitimately run for minutes. True — but the consequence was
+        // retained scripts legitimately run for minutes. True — but the
+        // consequence was
         // that a script blocked on a socket held one of only max_concurrent_ (3)
         // slots FOREVER, so three hangs silently killed every Python-backed
         // feature in the terminal until restart, with no error surfaced. The
@@ -1000,8 +986,8 @@ void PythonRunner::start_next() {
         // the QProcess, so the slot stayed occupied either way.
         //
         // The objection is answered by the budget being per-script-tree rather
-        // than blanket (default_timeout_for_script: 60 min for training/backtest/
-        // agent trees, 5 min otherwise), and by callers being able to override or
+        // than blanket (default_timeout_for_script: 60 min for known training/
+        // backtest trees, 5 min otherwise), and by callers being able to override or
         // disable it via RunOptions::timeout_ms.
         //
         // kill() drives the normal errorOccurred/finished path, so the slot is
@@ -1028,7 +1014,7 @@ void PythonRunner::start_next() {
 QString extract_json(const QString& output) {
     // Return the LAST complete top-level JSON value in the output.
     //
-    // Script/agent stdout is frequently polluted with leading log lines — some
+    // Script stdout is frequently polluted with leading log lines — some
     // of which contain braces (e.g. a Python dict repr like
     // "ERROR ... {'error': {...}, 'status': 401}" leaked onto stdout by a
     // third-party logger). The old "first '{' to end" logic grabbed that dict

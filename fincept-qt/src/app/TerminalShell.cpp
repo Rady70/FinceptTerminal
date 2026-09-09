@@ -18,7 +18,6 @@
 #include "core/telemetry/LocalTelemetrySink.h"
 #include "core/telemetry/TelemetryProvider.h"
 #include "core/window/WindowRegistry.h"
-#include "screens/ai_chat/ChatBubbleController.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "storage/workspace/CrashRecovery.h"
 #include "storage/workspace/WorkspaceDb.h"
@@ -123,11 +122,6 @@ void TerminalShell::initialise() {
     // for rationale). Constructing it here keeps the dependency direction
     // shell → controller correct so the future lift doesn't have to invert.
     auth::LockOverlayController::instance().initialise();
-    // Phase 3 final: chat-bubble shell coordinator. Per-frame bubble
-    // widgets stay where they are; this just centralises the shell-side
-    // observation surface (frame add/remove tracking, future telemetry,
-    // future cross-frame chat-session linking).
-    ai_chat::ChatBubbleController::instance().initialise();
     // Phase 6: open the per-profile LayoutCatalog so Launchpad's recent-
     // layouts list + the layout.* actions can read/write immediately.
     {

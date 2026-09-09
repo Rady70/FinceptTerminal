@@ -6,7 +6,6 @@
 #include "auth/UserApi.h"
 #include "core/logging/Logger.h"
 #include "network/http/HttpClient.h"
-#include "storage/repositories/LlmConfigRepository.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "storage/secure/SecureStorage.h"
 
@@ -183,17 +182,6 @@ void AuthManager::migrate_legacy_plaintext_credentials() {
         LOG_INFO("Auth", "Migrated legacy plaintext credentials into SecureStorage and purged settings rows");
 }
 
-QString AuthManager::fincept_api_key() const {
-    // Single supported resolver. Prefer the live in-memory session; fall back to
-    // the encrypted SecureStorage copy. Never reads the legacy plaintext row.
-    if (!session_.api_key.isEmpty())
-        return session_.api_key;
-    auto secure_key = fincept::SecureStorage::instance().retrieve("api_key");
-    if (secure_key.is_ok())
-        return secure_key.value();
-    return {};
-}
-
 void AuthManager::clear_session() {
     session_ = SessionData{};
     clear_tokens();
@@ -210,8 +198,6 @@ void AuthManager::clear_session() {
     // re-auth flow (LockScreen → reauth_requested), and that path should call
     // PinManager::clear_pin() explicitly before invoking logout().
 
-    // Clear auto-configured fincept LLM provider and reset LlmService
-    LlmConfigRepository::instance().delete_provider("fincept");
 }
 
 bool AuthManager::needs_pin_setup() const {
@@ -314,9 +300,7 @@ void AuthManager::complete_auth_flow(std::function<void()> on_done) {
         if (!session_.api_key.isEmpty())
             session_.authenticated = true;
         save_session();
-        // Purges the stale plaintext api_key row (CR-08). It no longer creates
-        // an LLM provider — see auto_configure_fincept_llm() for why.
-        auto_configure_fincept_llm();
+        purge_legacy_plaintext_api_key();
         set_loading(false);
         if (on_done)
             on_done();
@@ -417,8 +401,8 @@ void AuthManager::complete_desktop_login(const QString& api_key, const QString& 
     }
 
     // Mirror the login() success tail exactly so the desktop handoff lands in
-    // the same post-login machinery (profile + subscription fetch, save_session,
-    // fincept LLM auto-config, login_succeeded).
+    // the same post-login machinery (profile + subscription fetch,
+    // save_session, login_succeeded).
     apply_tokens(api_key, session_token);
 
     session_.authenticated = true;
@@ -636,42 +620,16 @@ void AuthManager::refresh_user_data() {
     fetch_user_profile([this] { emit subscription_fetched(); });
 }
 
-// ── Post-login LLM configuration ─────────────────────────────────────────────
+// ── Legacy plaintext-key cleanup ─────────────────────────────────────────────
 
-void AuthManager::auto_configure_fincept_llm() {
+void AuthManager::purge_legacy_plaintext_api_key() {
     if (session_.api_key.isEmpty())
         return;
 
     // CR-08: do NOT persist the api_key in the plaintext settings table. The
     // key already lives in the in-memory session and in SecureStorage (written
-    // by save_session). LlmService and friends resolve it via
-    // AuthManager::fincept_api_key(). Defensively purge any stale plaintext row.
+    // by save_session). Defensively purge any stale plaintext row.
     fincept::SettingsRepository::instance().remove("fincept_api_key");
-
-    // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). This function used to
-    // manufacture an LLM provider row literally named "fincept" (model
-    // "MiniMax-M2.7") and set it active when nothing else was, on every session
-    // revalidation. Blanking its base_url — the earlier fix — was not enough:
-    // the NAME is the credential path. AgentService::build_api_keys() exports
-    // every provider row's api_key keyed by its lowercased provider name, and
-    // the Python side treats a provider it does not recognise as
-    // OpenAI-compatible, so a row named "fincept" hands its key to OpenAIChat
-    // and it is POSTed to api.openai.com — a credential handed to an unrelated
-    // vendor, from a row this fork created by itself. The provider does not
-    // exist in this fork, so the honest fix is not to create it: there is no
-    // hosted Fincept LLM to configure, and a provider row is now something only
-    // the user creates in Data Sources → LLM providers.
-    //
-    // The seam is kept rather than deleted (matching orchestrator.py, which
-    // raises with an explanation instead of dropping its method) because the
-    // CR-08 purge above still has to run on this path, and because a reader
-    // arriving from the upstream tree needs to find the answer where the
-    // behaviour used to be. The complementary cleanup for an install that
-    // already has the row lives in clear_session(), which deletes it.
-    //
-    // Nothing replaces the set_active("fincept") call either: leaving no active
-    // provider is the correct state for an account with no configured LLM, and
-    // LlmService::is_configured() already reports that.
 }
 
 } // namespace fincept::auth

@@ -89,6 +89,10 @@ class NodeEditorScreen : public QWidget, public fincept::screens::IStatefulScree
     MiniMap* minimap_ = nullptr;
     ExecutionResultsPanel* results_panel_ = nullptr;
     QString current_workflow_id_;
+    // Legacy workflows containing removed node types are view-only. This
+    // prevents auto-save or manual actions from overwriting their stored JSON
+    // with the subset that the current registry can render.
+    bool current_workflow_read_only_ = false;
 
     // Clipboard for copy/paste
     QVector<NodeDef> clipboard_nodes_;

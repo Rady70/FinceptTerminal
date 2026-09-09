@@ -1,7 +1,7 @@
 #!/bin/bash
 # AppRun — AppImage launcher for Fincept Terminal
 # Sets up the runtime environment so Qt plugins, Python scripts,
-# and the Whisper model directory are found relative to the AppImage.
+# and resources are found relative to the AppImage.
 
 set -e
 
@@ -22,7 +22,7 @@ export LD_LIBRARY_PATH="${HERE}/usr/lib:${HERE}/usr/lib/x86_64-linux-gnu:${LD_LI
 # Python scripts — look beside the AppImage first, then inside it
 export FINCEPT_SCRIPTS_DIR="${HERE}/usr/share/fincept-terminal/scripts"
 
-# speech-dispatcher config (for TTS on Linux)
+# DBus session bus for desktop integration
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
 
 exec "${HERE}/usr/bin/FinceptTerminal" "$@"

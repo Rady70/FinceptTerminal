@@ -120,15 +120,6 @@ QVector<StorageCategoryInfo> StorageManager::all_stats() const {
         stats.append({"tab_sessions", "Tab Session State", "Cache", ts_count, true});
     }
 
-    // --- AI & LLM ---
-    stats.append({"chat_sessions", "Chat Sessions", "AI & LLM", count_table("chat_sessions"), true});
-    stats.append({"chat_messages", "Chat Messages", "AI & LLM", count_table("chat_messages"), true});
-    stats.append({"context_recordings", "Context Recordings", "AI & LLM", count_table("recorded_contexts"), true});
-    stats.append({"agent_configs", "Agent Configurations", "AI & LLM", count_table("agent_configs"), true});
-    stats.append({"llm_configs", "LLM Provider Configs", "AI & LLM", count_table("llm_configs"), true});
-    stats.append({"llm_model_configs", "LLM Model Configs", "AI & LLM", count_table("llm_model_configs"), true});
-    stats.append({"llm_profiles", "LLM Profiles", "AI & LLM", count_table("llm_profiles"), true});
-
     // --- News ---
     stats.append({"news_articles", "News Articles", "News", count_table("news_articles"), true});
     stats.append({"news_monitors", "News Monitors", "News", count_table("news_monitors"), true});
@@ -189,13 +180,6 @@ int StorageManager::count_for(const QString& category_id) const {
 
     // Map category_id → table name
     static const QHash<QString, QString> table_map = {
-        {"chat_sessions", "chat_sessions"},
-        {"chat_messages", "chat_messages"},
-        {"context_recordings", "recorded_contexts"},
-        {"agent_configs", "agent_configs"},
-        {"llm_configs", "llm_configs"},
-        {"llm_model_configs", "llm_model_configs"},
-        {"llm_profiles", "llm_profiles"},
         {"news_articles", "news_articles"},
         {"news_monitors", "news_monitors"},
         {"rss_feeds", "user_rss_feeds"},
@@ -243,61 +227,6 @@ Result<void> StorageManager::clear_category(const QString& category_id) {
         if (r.is_ok())
             emit category_cleared(category_id);
         return r;
-    }
-
-    // --- Chat: clear messages first (FK), then sessions ---
-    if (category_id == "chat_sessions") {
-        auto r = delete_cascade({"chat_context_links", "chat_messages", "chat_sessions"});
-        if (r.is_err())
-            return r;
-        emit category_cleared(category_id);
-        return Result<void>::ok();
-    }
-    if (category_id == "chat_messages") {
-        auto r = delete_from("chat_messages");
-        if (r.is_ok())
-            emit category_cleared(category_id);
-        return r;
-    }
-
-    // --- Context recordings ---
-    if (category_id == "context_recordings") {
-        auto r = delete_cascade({"recording_sessions", "recorded_contexts"});
-        if (r.is_err())
-            return r;
-        emit category_cleared(category_id);
-        return Result<void>::ok();
-    }
-
-    // --- Agent configs ---
-    if (category_id == "agent_configs") {
-        auto r = delete_from("agent_configs");
-        if (r.is_ok())
-            emit category_cleared(category_id);
-        return r;
-    }
-
-    // --- LLM configs ---
-    if (category_id == "llm_configs") {
-        auto r = delete_cascade({"llm_global_settings", "llm_configs"});
-        if (r.is_ok())
-            emit category_cleared(category_id);
-        return r;
-    }
-    if (category_id == "llm_model_configs") {
-        auto r = delete_from("llm_model_configs");
-        if (r.is_ok())
-            emit category_cleared(category_id);
-        return r;
-    }
-
-    // --- LLM profiles + assignments ---
-    if (category_id == "llm_profiles") {
-        auto r = delete_cascade({"llm_profile_assignments", "llm_profiles"});
-        if (r.is_err())
-            return r;
-        emit category_cleared(category_id);
-        return Result<void>::ok();
     }
 
     // --- News ---

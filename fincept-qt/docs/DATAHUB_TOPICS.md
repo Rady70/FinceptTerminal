@@ -101,29 +101,9 @@ plan's risk-mitigation cadence).
 |---|---|---|---|---|
 | `ma:<context>` | `MAAnalyticsService` | 2 min (push-only) | — | `<context>` follows the service method (e.g. `ma:dcf`, `ma:merger_model`, `ma:lbo_returns`). All analytics take caller-supplied params — hub cannot re-run them, so topics are push-only. Callers must drive refresh through the existing method API. |
 
-## AI / Agents / LLM (Phase 9)
-
-Push-only topic families published by `AgentService` and `LlmService`. These topics are **per-run disposable** — the producer calls `DataHub::retire_topic(...)` on completion so cached state is released back to the hub. Subscribers attached via `subscribe(owner, ...)` remain attached across retirement and will receive the next publish normally.
-
-### Agent execution
-
-| Pattern | Producer | TTL | Min interval | Notes |
-|---|---|---|---|---|
-| `agent:output:<run_id>` | `AgentService` | 10 min (push-only) | — | Final result payload for a run. Retired on completion. Shape: `{request_id, success, response, error, execution_time_ms, final}`. |
-| `agent:stream:<run_id>` | `AgentService` | 5 min (push-only, coalesce 50 ms) | — | Token firehose from streaming runs. Shape: `{request_id, token}`. |
-| `agent:status:<run_id>` | `AgentService` | 5 min (push-only, coalesce 100 ms) | — | Thinking/tool-call narration. Shape: `{request_id, status}`. |
-| `agent:routing:<run_id>` | `AgentService` | 10 min (push-only) | — | One-shot routing decision. Shape: `{request_id, success, agent_id, intent, confidence}`. |
-| `agent:error:<context>` | `AgentService` | 2 min (push-only) | — | Error stream keyed by context (discover_agents, create_plan, etc.). Shape: `{context, message}`. |
-
-### LLM session stream
-
-| Pattern | Producer | TTL | Min interval | Notes |
-|---|---|---|---|---|
-| `llm:session:<session_id>:stream` | `LlmService` | 5 min (push-only, coalesce 50 ms) | — | Shadow publish of every streaming chunk from `chat_streaming()`. Shape: `{session_id, chunk, done}`. Session id is generated per-call. Topic retired on `done=true`. |
-
 ### Generic DataHub MCP tools
 
-The MCP module `DataHubTools` exposes four generic introspection tools to any LLM tool caller (see `docs/agents/datahub-guide.md`):
+The MCP module `DataHubTools` exposes four generic introspection tools:
 
 - `datahub_list_topics` — every active topic + subscriber count + last-publish age
 - `datahub_peek` — current cached value for a topic (`{value, age_ms}`) without triggering refresh
@@ -157,7 +137,7 @@ The Crypto Center owns a small set of topics for the user's connected Solana wal
 
 | Pattern | Producer | TTL | Min interval | Notes |
 |---|---|---|---|---|
-| `billing:fncpt_discount:<pubkey>` | `FeeDiscountService` | derived from `wallet:balance:<pubkey>` (no separate fetch) | — | The service subscribes to the user's balance topic internally and republishes eligibility. Shape: `FncptDiscount{eligible, threshold_raw, threshold_decimals, applied_skus}`. Threshold + applied SKUs come from `services/billing/FeeDiscountConfig.h`; defaults to **1,000 $FNCPT → 30 % off** for AI reports, deep backtests, premium screens. |
+| `billing:fncpt_discount:<pubkey>` | `FeeDiscountService` | derived from `wallet:balance:<pubkey>` (no separate fetch) | — | The service subscribes to the user's balance topic internally and republishes eligibility. Shape: `FncptDiscount{eligible, threshold_raw, threshold_decimals, applied_skus}`. Threshold + applied SKUs come from `services/billing/FeeDiscountConfig.h`; defaults to **1,000 $FNCPT → 30 % off** for deep backtests and premium screens. |
 
 > **Phase 2 swap path is not a hub topic.** `PumpFunSwapService::build_swap()` is a one-shot, user-initiated HTTP POST to `pumpportal.fun/api/trade-local` that returns an unsigned versioned-tx body. There's no debounce-coalesce or cache-coherence value to pushing it through DataHub; the result is fed directly into `WalletService::sign_and_send()`. See `plans/crypto-center-phase-2.md` D1.
 
@@ -185,7 +165,7 @@ veFNCPT lock surface for the STAKE tab. All four producers ship in **mock mode**
 | `wallet:vefncpt:<pubkey>` | `StakingService` | 60 s | 30 s | Aggregate weight + projected next-period yield. Shape: `VeFncptAggregate{pubkey_b58, total_weight_raw, decimals, position_count, projected_next_period_yield_usdc, is_mock}`. Computed by summing `LockPosition.weight_raw` and applying §3.4 25 %-of-revenue staker-share. |
 | `wallet:yield:<pubkey>` | `RealYieldService` | 5 min | 60 s | Realised USDC yield. Shape: `YieldSnapshot{pubkey_b58, lifetime_usdc, last_period_usdc, last_period_end_ts, is_mock}`. Real path: `<endpoint>/yield/<pubkey>`. Mock path derives numbers from `treasury:revenue × 25 % / weight share` so demo numbers stay internally consistent with the buyback dashboard. |
 | `treasury:revenue` | `RealYieldService` | 1 h | 5 min | Terminal-wide weekly revenue bucket. Shape: `TreasuryRevenue{period_start_ts, period_end_ts, total_usd, is_mock}`. Used by `LockPanel` for "EST. YIELD" before lock-creation; also feeds the Phase 5 dashboard's revenue breakdown. Bucketed weekly to match the buyback worker's epoch cadence. |
-| `billing:tier:<pubkey>` | `TierService` | 60 s | 15 s | Derived from `wallet:vefncpt:<pubkey>`; service subscribes to vefncpt internally and republishes whenever weight changes. Shape: `TierStatus{pubkey_b58, tier (Free/Bronze/Silver/Gold), weight_raw, next_threshold_raw, decimals, is_mock}`. Thresholds in `services/billing/TierConfig.h` (100 / 1k / 10k veFNCPT). Drives cross-screen gating (AI Quant Lab, Alpha Arena) via the `tier_changed` Qt signal. |
+| `billing:tier:<pubkey>` | `TierService` | 60 s | 15 s | Derived from `wallet:vefncpt:<pubkey>`; service subscribes to vefncpt internally and republishes whenever weight changes. Shape: `TierStatus{pubkey_b58, tier (Free/Bronze/Silver/Gold), weight_raw, next_threshold_raw, decimals, is_mock}`. Thresholds live in `services/billing/TierConfig.h`. |
 
 ### Internal prediction markets (Phase 4)
 

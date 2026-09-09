@@ -23,11 +23,11 @@ It ships in **two editions on one data core**:
 
 **What this repository is for:**
 - 100+ data source integrations (stocks, crypto, forex, economic data, news)
-- AI-powered analysis — bring your own LLM key
+- Local analytics, historical simulation, and report building
 - Native C++ performance — no browser/JS overhead
 - Built by the community, for the community
 
-Contributions land in the open-source edition. Private datasets, point-in-time history, included AI credits and live execution are [Enterprise](https://fincept.in/enterprise) features.
+This fork is a local-first research workspace. Hosted subscriptions, bundled service credits, and external order execution are outside its scope.
 
 ### Technology Decisions (and Why)
 

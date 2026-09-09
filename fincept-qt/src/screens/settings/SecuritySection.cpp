@@ -46,7 +46,7 @@ void capture_row_labels(QWidget* row, QLabel** label_out, QLabel** desc_out = nu
 // build_ui() and retranslateUi() cannot drift apart.
 QString destructive_tools_desc() {
     return SecuritySection::tr(
-        "Off by default. With this off, AI chat and agents can read your terminal but cannot change anything "
+        "Off by default. With this off, external MCP clients can read terminal data but cannot change anything "
         "— no file writes, no spreadsheet, note, watchlist or portfolio edits, no dashboard or workspace "
         "changes, no script execution. Turning it on lets them act for you; you can turn it back off at any "
         "time. Live trading orders and access to your saved credentials stay blocked either way. Applies "
@@ -381,14 +381,12 @@ void SecuritySection::build_ui() {
     save_status_->hide();
     vl->addWidget(save_status_);
 
-    // ── AI TOOL PERMISSIONS ───────────────────────────────────────────────────
+    // ── MCP TOOL PERMISSIONS ──────────────────────────────────────────────────
     //
     // Backs `mcp/allow_destructive_tools`. Every MCP tool flagged
     // `is_destructive` — spreadsheet and file writes, dashboard / workspace /
-    // layout mutations, notes, watchlist, portfolio, report builder, agent
-    // execution, run_python_script — fails closed unless this is on. It is the
-    // ONLY place that grant can be made, so without it the whole "let the
-    // assistant drive the terminal" surface is permanently read-only.
+    // layout mutations, notes, watchlist, portfolio, report builder and
+    // run_python_script — fails closed unless this is on.
     //
     // Deliberately outside the Save button above: this is a capability grant,
     // not a form field, and a half-applied capability is worse than either
@@ -397,16 +395,16 @@ void SecuritySection::build_ui() {
     // session in one call — there is no second copy of this setting to keep in
     // sync.
     vl->addSpacing(16);
-    title_ai_tools_ = new QLabel(tr("AI TOOL PERMISSIONS"));
-    title_ai_tools_->setStyleSheet(sub_title_ss());
-    vl->addWidget(title_ai_tools_);
+    title_tool_permissions_ = new QLabel(tr("MCP TOOL PERMISSIONS"));
+    title_tool_permissions_->setStyleSheet(sub_title_ss());
+    vl->addWidget(title_tool_permissions_);
     vl->addSpacing(4);
 
-    sec_allow_destructive_ = new QCheckBox(tr("Allow AI agents to modify files, workspaces and data"));
+    sec_allow_destructive_ = new QCheckBox(tr("Allow MCP tools to modify files, workspaces and data"));
     sec_allow_destructive_->setStyleSheet(check_ss());
-    sec_allow_destructive_->setAccessibleName(tr("Allow AI agents to modify files, workspaces and data"));
+    sec_allow_destructive_->setAccessibleName(tr("Allow MCP tools to modify files, workspaces and data"));
     auto* row_destructive =
-        make_row(tr("Destructive AI Tools"), sec_allow_destructive_, destructive_tools_desc());
+        make_row(tr("Destructive MCP Tools"), sec_allow_destructive_, destructive_tools_desc());
     capture_row_labels(row_destructive, &row_destructive_lbl_, &row_destructive_desc_);
     vl->addWidget(row_destructive);
 
@@ -414,11 +412,11 @@ void SecuritySection::build_ui() {
         mcp::McpProvider::set_destructive_allowed(checked);
         // A capability grant belongs in the same audit stream the user is
         // already looking at, two rows further down this page.
-        auth::SecurityAuditLog::instance().record(checked ? QStringLiteral("ai_destructive_tools_enabled")
-                                                          : QStringLiteral("ai_destructive_tools_disabled"));
+        auth::SecurityAuditLog::instance().record(checked ? QStringLiteral("mcp_destructive_tools_enabled")
+                                                          : QStringLiteral("mcp_destructive_tools_disabled"));
         refresh_audit_log();
         LOG_INFO("Settings",
-                 QString("Destructive AI tools %1 from Security settings").arg(checked ? "enabled" : "disabled"));
+                 QString("Destructive MCP tools %1 from Security settings").arg(checked ? "enabled" : "disabled"));
     });
 
     // ── AUDIT LOG ─────────────────────────────────────────────────────────────
@@ -482,8 +480,8 @@ void SecuritySection::retranslateUi() {
         title_change_->setText(tr("CHANGE PIN"));
     if (title_lock_)
         title_lock_->setText(tr("AUTO-LOCK"));
-    if (title_ai_tools_)
-        title_ai_tools_->setText(tr("AI TOOL PERMISSIONS"));
+    if (title_tool_permissions_)
+        title_tool_permissions_->setText(tr("MCP TOOL PERMISSIONS"));
     if (title_audit_)
         title_audit_->setText(tr("AUDIT LOG"));
     if (audit_note_)
@@ -517,7 +515,7 @@ void SecuritySection::retranslateUi() {
     if (row_minimize_desc_)
         row_minimize_desc_->setText(tr("When on, minimizing the terminal immediately shows the PIN screen."));
     if (row_destructive_lbl_)
-        row_destructive_lbl_->setText(tr("Destructive AI Tools"));
+        row_destructive_lbl_->setText(tr("Destructive MCP Tools"));
     if (row_destructive_desc_)
         row_destructive_desc_->setText(destructive_tools_desc());
 
@@ -527,8 +525,8 @@ void SecuritySection::retranslateUi() {
     if (sec_lock_on_minimize_)
         sec_lock_on_minimize_->setText(tr("Lock when the window is minimized"));
     if (sec_allow_destructive_) {
-        sec_allow_destructive_->setText(tr("Allow AI agents to modify files, workspaces and data"));
-        sec_allow_destructive_->setAccessibleName(tr("Allow AI agents to modify files, workspaces and data"));
+        sec_allow_destructive_->setText(tr("Allow MCP tools to modify files, workspaces and data"));
+        sec_allow_destructive_->setAccessibleName(tr("Allow MCP tools to modify files, workspaces and data"));
     }
 
     // PIN field placeholders.

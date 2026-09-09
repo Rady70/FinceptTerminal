@@ -124,13 +124,12 @@ static const QSet<QString>& mutate_verbs() {
 }
 
 // Specialist categories — these have many tools that keyword-match generic
-// queries (e.g. quant-lab's 100 tools mention "factor/risk/model") and
+// queries (e.g. surface-analytics' many tools mention "surface/vol/skew") and
 // drown out simpler tools. Each entry maps category → cue tokens that
 // signal genuine intent for that specialist. If a query contains NO cue
 // for a specialist, every tool in it is demoted at scoring time.
 static const QHash<QString, QSet<QString>>& specialist_categories() {
     static const QHash<QString, QSet<QString>> kSpec = {
-        {"quant-lab", {"quant", "factor", "backtest", "alpha", "ic", "rl", "ml", "ml-ops", "alphalens", "qlib"}},
         {"surface-analytics", {"surface", "vol", "volatility", "skew", "databento", "iv"}},
         {"alt-investments", {"alt", "junk", "convertible", "preferred", "private", "venture", "hedge", "yield"}},
     };
@@ -254,7 +253,6 @@ QString ToolRetriever::classify_category(const QStringList& query_stems) {
         {"paper-trading", {"trad", "buy", "sell", "order", "portfolio", "pnl", "hold", "position", "broker"}},
         {"news", {"new", "feed", "rss", "headlin", "articl", "file", "edgar"}},
         {"report-builder", {"report", "builder", "generat", "document", "templat", "pdf"}},
-        {"quant-lab", {"quant", "factor", "backtest", "alpha", "risk", "metric", "sharp", "var"}},
         {"markets", {"market", "quot", "pric", "stock", "equity", "ticker", "chart", "ohlc"}},
         {"notes", {"not", "memo", "mind", "journal", "writ"}},
         {"file_manager", {"fil", "folder", "directory", "path", "open", "read", "writ"}},
@@ -432,9 +430,9 @@ std::vector<ToolMatch> ToolRetriever::search(const QString& query, int top_k, co
 
     // ── Specialist-category gating ─────────────────────────────────────
     // For each specialist category, decide whether ANY query token is a
-    // genuine cue (e.g. "quant"/"backtest" for quant-lab). Categories with
-    // no cue get demoted at scoring time. This stops the 100 quant_* tools
-    // from drowning out a plain "compute Sharpe ratio" query.
+    // genuine cue (e.g. "surface"/"vol" for surface-analytics). Categories with
+    // no cue get demoted at scoring time. This stops the many surface_* tools
+    // from drowning out a plain "compute volatility" query.
     QSet<QString> demoted_categories;
     {
         const QSet<QString> q_set(q_tokens.begin(), q_tokens.end());

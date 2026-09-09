@@ -66,7 +66,6 @@ venv/
 *.sw?
 .DS_Store
 Thumbs.db
-agents.md
 
 # ── Logs ─────────────────────────────────────────────────────
 *.log
@@ -143,9 +142,6 @@ lightning_logs/
 
 # ── Shell tree output files ───────────────────────────────────
 **/tree
-
-# ── Duplicate nested agents folder ───────────────────────────
-fincept-qt/scripts/agents/agents/
 
 # ── Firecrawl research artifacts ─────────────────────────────
 .firecrawl/

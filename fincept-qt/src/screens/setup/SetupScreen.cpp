@@ -309,7 +309,7 @@ void SetupScreen::retranslateUi() {
         {"packages-numpy1", tr("Install Trading Libraries"),
          tr("Backtesting, portfolio optimization and legacy quant tools")},
         {"packages-numpy2", tr("Install Analytics Libraries"),
-         tr("Machine learning, data science and AI agent frameworks")},
+         tr("Machine learning, statistics and data science tools")},
     };
     for (const auto& c : copy) {
         const QString k = QString::fromLatin1(c.key);

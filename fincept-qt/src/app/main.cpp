@@ -30,7 +30,6 @@
 #include "datahub/DataHubMetaTypes.h"
 #include "datahub/TopicPolicy.h"
 #include "mcp/McpInit.h"
-#include "mcp/ProviderToolFormatSelfTest.h"
 #include "mcp/ToolSelfTest.h"
 #include "network/http/HttpClient.h"
 #include "python/OptionGreeksWorker.h"
@@ -39,13 +38,11 @@
 #include "screens/launchpad/LaunchpadScreen.h"
 #include "screens/recovery/CrashRecoveryDialog.h"
 #include "screens/setup/SetupScreen.h"
-#include "services/alpha_arena/ArenaSelftest.h"
 #include "services/dbnomics/DBnomicsService.h"
 #include "services/economics/EconomicsService.h"
 #include "services/feeds/FeedSelfTest.h"
 #include "services/geopolitics/GeopoliticsService.h"
 #include "services/gov_data/GovDataService.h"
-#include "services/llm/LlmService.h"
 #include "services/ma_analytics/MAAnalyticsService.h"
 #include "services/markets/MarketDataService.h"
 #include "services/news/NewsService.h"
@@ -571,7 +568,6 @@ int main(int argc, char* argv[]) {
 
     // Register migrations explicitly (avoids MSVC /OPT:REF stripping static-init TUs)
     fincept::register_migration_v001();
-    fincept::register_migration_v002();
     fincept::register_migration_v003();
     fincept::register_migration_v004();
     fincept::register_migration_v005();
@@ -579,32 +575,26 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v007();
     fincept::register_migration_v008();
     fincept::register_migration_v009();
-    fincept::register_migration_v010();
     fincept::register_migration_v011();
     fincept::register_migration_v012();
     fincept::register_migration_v013();
-    fincept::register_migration_v014();
     fincept::register_migration_v015();
     fincept::register_migration_v016();
     fincept::register_migration_v017();
     fincept::register_migration_v018();
     fincept::register_migration_v019();
     fincept::register_migration_v020();
-    fincept::register_migration_v021();
     fincept::register_migration_v022();
     fincept::register_migration_v023();
-    fincept::register_migration_v024();
     fincept::register_migration_v025();
     fincept::register_migration_v026();
     fincept::register_migration_v027();
     fincept::register_migration_v028();
     fincept::register_migration_v029();
-    fincept::register_migration_v030();
     fincept::register_migration_v031();
     fincept::register_migration_v032();
     fincept::register_migration_v033();
     fincept::register_migration_v034();
-    fincept::register_migration_v035();
     fincept::register_migration_v036();
     fincept::register_migration_v037();
     fincept::register_migration_v038();
@@ -619,7 +609,6 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v047();
     fincept::register_migration_v048();
     fincept::register_migration_v049();
-    fincept::register_migration_v050();
     fincept::register_migration_v051();
 
     // Open main database
@@ -788,7 +777,7 @@ int main(int argc, char* argv[]) {
     {
         bool tools_needed_synchronously = false;
         for (int i = 1; i < argc; ++i) {
-            if (qstrcmp(argv[i], "--selftest-tools") == 0 || qstrcmp(argv[i], "--selftest-llm-tools") == 0 ||
+            if (qstrcmp(argv[i], "--selftest-tools") == 0 ||
                 qstrcmp(argv[i], "--dump-tools") == 0 ||
                 // MarketLab boundary selftest asserts the SHIPPED MCP tool set
                 // (no live-trading/forum/profile tools), so the real registry
@@ -824,7 +813,6 @@ int main(int argc, char* argv[]) {
     };
     static constexpr SelftestSuite kSelftestSuites[] = {
         {"--selftest-tools", &fincept::mcp::run_tool_selftest},
-        {"--selftest-llm-tools", &fincept::mcp::run_provider_tool_format_selftest},
         {"--selftest-feeds", &fincept::feeds::run_feed_selftest},
         {"--selftest-dock-layout", &fincept::layout::run_dock_layout_selftest},
         {"--selftest-live-table", &fincept::ui::run_live_table_selftest},
@@ -833,7 +821,6 @@ int main(int argc, char* argv[]) {
         {"--selftest-paper", &fincept::trading::run_paper_trading_selftest},
         {"--selftest-portfolio-monitor", &fincept::trading::run_portfolio_monitor_selftest},
         {"--selftest-portfolio-replication", &fincept::trading::replication::run_portfolio_replication_selftest},
-        {"--selftest-arena", &fincept::arena::run_arena_selftest},
         {"--selftest-marketlab-boundary", &fincept::marketlab::run_marketlab_boundary_selftest},
     };
 
@@ -953,11 +940,6 @@ int main(int argc, char* argv[]) {
                 // wire_app_lifecycle() at the top of this file.
                 wire_app_lifecycle(app, instance_lock);
 
-                if (!fincept::ai_chat::LlmService::instance().is_configured())
-                    LOG_WARN(
-                        "App",
-                        "LLM provider not configured — AI chat will prompt user to configure Settings → LLM Config");
-
                 LOG_INFO("App", "Application ready (after setup)");
             });
 
@@ -1037,19 +1019,6 @@ int main(int argc, char* argv[]) {
             Qt::SingleShotConnection);
         mgr.run_setup();
     }
-
-    // Deferred, and NOT just to save a few ms: is_configured() runs
-    // LlmService::ensure_config(), which on its FIRST call bakes the MCP
-    // tool-category discovery hint into the system prompt and caches it in a
-    // function-local static for the process lifetime. Tool registration is now
-    // deferred (see the initialize_all_tools singleShot above), so calling this
-    // inline would permanently cache a hint built against an empty registry.
-    // Posting it here keeps it strictly after that turn.
-    QTimer::singleShot(0, &app, []() {
-        if (!fincept::ai_chat::LlmService::instance().is_configured())
-            LOG_WARN("App",
-                     "LLM provider not configured — AI chat will prompt user to configure Settings → LLM Config");
-    });
 
     LOG_INFO("App", "Application ready");
     return app.exec();

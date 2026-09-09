@@ -1276,15 +1276,6 @@ void wire_trading_bridges(NodeRegistry& registry) {
     LOG_INFO("ServiceBridges", "Trading bridges wired (17 nodes)");
 }
 
-// ── Agent Bridge ───────────────────────────────────────────────────────
-
-void wire_agent_bridges(NodeRegistry& /*registry*/) {
-    // agent.run and agent.tool_picker have real executors from AgentNodes.cpp.
-    // agent.single/agent.multi/agent.mediator are legacy stubs — leave their
-    // executors to the fallback pass-through in wire_all_bridges if still null.
-    LOG_INFO("ServiceBridges", "Agent bridges wired");
-}
-
 // ── Wire All ───────────────────────────────────────────────────────────
 
 static void wire_utility_bridges(NodeRegistry& registry) {
@@ -2441,7 +2432,7 @@ static void wire_mcp_bridges(NodeRegistry& registry) {
 
             // Support both "serverId__toolName" and bare tool name
             if (tool.contains("__")) {
-                result = svc.execute_openai_function(tool, args);
+                result = svc.execute_wire_function(tool, args);
             } else {
                 result = svc.execute_tool(mcp::INTERNAL_SERVER_ID, tool, args);
             }
@@ -2469,7 +2460,6 @@ void wire_all_bridges(NodeRegistry& registry) {
     // wired — the trading nodes themselves are unregistered in this fork
     // (FINCEPT_FORK_PLAN.md §5.4).
     // wire_trading_bridges(registry);
-    wire_agent_bridges(registry);
     wire_utility_bridges(registry);
 
     // Wire any remaining nullptr executors with pass-through

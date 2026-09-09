@@ -5,10 +5,6 @@
 #include "core/logging/Logger.h"
 #include "mcp/McpProvider.h"
 #include "mcp/McpService.h"
-#include "mcp/TerminalMcpBridge.h"
-#include "mcp/tools/AgenticMemoryTools.h"
-#include "mcp/tools/AgentsTools.h"
-#include "mcp/tools/AiChatTools.h"
 #include "mcp/tools/AltInvestmentsTools.h"
 #include "mcp/tools/CryptoTradingTools.h"
 #include "mcp/tools/DBnomicsTools.h"
@@ -35,7 +31,6 @@
 #include "mcp/tools/PortfolioTools.h"
 #include "mcp/tools/ProfileTools.h"
 #include "mcp/tools/PythonTools.h"
-#include "mcp/tools/QuantLabTools.h"
 #include "mcp/tools/ReportBuilderTools.h"
 #include "mcp/tools/SettingsTools.h"
 #include "mcp/tools/SurfaceAnalyticsTools.h"
@@ -127,14 +122,6 @@ void initialize_all_tools() {
     // notes tab
     provider.register_tools(tools::get_notes_tools());
 
-    // agentic mode — MarketLab (reduced AI scope): NOT registered. The agentic
-    // memory tools belong to the disabled Agents surface
-    // (FINCEPT_FORK_PLAN.md §5.2).
-    // provider.register_tools(tools::get_agentic_memory_tools());
-
-    // ai chat tab
-    provider.register_tools(tools::get_ai_chat_tools());
-
     // crypto trading tab
     // MarketLab: crypto-trading MCP tools are NOT registered — the crypto
     // trading screen and its order-capable tools are Unavailable in this
@@ -185,14 +172,6 @@ void initialize_all_tools() {
 
     // external mcp server management (list/install/start/stop/call-through)
     provider.register_tools(tools::get_mcp_servers_tools());
-
-    // ai quant lab — 24-module quantitative research platform (96 specific + 3 generic)
-    provider.register_tools(tools::get_quant_lab_tools());
-
-    // agent studio — MarketLab (reduced AI scope): NOT registered. The Agents
-    // surface is disabled, so no agent discovery/execution/planning/config
-    // tools exist (FINCEPT_FORK_PLAN.md §5.2).
-    // provider.register_tools(tools::get_agents_tools());
 
     // dbnomics — economic data series (providers/datasets/series/observations/search)
     provider.register_tools(tools::get_dbnomics_tools());
@@ -250,10 +229,6 @@ void shutdown_mcp() {
         LOG_DEBUG(TAG, "shutdown_mcp() already ran — ignoring");
         return;
     }
-
-    // Close the local agent bridge first so no new tool call can arrive while
-    // the provider registry is being cleared out from under it.
-    TerminalMcpBridge::instance().stop();
 
     // Stops the health-check timer, then every external server process.
     // Without this the child processes (npx/uvx/python MCP servers) outlive the

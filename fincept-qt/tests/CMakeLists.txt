@@ -126,8 +126,8 @@ fincept_add_test(tst_marketlab_boundary
     "${PROJECT_SOURCE_DIR}/src/core/capability/CapabilityManager.cpp"
     "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
 
-# MarketLab: the rejection the three direct clients (ArenaLlmClient,
-# QuantLibClient, CloudClient) share. Those clients own their own
+# MarketLab: the rejection the two direct clients (QuantLibClient and
+# CloudClient) share. Those clients own their own
 # QNetworkAccessManager, so the shared HttpClient deny-list never sees them and
 # each has to reject for itself — the decision they all call lives in the
 # DirectRouteGuard leaf so it can be linked here against Qt Core alone.

@@ -106,14 +106,14 @@ Component.prototype.createOperations = function()
             "Type=Application\n" +
             "Name=Fincept Terminal\n" +
             "GenericName=Financial Intelligence Terminal\n" +
-            "Comment=Professional financial data terminal with AI analytics\n" +
+            "Comment=Local-first financial research workspace with market data and analytics\n" +
             "Exec=" + targetDir + "/bin/FinceptTerminal %U\n" +
             "Icon=" + targetDir + "/share/icons/hicolor/256x256/apps/fincept-terminal.png\n" +
             "Terminal=false\n" +
             "StartupWMClass=FinceptTerminal\n" +
             "StartupNotify=true\n" +
             "Categories=Finance;Office;Science;\n" +
-            "Keywords=finance;trading;stocks;crypto;portfolio;AI;analytics;markets;\n"
+            "Keywords=finance;research;stocks;crypto;portfolio;analytics;markets;\n"
         );
     }
     // macOS: .app bundle is self-contained, no shortcuts needed
@@ -166,10 +166,10 @@ function onUninstallationStarted()
                 "Remove Fincept Terminal User Data?",
                 "Do you want to remove all Fincept Terminal user data?\n\n" +
                 "This includes:\n" +
-                "  - Databases (chat history, portfolio, watchlists)\n" +
+                "  - Databases (portfolio, watchlists)\n" +
                 "  - Log files\n" +
                 "  - Downloaded files and cached data\n" +
-                "  - ML models (Whisper, etc.)\n" +
+                "  - ML model caches\n" +
                 "  - Python runtime and virtual environments\n" +
                 "  - Workspaces and profiles\n" +
                 "  - Saved credentials and API keys\n" +

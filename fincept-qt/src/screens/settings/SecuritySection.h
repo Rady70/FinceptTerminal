@@ -64,7 +64,7 @@ class SecuritySection : public QWidget {
     QLabel* title_pin_ = nullptr;
     QLabel* title_change_ = nullptr;
     QLabel* title_lock_ = nullptr;
-    QLabel* title_ai_tools_ = nullptr;
+    QLabel* title_tool_permissions_ = nullptr;
     QLabel* title_audit_ = nullptr;
     QLabel* audit_note_ = nullptr;
     QPushButton* save_pin_btn_ = nullptr;

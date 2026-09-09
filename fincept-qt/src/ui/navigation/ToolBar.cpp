@@ -271,9 +271,8 @@ QMenu* ToolBar::build_navigate_menu() {
     };
 
     auto nav = [this](QMenu* menu, const QString& label, const QString& id) {
-        // MarketLab: menu entries respect the capability gate — an Unavailable
-        // screen (e.g. agent_config) is not offered from any navigation menu,
-        // matching the command palette and component browser filters.
+        // MarketLab: menu entries respect the capability gate, matching the
+        // command palette and component browser filters.
         if (!capability::CapabilityManager::instance().is_screen_allowed(id))
             return;
         menu->addAction(label, this, [this, id]() { emit navigate_to(id); });
@@ -300,7 +299,6 @@ QMenu* ToolBar::build_navigate_menu() {
     nav(res, tr("Surface Analytics"), "surface_analytics");
 
     auto* tools = add_sub(tr("Tools"));
-    nav(tools, tr("Agent Config"), "agent_config");
     nav(tools, tr("MCP Servers"), "mcp_servers");
     nav(tools, tr("Data Mapping"), "data_mapping");
     nav(tools, tr("Data Sources"), "data_sources");
@@ -341,7 +339,6 @@ QMenu* ToolBar::build_view_menu() {
     panels->addAction(tr("Equity Research"), this, [this]() { emit action_triggered("panel_research"); });
     panels->addAction(tr("Economics"), this, [this]() { emit action_triggered("panel_economics"); });
     panels->addAction(tr("Geopolitics"), this, [this]() { emit action_triggered("panel_geopolitics"); });
-    panels->addAction(tr("AI Chat"), this, [this]() { emit action_triggered("panel_ai_chat"); });
     m->addSeparator();
 
     auto* persp = m->addMenu(tr("Quick Switch"));
@@ -365,10 +362,6 @@ QMenu* ToolBar::build_view_menu() {
     qs_econ->addAction(tr("Data Sources"), this, [this]() { emit action_triggered("perspective_data"); });
 
     persp->addAction(tr("Geopolitics View"), this, [this]() { emit action_triggered("perspective_geopolitics"); });
-
-    auto* qs_ai = persp->addMenu(tr("AI && Quant"));
-    qs_ai->setStyleSheet(popup_ss());
-    qs_ai->addAction(tr("AI Chat"), this, [this]() { emit action_triggered("perspective_ai"); });
 
     persp->addAction(tr("Tools View"), this, [this]() { emit action_triggered("perspective_tools"); });
     m->addSeparator();

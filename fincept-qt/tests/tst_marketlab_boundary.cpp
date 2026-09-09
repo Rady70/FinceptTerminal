@@ -34,10 +34,6 @@ void TstMarketlabBoundary::capability_defaults() {
 
     QVERIFY(mgr.is_available(Capability::LocalWorkspace));
     QVERIFY(mgr.is_available(Capability::PublicData));
-    // MarketLab (reduced AI scope): custom remote LLM and embedder endpoints
-    // are rejected; only local Ollama remains.
-    QVERIFY(!mgr.is_available(Capability::UserConfiguredProvider));
-    QVERIFY(!mgr.availability(Capability::UserConfiguredProvider).reason.isEmpty());
     QVERIFY(mgr.is_available(Capability::LocalAnalytics));
 
     QVERIFY(!mgr.is_available(Capability::FinceptHosted));
@@ -65,20 +61,15 @@ void TstMarketlabBoundary::screen_availability() {
     QVERIFY(mgr.is_screen_allowed(QStringLiteral("settings")));
     QVERIFY(mgr.is_screen_allowed(QStringLiteral("about")));
 
-    // Conditional screens stay reachable (they render their own conditional
-    // state) and report their condition truthfully. agent_config is NOT among
-    // them — the Agents surface is disabled (reduced AI scope).
-    for (const QString& id : {QStringLiteral("ai_chat"), QStringLiteral("ai_quant_lab"),
-                              QStringLiteral("surface_analytics")}) {
-        QVERIFY(mgr.is_screen_allowed(id));
-        QCOMPARE(mgr.screen_availability(id).state, AvailabilityState::Conditional);
-    }
+    QVERIFY(mgr.is_screen_allowed(QStringLiteral("surface_analytics")));
+    QCOMPARE(mgr.screen_availability(QStringLiteral("surface_analytics")).state, AvailabilityState::Conditional);
 
     // Execution and hosted screens must be denied with a reason.
     const QStringList denied = {
-        QStringLiteral("agent_config"),  QStringLiteral("equity_trading"), QStringLiteral("algo_trading"),
+        QStringLiteral("ai_chat"),       QStringLiteral("ai_quant_lab"),  QStringLiteral("agent_config"),
+        QStringLiteral("alpha_arena"),   QStringLiteral("equity_trading"), QStringLiteral("algo_trading"),
         QStringLiteral("crypto_trading"), QStringLiteral("crypto_center"),  QStringLiteral("polymarket"),
-        QStringLiteral("alpha_arena"),    QStringLiteral("fno"),            QStringLiteral("quantlib"),
+        QStringLiteral("fno"),            QStringLiteral("quantlib"),
         QStringLiteral("maritime"),       QStringLiteral("forum"),          QStringLiteral("support"),
         QStringLiteral("profile"),
     };
@@ -97,8 +88,7 @@ void TstMarketlabBoundary::screen_availability() {
     const QStringList filtered = mgr.allowed_screens(
         {QStringLiteral("equity_trading"), QStringLiteral("markets"), QStringLiteral("quantlib"),
          QStringLiteral("watchlist"), QStringLiteral("ai_chat")});
-    QCOMPARE(filtered,
-             QStringList({QStringLiteral("markets"), QStringLiteral("watchlist"), QStringLiteral("ai_chat")}));
+    QCOMPARE(filtered, QStringList({QStringLiteral("markets"), QStringLiteral("watchlist")}));
 }
 
 void TstMarketlabBoundary::hosted_path_guard() {

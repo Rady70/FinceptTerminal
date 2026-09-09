@@ -2,18 +2,16 @@
 //
 // Covers the gap left by tst_marketlab_boundary: that suite proves the
 // deny-list PREDICATE is correct (HostedPathGuard) and that capability/screen
-// gating holds, but nothing exercised the three clients that own their own
+// gating holds, but nothing exercised the two retained clients that own their own
 // QNetworkAccessManager and therefore have to reject for themselves, outside
 // the shared HttpClient deny-list (FINCEPT_FORK_PLAN.md §5.3):
 //
-//   src/services/alpha_arena/ArenaLlmClient.cpp:complete()
 //   src/services/quantlib/QuantLibClient.cpp:call()
 //   src/network/cloud/CloudClient.cpp:reject_hosted()
 //
 // ── Why this tests DirectRouteGuard and not the clients directly ─────────────
 //
-// None of the three can be constructed in a unit test: ArenaLlmClient needs
-// ProviderCatalog + ModelCatalog + AppConfig + AuthManager, QuantLibClient
+// Neither retained client can be constructed in a unit test: QuantLibClient
 // needs AppConfig + CacheManager + Logger + the MCP result type, CloudClient
 // needs Logger and a live QNetworkAccessManager. Linking any of them here
 // would mean hauling in most of the app, which tests/CMakeLists.txt forbids in
@@ -22,25 +20,25 @@
 // the pure logic into a small header (or a leaf .cpp) and test that."
 //
 // So the guard decision was extracted to src/network/http/DirectRouteGuard.cpp
-// and all three clients now CALL it — what is asserted below is the production
+// and both clients now call it — what is asserted below is the production
 // decision itself, not a copy of the predicate re-implemented in this file.
 // Weaken DirectRouteGuard (or the HostedPathGuard deny-list under it) and these
-// assertions fail, for all three clients at once. The vectors below are the
+// assertions fail for both clients. The vectors below are the
 // exact (base, endpoint) inputs each call site composes, so a change to a
 // client's URL composition shows up here too.
 //
 // ── What this suite does NOT cover, stated plainly ───────────────────────────
 //
-// It does not prove that the three clients still call the guard. Deleting the
-// `if (route.rejected) { ...; return; }` block from ArenaLlmClient::complete(),
-// QuantLibClient::call() or CloudClient::reject_hosted() still compiles and
+// It does not prove that the two clients still call the guard. Deleting the
+// `if (route.rejected) { ...; return; }` block from QuantLibClient::call() or
+// CloudClient::reject_hosted() still compiles and
 // every assertion here still passes — this file links DirectRouteGuard, not the
 // clients. Closing that properly needs the clients to be constructible in a
 // test, which is the refactor tests/CMakeLists.txt is asking for and which
 // nobody has done yet.
 //
 // What has changed since that paragraph was first written is where the
-// containment lives, not what this file proves. All three clients used to own a
+// containment lives, not what this file proves. Both clients used to own a
 // raw QNetworkAccessManager, so a deleted guard call was a hosted route. They
 // now own a GuardedNetworkAccessManager, which applies HostedPathGuard inside
 // createRequest() — on the initial URL and on every redirect hop — so deleting
@@ -52,7 +50,7 @@
 // manager back for a raw one changes a pinned count and fails the audit.
 //
 // These are also not regression tests for a bug that was fixed. Before
-// DirectRouteGuard was extracted, all three clients already rejected Fincept
+// DirectRouteGuard was extracted, both retained clients already rejected Fincept
 // destinations by calling HostedPathGuard::is_fincept_destination() on the same
 // composed URL (CloudClient::reject_hosted() already honoured the
 // absolute-endpoint form too), so every assertion below would have passed
@@ -91,7 +89,6 @@ class TstDirectClients : public QObject {
     Q_OBJECT
 
   private slots:
-    void arena_llm_client_rejects_fincept();
     void quantlib_client_rejects_fincept();
     void cloud_client_rejects_fincept();
     void rejection_is_the_typed_error_callers_match();
@@ -101,24 +98,6 @@ class TstDirectClients : public QObject {
     void probe_guard_judges_the_host_that_gets_dialled();
     void probe_guard_allows_third_party_connectors();
 };
-
-// ArenaLlmClient::complete() resolves an endpoint (ProviderCatalog for a normal
-// provider; AppConfig::api_base_url() + "/research/chat" for the "fincept"
-// provider) and hands the finished URL to DirectRouteGuard::check_url().
-void TstDirectClients::arena_llm_client_rejects_fincept() {
-    const auto fincept_provider = DirectRouteGuard::check_url(kApiBase + QStringLiteral("/research/chat"));
-    QVERIFY(fincept_provider.rejected);
-    QCOMPARE(fincept_provider.error, QStringLiteral("HOSTED_SERVICE_UNAVAILABLE: api.fincept.in"));
-
-    // A user-supplied provider base_url pointing back at a Fincept host is the
-    // same rejection — the guard judges the destination, not the provider name.
-    QVERIFY(DirectRouteGuard::check_url(QStringLiteral("https://llm.fincept.ai/v1/chat/completions")).rejected);
-    QVERIFY(DirectRouteGuard::check_url(QStringLiteral("https://fincept.app/v1/chat/completions")).rejected);
-
-    // A real third-party provider endpoint is untouched: the arena is usable,
-    // it just cannot be pointed at Fincept.
-    QVERIFY(!DirectRouteGuard::check_url(QStringLiteral("https://api.anthropic.com/v1/messages")).rejected);
-}
 
 // QuantLibClient::call() composes AppConfig::api_base_url() + "/quantlib/" +
 // endpoint and hands both halves to DirectRouteGuard::check_route().
@@ -156,7 +135,7 @@ void TstDirectClients::cloud_client_rejects_fincept() {
 }
 
 // Each client hands its own callback the guard's error string verbatim
-// (ArenaLlmResult::error, mcp::ToolResult::fail(), CloudResponse::error), so
+// (mcp::ToolResult::fail(), CloudResponse::error), so
 // the wording is an API contract with those callers, not prose.
 void TstDirectClients::rejection_is_the_typed_error_callers_match() {
     const auto route = DirectRouteGuard::check_route(kCloudBase, QStringLiteral("/sync/pull"));

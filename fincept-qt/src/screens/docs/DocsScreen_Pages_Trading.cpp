@@ -246,27 +246,25 @@ QWidget* DocsScreen::page_derivatives() {
 
 QWidget* DocsScreen::page_portfolio() {
     return make_page(
-        tr("PORTFOLIO"), tr("Multi-portfolio management with analytics and AI agent"),
+        tr("PORTFOLIO"), tr("Multi-portfolio management with local analytics"),
         {
             {tr("OVERVIEW"), tr("The Portfolio screen supports multiple portfolios with holdings tracking, performance "
-                                "analytics, sector heatmap, historical chart, blotter, and an AI agent panel for "
-                                "intelligent portfolio insights.")},
+                                "analytics, sector heatmap, historical chart, and trade blotter.")},
             {tr("KEY FEATURES"), tr("■  Multiple named portfolios with separate tracking\n"
                                     "■  Holdings table — symbol, quantity, cost basis, market value, P&L\n"
                                     "■  Sector heatmap — Visual allocation by sector\n"
                                     "■  Performance chart — Time series of portfolio returns\n"
                                     "■  Trade blotter — Complete transaction history\n"
-                                    "■  FFN analytics — Advanced factor analysis\n"
-                                    "■  AI Agent — Natural language portfolio insights")},
+                                    "■  FFN analytics — Advanced factor analysis")},
             {tr("REAL-WORLD USAGE"), tr("■  Track your actual brokerage positions with real-time P&L\n"
                                         "■  Compare multiple portfolio strategies side by side\n"
                                         "■  Monitor sector allocation drift and rebalance\n"
-                                        "■  Use AI agent to ask questions about your portfolio performance")},
+                                        "■  Review factor exposure and performance attribution")},
             {tr("SKILL LEVELS"),
              tr("BEGINNER: Create a portfolio, add holdings, track basic P&L\n"
                 "INTERMEDIATE: Use sector heatmap for diversification, review trade blotter\n"
                 "ADVANCED: Multiple portfolios for different strategies, FFN analytics\n"
-                "PRO: AI agent for portfolio optimization, factor exposure analysis, risk budgeting")},
+                "PRO: Factor exposure analysis, performance attribution, risk budgeting")},
         });
 }
 
@@ -294,36 +292,8 @@ QWidget* DocsScreen::page_ma_analytics() {
 }
 
 // ============================================================================
-// AI & Quantitative
+// Quantitative
 // ============================================================================
-
-QWidget* DocsScreen::page_ai_quant_lab() {
-    return make_page(
-        tr("AI QUANT LAB"), tr("18-module quantitative research platform with ML, factor discovery, and RL trading"),
-        {
-            {tr("OVERVIEW"), tr("The AI Quant Lab is a comprehensive quantitative research environment with 18 modules "
-                                "covering machine learning, factor discovery, high-frequency trading, reinforcement "
-                                "learning, and advanced statistical methods.")},
-            {tr("MODULES (18)"), tr("PREDICTION: ML price prediction, time series forecasting\n"
-                                    "FACTORS: Factor discovery, alpha generation, smart beta\n"
-                                    "RISK: ML risk models, tail risk, regime detection\n"
-                                    "HFT: High-frequency signals, microstructure analysis\n"
-                                    "RL TRADING: Reinforcement learning agents for trading\n"
-                                    "NLP: Sentiment analysis, news parsing, earnings call analysis\n"
-                                    "ALTERNATIVE DATA: Satellite, social media, web scraping\n"
-                                    "PORTFOLIO: ML portfolio optimization, dynamic allocation\n"
-                                    "EXECUTION: Smart order routing, execution quality analysis\n"
-                                    "And 9 more covering derivatives, crypto, macro, and cross-asset")},
-            {tr("REAL-WORLD USAGE"), tr("■  Quant research: Discover new alpha factors from alternative data\n"
-                                        "■  ML models: Train prediction models on historical market data\n"
-                                        "■  Risk management: Regime detection for dynamic hedging\n"
-                                        "■  Strategy development: RL agents that learn optimal trading policies")},
-            {tr("SKILL LEVELS"), tr("BEGINNER: Explore pre-built modules, run demo predictions on sample data\n"
-                                    "INTERMEDIATE: Train basic ML models, test factor strategies on historical data\n"
-                                    "ADVANCED: Custom factor research, multi-model ensembles, walk-forward validation\n"
-                                    "PRO: Production RL trading agents, HFT signal research, custom model deployment")},
-        });
-}
 
 QWidget* DocsScreen::page_quantlib() {
     return make_page(
@@ -359,80 +329,6 @@ QWidget* DocsScreen::page_quantlib() {
                 "INTERMEDIATE: Price bonds and options, build yield curves\n"
                 "ADVANCED: Calibrate vol models, run Monte Carlo simulations, regulatory calculations\n"
                 "PRO: Custom model development, multi-curve pricing, XVA calculations")},
-        });
-}
-
-QWidget* DocsScreen::page_ai_chat() {
-    return make_page(
-        tr("AI CHAT"), tr("AI-powered financial assistant"),
-        {
-            {tr("OVERVIEW"), tr("The AI Chat provides a conversational interface powered by large language models "
-                                "for financial analysis, market insights, and terminal assistance.")},
-            {tr("KEY FEATURES"), tr("■  Natural language market queries\n"
-                                    "■  Financial analysis and interpretation\n"
-                                    "■  Code generation for trading strategies\n"
-                                    "■  Portfolio insights and suggestions\n"
-                                    "■  Configurable LLM provider and model")},
-            {tr("REAL-WORLD USAGE"), tr("■  Quick analysis: \"What's driving NVDA today?\"\n"
-                                        "■  Strategy help: \"Write a mean reversion strategy for crypto\"\n"
-                                        "■  Learning: \"Explain how VaR is calculated\"\n"
-                                        "■  Data queries: \"Compare AAPL and MSFT P/E ratios over 5 years\"")},
-            {tr("SKILL LEVELS"),
-             tr("BEGINNER: Ask basic market questions, get explanations of financial concepts\n"
-                "INTERMEDIATE: Generate analysis code, get portfolio recommendations\n"
-                "ADVANCED: Complex multi-step analysis, custom strategy development\n"
-                "PRO: Multi-agent workflows, MCP server integration, automated research pipelines")},
-        });
-}
-
-QWidget* DocsScreen::page_agent_config() {
-    return make_page(
-        tr("AGENT STUDIO"), tr("Configure and manage AI agents, teams, and workflows"),
-        {
-            {tr("OVERVIEW"), tr("The Agent Studio (Agent Config) provides an 8-view interface for creating, "
-                                "managing, and orchestrating AI agents with specialized financial capabilities.")},
-            {tr("VIEWS (8)"), tr("■  Agents — Browse and manage configured agents\n"
-                                 "■  Create — Build new agents with custom capabilities\n"
-                                 "■  Teams — Organize agents into collaborative teams\n"
-                                 "■  Workflows — Define multi-step agent pipelines\n"
-                                 "■  Planner — AI task planning and decomposition\n"
-                                 "■  Tools — Manage tools available to agents\n"
-                                 "■  Chat — Interact with agents in conversation\n"
-                                 "■  System — System-level agent configuration")},
-            {tr("AGENT TYPES"), tr("■  Geopolitics Agent — Monitors global events, conflict analysis\n"
-                                   "■  Economic Agent — Macro analysis, indicator tracking\n"
-                                   "■  Hedge Fund Agent — Multi-strategy portfolio management\n"
-                                   "■  Trader Agent — Technical analysis and trade execution\n"
-                                   "■  Investor Agent — Long-term fundamental analysis\n"
-                                   "■  Deep Agent — Complex multi-step research tasks")},
-            {tr("SKILL LEVELS"),
-             tr("BEGINNER: Browse pre-configured agents, chat with the general assistant\n"
-                "INTERMEDIATE: Create custom agents with specific tool access\n"
-                "ADVANCED: Build agent teams, define multi-step workflows\n"
-                "PRO: Custom MCP server integration, multi-agent orchestration, automated research")},
-        });
-}
-
-QWidget* DocsScreen::page_alpha_arena() {
-    return make_page(
-        tr("ALPHA ARENA"), tr("Competitive alpha research and strategy ranking"),
-        {
-            {tr("OVERVIEW"), tr("Alpha Arena is a competitive environment where trading strategies are ranked "
-                                "by performance. Submit strategies, compare against peers, and discover new "
-                                "alpha sources through community insights.")},
-            {tr("KEY FEATURES"), tr("■  Strategy leaderboard with real-time rankings\n"
-                                    "■  Performance metrics comparison (Sharpe, returns, drawdown)\n"
-                                    "■  Strategy submission and backtesting\n"
-                                    "■  Community insights and discussion\n"
-                                    "■  Historical performance tracking")},
-            {tr("REAL-WORLD USAGE"), tr("■  Benchmark your strategies against others\n"
-                                        "■  Discover new trading ideas from top performers\n"
-                                        "■  Competitive motivation to improve strategy quality\n"
-                                        "■  Community learning through shared insights")},
-            {tr("SKILL LEVELS"), tr("BEGINNER: Browse the leaderboard, study top strategies\n"
-                                    "INTERMEDIATE: Submit your first strategy, analyze performance metrics\n"
-                                    "ADVANCED: Optimize strategies for ranking, study factor exposures\n"
-                                    "PRO: Multi-strategy submission, alpha decay analysis, ensemble approaches")},
         });
 }
 

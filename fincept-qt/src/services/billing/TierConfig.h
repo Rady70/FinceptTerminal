@@ -25,7 +25,7 @@ struct TierConfig {
 
     /// Tier from atomic weight. Pure function — used by both `TierService`
     /// (when publishing the topic) and any caller that needs a synchronous
-    /// view (cross-screen gating in `AI Quant Lab`, `Alpha Arena`).
+    /// view (cross-screen gating for paid screens).
     static fincept::wallet::TierStatus::Tier tier_from_weight(quint64 weight_raw) noexcept {
         using Tier = fincept::wallet::TierStatus::Tier;
         if (weight_raw >= kGoldThresholdRaw)
@@ -71,9 +71,9 @@ struct TierConfig {
     }
 
     /// Stable feature IDs that each tier unlocks. Consumed by gating
-    /// checks elsewhere in the terminal (AI Quant Lab, Alpha Arena, paid
-    /// screens). The exhaustive list below is the **plan §3.6 mapping**
-    /// — keep it tight; new gates require an explicit decision.
+    /// checks elsewhere in the terminal (paid screens). The exhaustive list
+    /// below is the **plan §3.6 mapping** — keep it tight; new gates require
+    /// an explicit decision.
     static QStringList features_unlocked_by(fincept::wallet::TierStatus::Tier t) {
         using Tier = fincept::wallet::TierStatus::Tier;
         switch (t) {
@@ -82,11 +82,9 @@ struct TierConfig {
             case Tier::Bronze:
                 return {QStringLiteral("api-quota-basic")};
             case Tier::Silver:
-                return {QStringLiteral("api-quota-basic"), QStringLiteral("premium-screens"),
-                        QStringLiteral("ai-quant-lab")};
+                return {QStringLiteral("api-quota-basic"), QStringLiteral("premium-screens")};
             case Tier::Gold:
-                return {QStringLiteral("api-quota-basic"), QStringLiteral("premium-screens"),
-                        QStringLiteral("ai-quant-lab"), QStringLiteral("alpha-arena"), QStringLiteral("all-agents")};
+                return {QStringLiteral("api-quota-basic"), QStringLiteral("premium-screens")};
         }
         return {};
     }

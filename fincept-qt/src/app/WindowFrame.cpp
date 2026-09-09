@@ -23,10 +23,6 @@
 #include "core/symbol/SymbolGroup.h"
 #include "core/window/WindowRegistry.h"
 #include "screens/about/AboutScreen.h"
-#include "screens/agent_config/AgentConfigScreen.h"
-#include "screens/ai_chat/AiChatBubble.h"
-#include "screens/ai_chat/AiChatScreen.h"
-#include "screens/ai_quant_lab/AIQuantLabScreen.h"
 #include "screens/akshare/AkShareScreen.h"
 #include "screens/alt_investments/AltInvestmentsScreen.h"
 #include "screens/asia_markets/AsiaMarketsScreen.h"
@@ -65,7 +61,6 @@
 #include "screens/surface_analytics/SurfaceAnalyticsScreen.h"
 #include "screens/trade_viz/TradeVizScreen.h"
 #include "screens/watchlist/WatchlistScreen.h"
-#include "services/llm/LlmService.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "trading/instruments/InstrumentService.h"
 #include "ui/command/CommandPalette.h"
@@ -345,36 +340,6 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
     // Update the main window title bar to reflect the current screen name.
     connect(dock_router_, &DockScreenRouter::screen_changed, this, [this](const QString&) { update_window_title(); });
 
-    // Per-screen tool filter wiring removed (Tool RAG / Tier-0 model).
-    // The LLM now sees a 6-tool Tier-0 prefix on every turn and discovers
-    // the rest via tool_list — making per-screen scoping unnecessary and
-    // counterproductive (it would prevent the LLM from finding tools the
-    // user might want regardless of which screen happens to be active).
-
-    // Chat bubble — floats over dock_manager_ content area
-    chat_bubble_ = new AiChatBubble(dock_manager_);
-    {
-        auto r = SettingsRepository::instance().get("appearance.show_chat_bubble");
-        bool show = !r.is_ok() || r.value() != "false";
-        chat_bubble_->setVisible(show);
-        if (show)
-            chat_bubble_->raise();
-    }
-
-    // Re-raise and reposition the bubble after each navigation — dock geometry
-    // shifts when panels open/close, so the bubble needs to re-anchor itself.
-    connect(dock_router_, &DockScreenRouter::screen_changed, this, [this](const QString&) {
-        if (!chat_bubble_)
-            return;
-        auto r = SettingsRepository::instance().get("appearance.show_chat_bubble");
-        bool show = !r.is_ok() || r.value() != "false";
-        chat_bubble_->setVisible(show);
-        if (show) {
-            chat_bubble_->reposition();
-            chat_bubble_->raise();
-        }
-    });
-
     connect(toolbar, &ui::ToolBar::navigate_to, this, [this](const QString& id) {
         if (!locked_)
             dock_router_->navigate(id, true);
@@ -555,7 +520,6 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 {"panel_research", {"Equity Research", "equity_research"}},
                 {"panel_economics", {"Economics", "economics"}},
                 {"panel_geopolitics", {"Geopolitics", "geopolitics"}},
-                {"panel_ai_chat", {"AI Chat", "ai_chat"}},
             };
             if (panel_map.contains(action)) {
                 const auto [title, route] = panel_map[action];
@@ -592,7 +556,6 @@ WindowFrame::WindowFrame(int window_id, QWidget* parent, const WindowId& adopted
                 // Geopolitics
                 {"perspective_geopolitics", {"geopolitics", "relationship_map", "news"}},
                 // AI & Quant
-                {"perspective_ai", {"ai_chat", "agent_config"}},
                 // Tools
                 {"perspective_tools", {"code_editor", "node_editor"}},
             };
@@ -1137,8 +1100,6 @@ void WindowFrame::closeEvent(QCloseEvent* event) {
 
 void WindowFrame::resizeEvent(QResizeEvent* event) {
     QMainWindow::resizeEvent(event);
-    if (chat_bubble_)
-        chat_bubble_->reposition();
     if (debug_overlay_ && debug_overlay_->isVisible())
         debug_overlay_->reposition();
 }

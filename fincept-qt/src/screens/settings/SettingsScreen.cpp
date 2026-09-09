@@ -13,7 +13,6 @@
 #include "screens/settings/DeveloperSection.h"
 #include "screens/settings/GeneralSection.h"
 #include "screens/settings/KeybindingsSection.h"
-#include "screens/settings/LlmConfigSection.h"
 #include "screens/settings/LoggingSection.h"
 #include "screens/settings/McpServersSection.h"
 #include "screens/settings/NotificationsSection.h"
@@ -22,11 +21,6 @@
 #include "screens/settings/SecuritySection.h"
 #include "screens/settings/SettingsStyles.h"
 #include "screens/settings/StorageSection.h"
-#include "screens/settings/VoiceConfigSection.h"
-#include "services/llm/LlmService.h"
-#include "services/stt/SpeechService.h"
-#include "services/tts/TtsService.h"
-#include "services/voice_trigger/ClapDetectorService.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
@@ -72,23 +66,22 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     // change rebuild path so we don't hardcode the type list twice.
     section_factories_.clear();
     // MarketLab: the Cloud Sync section is removed (Fincept cloud sync is not
-    // part of this fork — FINCEPT_FORK_PLAN.md §5.3, §6). 15 sections remain.
-    section_factories_.resize(15);
+    // part of this fork — FINCEPT_FORK_PLAN.md §5.3, §6). AI provider and
+    // voice configuration are not product capabilities.
+    section_factories_.resize(13);
     section_factories_[0] = [] { return new CredentialsSection; };
     section_factories_[1] = [] { return new AppearanceSection; };
     section_factories_[2] = [] { return new NotificationsSection; };
     section_factories_[3] = [] { return new StorageSection; };
     section_factories_[4] = [] { return new DataSourcesSection; };
-    section_factories_[5] = [] { return new LlmConfigSection; };
-    section_factories_[6] = [] { return new McpServersSection; };
-    section_factories_[7] = [] { return new LoggingSection; };
-    section_factories_[8] = [] { return new SecuritySection; };
-    section_factories_[9] = [] { return new ProfilesSection; };
-    section_factories_[10] = [] { return new KeybindingsSection; };
-    section_factories_[11] = [] { return new PythonEnvSection; };
-    section_factories_[12] = [] { return new DeveloperSection; };
-    section_factories_[13] = [] { return new VoiceConfigSection; };
-    section_factories_[14] = [] { return new GeneralSection; };
+    section_factories_[5] = [] { return new McpServersSection; };
+    section_factories_[6] = [] { return new LoggingSection; };
+    section_factories_[7] = [] { return new SecuritySection; };
+    section_factories_[8] = [] { return new ProfilesSection; };
+    section_factories_[9] = [] { return new KeybindingsSection; };
+    section_factories_[10] = [] { return new PythonEnvSection; };
+    section_factories_[11] = [] { return new DeveloperSection; };
+    section_factories_[12] = [] { return new GeneralSection; };
 
     sections_ = new QStackedWidget;
     for (const auto& factory : section_factories_)
@@ -127,38 +120,33 @@ SettingsScreen::SettingsScreen(QWidget* parent) : QWidget(parent) {
     // The keyword strings are search aliases only — never displayed, so they
     // stay in English (the filter also matches the translated label text).
     add_scope_header(QStringLiteral("SHELL"));
-    auto* first = make_btn(QStringLiteral("General"), 14,
+    auto* first = make_btn(QStringLiteral("General"), 12,
                            QStringLiteral("language locale currency window close launchpad quit"));
-    make_btn(QStringLiteral("Appearance"), 1, QStringLiteral("theme font size family density ticker chat bubble "
+    make_btn(QStringLiteral("Appearance"), 1, QStringLiteral("theme font size family density ticker "
                                                              "animation typography interface"));
     make_btn(QStringLiteral("Notifications"), 2,
              QStringLiteral("telegram discord slack email smtp whatsapp twilio pushover ntfy pushbullet gotify "
                             "mattermost teams webhook pagerduty opsgenie sms alerts price news order fill"));
-    make_btn(QStringLiteral("Keybindings"), 10, QStringLiteral("shortcut hotkey keyboard rebind keys"));
-    make_btn(QStringLiteral("Voice"), 13,
-             QStringLiteral("speech stt tts deepgram microphone mic clap wake trigger aura pyttsx3"));
-    make_btn(QStringLiteral("Logging"), 7, QStringLiteral("log level debug trace json log file tags diagnostics"));
-    make_btn(QStringLiteral("Developer"), 12, QStringLiteral("datahub inspector agentic experimental devtools"));
+    make_btn(QStringLiteral("Keybindings"), 9, QStringLiteral("shortcut hotkey keyboard rebind keys"));
+    make_btn(QStringLiteral("Logging"), 6, QStringLiteral("log level debug trace json log file tags diagnostics"));
+    make_btn(QStringLiteral("Developer"), 11, QStringLiteral("datahub inspector experimental devtools"));
 
     add_scope_header(QStringLiteral("PROFILE"));
-    make_btn(QStringLiteral("Profiles"), 9, QStringLiteral("account switch multi profile workspace isolation"));
+    make_btn(QStringLiteral("Profiles"), 8, QStringLiteral("account switch multi profile workspace isolation"));
     make_btn(QStringLiteral("Credentials"), 0,
              QStringLiteral("api key secret token keychain alpha vantage polygon fred binance kraken finnhub "
                             "polymarket tiingo quandl databento newsapi iex"));
-    make_btn(QStringLiteral("Security"), 8,
+    make_btn(QStringLiteral("Security"), 7,
              QStringLiteral("pin lock auto-lock timeout inactivity audit log attempts lockout minimize"));
     make_btn(QStringLiteral("Data Sources"), 4, QStringLiteral("connections connectors websocket rest sql providers"));
-    make_btn(QStringLiteral("LLM Config"), 5,
-             QStringLiteral("ai model openai anthropic ollama groq provider profile temperature tokens system "
-                            "prompt tool rounds mcp tools"));
-    make_btn(QStringLiteral("MCP Servers"), 6, QStringLiteral("model context protocol tools external server"));
-    make_btn(QStringLiteral("Python Env"), 11, QStringLiteral("packages venv pip uv numpy libraries install upgrade"));
+    make_btn(QStringLiteral("MCP Servers"), 5, QStringLiteral("model context protocol tools external server"));
+    make_btn(QStringLiteral("Python Env"), 10, QStringLiteral("packages venv pip uv numpy libraries install upgrade"));
     make_btn(QStringLiteral("Storage & Cache"), 3,
              QStringLiteral("disk database sqlite sql console cache clear delete data danger zone workspaces"));
     // MarketLab: no Cloud Sync nav entry — the section is removed.
 
     first->setChecked(true);
-    sections_->setCurrentIndex(14);
+    sections_->setCurrentIndex(12);
 
     nvl->addStretch();
     root->addWidget(nav_);
@@ -241,25 +229,6 @@ void SettingsScreen::rebuild_sections_for_language_change() {
 void SettingsScreen::wire_section_signals() {
     if (!sections_)
         return;
-    // LLM config changes → reload AI chat service.
-    if (auto* llm = qobject_cast<LlmConfigSection*>(sections_->widget(5))) {
-        connect(llm, &LlmConfigSection::config_changed, this,
-                []() { ai_chat::LlmService::instance().reload_config(); });
-    }
-    // Voice config changes → reload BOTH STT and TTS services and restart
-    // the clap detector so the user's new provider / key / voice / wake-trigger
-    // picks take effect on the next session.
-    if (auto* voice = qobject_cast<VoiceConfigSection*>(sections_->widget(13))) {
-        connect(voice, &VoiceConfigSection::config_changed, this, []() {
-            fincept::services::SpeechService::instance().reload_config();
-            fincept::services::TtsService::instance().reload_config();
-
-            auto& clap = fincept::services::ClapDetectorService::instance();
-            clap.stop();
-            if (fincept::services::ClapDetectorService::is_enabled_in_config())
-                clap.start();
-        });
-    }
 }
 
 void SettingsScreen::refresh_theme() {
@@ -329,23 +298,8 @@ void SettingsScreen::subscribe_mcp_events() {
             },
             Qt::QueuedConnection);
     };
-    auto on_provider_changed = [self](const QVariantMap&) {
-        if (!self)
-            return;
-        QMetaObject::invokeMethod(
-            self.data(),
-            [self]() {
-                if (!self)
-                    return;
-                self->reload_visible_section();
-                ai_chat::LlmService::instance().reload_config();
-            },
-            Qt::QueuedConnection);
-    };
-
     auto& bus = EventBus::instance();
     mcp_event_subs_.append(bus.subscribe(this, "settings.changed", on_settings_changed));
-    mcp_event_subs_.append(bus.subscribe(this, "llm.provider_changed", on_provider_changed));
 }
 
 void SettingsScreen::unsubscribe_mcp_events() {
@@ -362,7 +316,7 @@ QVariantMap SettingsScreen::save_state() const {
 void SettingsScreen::restore_state(const QVariantMap& state) {
     if (!sections_)
         return;
-    const int idx = state.value("section", 14).toInt();
+    const int idx = state.value("section", 0).toInt();
     if (idx < 0 || idx >= sections_->count())
         return;
     sections_->setCurrentIndex(idx);

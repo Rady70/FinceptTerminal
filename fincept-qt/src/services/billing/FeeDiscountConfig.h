@@ -28,7 +28,6 @@ struct FeeDiscountConfig {
     /// human labels via `display_label()`.
     static QStringList applied_skus() {
         return QStringList{
-            QStringLiteral("ai-report"),
             QStringLiteral("deep-backtest"),
             QStringLiteral("premium-screen"),
         };
@@ -37,8 +36,6 @@ struct FeeDiscountConfig {
     /// Human-readable label for a SKU id. Unknown ids fall back to the
     /// raw id (so a future SKU added on the backend at least renders).
     static QString display_label(const QString& sku) {
-        if (sku == QStringLiteral("ai-report"))
-            return QStringLiteral("AI Reports");
         if (sku == QStringLiteral("deep-backtest"))
             return QStringLiteral("Deep Backtests");
         if (sku == QStringLiteral("premium-screen"))

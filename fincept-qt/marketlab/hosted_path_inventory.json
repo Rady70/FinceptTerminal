@@ -41,41 +41,36 @@
         "src/network/http/HttpClient.cpp",
         "src/network/http/ProbeGuard.cpp",
         "src/network/http/ProbeGuard.h",
-        "src/screens/data_sources/ConnectionTester.cpp",
-        "src/services/agents/AgentService.cpp",
-        "src/services/llm/ProviderCatalog.cpp"
+        "src/screens/data_sources/ConnectionTester.cpp"
       ],
-      "note": "The deny-list itself and its enforcement point; the LLM provider base-URL block guard."
+      "note": "The deny-list itself and its enforcement points."
     },
     {
       "pattern": "fincept.com",
       "disposition": "guarded",
       "files": [
         "src/network/http/HostedPathGuard.cpp",
-        "src/network/http/HostedPathGuard.h",
-        "src/services/llm/ProviderCatalog.cpp"
+        "src/network/http/HostedPathGuard.h"
       ],
-      "note": "Deny-list entry; the LLM provider base-URL block guard."
+      "note": "Deny-list entry."
     },
     {
       "pattern": "fincept.app",
       "disposition": "guarded",
       "files": [
         "src/network/http/HostedPathGuard.cpp",
-        "src/services/llm/ProviderCatalog.cpp",
         "tests/**"
       ],
-      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
+      "note": "Deny-list entry. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
     },
     {
       "pattern": "fincept.ai",
       "disposition": "guarded",
       "files": [
         "src/network/http/HostedPathGuard.cpp",
-        "src/services/llm/ProviderCatalog.cpp",
         "tests/**"
       ],
-      "note": "Deny-list entry; the LLM provider base-URL block guard. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
+      "note": "Deny-list entry. In tests/: deny-list assertion vectors in the boundary test \u2014 the literal is the input to an is_fincept_host()/is_fincept_destination() QVERIFY, never a destination."
     },
     {
       "pattern": "Fincept-Corporation",
@@ -106,8 +101,6 @@
       "files": [
         "src/auth/GoogleDesktopLogin.h",
         "src/screens/auth/PricingScreen.cpp",
-        "src/screens/chat_mode/ChatModeService.h",
-        "src/screens/chat_mode/ChatModeService.cpp",
         "src/screens/quantlib/QuantLibScreen.h",
         "src/screens/quantlib/QuantLibScreen.cpp",
         "src/screens/quantlib/QuantLibScreen_Data.cpp",
@@ -118,11 +111,10 @@
         "src/services/economics/MacroCalendarService.cpp",
         "src/screens/dashboard/widgets/EconomicCalendarWidget.cpp",
         "src/services/data_normalization/DataNormalizationService.cpp",
-        "src/services/llm/LlmHttpHelpers.cpp",
         "src/services/prediction/fincept_internal/FinceptInternalAdapter.h",
         "src/ui/widgets/EnterprisePromo.cpp"
       ],
-      "note": "Owned by removed auth/pricing/chat-mode/quantlib/profile/maritime/cloud-sync surfaces that are not constructed or not registered in this fork; comment-only references to the removed endpoint."
+      "note": "Owned by unavailable auth, pricing, QuantLib, profile, maritime and cloud-sync surfaces that are not constructed or not registered in this fork; comment-only references to the removed endpoint."
     },
     {
       "pattern": "Fincept-Corporation",
@@ -137,10 +129,9 @@
       "disposition": "removed",
       "files": [
         "src/screens/dashboard/DashboardStatusBar.cpp",
-        "src/services/news/NewsService_LiveFeed.cpp",
-        "src/services/llm/LlmService.cpp"
+        "src/services/news/NewsService_LiveFeed.cpp"
       ],
-      "note": "Comments describing the removed API-health ping, the removed hosted news WebSocket, and the removed fincept LLM path; no live code reference remains."
+      "note": "Comments describing the removed API-health ping and hosted news WebSocket; no live code reference remains."
     },
     {
       "pattern": "Fincept-Corporation",
@@ -217,50 +208,9 @@
         "tests/**"
       ],
       "note": "Test fixtures: deny-list GitHub-org test vectors."
-    },
-    {
-      "pattern": "Fincept-Corporation",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py",
-        "scripts/agents/finagent_core/modules/knowledge_module.py"
-      ],
-      "note": "The Python-side deny-list and its knowledge-source application: the Fincept-Corporation GitHub path rule in the mirror of HostedPathGuard, and the comment in the knowledge reader guard that names it. The literal is the classification rule, never a destination."
-    },
-    {
-      "pattern": "fincept.in",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The Python-side deny-list itself: fincept.in is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
-    },
-    {
-      "pattern": "fincept.com",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The Python-side deny-list itself: fincept.com is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
-    },
-    {
-      "pattern": "fincept.app",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The Python-side deny-list itself: fincept.app is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
-    },
-    {
-      "pattern": "fincept.ai",
-      "disposition": "guarded",
-      "files": [
-        "scripts/agents/marketlab_net_guard.py"
-      ],
-      "note": "The Python-side deny-list itself: fincept.ai is one of the domains is_fincept_host() matches. The literal is the classification rule, never a destination."
     }
   ],
-  "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). C++ sink scope is src/ only \u2014 a sink in tests/ is not in the product. The Python sink scope (py_http_client, py_urllib, py_socket, py_websocket, py_sdk_client) is the transitive local-import closure of the .py entry points named as string literals in src/ \u2014 the Python children the application actually launches, which do their own networking inside the child process. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
+  "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). C++ sink scope is src/ only \u2014 a sink in tests/ is not in the product. The Python sink scope (py_http_client, py_urllib, py_socket, py_websocket) is the transitive local-import closure of the .py entry points named as string literals in src/ \u2014 the Python children the application actually launches, which do their own networking inside the child process. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
   "sinks": [
     {
       "sink": "tcp_socket",
@@ -272,15 +222,6 @@
         "src/services/workflow/nodes/DataSourceNodes.cpp"
       ],
       "note": "The fork's only four outbound connectToHost() probes: the Data Sources connection tester, the ds_test_connection MCP tool, the Data Sources live-status poller, and the data-source workflow node. Each takes host/port from a stored connector config \u2014 a configuration-derived route that no literal-host scan can see \u2014 and each applies HostedPathGuard before the socket: is_fincept_destination() on the URL form (which decides the path-scoped Fincept GitHub-org rules) and is_fincept_host() on the bare host+port form, returning the typed HOSTED_SERVICE_UNAVAILABLE error with no connection attempted."
-    },
-    {
-      "sink": "tcp_socket",
-      "disposition": "guarded",
-      "files": [
-        "src/mcp/TerminalMcpBridge.cpp",
-        "src/mcp/TerminalMcpBridge.h"
-      ],
-      "note": "Inbound only: a QTcpServer bound to QHostAddress::LocalHost on an OS-assigned port, exposing the internal MCP tool catalog to the local Python agent subprocess. The QTcpSocket instances are connections Qt returns from nextPendingConnection(); there is no connectToHost() and no outbound destination. Every request is additionally gated by a constant-time X-MCP-Token compare and auth/LoopbackGuard.h."
     },
     {
       "sink": "tcp_socket",
@@ -322,11 +263,9 @@
       "files": [
         "src/network/cloud/CloudClient.cpp",
         "src/network/cloud/CloudClient.h",
-        "src/services/quantlib/QuantLibClient.cpp",
-        "src/services/alpha_arena/ArenaLlmClient.cpp",
-        "src/services/alpha_arena/ArenaLlmClient.h"
+        "src/services/quantlib/QuantLibClient.cpp"
       ],
-      "note": "The three clients that own their own QNetworkAccessManager, so the shared client's deny-list cannot see their requests. Each rejects for itself through network/http/DirectRouteGuard.h before the QNAM is touched: CloudClient::reject_hosted() on every get/post/put/del, QuantLibClient::call() on the configuration-derived api_base_url()+\"/quantlib/\" route, ArenaLlmClient::complete() on the resolved provider endpoint. Covered by tests/tst_direct_clients.cpp. alpha_arena is additionally not a registered screen."
+      "note": "These clients own their own QNetworkAccessManager, so the shared client's deny-list cannot see their requests. Each rejects for itself through network/http/DirectRouteGuard.h before the QNAM is touched: CloudClient::reject_hosted() on every get/post/put/del and QuantLibClient::call() on the configuration-derived api_base_url()+\"/quantlib/\" route. Covered by tests/tst_direct_clients.cpp."
     },
     {
       "sink": "network_access_manager",
@@ -341,15 +280,6 @@
     },
     {
       "sink": "network_access_manager",
-      "disposition": "removed",
-      "files": [
-        "src/screens/dashboard/DashboardStatusBar.cpp",
-        "src/screens/dashboard/DashboardStatusBar.h"
-      ],
-      "note": "The status bar's QNetworkAccessManager member survives, but the Fincept API-health ping it existed for (GET api.fincept.in/health on a 30s timer) is removed: ping_api() now only sets local labels and issues no request, so the QNAM is constructed and never used."
-    },
-    {
-      "sink": "network_access_manager",
       "disposition": "guarded",
       "files": [
         "src/algo_engine/CandleDataFetcher.cpp",
@@ -360,7 +290,6 @@
         "src/screens/news/dialogs/RssFeedEditDialog.h",
         "src/screens/news/dialogs/RssFeedManagerDialog.cpp",
         "src/screens/news/dialogs/RssFeedManagerDialog.h",
-        "src/screens/settings/VoiceConfigSection.cpp",
         "src/services/equity/EquityResearchService.cpp",
         "src/services/equity/EquityResearchService.h",
         "src/services/equity/MarketSentimentService.cpp",
@@ -371,18 +300,7 @@
         "src/services/news/NewsService.h",
         "src/ui/widgets/WorldMapWidget.cpp"
       ],
-      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration \u2014 a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter \u2014 so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md \u00a75.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
-    },
-    {
-      "sink": "network_access_manager",
-      "disposition": "guarded",
-      "files": [
-        "src/services/llm/LlmHttpHelpers.cpp",
-        "src/services/llm/LlmModelsApi.cpp",
-        "src/services/llm/LlmService.cpp",
-        "src/services/llm/LlmService.h"
-      ],
-      "note": "User-configured LLM provider calls over their own QNetworkAccessManager (streaming SSE, which the shared client does not do). Endpoints are resolved by ProviderCatalog, whose is_blocked() hard-refuses the removed hosted \"fincept\" provider and any base_url containing fincept.in / .com / .app / .ai; LlmService::endpoint_url() consults that block before it resolves anything, which is what makes its remaining p==\"fincept\" branch dead."
+      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration \u2014 a user-typed scrape target, a stored or imported RSS feed, or a workflow node parameter \u2014 so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md \u00a75.3). Fixed third-party endpoints such as NewsAPI and OSM/Carto tiles use the same guarded manager so a later edit cannot silently reintroduce a raw manager."
     },
     {
       "sink": "network_access_manager",
@@ -390,7 +308,7 @@
       "files": [
         "src/services/workflow/adapters/ServiceBridges.cpp"
       ],
-      "note": "Each of these owns its own QNetworkAccessManager and fetches a URL that comes from configuration \u2014 a user-typed scrape target, a stored or imported RSS feed, a workflow node parameter \u2014 so the shared HttpClient deny-list never sees the request and no literal host appears anywhere in the tree. They now construct network::GuardedNetworkAccessManager instead, whose createRequest() override refuses a Fincept-owned destination before any connection is made and returns an already-failed reply, so each caller reports it through the error path it already had (FINCEPT_FORK_PLAN.md \u00a75.3). Every file in this rule now constructs the guarded manager, including the ones whose endpoint is a fixed third-party service (Deepgram, NewsAPI, OSM/Carto tiles): for those the guard is a no-op, and making the class uniform is what stops a later edit from reintroducing a raw manager next to a guarded one without anyone noticing."
+      "note": "This workflow adapter owns a QNetworkAccessManager for configuration-derived URLs, so it constructs network::GuardedNetworkAccessManager. The guard refuses Fincept-owned destinations before any connection and preserves the adapter's existing error path."
     },
     {
       "sink": "network_access_manager",
@@ -409,15 +327,6 @@
         "src/services/updater/UpdateService.cpp"
       ],
       "note": "Update-manifest fetch from the upstream Fincept-Corporation GitHub repo. check_for_updates() returns early in this fork and never issues the request; the deny-list would reject the URL anyway under its path-scoped GitHub-org rules. The .cpp is listed explicitly because its manager is the header-declared member net_, so the type name never appears in the translation unit that actually issues the three GETs (net_.get at :232, :310, :465) \u2014 the paired-implementation rule in audit_hosted_paths.py exists to stop exactly that file from being invisible to this inventory."
-    },
-    {
-      "sink": "network_access_manager",
-      "disposition": "unreachable",
-      "files": [
-        "src/screens/chat_mode/ChatModeService.cpp",
-        "src/screens/chat_mode/ChatModeService.h"
-      ],
-      "note": "Chat-mode service with its own QNAM against the configuration-derived api_base_url(). The chat-mode surface is not constructed in this fork and the service has no caller outside its own directory."
     },
     {
       "sink": "network_access_manager",
@@ -530,7 +439,6 @@
       "sink": "open_url",
       "disposition": "guarded",
       "files": [
-        "src/screens/ai_quant_lab/QuantModulePanel_Results.cpp",
         "src/screens/common/feeds/FeedCardView.cpp",
         "src/screens/common/feeds/FeedTableView.cpp",
         "src/screens/dashboard/widgets/VideoPlayerWidget.cpp",
@@ -724,22 +632,6 @@
         "scripts/exchange/ws_stream.py"
       ],
       "note": "aiohttp, imported inside the broker websocket streamer to reach the configured broker's own feed. The destination is the user's broker connector, never a Fincept host, and no order route is enabled in this fork."
-    },
-    {
-      "sink": "py_http_client",
-      "disposition": "no_hosted_route",
-      "files": [
-        "scripts/voice/deepgram_tts.py"
-      ],
-      "note": "Deepgram text-to-speech. The host is api.deepgram.com, fixed in the source, reached only when the user has configured a Deepgram key. Not a Fincept-owned route."
-    },
-    {
-      "sink": "py_urllib",
-      "disposition": "no_hosted_route",
-      "files": [
-        "scripts/voice/deepgram_tts.py"
-      ],
-      "note": "The urllib fallback for the same Deepgram request, kept so the script runs when requests is absent. Same fixed third-party host."
     },
     {
       "sink": "py_urllib",
@@ -946,10 +838,6 @@
     "scripts/unesco_data.py": {
       "py_http_client": 2
     },
-    "scripts/voice/deepgram_tts.py": {
-      "py_http_client": 1,
-      "py_urllib": 2
-    },
     "scripts/worldbank_data.py": {
       "py_http_client": 2
     },
@@ -986,12 +874,6 @@
     },
     "src/core/telemetry/CloudTelemetryProvider.h": {
       "network_access_manager": 3
-    },
-    "src/mcp/TerminalMcpBridge.cpp": {
-      "tcp_socket": 12
-    },
-    "src/mcp/TerminalMcpBridge.h": {
-      "tcp_socket": 7
     },
     "src/mcp/tools/DataSourcesTools.cpp": {
       "tcp_socket": 4
@@ -1047,17 +929,8 @@
     "src/screens/about/AboutScreen.cpp": {
       "open_url": 1
     },
-    "src/screens/ai_quant_lab/QuantModulePanel_Results.cpp": {
-      "open_url": 1
-    },
     "src/screens/auth/PricingScreen.cpp": {
       "open_url": 1
-    },
-    "src/screens/chat_mode/ChatModeService.cpp": {
-      "network_access_manager": 2
-    },
-    "src/screens/chat_mode/ChatModeService.h": {
-      "network_access_manager": 4
     },
     "src/screens/common/feeds/FeedCardView.cpp": {
       "open_url": 1
@@ -1073,12 +946,6 @@
     },
     "src/screens/crypto_center/tabs/ActivityTab.cpp": {
       "open_url": 1
-    },
-    "src/screens/dashboard/DashboardStatusBar.cpp": {
-      "network_access_manager": 1
-    },
-    "src/screens/dashboard/DashboardStatusBar.h": {
-      "network_access_manager": 2
     },
     "src/screens/dashboard/widgets/VideoPlayerWidget.cpp": {
       "open_url": 1
@@ -1143,15 +1010,6 @@
     "src/screens/settings/LoggingSection.cpp": {
       "open_url": 1
     },
-    "src/screens/settings/VoiceConfigSection.cpp": {
-      "network_access_manager": 3
-    },
-    "src/services/alpha_arena/ArenaLlmClient.cpp": {
-      "network_access_manager": 4
-    },
-    "src/services/alpha_arena/ArenaLlmClient.h": {
-      "network_access_manager": 2
-    },
     "src/services/equity/EquityResearchService.cpp": {
       "network_access_manager": 3
     },
@@ -1174,18 +1032,6 @@
       "network_access_manager": 1
     },
     "src/services/forum/ForumService.h": {
-      "network_access_manager": 2
-    },
-    "src/services/llm/LlmHttpHelpers.cpp": {
-      "network_access_manager": 4
-    },
-    "src/services/llm/LlmModelsApi.cpp": {
-      "network_access_manager": 2
-    },
-    "src/services/llm/LlmService.cpp": {
-      "network_access_manager": 2
-    },
-    "src/services/llm/LlmService.h": {
       "network_access_manager": 2
     },
     "src/services/maritime/GeocodingService.cpp": {
@@ -1333,10 +1179,6 @@
     },
     "src/trading/brokers/zerodha/ZerodhaAutoLogin.h": {
       "network_access_manager": 1
-    },
-    "src/trading/exchanges/hyperliquid/HyperliquidClient.cpp": {
-      "network_access_manager": 2,
-      "websocket": 5
     },
     "src/trading/instruments/InstrumentDownload.cpp": {
       "network_access_manager": 2

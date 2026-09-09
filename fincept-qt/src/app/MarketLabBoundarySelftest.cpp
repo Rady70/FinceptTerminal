@@ -45,9 +45,6 @@ int run_marketlab_boundary_selftest() {
     auto& mgr = CapabilityManager::instance();
     CHECK(mgr.is_available(Capability::LocalWorkspace), "LocalWorkspace available");
     CHECK(mgr.is_available(Capability::PublicData), "PublicData available");
-    // MarketLab (reduced AI scope): custom remote LLM and embedder endpoints
-    // are rejected; only local Ollama remains.
-    CHECK(!mgr.is_available(Capability::UserConfiguredProvider), "UserConfiguredProvider unavailable");
     CHECK(mgr.is_available(Capability::LocalAnalytics), "LocalAnalytics available");
     CHECK(!mgr.is_available(Capability::FinceptHosted), "FinceptHosted unavailable");
     CHECK(!mgr.is_available(Capability::CloudSync), "CloudSync unavailable");
@@ -60,7 +57,10 @@ int run_marketlab_boundary_selftest() {
     CHECK(mgr.is_screen_allowed(QStringLiteral("markets")), "markets allowed");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("equity_trading")), "equity_trading denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("crypto_trading")), "crypto_trading denied");
-    CHECK(!mgr.is_screen_allowed(QStringLiteral("agent_config")), "agent_config denied (agents disabled)");
+    CHECK(!mgr.is_screen_allowed(QStringLiteral("ai_chat")), "ai_chat removed");
+    CHECK(!mgr.is_screen_allowed(QStringLiteral("ai_quant_lab")), "ai_quant_lab removed");
+    CHECK(!mgr.is_screen_allowed(QStringLiteral("agent_config")), "agent_config removed");
+    CHECK(!mgr.is_screen_allowed(QStringLiteral("alpha_arena")), "alpha_arena removed");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("forum")), "forum denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("profile")), "profile denied");
     CHECK(!mgr.is_screen_allowed(QStringLiteral("quantlib")), "quantlib denied");
@@ -84,18 +84,31 @@ int run_marketlab_boundary_selftest() {
         }
         CHECK(!mcp::McpProvider::instance().has_tool(QStringLiteral("forum_get_posts")),
               "MCP forum tool not registered");
+        for (const QString& name : {
+                 QStringLiteral("create_chat_session"), QStringLiteral("get_chat_sessions"),
+                 QStringLiteral("get_llm_configs"), QStringLiteral("set_active_llm"),
+                 QStringLiteral("list_agents"), QStringLiteral("discover_agents"),
+                 QStringLiteral("run_agent"), QStringLiteral("execute_multi_agent_query"),
+                 QStringLiteral("archival_memory_save"), QStringLiteral("archival_memory_search"),
+                 QStringLiteral("list_quant_modules"), QStringLiteral("run_quant_module"),
+             }) {
+            CHECK(!mcp::McpProvider::instance().has_tool(name),
+                  ("AI MCP tool removed: " + name).toUtf8().constData());
+        }
     }
 
     // ── Workflow node registry (plan §5.4) ────────────────────────────────
     {
         bool found_trading_node = false;
+        bool found_agent_node = false;
         for (const auto& def : workflow::NodeRegistry::instance().all()) {
-            if (def.type_id.startsWith(QStringLiteral("trading."))) {
+            if (def.type_id.startsWith(QStringLiteral("trading.")))
                 found_trading_node = true;
-                break;
-            }
+            if (def.type_id.startsWith(QStringLiteral("agent.")))
+                found_agent_node = true;
         }
         CHECK(!found_trading_node, "no trading.* workflow nodes registered");
+        CHECK(!found_agent_node, "no agent.* workflow nodes registered");
     }
 
     // ── HttpClient hosted rejection (plan §5.3) ───────────────────────────

@@ -35,10 +35,6 @@ class NewsCommandBar : public QWidget {
     void set_alert_count(int count);
     void set_unseen_count(int count);
 
-    void show_summary(const QString& summary);
-    void hide_summary();
-    void set_summarizing(bool busy);
-
     // Intel strip updates (moved from side panel)
     void update_stats(int feeds, int articles, int clusters, int sources);
     void update_sentiment(int bullish, int bearish, int neutral);
@@ -60,7 +56,6 @@ class NewsCommandBar : public QWidget {
     void view_mode_changed(const QString& mode);
     void search_changed(const QString& query);
     void refresh_clicked();
-    void summarize_clicked();
     void rtl_toggled();
     void variant_changed(const QString& variant);
     void language_filter_changed(const QString& lang);
@@ -91,15 +86,10 @@ class NewsCommandBar : public QWidget {
     QPushButton* view_wire_ = nullptr;
     QPushButton* view_clusters_ = nullptr;
     QPushButton* refresh_btn_ = nullptr;
-    QPushButton* summarize_btn_ = nullptr;
     QPushButton* drawer_btn_ = nullptr;
     QPushButton* sources_btn_ = nullptr;
     QPushButton* rtl_btn_ = nullptr;
-    // AI-brief row (label + dismiss button) — laid out under the intel strip.
-    QWidget* summary_row_ = nullptr;
-    QLabel* summary_label_ = nullptr;
-    QPushButton* summary_close_btn_ = nullptr;
-    /// Height with the summary row hidden: 32px command row + 28px intel strip.
+    /// Height of the 32px command row plus 28px intel strip.
     static constexpr int kBaseHeight = 60;
     QLabel* count_label_ = nullptr;
     QLabel* alert_label_ = nullptr;

@@ -214,7 +214,7 @@ QWidget* HelpScreen::build_page() {
         // external links (FINCEPT_FORK_PLAN.md §4, §5.3, §6).
         const Action actions[] = {
             {"", "documentation", tr("Documentation"), tr("Bundled docs — open the Docs screen")},
-            {"", "settings", tr("Settings"), tr("Configure data sources, LLM providers, and appearance")},
+            {"", "settings", tr("Settings"), tr("Configure data sources, integrations, and appearance")},
             {"", "about", tr("About"), tr("Fork identity, upstream base, and capabilities")},
         };
 
@@ -338,7 +338,7 @@ QWidget* HelpScreen::build_page() {
             {"1", tr("Complete first-time setup"), tr("The setup wizard installs the bundled Python runtime.")},
             {"2", tr("Open the workspace"), tr("The local dashboard opens directly — no account or login.")},
             {"3", tr("Fetch public data"), tr("Use Markets, Watchlist, or Equity Research for quotes and history.")},
-            {"4", tr("Configure providers"), tr("Set up LLM or data providers in Settings — all optional and local.")},
+            {"4", tr("Configure providers"), tr("Set up optional data providers in Settings.")},
         };
 
         auto* steps_widget = new QWidget(page);

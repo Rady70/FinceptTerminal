@@ -74,12 +74,8 @@ class DocsScreen : public QWidget {
     QWidget* page_portfolio();
     QWidget* page_ma_analytics();
 
-    // AI & Quantitative
-    QWidget* page_ai_quant_lab();
+    // Quantitative
     QWidget* page_quantlib();
-    QWidget* page_ai_chat();
-    QWidget* page_agent_config();
-    QWidget* page_alpha_arena();
 
     // Data Sources
     QWidget* page_dbnomics();

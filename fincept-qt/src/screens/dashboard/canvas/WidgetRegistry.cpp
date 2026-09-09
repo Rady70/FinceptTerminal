@@ -1,6 +1,5 @@
 ﻿#include "screens/dashboard/canvas/WidgetRegistry.h"
 
-#include "screens/dashboard/widgets/AgentErrorsWidget.h"
 #include "screens/dashboard/widgets/BrokerHoldingsWidget.h"
 #include "screens/dashboard/widgets/CommoditiesWidget.h"
 #include "screens/dashboard/widgets/CryptoTickerWidget.h"
@@ -182,12 +181,6 @@ WidgetRegistry::WidgetRegistry() {
     // MarketLab: crypto-ticker, prediction-market, and trade-tape widgets are
     // not registered — their exchange/prediction WebSocket producers are not
     // started in this fork (FINCEPT_FORK_PLAN.md §5.4, §6).
-
-    register_widget({"agent_errors", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Agent Errors"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Tools"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Recent agent execution failures — subscribes to agent:error:*"),
-                     5, 4, 3, 3, [](const QJsonObject& cfg) { return new widgets::AgentErrorsWidget(cfg); }});
 
     register_widget({"sparklines", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Sparklines"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),

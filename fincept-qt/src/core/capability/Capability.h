@@ -4,8 +4,8 @@
 //
 // One small enum-based availability source used by startup, navigation, the
 // component browser, direct screen routing, restored layouts, the command
-// palette, MCP tool registration, workflow-node registration, and agent tool
-// exposure. A capability that is Unavailable here must be unreachable through
+// palette, MCP tool registration, and workflow-node registration. A capability
+// that is Unavailable here must be unreachable through
 // every one of those surfaces.
 
 #include <QString>
@@ -15,7 +15,6 @@ namespace fincept::capability {
 enum class Capability {
     LocalWorkspace,
     PublicData,
-    UserConfiguredProvider,
     LocalAnalytics,
     FinceptHosted,
     CloudSync,

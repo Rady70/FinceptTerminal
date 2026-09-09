@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include "core/identity/Uuid.h"
 #include "core/layout/LayoutTypes.h"
-#include "screens/ai_chat/AiChatBubble.h"
 
 #include <QMainWindow>
 #include <QPointer>
@@ -25,9 +24,6 @@ class TabBar;
 class DebugOverlay;
 class QuickCommandBar;
 } // namespace fincept::ui
-namespace fincept::chat_mode {
-class ChatModeScreen;
-}
 namespace fincept::screens {
 class LockScreen;
 }
@@ -243,7 +239,6 @@ class WindowFrame : public QMainWindow {
     bool locked_ = false;           ///< True while lock/PIN screen is active — blocks navigation.
     bool pin_gate_cleared_ = false; ///< Set once the user has passed the PIN gate this session.
                                     ///< Prevents repeated lock prompts; reset on lock.
-    AiChatBubble* chat_bubble_ = nullptr;
 
     // Debounced persistence of dock layout on add/replace/remove via command bar.
     // Without this, layout changes only survive clean shutdown (closeEvent),

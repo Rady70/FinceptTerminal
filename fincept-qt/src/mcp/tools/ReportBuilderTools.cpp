@@ -1,16 +1,13 @@
 // ReportBuilderTools.cpp — MCP tools for live report authoring.
 //
-// Every mutating tool runs on a worker thread (LlmService::do_request lives
-// on QtConcurrent::run). To talk to the main-thread-resident
+// Tool handlers may run on worker threads. To talk to the main-thread-resident
 // ReportBuilderService, we route through QMetaObject::invokeMethod with
 // Qt::BlockingQueuedConnection. This guarantees:
 //   • The service mutates on the main thread (Qt's invariant for QObjects
 //     created there, including the QUndoStack).
 //   • The tool returns only after the mutation has completed and signals
-//     have been emitted — so when the LLM asks "now update component X",
-//     the previous add has fully committed.
-//   • Side effects visible to the user (canvas re-render) happen before
-//     the LLM moves on.
+//     have been emitted before the handler returns.
+//   • Side effects visible to the user (canvas re-render) happen promptly.
 
 #include "mcp/tools/ReportBuilderTools.h"
 
@@ -19,9 +16,7 @@
 #include "core/report/ReportDocument.h"
 #include "mcp/tools/ExportPathGuard.h"
 #include "screens/report_builder/ReportBuilderScreen.h"
-#include "services/llm/LlmRequestPolicy.h"
 #include "services/report_builder/ReportBuilderService.h"
-#include "storage/repositories/SettingsRepository.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -59,9 +54,9 @@ void run_on_service_thread(F&& fn) {
 
 // ── Auto-navigate ────────────────────────────────────────────────────────────
 //
-// On the first mutation in an LLM tool-call burst, publish nav.switch_screen
+// On the first mutation in a tool-call burst, publish nav.switch_screen
 // so the user can see the live updates. Stays silent for subsequent
-// mutations within ~5 seconds (tracked by service.note_llm_mutation timer).
+// mutations within ~5 seconds.
 
 void maybe_request_navigation() {
     static std::atomic<qint64> last_nav_ms{0};
@@ -76,70 +71,11 @@ void maybe_request_navigation() {
                                           QVariantMap{{"screen_id", "report_builder"}, {"tab_index", 8}});
 }
 
-// ── Chat → report linkage ────────────────────────────────────────────────────
-//
-// Each chat session "claims" the report it edits so that new chats start
-// fresh while continuing chats keep editing the same canvas. The link key is
-// the chat_session_id surfaced via the thread_local set by chat_streaming;
-// the value is whatever feels stable about the current report (current_file
-// if saved, otherwise a session-scoped placeholder).
-//
-// Persisted under settings keys "chat_report_link:<chat_session_id>" so the
-// linkage survives restarts.
-
-QString link_key_for(const QString& chat_id) {
-    return QStringLiteral("chat_report_link:") + chat_id;
-}
-
-/// Reads the chat→report link. `ok` distinguishes "no link" (true, empty
-/// string) from "unknown because the settings read failed" (false) — the two
-/// must never be collapsed: an error read as "no link" makes on_llm_mutation_start()
-/// re-link the chat and overwrite the report the chat was already editing.
-QString get_linked_report_for(const QString& chat_id, bool* ok = nullptr) {
-    if (ok)
-        *ok = true;
-    if (chat_id.isEmpty())
-        return {};
-    auto r = SettingsRepository::instance().get(link_key_for(chat_id));
-    if (r.is_err()) {
-        LOG_ERROR(RB_TOOLS_TAG, QString("settings read failed for '%1' — treating the chat→report link as unknown "
-                                        "and leaving it untouched: %2")
-                                    .arg(link_key_for(chat_id), QString::fromStdString(r.error())));
-        if (ok)
-            *ok = false;
-        return {};
-    }
-    return r.value();
-}
-
-void set_linked_report_for(const QString& chat_id, const QString& path_or_placeholder) {
-    if (chat_id.isEmpty())
-        return;
-    SettingsRepository::instance().set(link_key_for(chat_id), path_or_placeholder, "report-builder");
-}
-
 // Helper: called at the top of every mutating tool.
-void on_llm_mutation_start() {
+void on_tool_mutation_start() {
     maybe_request_navigation();
     auto* svc = &Service::instance();
-    QMetaObject::invokeMethod(svc, [svc]() { svc->note_llm_mutation(); }, Qt::QueuedConnection);
-
-    // Auto-link: the first mutation in a chat session claims the currently-open
-    // report. If a real file path is set, that becomes the link target;
-    // otherwise we use an "<unsaved>" placeholder so subsequent calls in the
-    // same chat know "this chat has already started a report" and don't
-    // accidentally clear it.
-    const QString chat_id = fincept::ai_chat::detail::t_chat_session_id;
-    if (chat_id.isEmpty())
-        return;
-    bool link_known = false;
-    if (!get_linked_report_for(chat_id, &link_known).isEmpty())
-        return; // already linked
-    if (!link_known)
-        return; // read failed — unknown, do not modify the stored link
-    QString current;
-    QMetaObject::invokeMethod(svc, [svc, &current]() { current = svc->current_file(); }, Qt::BlockingQueuedConnection);
-    set_linked_report_for(chat_id, current.isEmpty() ? QStringLiteral("<unsaved>") : current);
+    QMetaObject::invokeMethod(svc, [svc]() { svc->note_tool_mutation(); }, Qt::QueuedConnection);
 }
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
@@ -294,7 +230,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             if (!valid_component_type(type))
                 return ToolResult::fail("Unknown component type: " + type);
 
-            on_llm_mutation_start();
+            on_tool_mutation_start();
 
             rep::ReportComponent c;
             c.type = type;
@@ -348,7 +284,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             QString content = args.value("content").toString();
             QMap<QString, QString> partial = json_to_string_map(args.value("config").toObject());
 
-            on_llm_mutation_start();
+            on_tool_mutation_start();
 
             bool ok = false;
             QJsonObject after;
@@ -383,7 +319,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             int id = args.value("id").toInt(0);
             if (id <= 0)
                 return ToolResult::fail("Missing or invalid 'id'");
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             bool ok = false;
             run_on_service_thread([&]() { ok = Service::instance().remove_component(id); });
             return ok ? ToolResult::ok(QString("Removed id=%1").arg(id))
@@ -408,7 +344,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             int to = args.value("to_index").toInt(-1);
             if (id <= 0 || to < 0)
                 return ToolResult::fail("Missing or invalid 'id' / 'to_index'");
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             bool ok = false;
             run_on_service_thread([&]() { ok = Service::instance().move_component(id, to); });
             return ok ? ToolResult::ok(QString("Moved id=%1 to index=%2").arg(id).arg(to))
@@ -428,15 +364,7 @@ std::vector<ToolDef> get_report_builder_tools() {
         t.handler = [](const QJsonObject&) -> ToolResult {
             run_on_service_thread([]() { Service::instance().clear_document(); });
 
-            // After clearing, force the link to the fresh-canvas placeholder so the
-            // next mutation in this chat treats the blank canvas as its own.
-            const QString chat_id = fincept::ai_chat::detail::t_chat_session_id;
-            if (!chat_id.isEmpty())
-                set_linked_report_for(chat_id, QStringLiteral("<unsaved>"));
-
-            // Notify mutation pipeline (navigation, undo bookkeeping) — link is
-            // already correct, so the auto-claim inside is a no-op.
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             return ToolResult::ok("Report cleared");
         };
         tools.push_back(std::move(t));
@@ -462,7 +390,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             {"show_page_numbers", QJsonObject{{"type", "boolean"}}},
         };
         t.handler = [](const QJsonObject& args) -> ToolResult {
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             QJsonObject after;
             run_on_service_thread([&]() {
                 auto& svc = Service::instance();
@@ -511,7 +439,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             QString name = args.value("name").toString();
             if (!rep::themes::all_names().contains(name))
                 return ToolResult::fail("Unknown theme. Valid: " + rep::themes::all_names().join(", "));
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             run_on_service_thread([&]() { Service::instance().set_theme(rep::themes::by_name(name)); });
             return ToolResult::ok("Theme set to " + name);
         };
@@ -546,7 +474,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             QString name = args.value("name").toString().trimmed();
             if (name.isEmpty())
                 return ToolResult::fail("Missing 'name'");
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             run_on_service_thread([&]() { Service::instance().apply_template(name); });
             return ToolResult::ok("Applied template: " + name);
         };
@@ -563,7 +491,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             QJsonObject{{"path", QJsonObject{{"type", "string"}, {"description", "Absolute file path (.fincept)"}}}};
         t.handler = [](const QJsonObject& args) -> ToolResult {
             QString path = args.value("path").toString();
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             QString resolved;
             QString err;
             run_on_service_thread([&]() {
@@ -582,11 +510,6 @@ std::vector<ToolDef> get_report_builder_tools() {
             });
             if (!err.isEmpty())
                 return ToolResult::fail(err);
-            // Promote the chat link from "<unsaved>" to the real path so the
-            // next chat session can identify the file even after restart.
-            const QString chat_id = fincept::ai_chat::detail::t_chat_session_id;
-            if (!chat_id.isEmpty() && !resolved.isEmpty())
-                set_linked_report_for(chat_id, resolved);
             return ToolResult::ok("Saved", QJsonObject{{"path", resolved}});
         };
         tools.push_back(std::move(t));
@@ -605,7 +528,7 @@ std::vector<ToolDef> get_report_builder_tools() {
             QString path = args.value("path").toString();
             if (path.isEmpty())
                 return ToolResult::fail("Missing 'path'");
-            on_llm_mutation_start();
+            on_tool_mutation_start();
             QString err;
             run_on_service_thread([&]() {
                 auto r = Service::instance().load_from(path);
@@ -652,7 +575,7 @@ std::vector<ToolDef> get_report_builder_tools() {
                     return ToolResult::fail(QString("components[%1]: unknown type '%2'").arg(i).arg(type));
             }
 
-            on_llm_mutation_start();
+            on_tool_mutation_start();
 
             QJsonArray ids;
             run_on_service_thread([&]() {
@@ -854,65 +777,6 @@ std::vector<ToolDef> get_report_builder_tools() {
             });
             return ToolResult::ok(redone ? "Redid last action" : "Nothing to redo",
                                   QJsonObject{{"redone", redone}, {"can_undo", can_u}, {"can_redo", can_r}});
-        };
-        tools.push_back(std::move(t));
-    }
-
-    // ── report_session_context ──────────────────────────────────────────────
-    // The model MUST call this at the start of any report task to decide
-    // whether to clear the canvas and begin fresh, or continue editing the
-    // report this chat has already been working on.
-    {
-        ToolDef t;
-        t.name = "report_session_context";
-        t.description = "Returns the chat→report linkage for the current chat session, plus a snapshot of "
-                        "what's already on the canvas. **Call this FIRST whenever the user asks you to build, "
-                        "edit, or work on a report**, then decide:\n"
-                        "• If `linked_report` is set and `component_count` > 0: this chat is already authoring "
-                        "  this report — continue editing it. Do NOT call report_clear.\n"
-                        "• If `linked_report` is null and `component_count` > 0: a previous (different) chat "
-                        "  left content on the canvas. Unless the user explicitly said 'add to this report' "
-                        "  or 'edit this report', call report_clear before starting your new report.\n"
-                        "• If both are empty: blank canvas, just start adding.\n"
-                        "Returns: {chat_session_id, linked_report, current_file, component_count, title}.";
-        t.category = "report-builder";
-        t.input_schema.properties = QJsonObject{};
-        t.handler = [](const QJsonObject&) -> ToolResult {
-            const QString chat_id = fincept::ai_chat::detail::t_chat_session_id;
-            bool link_known = false;
-            const QString linked = get_linked_report_for(chat_id, &link_known);
-            auto& svc = Service::instance();
-            int n = static_cast<int>(svc.components().size());
-            QString cur = svc.current_file();
-            QString title = svc.metadata().title;
-            QJsonObject data{
-                {"chat_session_id", chat_id.isEmpty() ? QJsonValue::Null : QJsonValue(chat_id)},
-                {"linked_report", linked.isEmpty() ? QJsonValue::Null : QJsonValue(linked)},
-                {"current_file", cur.isEmpty() ? QJsonValue::Null : QJsonValue(cur)},
-                {"component_count", n},
-                {"title", title.isEmpty() ? QJsonValue::Null : QJsonValue(title)},
-            };
-            // A failed read must not read as "null == new chat": that is the
-            // documented cue for the model to call report_clear, which would
-            // wipe the canvas this chat was already editing.
-            if (!link_known)
-                data["link_unknown"] = true;
-            QString msg =
-                chat_id.isEmpty()
-                    ? QStringLiteral("No chat session bound; canvas has %1 components").arg(n)
-                    : (!link_known
-                           ? QStringLiteral("Chat→report link could not be read (settings error) — treat it as "
-                                            "UNKNOWN, keep editing the canvas as-is and do NOT call report_clear. "
-                                            "Canvas has %1 components")
-                                 .arg(n)
-                           : (linked.isEmpty()
-                                  ? QStringLiteral("New chat — canvas has %1 components from a prior session").arg(n)
-                                  : QStringLiteral("Chat is editing %1 (canvas has %2 components)")
-                                        .arg(linked == QLatin1String("<unsaved>")
-                                                 ? QStringLiteral("an unsaved report")
-                                                 : linked)
-                                        .arg(n)));
-            return ToolResult::ok(msg, data);
         };
         tools.push_back(std::move(t));
     }

@@ -60,59 +60,6 @@ struct NewsArticle {
     QString lang; // ISO language code (e.g., "en", "fr", "ar")
 };
 
-struct SentimentAnalysis {
-    double score = 0;
-    double intensity = 0;
-    double confidence = 0;
-};
-
-struct MarketImpactData {
-    QString urgency;    // LOW/MEDIUM/HIGH
-    QString prediction; // negative/neutral/moderate_positive/positive
-};
-
-struct RiskSignal {
-    QString level;
-    QString details;
-};
-
-/// Named entity surfaced by the /news/analyze endpoint. `kind` is one of
-/// "organization" / "person" / "location"; `detail` carries the secondary
-/// field (ticker for orgs, country_code for locations) when present.
-struct AnalysisEntity {
-    QString name;
-    QString detail;       // ticker (orgs) or country code (locations); may be empty
-    QString sector;       // orgs only
-    double sentiment = 0; // orgs only
-};
-
-/// Article fetch metadata reported by the analyze endpoint — lets the UI
-/// warn when the publisher blocked content and the analysis is metadata-only.
-struct AnalysisContent {
-    QString headline;
-    int word_count = 0;
-    QString fetch_note; // e.g. "Article content blocked by publisher (HTTP 401)..."
-};
-
-struct NewsAnalysis {
-    SentimentAnalysis sentiment;
-    MarketImpactData market_impact;
-    QStringList keywords;
-    QStringList topics;
-    QStringList key_points;
-    QString summary;
-    RiskSignal regulatory;
-    RiskSignal geopolitical;
-    RiskSignal operational;
-    RiskSignal market;
-    QVector<AnalysisEntity> organizations;
-    QVector<AnalysisEntity> people;
-    QVector<AnalysisEntity> locations;
-    AnalysisContent content;
-    int credits_used = 0;
-    int credits_remaining = 0;
-};
-
 // ── RSS Feed definition ─────────────────────────────────────────────────────
 
 struct RSSFeed {
@@ -125,14 +72,6 @@ struct RSSFeed {
     int tier = 3;
 };
 
-// ── AI Summarization ────────────────────────────────────────────────────────
-
-struct HeadlineSummary {
-    QString summary;
-    int64_t cached_at = 0;
-    QString headline_signature; // hash of headlines used to generate
-};
-
 // ── Service ─────────────────────────────────────────────────────────────────
 
 /// Phase 5 — DataHub producer for `news:general`, `news:symbol:*`,
@@ -143,8 +82,6 @@ class NewsService : public QObject, public fincept::datahub::Producer {
     Q_OBJECT
   public:
     using ArticlesCallback = std::function<void(bool ok, QVector<NewsArticle>)>;
-    using AnalysisCallback = std::function<void(bool ok, NewsAnalysis)>;
-    using SummaryCallback = std::function<void(bool ok, QString summary)>;
 
     static NewsService& instance();
 
@@ -161,16 +98,6 @@ class NewsService : public QObject, public fincept::datahub::Producer {
     int max_requests_per_sec() const override; // RSS — cap at 2/s
 
     void fetch_all_news(bool force, ArticlesCallback cb);
-    void analyze_article(const QString& url, AnalysisCallback cb);
-
-    /// Load a previously-persisted analysis for an article URL, if one exists.
-    /// Lets the detail panel re-show a prior ANALYZE result on reopen without
-    /// hitting the network. Returns nullopt when nothing is cached.
-    std::optional<NewsAnalysis> cached_analysis(const QString& url);
-
-    /// Summarize top N headlines via AI. Cached for 10 min per headline signature.
-    void summarize_headlines(const QVector<NewsArticle>& articles, int count, SummaryCallback cb);
-
     int feed_count() const { return feed_count_; }
     QStringList active_sources() const { return active_sources_; }
 

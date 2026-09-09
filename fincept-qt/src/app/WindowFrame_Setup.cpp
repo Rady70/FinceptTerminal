@@ -22,9 +22,6 @@
 #include "core/logging/Logger.h"
 #include "core/session/SessionManager.h"
 #include "screens/about/AboutScreen.h"
-#include "screens/agent_config/AgentConfigScreen.h"
-#include "screens/ai_chat/AiChatScreen.h"
-#include "screens/ai_quant_lab/AIQuantLabScreen.h"
 #include "screens/akshare/AkShareScreen.h"
 #include "screens/alt_investments/AltInvestmentsScreen.h"
 #include "screens/asia_markets/AsiaMarketsScreen.h"
@@ -172,11 +169,9 @@ void WindowFrame::setup_dock_screens() {
     dock_router_->register_factory("notes", []() { return new screens::NotesScreen; });
 
     dock_router_->register_factory("portfolio", []() { return new screens::PortfolioScreen; });
-    dock_router_->register_factory("ai_chat", []() { return new screens::AiChatScreen; });
     dock_router_->register_factory("backtesting", []() { return new screens::BacktestingScreen; });
     dock_router_->register_factory("node_editor", []() { return new workflow::NodeEditorScreen; });
     dock_router_->register_factory("code_editor", []() { return new screens::CodeEditorScreen; });
-    dock_router_->register_factory("ai_quant_lab", []() { return new screens::AIQuantLabScreen; });
     dock_router_->register_factory("economics", []() { return new screens::EconomicsScreen; });
     dock_router_->register_factory("gov_data", []() { return new screens::GovDataScreen; });
     dock_router_->register_factory("dbnomics", []() { return new screens::DBnomicsScreen; });
@@ -190,7 +185,6 @@ void WindowFrame::setup_dock_screens() {
     dock_router_->register_factory("alt_investments", []() { return new screens::AltInvestmentsScreen; });
     dock_router_->register_factory("geopolitics", []() { return new screens::GeopoliticsScreen; });
     dock_router_->register_factory("surface_analytics", []() { return new fincept::surface::SurfaceAnalyticsScreen; });
-    dock_router_->register_factory("agent_config", []() { return new screens::AgentConfigScreen; });
     dock_router_->register_factory("mcp_servers", []() { return new screens::McpServersScreen; });
     dock_router_->register_factory("data_mapping", []() { return new screens::DataMappingScreen; });
     dock_router_->register_factory("data_sources", []() { return new screens::DataSourcesScreen; });
@@ -228,12 +222,10 @@ void WindowFrame::setup_dock_screens() {
     });
 
     // MarketLab: screens not registered here (equity_trading, algo_trading,
-    // crypto_trading, crypto_center, polymarket, alpha_arena, fno, quantlib,
     // maritime, forum, support, profile) are Unavailable in this build — see
     // CapabilityManager::screen_availability for their truthful reasons.
     for (const QString& id : capability::CapabilityManager::instance().allowed_screens(
              {QStringLiteral("equity_trading"), QStringLiteral("algo_trading"), QStringLiteral("crypto_trading"),
-              QStringLiteral("crypto_center"), QStringLiteral("polymarket"), QStringLiteral("alpha_arena"),
               QStringLiteral("fno"), QStringLiteral("quantlib"), QStringLiteral("maritime"), QStringLiteral("forum"),
               QStringLiteral("support"), QStringLiteral("profile")})) {
         LOG_WARN("WindowFrame", QString("Unexpected available screen in removal set: %1").arg(id));

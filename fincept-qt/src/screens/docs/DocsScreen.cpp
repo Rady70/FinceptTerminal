@@ -266,13 +266,9 @@ void DocsScreen::build_sidebar() {
     add_item(research, tr("Portfolio"), "portfolio");
     add_item(research, tr("M&A Analytics"), "ma_analytics");
 
-    // ── AI & Quantitative ────────────────────────────────────────────────────
-    auto* ai = add_category(tr("AI & QUANTITATIVE"));
-    add_item(ai, tr("AI Quant Lab"), "ai_quant_lab");
-    add_item(ai, tr("QuantLib Suite"), "quantlib");
-    add_item(ai, tr("AI Chat"), "ai_chat");
-    add_item(ai, tr("Agent Studio"), "agent_config");
-    add_item(ai, tr("Alpha Arena"), "alpha_arena");
+    // ── Quantitative ─────────────────────────────────────────────────────────
+    auto* quant = add_category(tr("QUANTITATIVE"));
+    add_item(quant, tr("QuantLib Suite"), "quantlib");
 
     // ── Data Sources ─────────────────────────────────────────────────────────
     auto* data_cat = add_category(tr("DATA SOURCES"));
@@ -351,12 +347,8 @@ void DocsScreen::build_content_pages() {
     add("portfolio", page_portfolio());
     add("ma_analytics", page_ma_analytics());
 
-    // AI
-    add("ai_quant_lab", page_ai_quant_lab());
+    // Quantitative
     add("quantlib", page_quantlib());
-    add("ai_chat", page_ai_chat());
-    add("agent_config", page_agent_config());
-    add("alpha_arena", page_alpha_arena());
 
     // Data
     add("dbnomics", page_dbnomics());

@@ -114,6 +114,16 @@ if(EXISTS "${STAMP_FILE}")
     string(STRIP "${_prev}" _prev)
 endif()
 
+# Source deletions do not make file(COPY) remove an older destination copy.
+# Purge the intentionally removed AI/LLM payload even when the source signature
+# matches and the incremental copy can otherwise return early.
+foreach(_removed_dir agents ai_quant_lab agno_trading voice)
+    file(REMOVE_RECURSE "${DST_DIR}/${_removed_dir}")
+endforeach()
+foreach(_removed_file litellm_models.py llm_models_data.json)
+    file(REMOVE "${DST_DIR}/${_removed_file}")
+endforeach()
+
 if(_prev STREQUAL "${_signature}" AND IS_DIRECTORY "${DST_DIR}")
     # Unchanged since last sync — skip the expensive copy + prune entirely.
     return()
