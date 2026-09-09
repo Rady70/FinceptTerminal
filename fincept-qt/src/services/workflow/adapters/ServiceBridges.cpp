@@ -72,6 +72,7 @@ static bool gate_or_queue(const QString& account_id, const fincept::trading::Uni
 // ── Market Data Bridge ─────────────────────────────────────────────────
 
 void wire_market_data_bridges(NodeRegistry& registry) {
+    (void)registry;
     // market.get_quote and market.get_historical already have real Python-backed
     // executors from MarketDataNodes.cpp — do NOT overwrite them.
 

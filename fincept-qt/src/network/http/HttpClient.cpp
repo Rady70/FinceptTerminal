@@ -106,6 +106,7 @@ bool reject_hosted_destination(const QString& base_url, const QString& url, cons
     // made. context-scoped lifetime mirrors handle_reply()'s contract.
     QTimer::singleShot(0, receiver, [cb, err]() { cb(Result<QJsonDocument>::err(err.toStdString())); });
     (void)base_url;
+    (void)url;
     return true;
 }
 } // namespace
