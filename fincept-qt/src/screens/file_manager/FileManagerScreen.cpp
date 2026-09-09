@@ -308,9 +308,9 @@ void FileManagerScreen::build_filter_bar(QVBoxLayout* root) {
                               "QPushButton:hover:!checked{border-color:%4;}")
                           .arg(colors::TEXT_SECONDARY(), colors::BORDER_DIM(), MF, colors::AMBER());
 
-    static const QStringList screens = {"All",          "portfolio",    "backtesting", "news",        "equity_research",
-                                        "algo_trading", "ai_quant_lab", "notes",       "code_editor", "report_builder",
-                                        "data_sources", "excel"};
+    static const QStringList screens = {"All",          "portfolio", "backtesting", "news",           "equity_research",
+                                        "algo_trading", "notes",     "code_editor", "report_builder", "data_sources",
+                                        "excel"};
     for (const QString& s : screens) {
         const QString filter_val = (s == "All") ? QString() : s;
         QString label = (s == "All") ? tr("All") : QString(s).replace('_', ' ').toUpper();
@@ -826,7 +826,6 @@ void FileManagerScreen::render_files() {
                 {"DS", tr("Data Sources"), tr("Connector configuration JSON")},
                 {"ALG", tr("Algo Trading"), tr("Saved strategy definitions")},
                 {"BT", tr("Backtesting"), tr("Backtest result JSON exports")},
-                {"AQL", tr("AI Quant Lab"), tr("Module result exports")},
                 {"NEWS", tr("News"), tr("Saved article text files")},
                 {"EQR", tr("Equity Research"), tr("Financial statement CSV exports")},
             };
@@ -837,7 +836,7 @@ void FileManagerScreen::render_files() {
             grid->setContentsMargins(0, 0, 0, 0);
             grid->setSpacing(8);
 
-            for (int i = 0; i < 11; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 const auto& s = sources[i];
                 auto* card = new QWidget(this);
                 card->setStyleSheet(panel_ss());
@@ -885,7 +884,7 @@ void FileManagerScreen::render_files() {
                 tr("Use the filter chips above to narrow files by source screen."),
                 tr("Click any file card to preview its contents in the right panel."),
                 tr("Use checkboxes on file cards to bulk-delete multiple files at once."),
-                tr("MCP tools can list and read your files directly in AI Chat."),
+                tr("MCP tools can list and read your files for local integrations."),
             };
             for (const QString& tip : tips) {
                 auto* tl2 = new QLabel(QString("•  ") + tip);

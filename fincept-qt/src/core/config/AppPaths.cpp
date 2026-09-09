@@ -11,16 +11,19 @@
 namespace fincept {
 
 QString AppPaths::root() {
+    // MarketLab Terminal state root (FINCEPT_FORK_PLAN.md §2.3): a fork-specific
+    // root so the official Fincept profile under %LOCALAPPDATA%\com.fincept.terminal
+    // is never read, migrated, renamed, or deleted.
 #ifdef _WIN32
     // Use GenericDataLocation which returns %LOCALAPPDATA% directly on Windows,
     // avoiding the fragile double-cdUp() from AppLocalDataLocation.
     // GenericDataLocation = %LOCALAPPDATA% on Windows (Qt docs: QStandardPaths).
     const QString local_app_data = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return local_app_data + "/com.fincept.terminal";
+    return local_app_data + "/com.marketlab.terminal";
 #elif defined(__APPLE__)
-    return QDir::homePath() + "/Library/Application Support/com.fincept.terminal";
+    return QDir::homePath() + "/Library/Application Support/com.marketlab.terminal";
 #else
-    return QDir::homePath() + "/.local/share/com.fincept.terminal";
+    return QDir::homePath() + "/.local/share/com.marketlab.terminal";
 #endif
 }
 

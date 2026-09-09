@@ -96,16 +96,14 @@ void DashboardCanvas::load_layout(const GridLayout& layout) {
     if (width() > 0)
         layout_.cols = responsive_cols(width());
 
-    // Unknown widget types used to be skipped while the GridItem stayed in
-    // layout_.items — leaving a permanent invisible hole in the grid, a
-    // widget_count that disagreed with the layout, and the dead entry being
-    // re-serialised on every save. Drop them instead.
-    QVector<GridItem> kept;
-    kept.reserve(layout_.items.size());
+    // Preserve unknown entries losslessly in layout_. They may belong to a
+    // feature removed from this build, and merely opening the Dashboard must
+    // not erase historical user state. Unknown entries are not rendered but
+    // continue to reserve their saved grid cells and survive serialization.
     for (const auto& item : layout_.items) {
         const WidgetMeta* meta = WidgetRegistry::instance().find(item.id);
         if (!meta) {
-            LOG_WARN("Canvas", QString("Dropping tile with unknown widget type: %1").arg(item.id));
+            LOG_WARN("Canvas", QString("Preserving unrendered tile with unknown widget type: %1").arg(item.id));
             continue;
         }
         auto* widget = meta->factory(item.config);
@@ -117,11 +115,6 @@ void DashboardCanvas::load_layout(const GridLayout& layout) {
         connect_tile(tile);
         tiles_.append(tile);
         tile->show();
-        kept.append(item);
-    }
-    if (kept.size() != layout_.items.size()) {
-        layout_.items = compact_vertical(kept);
-        emit layout_changed(layout_);
     }
 
     reflow_tiles();

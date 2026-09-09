@@ -15,6 +15,7 @@
 #include "core/session/ScreenStateManager.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/report_builder/ReportQuoteFormat.h"
 #include "services/cloud/CloudSyncEngine.h"
 #include "services/file_manager/FileManagerService.h"
 #include "services/markets/MarketDataService.h"
@@ -160,14 +161,20 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                                         return;
                                     auto comps2 = s.components();
                                     QStringList lines;
-                                    auto fmt_dbl = [](double v, int dec = 2) -> QString {
-                                        return v != 0 ? QString::number(v, 'f', dec) : "—";
+                                    // §4: a field yfinance did not report is
+                                    // missing, not zero. The InfoData has_*
+                                    // flags carry that distinction; the v
+                                    // checks below only preserve the old
+                                    // display choice of showing "—" for a
+                                    // genuine zero.
+                                    auto fmt_dbl = [](double v, bool has, int dec = 2) -> QString {
+                                        return has && v != 0 ? QString::number(v, 'f', dec) : QString("—");
                                     };
-                                    auto fmt_pct = [](double v) -> QString {
-                                        return v != 0 ? QString::number(v * 100, 'f', 2) + "%" : "—";
+                                    auto fmt_pct = [](double v, bool has) -> QString {
+                                        return has && v != 0 ? QString::number(v * 100, 'f', 2) + "%" : QString("—");
                                     };
-                                    auto fmt_mcap = [](double v) -> QString {
-                                        if (v <= 0)
+                                    auto fmt_mcap = [](double v, bool has) -> QString {
+                                        if (!has || v <= 0)
                                             return QString("—");
                                         if (v >= 1e12)
                                             return QString::number(v / 1e12, 'f', 2) + "T";
@@ -177,8 +184,8 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                                             return QString::number(v / 1e6, 'f', 2) + "M";
                                         return QString::number(v, 'f', 0);
                                     };
-                                    auto fmt_vol = [](double v) -> QString {
-                                        if (v <= 0)
+                                    auto fmt_vol = [](double v, bool has) -> QString {
+                                        if (!has || v <= 0)
                                             return QString("—");
                                         if (v >= 1e9)
                                             return QString::number(v / 1e9, 'f', 2) + "B";
@@ -200,23 +207,25 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                                             lines << "Industry: " + info.industry;
                                         if (!info.country.isEmpty())
                                             lines << "Country: " + info.country;
-                                        lines << "Market Cap: " + fmt_mcap(info.market_cap);
-                                        lines << "P/E Ratio: " + fmt_dbl(info.pe_ratio);
-                                        lines << "Forward P/E: " + fmt_dbl(info.forward_pe);
-                                        lines << "Price/Book: " + fmt_dbl(info.price_to_book);
-                                        lines << "Dividend Yield: " + fmt_pct(info.dividend_yield);
-                                        lines << "Beta: " + fmt_dbl(info.beta);
-                                        lines << "52W High: " + fmt_dbl(info.week52_high);
-                                        lines << "52W Low: " + fmt_dbl(info.week52_low);
-                                        lines << "Avg Volume: " + fmt_vol(info.avg_volume);
-                                        lines << "ROE: " + fmt_pct(info.roe);
-                                        lines << "Profit Margin: " + fmt_pct(info.profit_margin);
-                                        if (info.debt_to_equity != 0)
-                                            lines << "Debt/Equity: " + fmt_dbl(info.debt_to_equity);
-                                        if (info.current_ratio != 0)
-                                            lines << "Current Ratio: " + fmt_dbl(info.current_ratio);
-                                        if (info.eps != 0)
-                                            lines << "Rev/Share: " + fmt_dbl(info.eps);
+                                        lines << "Market Cap: " + fmt_mcap(info.market_cap, info.has_market_cap);
+                                        lines << "P/E Ratio: " + fmt_dbl(info.pe_ratio, info.has_pe_ratio);
+                                        lines << "Forward P/E: " + fmt_dbl(info.forward_pe, info.has_forward_pe);
+                                        lines << "Price/Book: " + fmt_dbl(info.price_to_book, info.has_price_to_book);
+                                        lines << "Dividend Yield: " +
+                                                     fmt_pct(info.dividend_yield, info.has_dividend_yield);
+                                        lines << "Beta: " + fmt_dbl(info.beta, info.has_beta);
+                                        lines << "52W High: " + fmt_dbl(info.week52_high, info.has_week52_high);
+                                        lines << "52W Low: " + fmt_dbl(info.week52_low, info.has_week52_low);
+                                        lines << "Avg Volume: " + fmt_vol(info.avg_volume, info.has_avg_volume);
+                                        lines << "ROE: " + fmt_pct(info.roe, info.has_roe);
+                                        lines
+                                            << "Profit Margin: " + fmt_pct(info.profit_margin, info.has_profit_margin);
+                                        if (info.has_debt_to_equity && info.debt_to_equity != 0)
+                                            lines << "Debt/Equity: " + fmt_dbl(info.debt_to_equity, true);
+                                        if (info.has_current_ratio && info.current_ratio != 0)
+                                            lines << "Current Ratio: " + fmt_dbl(info.current_ratio, true);
+                                        if (info.has_eps && info.eps != 0)
+                                            lines << "Rev/Share: " + fmt_dbl(info.eps, true);
                                     }
                                     auto cfg = comps2[idx2].config;
                                     cfg["data"] = lines.join("\n");
@@ -313,14 +322,14 @@ ReportBuilderScreen::ReportBuilderScreen(QWidget* parent) : QWidget(parent) {
                             return;
                         auto comps2 = s.components();
                         auto cfg2 = comps2[idx2].config;
-                        cfg2["price"] = QString::number(q.price, 'f', 2);
-                        cfg2["change"] = QString::number(q.change, 'f', 2);
-                        cfg2["change_pct"] = QString::number(q.change_pct, 'f', 2);
-                        cfg2["name"] = q.name;
-                        cfg2["high"] = q.high > 0 ? QString::number(q.high, 'f', 2) : "";
-                        cfg2["low"] = q.low > 0 ? QString::number(q.low, 'f', 2) : "";
-                        cfg2["volume"] = q.volume > 0 ? QString::number(q.volume, 'f', 0) : "";
-                        cfg2["status"] = "ok";
+                        // Presence-flag-driven rendering (§4): a missing cell
+                        // becomes an empty config value the canvas skips, a
+                        // genuine zero stays a number, and the row's real
+                        // retrieval status is propagated instead of being
+                        // flattened to "ok". See ReportQuoteFormat.h.
+                        const QMap<QString, QString> qc = quote_report_config(q);
+                        for (auto it = qc.cbegin(); it != qc.cend(); ++it)
+                            cfg2[it.key()] = it.value();
                         s.update_component(comp_id, comps2[idx2].content, cfg2);
                     };
 

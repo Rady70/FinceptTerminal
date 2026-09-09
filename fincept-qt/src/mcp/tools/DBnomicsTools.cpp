@@ -89,7 +89,8 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "list_dbnomics_datasets";
-        t.description = "List datasets within a DBnomics provider (paginated). Returns code + name + pagination info.";
+        t.description =
+            "List economic datasets within a DBnomics provider (paginated). Returns code + name + pagination info.";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()
@@ -133,7 +134,7 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "list_dbnomics_series";
-        t.description = "List series within a dataset; optional in-dataset query filter (paginated).";
+        t.description = "List economic time series within a dataset; optional in-dataset query filter (paginated).";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()
@@ -185,7 +186,7 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "get_dbnomics_observations";
-        t.description = "Fetch full time-series observations (period + value) for a specific DBnomics series.";
+        t.description = "Fetch full economic time-series observations (period + value) for a specific DBnomics series.";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()
@@ -237,7 +238,8 @@ std::vector<ToolDef> get_dbnomics_tools() {
     {
         ToolDef t;
         t.name = "search_dbnomics";
-        t.description = "Global search across all DBnomics providers and datasets (paginated).";
+        t.description =
+            "Global search for economic time-series data across all DBnomics providers and datasets (paginated).";
         t.category = "dbnomics";
         t.default_timeout_ms = kDefaultTimeoutMs;
         t.input_schema = ToolSchemaBuilder()

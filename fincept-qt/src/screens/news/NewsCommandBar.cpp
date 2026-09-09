@@ -15,37 +15,6 @@ NewsCommandBar::NewsCommandBar(QWidget* parent) : QWidget(parent) {
 
     build_command_row(root);
     build_intel_row(root);
-
-    // AI-brief summary row. This used to be a bare child QLabel that was never
-    // added to a layout, so show_summary() painted it at (0,0) on top of the
-    // command row inside a widget with a hard 60px height — i.e. the AI brief
-    // was unreadable and undismissable. It now lives in the layout, with a
-    // close button, and the bar grows to fit while it is shown.
-    summary_row_ = new QWidget(this);
-    summary_row_->setObjectName("newsSummaryRow");
-    auto* srl = new QHBoxLayout(summary_row_);
-    srl->setContentsMargins(8, 4, 6, 4);
-    srl->setSpacing(6);
-
-    summary_label_ = new QLabel(summary_row_);
-    summary_label_->setObjectName("newsDetailAiSummary");
-    summary_label_->setWordWrap(true);
-    summary_label_->setTextFormat(Qt::PlainText); // model output is untrusted text
-    summary_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    summary_label_->setAccessibleName(tr("AI headline brief"));
-    srl->addWidget(summary_label_, 1);
-
-    summary_close_btn_ = new QPushButton("x", summary_row_);
-    summary_close_btn_->setObjectName("newsDetailCloseBtn");
-    summary_close_btn_->setFixedSize(18, 18);
-    summary_close_btn_->setCursor(Qt::PointingHandCursor);
-    summary_close_btn_->setToolTip(tr("Dismiss the AI brief"));
-    summary_close_btn_->setAccessibleName(tr("Dismiss AI brief"));
-    connect(summary_close_btn_, &QPushButton::clicked, this, &NewsCommandBar::hide_summary);
-    srl->addWidget(summary_close_btn_, 0, Qt::AlignTop);
-
-    summary_row_->hide();
-    root->addWidget(summary_row_);
 }
 
 void NewsCommandBar::changeEvent(QEvent* event) {
@@ -64,14 +33,6 @@ void NewsCommandBar::retranslateUi() {
         search_input_->setPlaceholderText(tr("Search..."));
     if (sources_btn_)
         sources_btn_->setToolTip(tr("Manage RSS feed sources"));
-    if (summarize_btn_)
-        summarize_btn_->setToolTip(tr("AI Brief — summarize headlines"));
-    if (summary_close_btn_) {
-        summary_close_btn_->setToolTip(tr("Dismiss the AI brief"));
-        summary_close_btn_->setAccessibleName(tr("Dismiss AI brief"));
-    }
-    if (summary_label_)
-        summary_label_->setAccessibleName(tr("AI headline brief"));
     // Pills (category/time/sort/view) and combo entries carry logical code
     // values used in filter logic — intentionally not retranslated.
 
@@ -275,14 +236,6 @@ void NewsCommandBar::build_command_row(QVBoxLayout* root) {
         emit rtl_toggled();
     });
 
-    // Summarize button
-    summarize_btn_ = new QPushButton(tr("AI"), row);
-    summarize_btn_->setObjectName("newsDetailAnalyzeBtn");
-    summarize_btn_->setFixedHeight(20);
-    summarize_btn_->setToolTip(tr("AI Brief — summarize headlines"));
-    hl->addWidget(summarize_btn_);
-    connect(summarize_btn_, &QPushButton::clicked, this, &NewsCommandBar::summarize_clicked);
-
     // Refresh-cadence selector — drives NewsService::set_refresh_interval.
     // 0 = manual (auto-refresh paused); other values are minutes.
     refresh_combo_ = new QComboBox(row);
@@ -332,8 +285,8 @@ void NewsCommandBar::build_command_row(QVBoxLayout* root) {
     for (QWidget* w : {static_cast<QWidget*>(sort_relevance_), static_cast<QWidget*>(sort_newest_),
                        static_cast<QWidget*>(view_wire_), static_cast<QWidget*>(view_clusters_),
                        static_cast<QWidget*>(lang_filter_combo_), static_cast<QWidget*>(variant_combo_),
-                       static_cast<QWidget*>(summarize_btn_), static_cast<QWidget*>(refresh_combo_),
-                       static_cast<QWidget*>(sources_btn_), static_cast<QWidget*>(refresh_btn_)}) {
+                       static_cast<QWidget*>(refresh_combo_), static_cast<QWidget*>(sources_btn_),
+                       static_cast<QWidget*>(refresh_btn_)}) {
         if (w) {
             QWidget::setTabOrder(prev, w);
             prev = w;
@@ -528,33 +481,6 @@ void NewsCommandBar::set_unseen_count(int count) {
     } else {
         unseen_label_->hide();
     }
-}
-
-void NewsCommandBar::show_summary(const QString& summary) {
-    if (summary.trimmed().isEmpty()) {
-        hide_summary();
-        return;
-    }
-    summary_label_->setText(summary);
-    summary_row_->show();
-    // Grow the bar to fit the wrapped brief (capped so a long summary can't
-    // swallow the feed), then restore the fixed height on dismiss.
-    const int text_w = qMax(120, width() - 40);
-    const int text_h = summary_label_->heightForWidth(text_w);
-    setFixedHeight(kBaseHeight + qBound(20, text_h + 10, 140));
-    summarize_btn_->setText(tr("AI"));
-    summarize_btn_->setEnabled(true);
-}
-
-void NewsCommandBar::hide_summary() {
-    if (summary_row_)
-        summary_row_->hide();
-    setFixedHeight(kBaseHeight);
-}
-
-void NewsCommandBar::set_summarizing(bool busy) {
-    summarize_btn_->setText(busy ? tr("...") : tr("AI"));
-    summarize_btn_->setEnabled(!busy);
 }
 
 // ── Intel strip updates ────────────────────────────────────────────────────

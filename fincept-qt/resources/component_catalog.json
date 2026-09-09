@@ -21,11 +21,7 @@
     { "id": "alt_investments",   "title": "Alt. Investments",   "category": "Research",    "description": "Private markets, real assets, infrastructure screens",     "tags": ["alts","private","infra"] },
 
     { "id": "quantlib",          "title": "QuantLib Suite",     "category": "QuantLib",    "description": "18 quantitative analysis tools — curves, models, risk",    "tags": ["quantlib","curves","models"] },
-    { "id": "ai_quant_lab",      "title": "AI Quant Lab",       "category": "AI",          "description": "ML factor discovery, HFT, RL trading, vision quant",       "tags": ["ai","quant","ml"] },
-    { "id": "alpha_arena",       "title": "Alpha Arena",        "category": "AI",          "description": "Competitive strategy arena with leaderboards",             "tags": ["alpha","arena","contest"] },
-    { "id": "agent_config",      "title": "Agent Config",       "category": "AI",          "description": "LLM agent framework configuration (hedge fund, macro)",    "tags": ["agents","llm","config"] },
-    { "id": "mcp_servers",       "title": "MCP Servers",        "category": "AI",          "description": "Model Context Protocol server management",                 "tags": ["mcp","tools","servers"] },
-    { "id": "ai_chat",           "title": "AI Chat",            "category": "AI",          "description": "In-terminal chat with market-aware tool-use",              "tags": ["chat","llm","assistant"] },
+    { "id": "mcp_servers",       "title": "MCP Servers",        "category": "Tools",       "description": "Model Context Protocol server management",                 "tags": ["mcp","tools","servers"] },
 
     { "id": "economics",         "title": "Economics",          "category": "Economics",   "description": "Macro dashboards — FRED, IMF, World Bank, OECD",          "tags": ["economics","macro","fred"] },
     { "id": "dbnomics",          "title": "DBnomics",           "category": "Economics",   "description": "80+ provider unified economic data browser",              "tags": ["dbnomics","providers","series"] },
@@ -49,7 +45,7 @@
 
     { "id": "forum",             "title": "Forum",              "category": "Community",   "description": "Community discussion threads",                            "tags": ["forum","community"] },
     { "id": "profile",           "title": "Profile",            "category": "Community",   "description": "User profile and account",                                "tags": ["profile","account"] },
-    { "id": "settings",          "title": "Settings",           "category": "Community",   "description": "Preferences, keybindings, themes, voice, LLM",            "tags": ["settings","preferences"] },
+    { "id": "settings",          "title": "Settings",           "category": "Community",   "description": "Preferences, keybindings, themes, and integrations",      "tags": ["settings","preferences"] },
     { "id": "support",           "title": "Support",            "category": "Community",   "description": "Ticket + support",                                        "tags": ["support","help"] },
     { "id": "docs",              "title": "Docs",               "category": "Community",   "description": "In-app documentation",                                    "tags": ["docs","documentation"] },
     { "id": "about",             "title": "About",              "category": "Community",   "description": "Version, license, credits",                               "tags": ["about","version"] }

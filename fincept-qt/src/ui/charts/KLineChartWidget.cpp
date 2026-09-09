@@ -188,6 +188,21 @@ void KLineChartWidget::flush_pending() {
 #endif
 }
 
+namespace {
+// Copy a numeric candle field only when the source genuinely carries one.
+// The equity layer now emits JSON null for a cell the provider did not return
+// (a halted session, a missing volume print), and QJsonValue::toDouble()
+// flattens null to 0.0 — which would draw a real zero-height volume bar and a
+// zero price, i.e. exactly the "missing rendered as zero" the fork forbids
+// (FINCEPT_FORK_PLAN.md §4). klinecharts skips a field that is absent, so
+// leaving the key out is what makes the gap visible as a gap.
+void copy_num_if_present(QJsonObject& dst, const QJsonObject& src, QLatin1String key) {
+    const QJsonValue v = src.value(key);
+    if (v.isDouble())
+        dst[QString(key)] = v.toDouble();
+}
+} // namespace
+
 void KLineChartWidget::set_candles(const QJsonArray& candles) {
     if (candles.isEmpty())
         return;
@@ -198,11 +213,11 @@ void KLineChartWidget::set_candles(const QJsonArray& candles) {
         QJsonObject dst;
         dst[QStringLiteral("timestamp")] =
             static_cast<double>(src[QStringLiteral("timestamp")].toVariant().toLongLong()) * 1000.0;
-        dst[QStringLiteral("open")] = src[QStringLiteral("open")].toDouble();
-        dst[QStringLiteral("high")] = src[QStringLiteral("high")].toDouble();
-        dst[QStringLiteral("low")] = src[QStringLiteral("low")].toDouble();
-        dst[QStringLiteral("close")] = src[QStringLiteral("close")].toDouble();
-        dst[QStringLiteral("volume")] = src[QStringLiteral("volume")].toDouble();
+        copy_num_if_present(dst, src, QLatin1String("open"));
+        copy_num_if_present(dst, src, QLatin1String("high"));
+        copy_num_if_present(dst, src, QLatin1String("low"));
+        copy_num_if_present(dst, src, QLatin1String("close"));
+        copy_num_if_present(dst, src, QLatin1String("volume"));
         converted.append(dst);
     }
 
@@ -214,11 +229,11 @@ void KLineChartWidget::update_candle(const QJsonObject& candle) {
     QJsonObject dst;
     dst[QStringLiteral("timestamp")] =
         static_cast<double>(candle[QStringLiteral("timestamp")].toVariant().toLongLong()) * 1000.0;
-    dst[QStringLiteral("open")] = candle[QStringLiteral("open")].toDouble();
-    dst[QStringLiteral("high")] = candle[QStringLiteral("high")].toDouble();
-    dst[QStringLiteral("low")] = candle[QStringLiteral("low")].toDouble();
-    dst[QStringLiteral("close")] = candle[QStringLiteral("close")].toDouble();
-    dst[QStringLiteral("volume")] = candle[QStringLiteral("volume")].toDouble();
+    copy_num_if_present(dst, candle, QLatin1String("open"));
+    copy_num_if_present(dst, candle, QLatin1String("high"));
+    copy_num_if_present(dst, candle, QLatin1String("low"));
+    copy_num_if_present(dst, candle, QLatin1String("close"));
+    copy_num_if_present(dst, candle, QLatin1String("volume"));
 
     const QString json = QString::fromUtf8(QJsonDocument(dst).toJson(QJsonDocument::Compact));
     run_js(QStringLiteral("window.updateCandle(%1)").arg(json));

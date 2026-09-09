@@ -1,9 +1,12 @@
 #include "network/cloud/CloudClient.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/DirectRouteGuard.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 
 #include <QJsonDocument>
 #include <QNetworkReply>
+#include <QTimer>
 #include <QUrl>
 
 #include <chrono>
@@ -16,7 +19,12 @@ CloudClient& CloudClient::instance() {
 }
 
 CloudClient::CloudClient() {
-    nam_ = new QNetworkAccessManager(this);
+    // GuardedNetworkAccessManager, not a raw one. reject_hosted() still judges
+    // the composed base+endpoint before anything is issued — it rejects earlier
+    // and with the typed CloudResponse the callers already handle — but only
+    // the manager sees a redirect Qt follows by itself, which is the one hop
+    // the composed-URL check cannot possibly cover.
+    nam_ = new network::GuardedNetworkAccessManager(this);
     // Qt disables the transfer timeout by default: a half-open TCP connection
     // never emits finished(), so the callback never runs and there is no cancel
     // path — the only recovery is restarting the app. Matches HttpClient.
@@ -38,15 +46,38 @@ void CloudClient::set_base_url(const QString& base) {
 }
 
 QNetworkRequest CloudClient::build_request(const QString& endpoint) const {
-    const QString full = endpoint.startsWith("http") ? endpoint : (base_url_ + endpoint);
+    // Same composition DirectRouteGuard judged in reject_hosted() — one rule,
+    // so the URL that was cleared is exactly the URL that gets requested.
+    const QString full = network::DirectRouteGuard::compose(base_url_, endpoint);
     QNetworkRequest req{QUrl(full)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    req.setHeader(QNetworkRequest::UserAgentHeader, "FinceptTerminal/4.0");
+    req.setHeader(QNetworkRequest::UserAgentHeader, "MarketLabTerminal/0.1.0");
     if (!api_key_.isEmpty())
         req.setRawHeader("Authorization", QByteArray("Bearer ") + api_key_.toUtf8());
     if (!session_token_.isEmpty())
         req.setRawHeader("X-Session-Token", session_token_.toUtf8());
     return req;
+}
+
+bool CloudClient::reject_hosted(const QString& endpoint, const Callback& cb, const QObject* context) {
+    // The decision (compose base+endpoint, judge, produce the typed error) is
+    // DirectRouteGuard's, shared with ArenaLlmClient and QuantLibClient and
+    // covered by tests/tst_direct_clients.cpp.
+    const auto route = network::DirectRouteGuard::check_route(base_url_, endpoint);
+    if (!route.rejected)
+        return false;
+    const QString err = route.error;
+    LOG_WARN("CloudSync", QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
+                              .arg(route.url.host()));
+    const QObject* receiver = context;
+    QTimer::singleShot(0, receiver, [cb, err]() {
+        CloudResponse out;
+        out.status = 0;
+        out.ok = false;
+        out.error = err;
+        cb(out);
+    });
+    return true;
 }
 
 void CloudClient::finish(QNetworkReply* reply, Callback cb, const QObject* context) {
@@ -97,23 +128,31 @@ void CloudClient::finish(QNetworkReply* reply, Callback cb, const QObject* conte
 
 void CloudClient::get(const QString& endpoint, Callback cb, const QObject* context) {
     LOG_DEBUG("CloudSync", "GET " + endpoint);
+    if (reject_hosted(endpoint, cb, context))
+        return;
     finish(nam_->get(build_request(endpoint)), std::move(cb), context);
 }
 
 void CloudClient::post(const QString& endpoint, const QJsonObject& body, Callback cb, const QObject* context) {
     LOG_DEBUG("CloudSync", "POST " + endpoint);
+    if (reject_hosted(endpoint, cb, context))
+        return;
     finish(nam_->post(build_request(endpoint), QJsonDocument(body).toJson(QJsonDocument::Compact)), std::move(cb),
            context);
 }
 
 void CloudClient::put(const QString& endpoint, const QJsonObject& body, Callback cb, const QObject* context) {
     LOG_DEBUG("CloudSync", "PUT " + endpoint);
+    if (reject_hosted(endpoint, cb, context))
+        return;
     finish(nam_->put(build_request(endpoint), QJsonDocument(body).toJson(QJsonDocument::Compact)), std::move(cb),
            context);
 }
 
 void CloudClient::del(const QString& endpoint, Callback cb, const QObject* context) {
     LOG_DEBUG("CloudSync", "DELETE " + endpoint);
+    if (reject_hosted(endpoint, cb, context))
+        return;
     finish(nam_->deleteResource(build_request(endpoint)), std::move(cb), context);
 }
 

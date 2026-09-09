@@ -2,6 +2,7 @@
 
 #include "core/logging/Logger.h"
 #include "mcp/McpService.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HttpClient.h"
 #include "python/PythonRunner.h"
 #include "services/notifications/NotificationService.h"
@@ -71,44 +72,13 @@ static bool gate_or_queue(const QString& account_id, const fincept::trading::Uni
 // ── Market Data Bridge ─────────────────────────────────────────────────
 
 void wire_market_data_bridges(NodeRegistry& registry) {
+    (void)registry;
     // market.get_quote and market.get_historical already have real Python-backed
     // executors from MarketDataNodes.cpp — do NOT overwrite them.
 
-    // Crypto Price — uses ExchangeService (Kraken public API, no key needed)
-    auto* crypto_price_def = const_cast<NodeTypeDef*>(registry.find("market.get_crypto_price"));
-    if (crypto_price_def) {
-        crypto_price_def->execute = [](const QJsonObject& params, const QVector<QJsonValue>&,
-                                       std::function<void(bool, QJsonValue, QString)> cb) {
-            QString base = params.value("symbol").toString("BTC").toUpper();
-            QString quote = params.value("quote").toString("USD").toUpper();
-            QString symbol = base + "/" + quote; // Kraken format: BTC/USD
-
-            (void)QtConcurrent::run([symbol, cb]() {
-                auto& svc = trading::ExchangeService::instance();
-                trading::TickerData t = svc.fetch_ticker(symbol);
-
-                if (t.last <= 0.0) {
-                    cb(false, {}, QString("No price data for %1").arg(symbol));
-                    return;
-                }
-
-                QJsonObject out;
-                out["symbol"] = symbol;
-                out["price"] = t.last;
-                out["bid"] = t.bid;
-                out["ask"] = t.ask;
-                out["high"] = t.high;
-                out["low"] = t.low;
-                out["change"] = t.change;
-                out["change_pct"] = t.percentage;
-                out["volume"] = t.base_volume;
-                out["exchange"] = "kraken";
-                out["timestamp"] = static_cast<qint64>(t.timestamp);
-                cb(true, out, {});
-                LOG_DEBUG("MarketBridge", QString("Crypto price fetched: %1 = %2").arg(symbol).arg(t.last));
-            });
-        };
-    }
+    // MarketLab: the crypto-price node and its ExchangeService bridge are
+    // removed with the exchange surface (FINCEPT_FORK_PLAN.md §5.4, §6); the
+    // node is not registered, so there is nothing to wire here.
 
     // market.get_news already has a real executor from MarketDataNodes.cpp.
     // Remaining market nodes (depth, stats, fundamentals, economics) are wired
@@ -1307,15 +1277,6 @@ void wire_trading_bridges(NodeRegistry& registry) {
     LOG_INFO("ServiceBridges", "Trading bridges wired (17 nodes)");
 }
 
-// ── Agent Bridge ───────────────────────────────────────────────────────
-
-void wire_agent_bridges(NodeRegistry& /*registry*/) {
-    // agent.run and agent.tool_picker have real executors from AgentNodes.cpp.
-    // agent.single/agent.multi/agent.mediator are legacy stubs — leave their
-    // executors to the fallback pass-through in wire_all_bridges if still null.
-    LOG_INFO("ServiceBridges", "Agent bridges wired");
-}
-
 // ── Wire All ───────────────────────────────────────────────────────────
 
 static void wire_utility_bridges(NodeRegistry& registry) {
@@ -1728,7 +1689,7 @@ static void wire_utility_bridges(NodeRegistry& registry) {
 
             static QNetworkAccessManager* rss_nam = nullptr;
             if (!rss_nam)
-                rss_nam = new QNetworkAccessManager;
+                rss_nam = new network::GuardedNetworkAccessManager;
 
             QNetworkRequest request{QUrl{url}};
             request.setRawHeader("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml");
@@ -1970,7 +1931,7 @@ static void wire_utility_bridges(NodeRegistry& registry) {
         execute_request = [](std::shared_ptr<ApiCallState> state) {
             static QNetworkAccessManager* api_nam = nullptr;
             if (!api_nam)
-                api_nam = new QNetworkAccessManager;
+                api_nam = new network::GuardedNetworkAccessManager;
 
             QNetworkReply* reply = nullptr;
             if (state->method == "POST")
@@ -2472,7 +2433,7 @@ static void wire_mcp_bridges(NodeRegistry& registry) {
 
             // Support both "serverId__toolName" and bare tool name
             if (tool.contains("__")) {
-                result = svc.execute_openai_function(tool, args);
+                result = svc.execute_wire_function(tool, args);
             } else {
                 result = svc.execute_tool(mcp::INTERNAL_SERVER_ID, tool, args);
             }
@@ -2496,8 +2457,10 @@ static void wire_mcp_bridges(NodeRegistry& registry) {
 void wire_all_bridges(NodeRegistry& registry) {
     wire_mcp_bridges(registry);
     wire_market_data_bridges(registry);
-    wire_trading_bridges(registry);
-    wire_agent_bridges(registry);
+    // MarketLab: trading bridges (UnifiedTrading live order routing) are NOT
+    // wired — the trading nodes themselves are unregistered in this fork
+    // (FINCEPT_FORK_PLAN.md §5.4).
+    // wire_trading_bridges(registry);
     wire_utility_bridges(registry);
 
     // Wire any remaining nullptr executors with pass-through

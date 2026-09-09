@@ -97,7 +97,8 @@ class CloudTelemetryProvider : public QObject, public TelemetryProvider {
     void requeue_batch_front(QVector<Event> events);
 
     /// Read endpoint + api_key from SettingsRepository. Returns false if
-    /// telemetry.cloud_endpoint is unset; callers skip POST.
+    /// telemetry.cloud_endpoint is unset, is not http(s), or names a
+    /// Fincept-owned destination (MarketLab containment); callers skip POST.
     bool read_config(QString& endpoint_out, QString& api_key_out) const;
 
     /// One-shot POST. Owns the reply via deleteLater. Updates healthy_,
@@ -119,6 +120,11 @@ class CloudTelemetryProvider : public QObject, public TelemetryProvider {
     std::atomic<bool> healthy_{true};
     int backoff_seconds_ = 0; // 0 = no backoff; flushes proceed normally
     qint64 next_attempt_ms_ = 0;
+
+    /// Latch so the Fincept-endpoint refusal in read_config() is logged once
+    /// per configuration rather than on every flush tick. Mutable because
+    /// read_config() is const and touched only on the timer's thread.
+    mutable bool hosted_refusal_logged_ = false;
 
     bool started_ = false;
 };

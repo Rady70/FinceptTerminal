@@ -205,7 +205,7 @@ QWidget* CodeEditorScreen::build_header() {
     hl->setContentsMargins(14, 0, 12, 0);
     hl->setSpacing(8);
 
-    header_title_ = new QLabel(tr("FINCEPT NOTEBOOK"), bar);
+    header_title_ = new QLabel(tr("MARKETLAB NOTEBOOK"), bar);
     header_title_->setObjectName("nbHeaderTitle");
     header_title_->setStyleSheet(QString("font-family:%1; font-size:%2px;").arg(fonts::DATA_FAMILY).arg(fonts::SMALL));
     hl->addWidget(header_title_);
@@ -805,7 +805,7 @@ void CodeEditorScreen::on_open_notebook() {
     if (!confirm_discard_changes(tr("Opening another notebook")))
         return;
     const QString path =
-        QFileDialog::getOpenFileName(this, tr("Open Notebook"), {}, tr("Fincept Notebooks (*.ipynb);;All Files (*)"));
+        QFileDialog::getOpenFileName(this, tr("Open Notebook"), {}, tr("MarketLab Notebooks (*.ipynb);;All Files (*)"));
     if (path.isEmpty())
         return;
     if (!open_notebook_path(path)) {
@@ -897,7 +897,7 @@ void CodeEditorScreen::on_save_notebook() {
     QString path = notebook_path_;
     if (path.isEmpty()) {
         path = QFileDialog::getSaveFileName(this, tr("Save Notebook"), "notebook.ipynb",
-                                            tr("Fincept Notebooks (*.ipynb)"));
+                                            tr("MarketLab Notebooks (*.ipynb)"));
         if (path.isEmpty())
             return;
     }
@@ -1048,7 +1048,7 @@ void CodeEditorScreen::changeEvent(QEvent* event) {
 void CodeEditorScreen::retranslateUi() {
     // Header
     if (header_title_)
-        header_title_->setText(tr("FINCEPT NOTEBOOK"));
+        header_title_->setText(tr("MARKETLAB NOTEBOOK"));
     const QStringList tab_labels = {tr("LIBRARY"), tr("EDITOR")};
     for (int i = 0; i < view_btns_.size() && i < tab_labels.size(); ++i)
         view_btns_[i]->setText(tab_labels[i]);
@@ -1076,7 +1076,7 @@ void CodeEditorScreen::retranslateUi() {
         py_label_->setText(tr("Python 3.11"));
     refresh_kernel_label();
     if (lib_toolbar_lbl_)
-        lib_toolbar_lbl_->setText(tr("FINCEPT NOTEBOOK LIBRARY — curated finance, economics, trading, "
+        lib_toolbar_lbl_->setText(tr("MARKETLAB NOTEBOOK LIBRARY — curated finance, economics, trading, "
                                      "investing, portfolio & quant notebooks"));
 
     // Status bar

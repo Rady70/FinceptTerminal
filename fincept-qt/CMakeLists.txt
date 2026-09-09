@@ -33,7 +33,10 @@ if(WIN32 AND CMAKE_HOST_WIN32)
     unset(_fincept_sdk_dirs)
 endif()
 
-project(FinceptTerminal VERSION 4.5.0 LANGUAGES C CXX)
+# MarketLab Terminal — personal fork (FINCEPT_FORK_PLAN.md). The fork carries
+# its own version; the released application-code baseline it forked from
+# (upstream v4.5.0) is recorded separately and displayed in the About screen.
+project(FinceptTerminal VERSION 0.1.0 LANGUAGES C CXX)
 
 # Strip C/C++ flags out of RC invocations — rc.exe only understands /D, /I, /fo.
 if(WIN32)
@@ -365,18 +368,6 @@ add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 # .github/workflows/build-cpp.yml. Original tracking item: AUDIT_2026-07-25.md §E.
 option(FINCEPT_BUILD_TESTS "Build the Fincept Terminal test suite" OFF)
 
-# ── Alpha Arena live-mode geofencing ─────────────────────────────────────────
-# Live mode is gated by best-effort locale detection in AlphaArenaScreen.
-# A handful of jurisdictions (US, NK, IR, …) are blocked. This flag exists
-# *only* for development on machines that report a blocked locale; release
-# builds must leave it OFF.
-option(FINCEPT_UNSAFE_DISABLE_GEOFENCE
-       "Alpha Arena: disable live-mode geofence (DEV ONLY)" OFF)
-if(FINCEPT_UNSAFE_DISABLE_GEOFENCE)
-    add_compile_definitions(FINCEPT_UNSAFE_DISABLE_GEOFENCE=1)
-    message(WARNING "Alpha Arena: geofence DISABLED — do not ship this build.")
-endif()
-
 # ── Qt packages ──────────────────────────────────────────────────────────────
 # Qt is pinned across all platforms. The shipped release artifact must use
 # exactly the documented version to guarantee binary/ABI stability of the
@@ -501,12 +492,6 @@ endif()
 find_package(Qt6 ${_FINCEPT_QT_VER_ARGS} QUIET COMPONENTS MultimediaWidgets)
 if(Qt6MultimediaWidgets_FOUND)
     set(HAS_MULTIMEDIA TRUE)
-endif()
-
-# Optional: TextToSpeech (cross-platform TTS — SAPI/AVSpeech/speech-dispatcher)
-find_package(Qt6 ${_FINCEPT_QT_VER_ARGS} QUIET COMPONENTS TextToSpeech)
-if(Qt6TextToSpeech_FOUND)
-    set(HAS_TTS TRUE)
 endif()
 
 # Optional: WebEngineWidgets + WebChannel (KLineChart / JS-based charting)
@@ -834,6 +819,7 @@ set(CMAKE_SKIP_INSTALL_RULES FALSE CACHE BOOL "" FORCE)
 set(CORE_SOURCES
     src/core/actions/ActionRegistry.cpp
     src/core/actions/builtin_actions.cpp
+    src/core/capability/CapabilityManager.cpp
     src/core/config/AppConfig.cpp
     src/core/config/AppPaths.cpp
     src/core/config/ProfileManager.cpp
@@ -876,6 +862,25 @@ set(CORE_SOURCES
 # Network
 set(NETWORK_SOURCES
     src/network/http/HttpClient.cpp
+    src/network/http/HostedPathGuard.cpp
+    # MarketLab: the rejection decision the three direct clients (ArenaLlmClient,
+    # QuantLibClient, CloudClient) share. A leaf TU on purpose — Qt Core only,
+    # so tests/tst_direct_clients.cpp can link the real production decision
+    # without dragging a service graph or Qt Network into a test binary.
+    src/network/http/DirectRouteGuard.cpp
+    # MarketLab: the one decision the four Data Sources connector probes make
+    # before opening a raw socket (§5.3). A leaf TU for the same reason as
+    # DirectRouteGuard — the probe sites live in screens/, mcp/ and workflow/,
+    # none of which a unit test can link.
+    src/network/http/ProbeGuard.cpp
+    # MarketLab: the guard for the surfaces that own their own manager and
+    # fetch a configuration-derived URL (§5.3). Guards createRequest(), the
+    # one function every get/post/put passes through.
+    src/network/http/GuardedNetworkAccessManager.cpp
+    # MarketLab: the single external-browser handoff (§11.2). Every screen that
+    # opens an item link goes through it, so the deny-list is consulted once
+    # instead of at a dozen call sites that could each forget.
+    src/network/http/ExternalUrlGuard.cpp
     src/network/cloud/CloudClient.cpp
 )
 # WebSocketClient is always compiled; it stubs out when HAS_QT_WEBSOCKETS is not defined
@@ -917,7 +922,6 @@ set(STORAGE_SOURCES
     # Migration system
     src/storage/sqlite/migrations/MigrationRunner.cpp
     src/storage/sqlite/migrations/v001_initial.cpp
-    src/storage/sqlite/migrations/v002_llm_chat.cpp
     src/storage/sqlite/migrations/v003_data_mcp_agents.cpp
     src/storage/sqlite/migrations/v004_cleanup.cpp
     src/storage/sqlite/migrations/v005_dashboard_layout.cpp
@@ -952,14 +956,9 @@ set(STORAGE_SOURCES
     src/storage/repositories/FeedSubscriptionRepository.cpp
     src/storage/repositories/FeedItemRepository.cpp
     src/storage/repositories/PortfolioHoldingsRepository.cpp
-    src/storage/repositories/ChatRepository.cpp
     src/storage/repositories/DashboardLayoutRepository.cpp
-    src/storage/repositories/LlmConfigRepository.cpp
-    src/storage/repositories/LlmProfileRepository.cpp
     src/storage/repositories/DataSourceRepository.cpp
     src/storage/repositories/McpServerRepository.cpp
-    src/storage/repositories/AgentConfigRepository.cpp
-    src/storage/repositories/ContextRecordingRepository.cpp
     src/storage/repositories/PortfolioRepository.cpp
     src/storage/repositories/WorkflowRepository.cpp
     src/storage/repositories/CustomIndexRepository.cpp
@@ -973,8 +972,6 @@ set(STORAGE_SOURCES
     # Instrument master contract (Phase 1)
     src/storage/sqlite/migrations/v009_instruments.cpp
 
-    # LLM Profiles — multi-provider support
-    src/storage/sqlite/migrations/v010_llm_profiles.cpp
 
     # Custom Indices — user-defined index creation
     src/storage/sqlite/migrations/v011_custom_indices.cpp
@@ -985,8 +982,6 @@ set(STORAGE_SOURCES
     # News articles — dedicated news article storage
     src/storage/sqlite/migrations/v013_news_articles.cpp
 
-    # LLM tools toggle
-    src/storage/sqlite/migrations/v014_llm_tools_toggle.cpp
 
     # Screen UI state — crash-safe per-screen state in cache.db
     src/storage/sqlite/migrations/v015_screen_state.cpp
@@ -997,21 +992,17 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v018_widget_config.cpp
     src/storage/sqlite/migrations/v019_sector_cache.cpp
     src/storage/sqlite/migrations/v020_security_audit_log.cpp
-    src/storage/sqlite/migrations/v021_max_tokens_default.cpp
     src/storage/sqlite/migrations/v022_portfolio_broker_link.cpp
     src/storage/sqlite/migrations/v023_algo_trading_deploy.cpp
-    src/storage/sqlite/migrations/v024_alpha_arena.cpp
     src/storage/sqlite/migrations/v025_oi_snapshots.cpp
     src/storage/sqlite/migrations/v026_strategies.cpp
     src/storage/sqlite/migrations/v027_fii_dii.cpp
     src/storage/sqlite/migrations/v028_iv_history.cpp
     src/storage/sqlite/migrations/v029_secure_credentials.cpp
-    src/storage/sqlite/migrations/v030_max_tool_rounds.cpp
     src/storage/sqlite/migrations/v031_rss_feeds.cpp
     src/storage/sqlite/migrations/v032_pending_orders.cpp
     src/storage/sqlite/migrations/v033_historify.cpp
     src/storage/sqlite/migrations/v034_strategy_portfolio.cpp
-    src/storage/sqlite/migrations/v035_news_analysis.cpp
     src/storage/sqlite/migrations/v036_instrument_broker_token.cpp
     src/storage/sqlite/migrations/v037_cloud_sync.cpp
     src/storage/sqlite/migrations/v038_notebooks.cpp
@@ -1026,7 +1017,6 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v047_algo_multileg_trades.cpp
     src/storage/sqlite/migrations/v048_instruments_exchange_unique.cpp
     src/storage/sqlite/migrations/v049_order_baskets.cpp
-    src/storage/sqlite/migrations/v050_alpha_arena_rewrite.cpp
     src/storage/sqlite/migrations/v051_drop_duplicate_indexes.cpp
 
     # Historical OHLCV data store (Historify, Phase 3 §13)
@@ -1046,31 +1036,6 @@ set(PYTHON_SOURCES
     src/python/OptionGreeksWorker.cpp
 )
 
-# LLM service — provider-neutral chat / streaming / tools layer
-set(LLM_SERVICE_SOURCES
-    src/services/llm/LlmService.cpp
-    src/services/llm/LlmContentExtractors.cpp
-    src/services/llm/LlmHttpHelpers.cpp
-    src/services/llm/LlmRequestBuilders.cpp
-    src/services/llm/LlmModelsApi.cpp
-    src/services/llm/LlmFinceptAsync.cpp
-    src/services/llm/LlmToolLoop.cpp
-    src/services/llm/ModelCatalog.cpp
-    src/services/llm/ProviderCatalog.cpp
-)
-
-# AI Chat screen — UI for chatting with the LLM service
-set(AI_CHAT_SCREEN_SOURCES
-    src/screens/ai_chat/ChatBubbleFactory.cpp
-    # AiChatScreen split; see header.
-    src/screens/ai_chat/AiChatScreen.cpp
-    src/screens/ai_chat/AiChatScreen_Layout.cpp
-    src/screens/ai_chat/AiChatScreen_Sessions.cpp
-    src/screens/ai_chat/AiChatScreen_Messaging.cpp
-    src/screens/ai_chat/AiChatBubble.cpp
-    src/screens/ai_chat/ChatBubbleController.cpp
-)
-
 # MCP — Model Context Protocol system
 set(MCP_SOURCES
     # Core
@@ -1082,9 +1047,6 @@ set(MCP_SOURCES
     src/mcp/SchemaValidator.cpp
     src/mcp/ToolRetriever.cpp
     src/mcp/ToolSelfTest.cpp
-    src/mcp/GeminiSchema.cpp
-    src/mcp/ProviderToolFormatSelfTest.cpp
-    src/mcp/TerminalMcpBridge.cpp
     src/mcp/JobRegistry.cpp
     src/mcp/ResultStore.cpp
 
@@ -1095,9 +1057,7 @@ set(MCP_SOURCES
     src/mcp/tools/WatchlistTools.cpp
     src/mcp/tools/NewsTools.cpp
     src/mcp/tools/NotesTools.cpp
-    src/mcp/tools/AgenticMemoryTools.cpp
     src/mcp/tools/FileManagerTools.cpp
-    src/mcp/tools/AiChatTools.cpp
     src/mcp/tools/PortfolioTools.cpp
     src/mcp/tools/CryptoTradingTools.cpp
     src/mcp/tools/PaperTradingTools.cpp
@@ -1115,12 +1075,6 @@ set(MCP_SOURCES
     src/mcp/tools/ReportBuilderTools.cpp
     src/mcp/tools/MetaTools.cpp
     src/mcp/tools/McpServersTools.cpp
-    src/mcp/tools/QuantLabTools.cpp
-    # AgentsTools split by section; see AgentsTools.cpp header.
-    src/mcp/tools/AgentsTools.cpp
-    src/mcp/tools/AgentsTools_Discovery.cpp
-    src/mcp/tools/AgentsTools_Execution.cpp
-    src/mcp/tools/AgentsTools_Repos.cpp
     src/mcp/tools/DBnomicsTools.cpp
     src/mcp/tools/GovDataTools.cpp
     src/mcp/tools/EquityResearchTools.cpp
@@ -1164,11 +1118,6 @@ set(TRADING_SOURCES
     src/trading/ExchangeSession.cpp
     src/trading/ExchangeSessionManager.cpp
     src/trading/ExchangeDaemonPool.cpp
-    # Hyperliquid (Alpha Arena live mode — Phase 5c partial)
-    src/trading/exchanges/hyperliquid/HyperliquidClient.cpp
-    src/trading/exchanges/hyperliquid/Keccak256.cpp
-    src/trading/exchanges/hyperliquid/HyperliquidSigner.cpp
-    src/trading/exchanges/hyperliquid/HyperliquidVenue.cpp
     src/trading/brokers/BrokerHttp.cpp
     # Trading WebSocket
     src/trading/websocket/ZerodhaWebSocket.cpp
@@ -1275,7 +1224,6 @@ set(SERVICE_SOURCES
     src/services/cloud/WatchlistCloudAdapter.cpp
     src/services/cloud/NotesCloudAdapter.cpp
     src/services/cloud/PortfolioCloudAdapter.cpp
-    src/services/cloud/AgentConfigCloudAdapter.cpp
     src/services/cloud/ReportCloudAdapter.cpp
     src/services/cloud/WorkflowCloudAdapter.cpp
     src/services/cloud/DashboardCloudAdapter.cpp
@@ -1284,20 +1232,6 @@ set(SERVICE_SOURCES
     src/services/cloud/NewsFeedCloudAdapter.cpp
     src/services/cloud/NotebookCloudAdapter.cpp
     src/services/akshare/AkShareService.cpp
-    src/services/alpha_arena/ArenaStore.cpp
-    src/services/alpha_arena/ArenaIndicators.cpp
-    src/services/alpha_arena/ArenaDecisionParser.cpp
-    src/services/alpha_arena/PaperExchange.cpp
-    src/services/alpha_arena/ArenaRisk.cpp
-    src/services/alpha_arena/ArenaModelRegistry.cpp
-    src/services/alpha_arena/ArenaPrompts.cpp
-    src/services/alpha_arena/ArenaLlmClient.cpp
-    src/services/alpha_arena/ArenaMarketData.cpp
-    src/services/alpha_arena/ArenaEngine.cpp
-    src/services/alpha_arena/HyperliquidLiveVenue.cpp
-    # Header-only Q_OBJECT interface — listed so AUTOMOC scans it (no sibling .cpp).
-    src/services/alpha_arena/ArenaMarketDataIface.h
-    src/services/alpha_arena/ArenaSelftest.cpp
     src/services/asia_markets/AsiaMarketsService.cpp
     src/services/crypto/TotpService.cpp
     src/services/python_cli/PythonCliService.cpp
@@ -1339,7 +1273,6 @@ set(SERVICE_SOURCES
     src/services/maritime/MaritimeService.cpp
     src/services/maritime/PortsCatalog.cpp
     src/services/maritime/GeocodingService.cpp
-    src/services/ai_quant_lab/AIQuantLabService.cpp
     src/services/backtesting/BacktestingService.cpp
     src/services/backtesting/BacktestBrokerData.cpp
     src/services/algo_trading/AlgoTradingService.cpp
@@ -1352,12 +1285,6 @@ set(SERVICE_SOURCES
     src/services/quantlib/QuantLibClient.cpp
     src/services/economics/EconomicsService.cpp
     src/services/economics/MacroCalendarService.cpp
-    # AgentService is split across multiple files; see AgentService.cpp header.
-    src/services/agents/AgentService.cpp
-    src/services/agents/AgentService_Discovery.cpp
-    src/services/agents/AgentService_Execution.cpp
-    src/services/agents/AgentService_Workflows.cpp
-    src/services/agents/AgentService_Repositories.cpp
     src/services/file_manager/FileManagerService.cpp
     src/services/notebooks/NotebookLibraryService.cpp
 
@@ -1407,7 +1334,6 @@ set(SERVICE_SOURCES
     src/services/workflow/nodes/AnalyticsNodes.cpp
     src/services/workflow/nodes/SafetyNodes.cpp
     src/services/workflow/nodes/NotificationNodes.cpp
-    src/services/workflow/nodes/AgentNodes.cpp
     src/services/workflow/nodes/DataSourceNodes.cpp
     src/services/workflow/nodes/FileNodes.cpp
     src/services/workflow/nodes/DataFormatNodes.cpp
@@ -1437,17 +1363,6 @@ set(SERVICE_SOURCES
     # Phase 4 — Fincept Internal prediction-market adapter (demo mode until
     # `fincept.markets_endpoint` is configured and `fincept_market` lands).
     src/services/prediction/fincept_internal/FinceptInternalAdapter.cpp
-
-    # Speech-to-text service (Python speech_recognition + Google API)
-    src/services/stt/SpeechService.cpp
-
-    # Text-to-speech service (Python pyttsx3 — used as a portable substitute
-    # for Qt6::TextToSpeech when the Qt Speech module isn't installed).
-    src/services/tts/TtsService.cpp
-
-    # Clap-to-start trigger — lightweight sounddevice loop that fires a signal
-    # when it hears a (double-)clap. Wakes up the AiChatBubble mic.
-    src/services/voice_trigger/ClapDetectorService.cpp
 
     # Modular notification system — service + 15 providers
     src/services/notifications/NotificationService.cpp
@@ -1567,9 +1482,6 @@ set(SCREEN_SOURCES
     src/screens/settings/NotificationsSection.cpp
     src/screens/settings/StorageSection.cpp
     src/screens/settings/DataSourcesSection.cpp
-    src/screens/settings/LlmConfigSection.cpp
-    src/screens/settings/LlmConfigSection_Providers.cpp
-    src/screens/settings/LlmConfigSection_Profiles.cpp
     src/screens/settings/McpServersSection.cpp
     src/screens/settings/LoggingSection.cpp
     src/screens/settings/SecuritySection.cpp
@@ -1577,7 +1489,6 @@ set(SCREEN_SOURCES
     src/screens/settings/KeybindingsSection.cpp
     src/screens/settings/PythonEnvSection.cpp
     src/screens/settings/DeveloperSection.cpp
-    src/screens/settings/VoiceConfigSection.cpp
     src/screens/about/AboutScreen.cpp
     src/screens/support/SupportScreen.cpp
     src/screens/support/SupportScreen_Layout.cpp
@@ -1590,12 +1501,6 @@ set(SCREEN_SOURCES
     src/screens/docs/DocsScreen_Pages_Trading.cpp
     src/screens/docs/DocsScreen_Pages_Data.cpp
     src/screens/common/ComingSoonScreen.cpp
-    src/screens/chat_mode/ChatModeService.cpp
-    src/screens/chat_mode/ChatSessionPanel.cpp
-    src/screens/chat_mode/ChatMessagePanel.cpp
-    src/screens/chat_mode/ChatAgentPanel.cpp
-    src/screens/chat_mode/ChatModeScreen.cpp
-    src/screens/chat_mode/TerminalToolBridge.cpp
     src/screens/setup/SetupScreen.cpp
     src/screens/launchpad/LaunchpadScreen.cpp
     src/screens/launchpad/OnboardingTour.cpp
@@ -1651,7 +1556,6 @@ set(SCREEN_SOURCES
     src/screens/dashboard/widgets/MarketQuoteStripWidget.cpp
     src/screens/dashboard/widgets/CryptoTickerWidget.cpp
     src/screens/dashboard/widgets/PolymarketPriceWidget.cpp
-    src/screens/dashboard/widgets/AgentErrorsWidget.cpp
     src/screens/dashboard/widgets/SparklineStripWidget.cpp
     src/screens/dashboard/widgets/TradeTapeWidget.cpp
     src/screens/dashboard/widgets/NewsCategoryWidget.cpp
@@ -1833,30 +1737,6 @@ set(SCREEN_SOURCES
     src/screens/maritime/MaritimeScreen_Layout.cpp
     src/screens/maritime/MaritimeScreen_Handlers.cpp
 
-    # AI Quant Lab
-    src/screens/ai_quant_lab/AIQuantLabScreen.cpp
-    src/screens/ai_quant_lab/QuantModulePanel.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Results.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_GS.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Functime.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Statsmodels.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Fortitudo.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Gluonts.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CFA.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CFA_Display.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Backtesting.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_RL.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_DeepAgent.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_QuantReporting.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays_Models.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays_Factors.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AIMLDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CoreDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Misc.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_HFT.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_LiveLearning.cpp
-
     # Backtesting (partial-class split across logical sub-files; see
     # BacktestingScreen.cpp header comment for the layout).
     src/screens/backtesting/BacktestingScreen.cpp
@@ -1932,14 +1812,6 @@ set(SCREEN_SOURCES
     src/screens/polymarket/ExchangePresentation.cpp
     src/screens/polymarket/PolymarketOrderBlotter.cpp
 
-    # Alpha Arena
-    src/screens/alpha_arena/AlphaArenaScreen.cpp
-    src/screens/alpha_arena/EquityCurveWidget.cpp
-    src/screens/alpha_arena/LeaderboardCards.cpp
-    src/screens/alpha_arena/ArenaTabs.cpp
-    src/screens/alpha_arena/NewCompetitionWizard.cpp
-    src/screens/alpha_arena/panels/LiveModeGateDialog.cpp
-
     # Alternative Investments — partial-class split; see header.
     src/screens/alt_investments/AltInvestmentsScreen.cpp
     src/screens/alt_investments/AltInvestmentsScreen_Layout.cpp
@@ -2006,19 +1878,6 @@ set(SCREEN_SOURCES
     src/screens/portfolio/views/PlanningView.cpp
     src/screens/portfolio/views/EconomicsView.cpp
     src/screens/portfolio/PortfolioFFNView.cpp
-    src/screens/portfolio/PortfolioInsightsPanel.cpp
-    src/screens/agent_config/AgentConfigScreen.cpp
-    src/screens/agent_config/AgentsViewPanel.cpp
-    src/screens/agent_config/SystemViewPanel.cpp
-    src/screens/agent_config/CreateAgentPanel.cpp
-    src/screens/agent_config/CreateAgentPanel_Layout.cpp
-    src/screens/agent_config/CreateAgentPanel_DataOps.cpp
-    src/screens/agent_config/ToolsViewPanel.cpp
-    src/screens/agent_config/AgentChatPanel.cpp
-    src/screens/agent_config/TeamsViewPanel.cpp
-    src/screens/agent_config/WorkflowsViewPanel.cpp
-    src/screens/agent_config/PlannerViewPanel.cpp
-    src/screens/agent_config/AgenticTasksPanel.cpp
 
     # Node Editor
     src/screens/node_editor/NodeEditorScreen.cpp
@@ -2066,6 +1925,7 @@ set(SCREEN_SOURCES
 set(APP_SOURCES
     src/app/main.cpp
     src/app/InstanceLock.cpp
+    src/app/MarketLabBoundarySelftest.cpp
     src/app/ScreenSmokeTest.cpp
     # WindowFrame is split across multiple files; see WindowFrame.cpp header
     # comment for the layout. All variants stay outside unity build (see
@@ -2090,47 +1950,6 @@ set(APP_SOURCES
 set_source_files_properties(
     src/screens/common/ComingSoonScreen.cpp
     src/screens/about/AboutScreen.cpp
-    src/screens/agent_config/AgentChatPanel.cpp
-    src/screens/agent_config/AgentConfigScreen.cpp
-    src/screens/agent_config/AgentsViewPanel.cpp
-    src/screens/agent_config/CreateAgentPanel.cpp
-    src/screens/agent_config/PlannerViewPanel.cpp
-    src/screens/agent_config/SystemViewPanel.cpp
-    src/screens/agent_config/TeamsViewPanel.cpp
-    src/screens/agent_config/ToolsViewPanel.cpp
-    src/screens/agent_config/WorkflowsViewPanel.cpp
-    src/screens/agent_config/AgenticTasksPanel.cpp
-    src/screens/agent_config/CreateAgentPanel_Layout.cpp
-    src/screens/agent_config/CreateAgentPanel_DataOps.cpp
-    src/screens/ai_chat/AiChatScreen.cpp
-    src/screens/ai_chat/AiChatScreen_Layout.cpp
-    src/screens/ai_chat/AiChatScreen_Sessions.cpp
-    src/screens/ai_chat/AiChatScreen_Messaging.cpp
-    src/screens/ai_chat/AiChatBubble.cpp
-    src/screens/ai_chat/ChatBubbleController.cpp
-    src/screens/ai_chat/ChatBubbleFactory.cpp
-    src/screens/ai_quant_lab/AIQuantLabScreen.cpp
-    src/screens/ai_quant_lab/QuantModulePanel.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Results.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_GS.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Functime.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Statsmodels.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Fortitudo.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Gluonts.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CFA.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CFA_Display.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Backtesting.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_RL.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_DeepAgent.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_QuantReporting.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays_Models.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AdvancedDisplays_Factors.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_AIMLDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_CoreDisplays.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_Misc.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_HFT.cpp
-    src/screens/ai_quant_lab/QuantModulePanel_LiveLearning.cpp
     src/screens/akshare/AkShareScreen.cpp
     src/screens/algo_trading/AlgoTradingScreen.cpp
     src/screens/algo_trading/DeploymentDashboard.cpp
@@ -2140,12 +1959,6 @@ set_source_files_properties(
     src/screens/algo_trading/StrategyBuilderPanel.cpp
     src/screens/algo_trading/StrategyListPanel.cpp
     src/screens/algo_trading/AlgoDeployDialog.cpp
-    src/screens/alpha_arena/AlphaArenaScreen.cpp
-    src/screens/alpha_arena/EquityCurveWidget.cpp
-    src/screens/alpha_arena/LeaderboardCards.cpp
-    src/screens/alpha_arena/ArenaTabs.cpp
-    src/screens/alpha_arena/NewCompetitionWizard.cpp
-    src/screens/alpha_arena/panels/LiveModeGateDialog.cpp
     src/screens/alt_investments/AltInvestmentsScreen.cpp
     src/screens/alt_investments/AltInvestmentsScreen_Layout.cpp
     src/screens/alt_investments/AltInvestmentsScreen_Analysis.cpp
@@ -2256,7 +2069,6 @@ set_source_files_properties(
     src/screens/dashboard/widgets/MarketQuoteStripWidget.cpp
     src/screens/dashboard/widgets/CryptoTickerWidget.cpp
     src/screens/dashboard/widgets/PolymarketPriceWidget.cpp
-    src/screens/dashboard/widgets/AgentErrorsWidget.cpp
     src/screens/dashboard/widgets/SparklineStripWidget.cpp
     src/screens/dashboard/widgets/TradeTapeWidget.cpp
     src/screens/dashboard/widgets/NewsCategoryWidget.cpp
@@ -2410,7 +2222,6 @@ set_source_files_properties(
     src/screens/node_editor/toolbar/DeployDialog.cpp
     src/screens/node_editor/toolbar/NodeEditorToolbar.cpp
     src/screens/notes/NotesScreen.cpp
-    src/screens/portfolio/PortfolioInsightsPanel.cpp
     src/screens/portfolio/PortfolioBlotter.cpp
     src/screens/portfolio/PortfolioCommandBar.cpp
     src/screens/portfolio/PortfolioDetailWrapper.cpp
@@ -2451,9 +2262,6 @@ set_source_files_properties(
     src/screens/settings/DeveloperSection.cpp
     src/screens/settings/GeneralSection.cpp
     src/screens/settings/KeybindingsSection.cpp
-    src/screens/settings/LlmConfigSection.cpp
-    src/screens/settings/LlmConfigSection_Providers.cpp
-    src/screens/settings/LlmConfigSection_Profiles.cpp
     src/screens/settings/LoggingSection.cpp
     src/screens/settings/McpServersSection.cpp
     src/screens/settings/NotificationsSection.cpp
@@ -2482,12 +2290,8 @@ set_source_files_properties(
     src/screens/trade_viz/TradeVizScreen.cpp
     src/screens/watchlist/WatchlistScreen.cpp
     # Storage repositories — each defines kCols in namespace fincept
-    src/storage/repositories/AgentConfigRepository.cpp
-    src/storage/repositories/ChatRepository.cpp
-    src/storage/repositories/ContextRecordingRepository.cpp
     src/storage/repositories/DashboardLayoutRepository.cpp
     src/storage/repositories/DataSourceRepository.cpp
-    src/storage/repositories/LlmConfigRepository.cpp
     src/storage/repositories/McpServerRepository.cpp
     src/storage/repositories/NewsMonitorRepository.cpp
     src/storage/repositories/NewsArticleRepository.cpp
@@ -2507,7 +2311,6 @@ set_source_files_properties(
     src/storage/repositories/AccountRepository.cpp
     # Migration files — each defines sql() helper in anonymous namespace
     src/storage/sqlite/migrations/v001_initial.cpp
-    src/storage/sqlite/migrations/v002_llm_chat.cpp
     src/storage/sqlite/migrations/v003_data_mcp_agents.cpp
     src/storage/sqlite/migrations/v004_cleanup.cpp
     src/storage/sqlite/migrations/v005_dashboard_layout.cpp
@@ -2515,32 +2318,26 @@ set_source_files_properties(
     src/storage/sqlite/migrations/v007_news_baselines.cpp
     src/storage/sqlite/migrations/v008_workflows.cpp
     src/storage/sqlite/migrations/v009_instruments.cpp
-    src/storage/sqlite/migrations/v010_llm_profiles.cpp
     src/storage/sqlite/migrations/v011_custom_indices.cpp
     src/storage/sqlite/migrations/v012_data_normalization.cpp
     src/storage/sqlite/migrations/v013_news_articles.cpp
-    src/storage/sqlite/migrations/v014_llm_tools_toggle.cpp
     src/storage/sqlite/migrations/v015_screen_state.cpp
     src/storage/sqlite/migrations/v016_broker_accounts.cpp
     src/storage/sqlite/migrations/v017_perf_indexes.cpp
     src/storage/sqlite/migrations/v018_widget_config.cpp
     src/storage/sqlite/migrations/v019_sector_cache.cpp
     src/storage/sqlite/migrations/v020_security_audit_log.cpp
-    src/storage/sqlite/migrations/v021_max_tokens_default.cpp
     src/storage/sqlite/migrations/v022_portfolio_broker_link.cpp
     src/storage/sqlite/migrations/v023_algo_trading_deploy.cpp
-    src/storage/sqlite/migrations/v024_alpha_arena.cpp
     src/storage/sqlite/migrations/v025_oi_snapshots.cpp
     src/storage/sqlite/migrations/v026_strategies.cpp
     src/storage/sqlite/migrations/v027_fii_dii.cpp
     src/storage/sqlite/migrations/v028_iv_history.cpp
     src/storage/sqlite/migrations/v029_secure_credentials.cpp
-    src/storage/sqlite/migrations/v030_max_tool_rounds.cpp
     src/storage/sqlite/migrations/v031_rss_feeds.cpp
     src/storage/sqlite/migrations/v032_pending_orders.cpp
     src/storage/sqlite/migrations/v033_historify.cpp
     src/storage/sqlite/migrations/v034_strategy_portfolio.cpp
-    src/storage/sqlite/migrations/v035_news_analysis.cpp
     src/storage/sqlite/migrations/v036_instrument_broker_token.cpp
     src/storage/sqlite/migrations/v037_cloud_sync.cpp
     src/storage/sqlite/migrations/v038_notebooks.cpp
@@ -2554,7 +2351,6 @@ set_source_files_properties(
     src/storage/sqlite/migrations/v046_fno_algo.cpp
     src/storage/sqlite/migrations/v047_algo_multileg_trades.cpp
     src/storage/sqlite/migrations/v048_instruments_exchange_unique.cpp
-    src/storage/sqlite/migrations/v050_alpha_arena_rewrite.cpp
     # v051: excluded from unity too. Not because it collides (its helper is
     # deliberately named sql_v051), but because a file that JOINS a unity batch
     # re-batches every source after it — which can collide two files that were
@@ -2573,10 +2369,6 @@ set_source_files_properties(
     src/screens/polymarket/PolymarketStatusBar.cpp
     src/screens/polymarket/PredictionAccountDialog.cpp
     src/screens/polymarket/PolymarketOrderBlotter.cpp
-    src/screens/chat_mode/ChatAgentPanel.cpp
-    src/screens/chat_mode/ChatModeScreen.cpp
-    src/screens/chat_mode/ChatModeService.cpp
-    src/screens/chat_mode/TerminalToolBridge.cpp
     src/screens/quantlib/QuantLibScreen.cpp
     src/screens/quantlib/QuantLibScreen_Data.cpp
     src/trading/brokers/BrokerHttp.cpp
@@ -2629,29 +2421,6 @@ set_source_files_properties(
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
 )
 
-# Alpha Arena services and Hyperliquid integration use anonymous namespaces
-# and Q_OBJECT-bearing helpers — exclude from unity to avoid the kind of
-# ODR clashes that masked compile errors in early Phase 5c integration.
-set_source_files_properties(
-    src/services/alpha_arena/ArenaStore.cpp
-    src/services/alpha_arena/ArenaIndicators.cpp
-    src/services/alpha_arena/ArenaDecisionParser.cpp
-    src/services/alpha_arena/PaperExchange.cpp
-    src/services/alpha_arena/ArenaRisk.cpp
-    src/services/alpha_arena/ArenaModelRegistry.cpp
-    src/services/alpha_arena/ArenaPrompts.cpp
-    src/services/alpha_arena/ArenaLlmClient.cpp
-    src/services/alpha_arena/ArenaMarketData.cpp
-    src/services/alpha_arena/ArenaEngine.cpp
-    src/services/alpha_arena/HyperliquidLiveVenue.cpp
-    src/services/alpha_arena/ArenaSelftest.cpp
-    src/trading/exchanges/hyperliquid/HyperliquidClient.cpp
-    src/trading/exchanges/hyperliquid/Keccak256.cpp
-    src/trading/exchanges/hyperliquid/HyperliquidSigner.cpp
-    src/trading/exchanges/hyperliquid/HyperliquidVenue.cpp
-    PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
-)
-
 # MCP core + tools: each defines TAG or kTimeoutMs in shared namespaces —
 # must stay excluded from unity (batch size 1 = each file its own TU)
 set_source_files_properties(
@@ -2663,17 +2432,12 @@ set_source_files_properties(
     src/mcp/SchemaValidator.cpp
     src/mcp/ToolRetriever.cpp
     src/mcp/ToolSelfTest.cpp
-    src/mcp/GeminiSchema.cpp
-    src/mcp/ProviderToolFormatSelfTest.cpp
-    src/mcp/TerminalMcpBridge.cpp
     src/mcp/tools/NavigationTools.cpp
     src/mcp/tools/MarketsTools.cpp
     src/mcp/tools/WatchlistTools.cpp
     src/mcp/tools/NewsTools.cpp
     src/mcp/tools/NotesTools.cpp
-    src/mcp/tools/AgenticMemoryTools.cpp
     src/mcp/tools/FileManagerTools.cpp
-    src/mcp/tools/AiChatTools.cpp
     src/mcp/tools/PortfolioTools.cpp
     src/mcp/tools/CryptoTradingTools.cpp
     src/mcp/tools/PaperTradingTools.cpp
@@ -2691,11 +2455,6 @@ set_source_files_properties(
     src/mcp/tools/ReportBuilderTools.cpp
     src/mcp/tools/MetaTools.cpp
     src/mcp/tools/McpServersTools.cpp
-    src/mcp/tools/QuantLabTools.cpp
-    src/mcp/tools/AgentsTools.cpp
-    src/mcp/tools/AgentsTools_Discovery.cpp
-    src/mcp/tools/AgentsTools_Execution.cpp
-    src/mcp/tools/AgentsTools_Repos.cpp
     src/mcp/tools/DBnomicsTools.cpp
     src/mcp/tools/GovDataTools.cpp
     src/mcp/tools/EquityResearchTools.cpp
@@ -2812,12 +2571,8 @@ set_source_files_properties(
 
 # Storage repositories: each defines kCols — safe to batch in groups of 3
 set_source_files_properties(
-    src/storage/repositories/AgentConfigRepository.cpp
-    src/storage/repositories/ChatRepository.cpp
-    src/storage/repositories/ContextRecordingRepository.cpp
     src/storage/repositories/DashboardLayoutRepository.cpp
     src/storage/repositories/DataSourceRepository.cpp
-    src/storage/repositories/LlmConfigRepository.cpp
     src/storage/repositories/McpServerRepository.cpp
     src/storage/repositories/NewsMonitorRepository.cpp
     src/storage/repositories/NewsArticleRepository.cpp
@@ -2874,8 +2629,6 @@ add_executable(FinceptTerminal ${_FINCEPT_EXE_FLAGS}
     ${AUTH_SOURCES}
     ${STORAGE_SOURCES}
     ${PYTHON_SOURCES}
-    ${LLM_SERVICE_SOURCES}
-    ${AI_CHAT_SCREEN_SOURCES}
     ${MCP_SOURCES}
     ${TRADING_SOURCES}
     ${ALGO_ENGINE_SOURCES}
@@ -3291,8 +3044,17 @@ endif()
 # ── Application version (single source of truth) ─────────────────────────────
 # FINCEPT_VERSION_STRING is consumed by main.cpp so QApplication::applicationVersion()
 # always matches the project() VERSION declared at the top of this file.
+# MarketLab: VERSION is the FORK version (0.1.0); the upstream released
+# application-code baseline is recorded as FINCEPT_UPSTREAM_BASE_VERSION and
+# shown separately in the About screen.
 target_compile_definitions(FinceptTerminal PRIVATE
-    FINCEPT_VERSION_STRING="${CMAKE_PROJECT_VERSION}")
+    FINCEPT_VERSION_STRING="${CMAKE_PROJECT_VERSION}"
+    FINCEPT_UPSTREAM_BASE_VERSION="4.5.0")
+
+# MarketLab Terminal binary identity: the target keeps the internal
+# "FinceptTerminal" name (non-user-facing; reduces upstream merge conflicts),
+# but the produced binary is MarketLabTerminal.exe.
+set_target_properties(FinceptTerminal PROPERTIES OUTPUT_NAME "MarketLabTerminal")
 
 # ── Optional feature compile definitions (applied after add_executable) ──────
 if(FINCEPT_HAS_PRIVATE_HEADERS)
@@ -3307,11 +3069,6 @@ endif()
 if(HAS_MULTIMEDIA)
     target_link_libraries(FinceptTerminal PRIVATE Qt6::MultimediaWidgets)
     target_compile_definitions(FinceptTerminal PRIVATE HAS_QT_MULTIMEDIA)
-endif()
-
-if(HAS_TTS)
-    target_link_libraries(FinceptTerminal PRIVATE Qt6::TextToSpeech)
-    target_compile_definitions(FinceptTerminal PRIVATE HAS_QT_TTS)
 endif()
 
 if(HAS_WEBENGINE)
@@ -3834,11 +3591,10 @@ if(FINCEPT_BUILD_INSTALLER)
         install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/qt.conf"
                 DESTINATION "." COMPONENT core OPTIONAL)
         # Qt plugin directories. OPTIONAL keeps the install non-fatal when
-        # a plugin dir isn't produced by windeployqt on a given host (e.g.
-        # texttospeech only appears when Qt TTS is present).
+        # a plugin dir isn't produced by windeployqt on a given host.
         foreach(_plugin_dir
                 platforms sqldrivers imageformats iconengines styles tls
-                multimedia texttospeech networkinformation platforminputcontexts
+                multimedia networkinformation platforminputcontexts
                 printsupport generic)
             install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/${_plugin_dir}"
                     DESTINATION "." COMPONENT core OPTIONAL)
@@ -3850,7 +3606,7 @@ if(FINCEPT_BUILD_INSTALLER)
     set(CPACK_PACKAGE_VENDOR "Fincept Corporation")
     set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-        "Professional financial intelligence terminal with AI analytics")
+        "Local-first financial research workspace with market data and analytics")
     set(CPACK_PACKAGE_HOMEPAGE_URL
         "https://github.com/Fincept-Corporation/FinceptTerminal")
     set(CPACK_RESOURCE_FILE_LICENSE
@@ -4159,7 +3915,7 @@ endif()
 # ── Build configuration summary ──────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "============================================================")
-message(STATUS "  Fincept Terminal ${CMAKE_PROJECT_VERSION} — build summary")
+message(STATUS "  MarketLab Terminal ${CMAKE_PROJECT_VERSION} — build summary (upstream base: Fincept Terminal 4.5.0)")
 message(STATUS "============================================================")
 message(STATUS "  Qt version        : ${Qt6Core_VERSION}  (pin mode: ${FINCEPT_QT_PIN_MODE})")
 message(STATUS "  Build type        : ${CMAKE_BUILD_TYPE}")
@@ -4175,9 +3931,6 @@ message(STATUS "  WebSockets        : ${HAS_WEBSOCKETS}")
 endif()
 if(DEFINED HAS_MULTIMEDIA)
 message(STATUS "  Multimedia        : ${HAS_MULTIMEDIA}")
-endif()
-if(DEFINED HAS_TTS)
-message(STATUS "  TextToSpeech      : ${HAS_TTS}")
 endif()
 if(DEFINED HAS_WAYLAND)
 message(STATUS "  Wayland (Linux)   : ${HAS_WAYLAND}")
@@ -4225,6 +3978,57 @@ if(UNIX AND NOT APPLE)
     if(_QM_FILES)
         install(FILES ${_QM_FILES}
             DESTINATION ${CMAKE_INSTALL_DATADIR}/fincept-terminal/translations)
+    endif()
+endif()
+
+# ── MarketLab: static hosted-path audit ───────────────────────────────────────
+# Audit control for FINCEPT_FORK_PLAN.md §5.3: fails when a new Fincept-owned
+# host reference appears without an explicit disposition in
+# marketlab/hosted_path_inventory.json. Pure-stdlib Python; runs as the
+# `marketlab-audit` target and (with tests on) as a CTest named
+# `marketlab_audit`.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
+# The FINCEPT_BUILD_TESTS branch of this guard is load-bearing, and it is the
+# reason the interpreter check is not simply QUIET-and-skip. The audit is a
+# MANDATORY control, not an optional convenience: it is what turns a newly
+# added Fincept-owned host or an undispositioned network sink into a build
+# failure. When it is only registered `if(Python3_Interpreter_FOUND)`, a
+# machine without a python3 on PATH configures cleanly, runs ctest, reports
+# every test passing — and never runs the audit at all. The control does not
+# announce its own absence, so the evidence trail records a green test run
+# that proves strictly less than it claims. A test configuration therefore
+# fails CLOSED here, at configure time, naming the control and the fix.
+#
+# With tests OFF the soft behaviour is kept deliberately: `marketlab-audit` is
+# then only a developer convenience target, nothing consumes its result as
+# evidence, and a missing interpreter should not break an ordinary app build.
+if(FINCEPT_BUILD_TESTS AND NOT Python3_Interpreter_FOUND)
+    message(FATAL_ERROR
+        "FINCEPT_BUILD_TESTS=ON but no Python 3 interpreter was found, so the "
+        "MarketLab hosted-path audit (marketlab/audit_hosted_paths.py, registered as "
+        "the CTest `marketlab_audit`) cannot be registered. That audit is a required "
+        "boundary control (FINCEPT_FORK_PLAN.md §5.3) — omitting it silently would let "
+        "a test run pass while the control never executed.\n"
+        "Fix: install Python 3 and put it on PATH, or point CMake at one with "
+        "-DPython3_EXECUTABLE=/path/to/python3. The script is pure stdlib — no pip "
+        "install, no virtualenv. If you genuinely want a build with no audit, "
+        "configure with -DFINCEPT_BUILD_TESTS=OFF.")
+endif()
+
+if(Python3_Interpreter_FOUND)
+    add_custom_target(marketlab-audit
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/audit_hosted_paths.py"
+                --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "MarketLab hosted-path source audit"
+        VERBATIM)
+    if(FINCEPT_BUILD_TESTS)
+        add_test(NAME marketlab_audit
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/audit_hosted_paths.py"
+                    --root "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
 endif()
 

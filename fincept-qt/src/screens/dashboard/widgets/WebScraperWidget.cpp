@@ -1,6 +1,7 @@
 #include "screens/dashboard/widgets/WebScraperWidget.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "ui/tables/DataTable.h"
 #include "ui/theme/Theme.h"
 
@@ -175,7 +176,7 @@ QJsonValue walk_json_path(const QJsonValue& root, const QString& dotted) {
 // ─── ctor / dtor ──────────────────────────────────────────────────────────
 
 WebScraperWidget::WebScraperWidget(const QJsonObject& cfg, QWidget* parent) : BaseWidget(tr("WEB SCRAPER"), parent) {
-    net_ = new QNetworkAccessManager(this);
+    net_ = new network::GuardedNetworkAccessManager(this);
     connect(net_, &QNetworkAccessManager::finished, this, &WebScraperWidget::handle_reply);
 
     auto_timer_ = new QTimer(this);

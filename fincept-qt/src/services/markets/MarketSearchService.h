@@ -9,12 +9,11 @@ namespace fincept::services {
 
 /// Symbol/asset search proxy for screen-side search-as-you-type UIs.
 ///
-/// Wraps the `/market/search` REST endpoint so screens never call `HttpClient`
-/// directly. Callers pass a `request_id` (typically the current query string)
-/// so they can ignore stale responses without subclassing the service.
-///
-/// The service is intentionally thin — it is the seam, not the cache. Hot
-/// search-as-you-type widgets should debounce client-side before calling.
+/// MarketLab: the hosted `/market/search` endpoint is replaced by the local
+/// `yfinance_data.py search` path (FINCEPT_FORK_PLAN.md §7). Screens never
+/// call `HttpClient` or `PythonRunner` directly for search; callers pass a
+/// `request_id` (typically the current query string) so they can ignore
+/// stale responses without subclassing the service.
 class MarketSearchService : public QObject {
     Q_OBJECT
 
@@ -29,7 +28,8 @@ class MarketSearchService : public QObject {
 
     static MarketSearchService& instance();
 
-    /// Fire a search. `type` is optional (e.g. "stock"); pass empty to omit.
+    /// Fire a search through the local yfinance search script. `type` is
+    /// optional (e.g. "stock"); pass empty to omit the client-side filter.
     /// `request_id` is echoed back in `results_ready` so the caller can
     /// discard out-of-order responses. Limit is clamped to [1, 100].
     void search(const QString& query, const QString& type, int limit, const QString& request_id);

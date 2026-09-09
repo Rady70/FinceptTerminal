@@ -17,7 +17,6 @@
 #include "screens/portfolio/PortfolioDialogs.h"
 #include "screens/portfolio/PortfolioFFNView.h"
 #include "screens/portfolio/PortfolioHeatmap.h"
-#include "screens/portfolio/PortfolioInsightsPanel.h"
 #include "screens/portfolio/PortfolioOrderPanel.h"
 #include "screens/portfolio/PortfolioPanelHeader.h"
 #include "screens/portfolio/PortfolioPerfChart.h"
@@ -407,7 +406,7 @@ void PortfolioScreen::load_demo_portfolio() {
     });
 
     // Create the demo portfolio (emits portfolio_created synchronously)
-    svc.create_portfolio(tr("Demo Portfolio"), tr("Fincept User"), "USD", tr("Sample portfolio for demonstration"));
+    svc.create_portfolio(tr("Demo Portfolio"), tr("MarketLab User"), "USD", tr("Sample portfolio for demonstration"));
 }
 
 } // namespace fincept::screens

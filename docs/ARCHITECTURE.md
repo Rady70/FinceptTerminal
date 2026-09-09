@@ -114,8 +114,6 @@ Each context owns its screens, services, types, and DataHub topics. Contexts pub
 | **Crypto** | Hyperliquid, Kraken, on-chain, wallets | `ws:<exchange>:*`, `wallet:*` |
 | **Derivatives** | Option chains, F&O, surface analytics | `derivatives:*` |
 | **Predictions** | Polymarket, Kalshi, internal | `prediction:*` |
-| **Agents** | Hedge fund, geopolitics, economics, trader, finagent | `agent:<kind>:run:<id>` |
-| **AI Chat** | LLM provider routing, prompt context, history | (event-driven, not DataHub) |
 | **Workflow** | Node editor, DAG executor, scheduled flows | `workflow:*` |
 | **Identity** | Auth, sessions, profile, billing | (event-driven) |
 
@@ -215,12 +213,10 @@ fincept-qt/
 - See [`DATAHUB_ARCHITECTURE.md`](../fincept-qt/DATAHUB_ARCHITECTURE.md) for the contract.
 
 #### `mcp/`
-- `McpService` — unified tool surface for AI chat, agents, node editor.
+- `McpService` — unified tool surface for workflows and application features.
 - `McpProvider` — internal C++ tool registry.
 - `McpManager` — external MCP server lifecycle and RPC.
-- `dispatch/ToolDispatcher` — multi-round tool orchestration state machine.
-- `dispatch/ProviderAdapter` — OpenAI / Anthropic / Gemini protocol shims.
-- `tools/` — 40+ tool implementations bridging `MarketDataService`, `NewsService`, `AgentService`, `WatchlistTools`, `NotesTools`, `SettingsTools`, etc.
+- `tools/` — tool implementations bridging retained services such as market data, news, watchlists, notes, and settings.
 
 #### `trading/`
 - `BrokerInterface.h` — base contract (32 virtual methods). **Shallow-but-wide today; refactor target is a deep `BrokerAdapter` with shared OAuth/mapping/parsing infrastructure.**
@@ -349,19 +345,19 @@ MarketDataProducer.refresh({"market:quote:AAPL"})
 Producer calls hub.publish("market:quote:AAPL", quote)
        │
        ▼
-All subscribers (Markets, Watchlist, Dashboard, AI Chat) receive update.
+All subscribers (Markets, Watchlist, Dashboard) receive update.
 CacheManager persists.
 ```
 
 Properties: **one fetch per (topic, source)**; subscribers fan out for free; cache and live-feed are unified.
 
-### 7.2 Imperative command (MCP / agent path)
+### 7.2 Imperative command (MCP workflow path)
 
 ```
-LLM emits tool call: place_order(symbol="AAPL", qty=10, side="buy")
+Workflow invokes an MCP tool with validated arguments
        │
        ▼
-ToolDispatcher → McpService::execute_openai_function_async(...)
+McpService::execute_wire_function(...)
        │
        ▼
 Internal McpProvider tool → UnifiedTrading::place_order(account_id, order)
@@ -370,40 +366,15 @@ Internal McpProvider tool → UnifiedTrading::place_order(account_id, order)
        └─── BrokerAdapter::place_order  (live)
        │
        ▼
-Result returned to dispatcher; DataHub topic broker:<id>:orders updated.
+Result returned to the workflow; DataHub topic broker:<id>:orders updated.
        │
        ▼
 UI screens subscribed to broker:<id>:orders refresh automatically.
 ```
 
-### 7.3 Agentic mode
-
-```
-User starts hedge-fund agent task
-       │
-       ▼
-AgentService::start_task(task_def)
-       │
-       ▼
-PythonRunner spawns scripts/agents/finagent_core/main.py with streaming callback
-       │
-       ▼
-Agent emits per-step events on stdout (JSON lines)
-       │
-       ├─── persisted to agent_tasks SQLite table  (durable)
-       └─── published on DataHub topic agent:<kind>:run:<id>
-       │
-       ▼
-AiChatScreen and AgentConfigScreen subscribe to topic for live progress.
-```
-
-Crash-resume is durable: state lives in SQL.
-
----
-
 ## 8. Public contracts
 
-These are the surfaces external contributors and AI assistants should treat as stable:
+These are the surfaces external contributors and automation clients should treat as stable:
 
 | Contract | Where | Notes |
 |---|---|---|

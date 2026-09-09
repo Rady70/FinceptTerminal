@@ -1,8 +1,8 @@
 #include "screens/common/feeds/FeedTableView.h"
 
+#include "network/http/ExternalUrlGuard.h"
 #include "ui/tables/DataTable.h"
 
-#include <QDesktopServices>
 #include <QTableWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -15,8 +15,11 @@ FeedTableView::FeedTableView(QWidget* parent) : QWidget(parent) {
     table_ = new ui::DataTable(this);
     lay->addWidget(table_);
     connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int r, int) {
+        // MarketLab containment (FINCEPT_FORK_PLAN.md §11.2). The row's link
+        // comes from a fetched feed item, so the destination is whatever the
+        // subscribed feed put there.
         if (r >= 0 && r < items_.size() && !items_[r].link.isEmpty())
-            QDesktopServices::openUrl(QUrl(items_[r].link));
+            network::ExternalUrlGuard::open_external(QUrl(items_[r].link), this);
     });
 }
 

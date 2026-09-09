@@ -2,6 +2,7 @@
 #include "ui/widgets/WorldMapWidget.h"
 
 #include "core/config/AppPaths.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 
 #include <QGeoView/QGVCamera.h>
 #include <QGeoView/QGVDrawItem.h>
@@ -239,7 +240,7 @@ static void ensure_network_manager() {
     if (QGV::getNetworkManager())
         return;
 
-    auto* nam = new QNetworkAccessManager(qApp);
+    auto* nam = new network::GuardedNetworkAccessManager(qApp);
     auto* cache = new QNetworkDiskCache(nam);
     QString cache_dir = fincept::AppPaths::cache() + "/map_tiles";
     cache->setCacheDirectory(cache_dir);

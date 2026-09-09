@@ -6,9 +6,9 @@ namespace fincept {
 /// Central registry for all application file-system paths.
 ///
 /// All paths live under a single root directory:
-///   Windows : %LOCALAPPDATA%/com.fincept.terminal/
-///   macOS   : ~/Library/Application Support/com.fincept.terminal/
-///   Linux   : ~/.local/share/com.fincept.terminal/
+///   Windows : %LOCALAPPDATA%/com.marketlab.terminal/
+///   macOS   : ~/Library/Application Support/com.marketlab.terminal/
+///   Linux   : ~/.local/share/com.marketlab.terminal/
 ///
 /// Sub-directories:
 ///   data/    — SQLite databases (fincept.db, cache.db)
@@ -21,7 +21,7 @@ namespace fincept {
 /// Call AppPaths::ensure_all() once at startup to create every sub-directory.
 class AppPaths {
   public:
-    /// Root: %LOCALAPPDATA%\com.fincept.terminal  (Windows)
+    /// Root: %LOCALAPPDATA%\com.marketlab.terminal  (Windows)
     static QString root();
 
     /// root/data  — persistent databases

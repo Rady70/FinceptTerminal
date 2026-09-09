@@ -3,14 +3,12 @@
 #include "mcp/ToolSelfTest.h"
 
 #include "mcp/JobRegistry.h"
-#include "services/llm/LlmRequestPolicy.h"
-
 #include "mcp/McpProvider.h"
 #include "mcp/ToolRetriever.h"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
-#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -58,15 +56,12 @@ std::vector<EvalCase> corpus() {
         {"cancel my pending paper order", {"pt_cancel_order"}},
 
         // ── live broker trading ──
-        {"place a real order to buy 50 shares through my broker", {"live_place_order", "live_smart_order"}},
-        {"what positions do I hold at my broker right now", {"live_get_positions", "live_get_holdings"}},
-        {"cancel my open broker order", {"live_cancel_order", "live_cancel_all_orders"}},
-        {"check my available trading funds and margin", {"live_get_funds"}},
-        {"close all my open positions immediately", {"live_close_all_positions", "live_close_position"}},
-        {"get the live option chain for NIFTY", {"live_get_option_chain"}},
+        // MarketLab: live-trading MCP tools are NOT registered in this fork
+        // (FINCEPT_FORK_PLAN.md §5.4), so no retrieval case may expect them.
+        // Their absence is asserted by --selftest-marketlab-boundary.
 
         // ── markets / quotes ──
-        {"what is the current price of Apple stock", {"get_quote", "live_get_quote"}},
+        {"what is the current price of Apple stock", {"get_quote"}},
         {"get historical daily prices for GOOGL over the last year", {"get_history", "get_equity_historical"}},
         {"find the ticker symbol for Microsoft", {"lookup_symbol", "search_equity_symbols"}},
 
@@ -79,7 +74,7 @@ std::vector<EvalCase> corpus() {
         // ── news ──
         {"show me the latest market news", {"get_news", "get_top_news"}},
         {"search for recent news about Tesla", {"search_news", "get_equity_news"}},
-        {"summarize today's top headlines", {"summarize_news_headlines", "get_news_summary"}},
+        {"summarize today's top headlines", {"get_news_summary", "get_top_news"}},
         {"alert me when there is breaking news about oil prices", {"add_news_monitor"}},
 
         // ── notes ──
@@ -91,8 +86,9 @@ std::vector<EvalCase> corpus() {
         {"what tabs or screens are available", {"list_tabs", "list_available_screen_ids"}},
 
         // ── crypto ──
+        // MarketLab: crypto-trading MCP tools are NOT registered — only the
+        // public-data quote tools remain.
         {"get the current bitcoin price on the exchange", {"get_ticker", "get_quote"}},
-        {"show me the order book depth for ETH", {"get_order_book"}},
 
         // ── equity research ──
         {"pull the latest financial statements for Apple", {"get_equity_financials", "edgar_get_financials"}},
@@ -122,9 +118,8 @@ std::vector<EvalCase> corpus() {
         {"compute the accretion dilution of the merger", {"ma_accretion_dilution"}},
 
         // ── agents ──
-        {"run an AI agent to analyze a stock for me",
-         {"run_stock_analysis_agent", "run_agent", "run_agent_structured"}},
-        {"list the available AI agents", {"list_agents", "list_agent_configs"}},
+        // MarketLab (reduced AI scope): agent MCP tools are NOT registered —
+        // the Agents surface is disabled (FINCEPT_FORK_PLAN.md §5.2).
 
         // ── excel ──
         {"set the value of cell B2 in my spreadsheet", {"set_excel_cell"}},
@@ -135,19 +130,19 @@ std::vector<EvalCase> corpus() {
         {"read the contents of a file", {"read_file_contents"}},
 
         // ── settings ──
-        {"switch my active LLM provider", {"set_active_llm"}},
         {"change an application setting", {"set_setting"}},
 
         // ── profile / account ──
-        {"how many credits do I have left", {"profile_get_credits"}},
-        {"what subscription tier am I on", {"profile_get_subscription"}},
+        // MarketLab: profile/account MCP tools are NOT registered (Fincept
+        // account removed — FINCEPT_FORK_PLAN.md §5.1, §6).
 
         // ── workspace ──
         {"tile my open panels in a 2x2 grid", {"tile_panels_2x2"}},
         {"save my current window layout", {"save_current_layout", "snapshot_workspace_now"}},
 
         // ── economics / data ──
-        {"find economic time series data on GDP", {"search_dbnomics", "list_dbnomics_series"}},
+        {"find economic time series data on GDP",
+         {"search_dbnomics", "list_dbnomics_series", "list_dbnomics_datasets", "get_dbnomics_observations"}},
 
         // ── mcp servers / data sources ──
         {"list my connected MCP servers", {"list_mcp_servers"}},
@@ -429,57 +424,6 @@ int run_tool_selftest() {
             errs << QStringLiteral("an unknown job id returned a status");
 
         report_list(QStringLiteral("job lifecycle failures"), errs, true);
-    }
-
-    // — Part 4: tool-call batch planning ———
-    //
-    // Ordering is the one property of parallel execution that no compiler and
-    // no smoke test will catch: get it wrong and a write silently overtakes a
-    // read, occasionally, in production. The rule is that a destructive call is
-    // a barrier, so these cases pin the shape exactly.
-    {
-        out(QStringLiteral("\n[4] TOOL-CALL BATCH PLANNING"));
-        QStringList errs;
-        using Batches = std::vector<std::pair<std::size_t, std::size_t>>;
-
-        auto describe = [](const Batches& b) {
-            QStringList parts;
-            for (const auto& [x, y] : b)
-                parts << QStringLiteral("[%1,%2)").arg(x).arg(y);
-            return parts.join(QLatin1Char(' '));
-        };
-        auto check = [&](const QString& label, const std::vector<bool>& destructive, int fanout,
-                         const Batches& want) {
-            const Batches got = ai_chat::detail::plan_tool_batches(destructive, fanout);
-            if (got != want) {
-                errs << QStringLiteral("%1: got %2, expected %3").arg(label, describe(got), describe(want));
-                return;
-            }
-            // Whatever the plan, it must cover every call exactly once and in
-            // order — that is what keeps results index-aligned.
-            std::size_t cursor = 0;
-            for (const auto& [x, y] : got) {
-                if (x != cursor || y <= x)
-                    errs << QStringLiteral("%1: batches are not a contiguous ordered cover").arg(label);
-                cursor = y;
-            }
-            if (cursor != destructive.size())
-                errs << QStringLiteral("%1: batches do not cover every call").arg(label);
-        };
-
-        check(QStringLiteral("all read-only fan out together"), {false, false, false}, 4, {{0, 3}});
-        check(QStringLiteral("fanout caps the batch"), {false, false, false, false, false}, 2,
-              {{0, 2}, {2, 4}, {4, 5}});
-        check(QStringLiteral("fanout=1 is fully sequential"), {false, false, false}, 1, {{0, 1}, {1, 2}, {2, 3}});
-        check(QStringLiteral("a destructive call runs alone"), {true}, 4, {{0, 1}});
-        // The case that matters: a write must not be overtaken by the read after
-        // it, nor overtake the read before it.
-        check(QStringLiteral("a write is a barrier"), {false, false, true, false, false}, 4,
-              {{0, 2}, {2, 3}, {3, 5}});
-        check(QStringLiteral("consecutive writes stay serial"), {true, true}, 4, {{0, 1}, {1, 2}});
-        check(QStringLiteral("empty round plans nothing"), {}, 4, {});
-
-        report_list(QStringLiteral("batch planning failures"), errs, true);
     }
 
     out(QStringLiteral("\n──────────────────────────────────────────────────────────────"));

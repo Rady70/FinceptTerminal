@@ -37,122 +37,13 @@ static constexpr int kWsReconnectDelayMs = 10000;
 
 #ifdef HAS_QT_WEBSOCKETS
 void NewsService::connect_live_feed(const QString& ws_url) {
-    if (live_ws_)
-        return; // already connected
-
-    live_ws_ = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
-
-    connect(live_ws_, &QWebSocket::connected, this, [this]() {
-        live_connected_ = true;
-        LOG_INFO("NewsService", "WebSocket live feed connected");
-        emit live_state_changed(true);
-    });
-
-    connect(live_ws_, &QWebSocket::disconnected, this, [this]() {
-        live_connected_ = false;
-        LOG_WARN("NewsService", "WebSocket live feed disconnected");
-        emit live_state_changed(false);
-        // Auto-reconnect after delay
-        QTimer::singleShot(kWsReconnectDelayMs, this, [this]() {
-            if (live_ws_ && !live_connected_)
-                live_ws_->open(live_ws_->requestUrl());
-        });
-    });
-
-    connect(live_ws_, &QWebSocket::textMessageReceived, this, [this](const QString& msg) {
-        // Parse incoming JSON article
-        auto doc = QJsonDocument::fromJson(msg.toUtf8());
-        if (!doc.isObject())
-            return;
-
-        auto obj = doc.object();
-        NewsArticle article;
-        article.id = obj["id"].toString();
-        article.headline = obj["headline"].toString(obj["title"].toString());
-        article.summary = obj["summary"].toString(obj["description"].toString());
-        article.source = obj["source"].toString();
-        article.link = obj["link"].toString(obj["url"].toString());
-        article.category = obj["category"].toString("MARKETS");
-        article.sort_ts = obj["timestamp"].toInteger(QDateTime::currentSecsSinceEpoch());
-        article.time = QDateTime::fromSecsSinceEpoch(article.sort_ts).toString("MMM dd, HH:mm");
-        article.tier = obj["tier"].toInt(2);
-
-        if (article.headline.isEmpty())
-            return;
-
-        enrich_article(article);
-
-        // Prepend to cached articles
-        QVector<NewsArticle> updated;
-        {
-            const QVariant cv = fincept::CacheManager::instance().get("news:articles");
-            if (!cv.isNull()) {
-                const QJsonArray existing = QJsonDocument::fromJson(cv.toString().toUtf8()).array();
-                updated.reserve(existing.size() + 1);
-                for (const auto& v : existing) {
-                    const QJsonObject o = v.toObject();
-                    NewsArticle a;
-                    a.id = o["id"].toString();
-                    a.time = o["time"].toString();
-                    a.headline = o["headline"].toString();
-                    a.summary = o["summary"].toString();
-                    a.source = o["source"].toString();
-                    a.region = o["region"].toString();
-                    a.category = o["category"].toString();
-                    a.link = o["link"].toString();
-                    a.sort_ts = o["sort_ts"].toVariant().toLongLong();
-                    a.tier = o["tier"].toInt(4);
-                    // Preserve the NLP enrichment — omitting these fields on the
-                    // round-trip stripped priority/sentiment/impact/lang/tickers
-                    // from every cached row on each live push, breaking colouring,
-                    // priority sort and ticker filters.
-                    a.priority = priority_from_string(o["priority"].toString());
-                    a.sentiment = sentiment_from_string(o["sentiment"].toString());
-                    a.impact = impact_from_string(o["impact"].toString());
-                    a.lang = o["lang"].toString();
-                    for (const auto& t : o["tickers"].toArray())
-                        a.tickers << t.toString();
-                    updated.append(a);
-                }
-            }
-        }
-        updated.prepend(article);
-        QJsonArray narr;
-        for (const auto& a : updated) {
-            QJsonObject o;
-            o["id"] = a.id;
-            o["time"] = a.time;
-            o["headline"] = a.headline;
-            o["summary"] = a.summary;
-            o["source"] = a.source;
-            o["region"] = a.region;
-            o["category"] = a.category;
-            o["link"] = a.link;
-            o["sort_ts"] = static_cast<qint64>(a.sort_ts);
-            o["tier"] = a.tier;
-            // Write the enrichment back too, so it survives the next live push.
-            o["priority"] = priority_string(a.priority);
-            o["sentiment"] = sentiment_string(a.sentiment);
-            o["impact"] = impact_string(a.impact);
-            o["lang"] = a.lang;
-            QJsonArray tk;
-            for (const auto& t : a.tickers)
-                tk.append(t);
-            o["tickers"] = tk;
-            narr.append(o);
-        }
-        fincept::CacheManager::instance().put(
-            "news:articles", QVariant(QString::fromUtf8(QJsonDocument(narr).toJson(QJsonDocument::Compact))),
-            kArticleCacheTtlSec, "news");
-        emit articles_partial(updated, 1, 1);
-        LOG_INFO("NewsService", "Live article: " + article.headline.left(50));
-    });
-
-    QString ws_base = fincept::AppConfig::instance().api_base_url();
-    ws_base.replace(QStringLiteral("https://"), QStringLiteral("wss://"));
-    ws_base.replace(QStringLiteral("http://"), QStringLiteral("ws://"));
-    QString url = ws_url.isEmpty() ? (ws_base + QStringLiteral("/ws/news")) : ws_url;
-    live_ws_->open(QUrl(url));
+    Q_UNUSED(ws_url);
+    // MarketLab: the hosted live-news WebSocket (wss://api.fincept.in/ws/news)
+    // is removed (FINCEPT_FORK_PLAN.md §5.3, §6). RSS-based fetching, caching,
+    // clustering, and local NLP remain; the live-feed toggle is inert and the
+    // socket is never created.
+    LOG_WARN("NewsService", "Hosted live feed is unavailable in MarketLab Terminal — using RSS feeds");
+    emit live_state_changed(false);
 }
 
 void NewsService::disconnect_live_feed() {

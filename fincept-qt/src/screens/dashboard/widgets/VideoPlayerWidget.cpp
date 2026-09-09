@@ -1,10 +1,10 @@
 #include "screens/dashboard/widgets/VideoPlayerWidget.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "ui/theme/Theme.h"
 
 #include <QCoreApplication>
-#include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -234,7 +234,10 @@ void VideoPlayerWidget::play_url(const QString& url, const QString& title) {
         play_direct(url);
     }
 #else
-    QDesktopServices::openUrl(QUrl(url));
+    // MarketLab containment (FINCEPT_FORK_PLAN.md §11.2). Without Qt Multimedia
+    // the stream is handed to the OS instead of played in-process, and the URL
+    // is the channel the user configured — not a destination this fork fixes.
+    network::ExternalUrlGuard::open_external(QUrl(url), this);
 #endif
 }
 

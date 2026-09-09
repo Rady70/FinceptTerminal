@@ -6,7 +6,6 @@
 #include "auth/UserApi.h"
 #include "core/logging/Logger.h"
 #include "network/http/HttpClient.h"
-#include "storage/repositories/LlmConfigRepository.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "storage/secure/SecureStorage.h"
 
@@ -183,17 +182,6 @@ void AuthManager::migrate_legacy_plaintext_credentials() {
         LOG_INFO("Auth", "Migrated legacy plaintext credentials into SecureStorage and purged settings rows");
 }
 
-QString AuthManager::fincept_api_key() const {
-    // Single supported resolver. Prefer the live in-memory session; fall back to
-    // the encrypted SecureStorage copy. Never reads the legacy plaintext row.
-    if (!session_.api_key.isEmpty())
-        return session_.api_key;
-    auto secure_key = fincept::SecureStorage::instance().retrieve("api_key");
-    if (secure_key.is_ok())
-        return secure_key.value();
-    return {};
-}
-
 void AuthManager::clear_session() {
     session_ = SessionData{};
     clear_tokens();
@@ -209,9 +197,6 @@ void AuthManager::clear_session() {
     // sessions. The only path that should reset the PIN is the max-attempts
     // re-auth flow (LockScreen → reauth_requested), and that path should call
     // PinManager::clear_pin() explicitly before invoking logout().
-
-    // Clear auto-configured fincept LLM provider and reset LlmService
-    LlmConfigRepository::instance().delete_provider("fincept");
 }
 
 bool AuthManager::needs_pin_setup() const {
@@ -314,7 +299,7 @@ void AuthManager::complete_auth_flow(std::function<void()> on_done) {
         if (!session_.api_key.isEmpty())
             session_.authenticated = true;
         save_session();
-        auto_configure_fincept_llm();
+        purge_legacy_plaintext_api_key();
         set_loading(false);
         if (on_done)
             on_done();
@@ -415,8 +400,8 @@ void AuthManager::complete_desktop_login(const QString& api_key, const QString& 
     }
 
     // Mirror the login() success tail exactly so the desktop handoff lands in
-    // the same post-login machinery (profile + subscription fetch, save_session,
-    // fincept LLM auto-config, login_succeeded).
+    // the same post-login machinery (profile + subscription fetch,
+    // save_session, login_succeeded).
     apply_tokens(api_key, session_token);
 
     session_.authenticated = true;
@@ -634,46 +619,16 @@ void AuthManager::refresh_user_data() {
     fetch_user_profile([this] { emit subscription_fetched(); });
 }
 
-// ── Auto-configure Fincept LLM provider ──────────────────────────────────────
+// ── Legacy plaintext-key cleanup ─────────────────────────────────────────────
 
-void AuthManager::auto_configure_fincept_llm() {
+void AuthManager::purge_legacy_plaintext_api_key() {
     if (session_.api_key.isEmpty())
         return;
 
     // CR-08: do NOT persist the api_key in the plaintext settings table. The
     // key already lives in the in-memory session and in SecureStorage (written
-    // by save_session). LlmService and friends resolve it via
-    // AuthManager::fincept_api_key(). Defensively purge any stale plaintext row.
+    // by save_session). Defensively purge any stale plaintext row.
     fincept::SettingsRepository::instance().remove("fincept_api_key");
-
-    // Only create the fincept provider row if it doesn't already exist.
-    // This prevents overwriting the user's model/settings choice on every
-    // session revalidation (~30s interval).
-    auto providers = LlmConfigRepository::instance().list_providers();
-    bool fincept_exists = false;
-    if (providers.is_ok()) {
-        for (const auto& p : providers.value()) {
-            if (p.provider.toLower() == "fincept") {
-                fincept_exists = true;
-                break;
-            }
-        }
-    }
-
-    if (!fincept_exists) {
-        LlmConfig fincept_llm;
-        fincept_llm.provider = "fincept";
-        fincept_llm.model = "MiniMax-M2.7";
-        fincept_llm.base_url = {};
-        LlmConfigRepository::instance().save_provider(fincept_llm);
-        LOG_INFO("Auth", "Created fincept LLM provider config");
-    }
-
-    // Set as active if no other provider is currently active
-    auto active = LlmConfigRepository::instance().get_active_provider();
-    bool has_active = active.is_ok() && !active.value().provider.isEmpty();
-    if (!has_active)
-        LlmConfigRepository::instance().set_active("fincept");
 }
 
 } // namespace fincept::auth

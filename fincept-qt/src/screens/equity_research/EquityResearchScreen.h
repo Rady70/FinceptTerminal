@@ -59,6 +59,8 @@ class EquityResearchScreen : public QWidget, public IStatefulScreen, public IGro
     QWidget* build_title_bar();
     QWidget* build_quote_bar();
     void update_quote_bar(const services::equity::QuoteData& q);
+    /// Render `source_label_` (text + tooltip) from a quote's provenance fields.
+    void update_source_label(const services::equity::QuoteData& q);
     void load_symbol(const QString& symbol);
     void retranslateUi();
     void hub_subscribe_broker_quote();
@@ -80,6 +82,11 @@ class EquityResearchScreen : public QWidget, public IStatefulScreen, public IGro
     QLabel* hl_label_ = nullptr;
     QLabel* mktcap_label_ = nullptr;
     QLabel* rec_label_ = nullptr;
+    /// Provenance strip: which provider produced the quote on screen, when it
+    /// was retrieved, and whether it arrived whole (FINCEPT_FORK_PLAN.md §4 —
+    /// "the displayed or retained result identifies its source and retrieval
+    /// status"). Full detail in its tooltip.
+    QLabel* source_label_ = nullptr;
 
     QTabWidget* tab_widget_ = nullptr;
     EquityOverviewTab* overview_tab_ = nullptr;

@@ -33,7 +33,6 @@ const QVector<DomainRow>& cloud_domains() {
         {"watchlist", "Watchlists", "Sync watchlists and their symbols."},
         {"note", "Notes", "Sync financial notes (title, content, tags, favourites)."},
         {"portfolio", "Portfolios", "Sync portfolios, holdings, transactions and snapshots."},
-        {"agent_config", "Agent configs", "Sync AI agent configurations."},
         {"report", "Reports", "Sync report-builder documents."},
         {"workflow", "Workflows", "Sync node-editor workflows (nodes + edges)."},
         {"dashboard", "Dashboard", "Sync dashboard layouts (grid + widgets)."},

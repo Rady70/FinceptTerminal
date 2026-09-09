@@ -4,6 +4,7 @@
 
 #include "app/DockScreenRouter.h"
 #include "app/WindowFrame.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/events/EventBus.h"
 #include "core/logging/Logger.h"
 #include "mcp/ToolSchemaBuilder.h"
@@ -123,6 +124,14 @@ std::vector<ToolDef> get_navigation_tools() {
 
             if (resolved.isEmpty()) {
                 return ToolResult::fail("Unknown tab '" + tab + "'. Valid ids: " + snap.ids.join(", "));
+            }
+
+            // MarketLab: capability gate — MCP navigation cannot reach an
+            // unavailable screen (FINCEPT_FORK_PLAN.md §5.2).
+            if (!capability::CapabilityManager::instance().is_screen_allowed(resolved)) {
+                const auto avail = capability::CapabilityManager::instance().screen_availability(resolved);
+                return ToolResult::fail(
+                    QString("Screen '%1' is unavailable in this build: %2").arg(resolved, avail.reason));
             }
 
             // Hand off to WindowFrame's existing nav.switch_screen subscriber.

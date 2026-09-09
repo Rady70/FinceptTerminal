@@ -19,12 +19,10 @@ TabBar::TabBar(QWidget* parent) : QWidget(parent) {
     tab_layout_->setContentsMargins(4, 0, 4, 0);
     tab_layout_->setSpacing(2);
 
+    // MarketLab: trading/hosted tabs removed (FINCEPT_FORK_PLAN.md §5.2, §6).
     tab_defs_ = {
-        {"dashboard", "DASHBOARD"},   {"markets", "MARKETS"},      {"crypto_trading", "CRYPTO"},
-        {"equity_trading", "EQUITY"}, {"portfolio", "PORTFOLIO"},  {"news", "NEWS"},
-        {"ai_chat", "AI CHAT"},       {"backtesting", "BACKTEST"}, {"algo_trading", "ALGO"},
-        {"node_editor", "NODES"},     {"code_editor", "CODE"},     {"ai_quant_lab", "QUANT LAB"},
-        {"quantlib", "QUANTLIB"},     {"settings", "SETTINGS"},    {"profile", "PROFILE"},
+        {"dashboard", "DASHBOARD"},  {"markets", "MARKETS"},   {"portfolio", "PORTFOLIO"}, {"news", "NEWS"},
+        {"backtesting", "BACKTEST"}, {"node_editor", "NODES"}, {"code_editor", "CODE"},    {"settings", "SETTINGS"},
     };
     for (const auto& def : tab_defs_)
         add_tab(def);

@@ -21,7 +21,46 @@ struct QuoteData {
     double high = 0;
     double low = 0;
     double volume = 0;
+
+    // ── Provenance ───────────────────────────────────────────────────────────
+    // FINCEPT_FORK_PLAN.md §4: "the displayed or retained result identifies its
+    // source and retrieval status". Appended after the existing members on
+    // purpose — every brace-init site in MarketDataService.cpp lists only the
+    // eight above, which stays valid aggregate initialisation, so no consumer of
+    // this struct has to change to keep compiling.
+    QString source;          ///< "yfinance", or "cache (yfinance)" on a cache hit
+    qint64 retrieved_at = 0; ///< epoch seconds at which the provider answered
+    QString status;          ///< "OK" | "PARTIAL" | "STALE" — see kQuoteStatus* below
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // yfinance_data.py emits JSON null for a cell the provider did not return,
+    // and QJsonValue::toDouble() flattens null, an absent key and a genuine zero
+    // to the same 0.0 — which is how a halted session reached the watchlist as a
+    // volume of "0". A bare `double` cannot carry that difference, so every
+    // numeric field above is paired with the flag that says whether it arrived.
+    //
+    // Appended after the existing members, like the provenance block above and
+    // for the same reason: every brace-init site lists only the eight leading
+    // fields, so those stay valid aggregate initialisation and no consumer has
+    // to change to keep compiling. A reader that does not ask still sees 0.0,
+    // exactly as before; a reader that asks is told the truth.
+    bool has_price = false;
+    bool has_change = false;
+    bool has_change_pct = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_volume = false;
 };
+
+/// Retrieval status tokens for QuoteData::status. Deliberately untranslated:
+/// they are provenance, and have to read the same in a bug report as on screen.
+/// "PARTIAL" means at least one has_* flag above came back false, so that value
+/// renders as its widget's missing-value placeholder rather than as a number.
+/// "STALE" outranks it — a row served after a failed refresh is first of all
+/// not current.
+inline constexpr const char* kQuoteStatusOk = "OK";
+inline constexpr const char* kQuoteStatusPartial = "PARTIAL";
+inline constexpr const char* kQuoteStatusStale = "STALE";
 
 struct InfoData {
     QString symbol;
@@ -44,6 +83,34 @@ struct InfoData {
     double profit_margin = 0;
     double debt_to_equity = 0;
     double current_ratio = 0;
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // Same rule as QuoteData above: get_info and get_financial_ratios emit JSON
+    // null for a fundamental yfinance did not report, and toDouble() flattens
+    // null, an absent key and a genuine zero to the same 0.0 — which is how a
+    // missing market cap reached the report builder as "$0". A bare `double`
+    // cannot carry that difference, so every numeric field is paired with the
+    // flag that says whether it arrived.
+    //
+    // Appended after the existing members, like the QuoteData and HistoryPoint
+    // presence blocks and for the same reason: aggregate initialisation of the
+    // leading fields stays valid and no consumer has to change to keep
+    // compiling. A reader that does not ask still sees 0.0, exactly as before;
+    // a reader that asks is told the truth.
+    bool has_market_cap = false;
+    bool has_pe_ratio = false;
+    bool has_forward_pe = false;
+    bool has_price_to_book = false;
+    bool has_dividend_yield = false;
+    bool has_beta = false;
+    bool has_week52_high = false;
+    bool has_week52_low = false;
+    bool has_avg_volume = false;
+    bool has_eps = false;
+    bool has_roe = false;
+    bool has_profit_margin = false;
+    bool has_debt_to_equity = false;
+    bool has_current_ratio = false;
 };
 
 struct HistoryPoint {
@@ -53,6 +120,25 @@ struct HistoryPoint {
     double low = 0;
     double close = 0;
     qint64 volume = 0;
+
+    // ── Presence ─────────────────────────────────────────────────────────────
+    // Same rule as QuoteData above: yfinance_data.py emits JSON null for an
+    // OHLCV cell the provider did not return, and toDouble() flattens null, an
+    // absent key and a genuine zero to the same 0.0. On a chart that is worse
+    // than on a table — one missing `low` read as 0.0 drags the whole price
+    // axis down to zero and squashes the series into a few pixels.
+    //
+    // `close` has no flag on purpose: a bar with no close is not a price point
+    // at all and never reaches this struct (see parse_history_point() in
+    // MarketQuoteParse.h), which mirrors equity's Candle.
+    //
+    // Appended after the existing members, like the two blocks above and for
+    // the same reason: no brace-init site has to change to keep compiling, and
+    // a reader that does not ask still sees 0.0 exactly as before.
+    bool has_open = false;
+    bool has_high = false;
+    bool has_low = false;
+    bool has_volume = false;
 };
 
 struct TickerDef {

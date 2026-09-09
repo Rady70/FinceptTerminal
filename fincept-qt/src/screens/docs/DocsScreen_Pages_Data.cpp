@@ -129,8 +129,7 @@ QWidget* DocsScreen::page_geopolitics() {
                                     "■  HDX integration — Humanitarian Data Exchange for crisis data\n"
                                     "■  Trade analysis — Sanctions, tariffs, trade flow disruptions\n"
                                     "■  Relationship mapping — Entity relationships and influence networks\n"
-                                    "■  Risk scoring — Country-level geopolitical risk assessments\n"
-                                    "■  AI agent — Geopolitics-specialized analysis agent")},
+                                    "■  Risk scoring — Country-level geopolitical risk assessments")},
             {tr("REAL-WORLD USAGE"), tr("■  Risk management: Monitor geopolitical risks to your portfolio\n"
                                         "■  Commodity trading: Track supply disruptions from conflicts\n"
                                         "■  FX trading: Geopolitical risk premium in currency pricing\n"
@@ -326,19 +325,19 @@ QWidget* DocsScreen::page_mcp_servers() {
     return make_page(
         tr("MCP SERVERS"), tr("Model Context Protocol server management"),
         {
-            {tr("OVERVIEW"), tr("The MCP Servers screen manages Model Context Protocol servers that extend "
-                                "AI agent capabilities with external tool access and data sources.")},
+            {tr("OVERVIEW"), tr("The MCP Servers screen manages Model Context Protocol servers that expose "
+                                "external tools and data sources to supported workflows.")},
             {tr("KEY FEATURES"), tr("■  Server registration and management\n"
                                     "■  Tool discovery and configuration\n"
                                     "■  Connection status monitoring\n"
                                     "■  Custom server integration\n"
                                     "■  Security and access control")},
-            {tr("REAL-WORLD USAGE"), tr("■  Extend AI agents with custom data sources\n"
+            {tr("REAL-WORLD USAGE"), tr("■  Extend workflows with custom data sources\n"
                                         "■  Connect to proprietary APIs and databases\n"
                                         "■  Add specialized tools for domain-specific analysis\n"
                                         "■  Build custom research pipelines with external tools")},
             {tr("SKILL LEVELS"), tr("BEGINNER: Browse available MCP servers, understand the concept\n"
-                                    "INTERMEDIATE: Connect pre-configured MCP servers to agents\n"
+                                    "INTERMEDIATE: Connect pre-configured MCP servers to workflows\n"
                                     "ADVANCED: Deploy custom MCP servers for proprietary data\n"
                                     "PRO: Build production MCP infrastructure, multi-server orchestration")},
         });
@@ -371,29 +370,26 @@ QWidget* DocsScreen::page_data_mapping() {
 // ============================================================================
 
 QWidget* DocsScreen::page_settings() {
-    return make_page(
-        tr("SETTINGS"), tr("Application configuration and preferences"),
-        {
-            {tr("OVERVIEW"), tr("The Settings screen provides comprehensive application configuration "
-                                "including display preferences, data sources, LLM configuration, MCP servers, "
-                                "and integration settings.")},
-            {tr("KEY FEATURES"), tr("■  Display preferences — Theme, font size, layout options\n"
-                                    "■  Data configuration — API keys, refresh intervals, cache settings\n"
-                                    "■  LLM Configuration — Model provider, API key, parameters\n"
-                                    "■  MCP Servers — Server management and configuration\n"
-                                    "■  Notification preferences\n"
-                                    "■  Keyboard shortcut customization")},
-            {tr("SECTIONS"), tr("■  General — Language, timezone, display density\n"
-                                "■  Trading — Default exchange, order confirmations, risk limits\n"
-                                "■  Data — API keys for market data providers\n"
-                                "■  AI — LLM provider, model selection, temperature\n"
-                                "■  MCP — Server endpoints and tool access\n"
-                                "■  Notifications — Alert channels and thresholds")},
-            {tr("SKILL LEVELS"), tr("BEGINNER: Set your timezone and preferred market\n"
-                                    "INTERMEDIATE: Configure API keys for data providers and LLM\n"
-                                    "ADVANCED: Fine-tune LLM parameters, set up MCP servers\n"
-                                    "PRO: Full infrastructure configuration, custom integrations")},
-        });
+    return make_page(tr("SETTINGS"), tr("Application configuration and preferences"),
+                     {
+                         {tr("OVERVIEW"), tr("The Settings screen provides comprehensive application configuration "
+                                             "including display preferences, data sources, MCP servers, "
+                                             "and integration settings.")},
+                         {tr("KEY FEATURES"), tr("■  Display preferences — Theme, font size, layout options\n"
+                                                 "■  Data configuration — API keys, refresh intervals, cache settings\n"
+                                                 "■  MCP Servers — Server management and configuration\n"
+                                                 "■  Notification preferences\n"
+                                                 "■  Keyboard shortcut customization")},
+                         {tr("SECTIONS"), tr("■  General — Language, timezone, display density\n"
+                                             "■  Trading — Default exchange, order confirmations, risk limits\n"
+                                             "■  Data — API keys for market data providers\n"
+                                             "■  MCP — Server endpoints and tool access\n"
+                                             "■  Notifications — Alert channels and thresholds")},
+                         {tr("SKILL LEVELS"), tr("BEGINNER: Set your timezone and preferred market\n"
+                                                 "INTERMEDIATE: Configure API keys for data providers\n"
+                                                 "ADVANCED: Set up MCP servers and local integrations\n"
+                                                 "PRO: Full infrastructure configuration, custom integrations")},
+                     });
 }
 
 QWidget* DocsScreen::page_profile() {
@@ -405,7 +401,7 @@ QWidget* DocsScreen::page_profile() {
             {tr("KEY FEATURES"), tr("■  Account details — Name, email, registration date\n"
                                     "■  Subscription status — Current plan, expiry, features\n"
                                     "■  Usage statistics — API calls, data consumed, trades placed\n"
-                                    "■  Credit balance — Remaining AI/compute credits\n"
+                                    "■  Credit balance — Remaining compute credits\n"
                                     "■  Billing history — Past invoices and payments")},
             {tr("REAL-WORLD USAGE"), tr("■  Monitor your subscription and credit usage\n"
                                         "■  Upgrade or change your plan\n"

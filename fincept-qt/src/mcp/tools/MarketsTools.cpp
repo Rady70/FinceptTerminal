@@ -11,11 +11,25 @@
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonValue>
 #include <QTimeZone>
 
 namespace fincept::mcp::tools {
 
 static constexpr const char* TAG = "MarketsTools";
+
+namespace {
+
+// A field the provider did not return is emitted as JSON null, never as 0.
+// Mirrors num_or_null in EquityResearchTools.cpp, and for the same reason:
+// this payload is *retained* and handed to an LLM agent, which is the one
+// consumer that will silently reason over a fabricated zero — "volume 0" reads
+// as a halted session rather than as "no reading" (FINCEPT_FORK_PLAN.md §4).
+QJsonValue num_or_null(double v, bool present) {
+    return present ? QJsonValue(v) : QJsonValue(QJsonValue::Null);
+}
+
+} // namespace
 
 // Symbol search cache TTL — 1 hour. Yahoo's symbol catalog rarely changes;
 // IPOs/delistings settle within a day, so an hour is a generous floor.
@@ -71,12 +85,18 @@ std::vector<ToolDef> get_markets_tools() {
 
             return ToolResult::ok_data(QJsonObject{{"symbol", q.symbol},
                                                    {"name", q.name},
-                                                   {"price", q.price},
-                                                   {"change", q.change},
-                                                   {"change_pct", q.change_pct},
-                                                   {"high", q.high},
-                                                   {"low", q.low},
-                                                   {"volume", q.volume}});
+                                                   {"price", num_or_null(q.price, q.has_price)},
+                                                   {"change", num_or_null(q.change, q.has_change)},
+                                                   {"change_pct", num_or_null(q.change_pct, q.has_change_pct)},
+                                                   {"high", num_or_null(q.high, q.has_high)},
+                                                   {"low", num_or_null(q.low, q.has_low)},
+                                                   {"volume", num_or_null(q.volume, q.has_volume)},
+                                                   // §4: "the displayed or retained result identifies its source
+                                                   // and retrieval status". This is a retained result, so it
+                                                   // carries both — the service already stamps them.
+                                                   {"source", q.source},
+                                                   {"retrieved_at", static_cast<double>(q.retrieved_at)},
+                                                   {"retrieval_status", q.status}});
         };
         tools.push_back(std::move(t));
     }
@@ -242,11 +262,13 @@ std::vector<ToolDef> get_markets_tools() {
                 bars.append(QJsonObject{
                     {"timestamp", p.timestamp},
                     {"date", QDateTime::fromSecsSinceEpoch(p.timestamp, QTimeZone::UTC).toString(Qt::ISODate)},
-                    {"open", p.open},
-                    {"high", p.high},
-                    {"low", p.low},
+                    {"open", num_or_null(p.open, p.has_open)},
+                    {"high", num_or_null(p.high, p.has_high)},
+                    {"low", num_or_null(p.low, p.has_low)},
+                    // Every bar that reaches here has a close; one without is
+                    // dropped at the parse boundary (parse_history_point).
                     {"close", p.close},
-                    {"volume", static_cast<double>(p.volume)}});
+                    {"volume", num_or_null(static_cast<double>(p.volume), p.has_volume)}});
             }
 
             return ToolResult::ok_data(QJsonObject{{"symbol", symbol},

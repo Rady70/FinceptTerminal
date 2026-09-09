@@ -1,6 +1,6 @@
 #include "ui/navigation/ToolBar.h"
 
-#include "auth/AuthManager.h"
+#include "core/capability/CapabilityManager.h"
 #include "ui/pushpins/PushpinBar.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
@@ -77,9 +77,9 @@ ToolBar::ToolBar(QWidget* parent) : QWidget(parent) {
     };
 
     sep();
-    // FINCEPT / TERMINAL are brand marks — set raw, never translated.
-    fincept_label_ = mk(QStringLiteral("FINCEPT "));
-    hl->addWidget(fincept_label_);
+    // MARKETLAB / TERMINAL are brand marks — set raw, never translated.
+    marketlab_label_ = mk(QStringLiteral("MARKETLAB "));
+    hl->addWidget(marketlab_label_);
     branding_label_ = mk(QStringLiteral("TERMINAL"));
     hl->addWidget(branding_label_);
     subtitle_label_ = mk({});
@@ -106,45 +106,8 @@ ToolBar::ToolBar(QWidget* parent) : QWidget(parent) {
 
     hl->addStretch(0);
 
-    user_label_ = mk("---");
-    user_label_->setMaximumWidth(120);
-    hl->addWidget(user_label_);
-    sep();
-    credits_label_ = mk("---");
-    credits_label_->setMaximumWidth(100);
-    hl->addWidget(credits_label_);
-    sep();
-    plan_btn_ = new QPushButton("---");
-    plan_btn_->setCursor(Qt::PointingHandCursor);
-    plan_btn_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    connect(plan_btn_, &QPushButton::clicked, this, &ToolBar::plan_clicked);
-    hl->addWidget(plan_btn_);
-
-    // Enterprise CTA. Deliberately added without its own separator: the
-    // credits/chat visibility toggles in apply_responsive_layout() index into
-    // separators_ by position, so inserting one here would shift them.
-    upgrade_btn_ = new QPushButton;
-    upgrade_btn_->setFixedHeight(20);
-    upgrade_btn_->setCursor(Qt::PointingHandCursor);
-    upgrade_btn_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    connect(upgrade_btn_, &QPushButton::clicked, this, &ToolBar::upgrade_clicked);
-    hl->addWidget(upgrade_btn_);
-    sep();
-
-    chat_mode_btn_ = new QPushButton;
-    chat_mode_btn_->setFixedHeight(20);
-    chat_mode_btn_->setCursor(Qt::PointingHandCursor);
-    chat_mode_btn_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    connect(chat_mode_btn_, &QPushButton::clicked, this, &ToolBar::chat_mode_toggled);
-    hl->addWidget(chat_mode_btn_);
-    sep();
-
-    logout_btn_ = new QPushButton;
-    logout_btn_->setFixedHeight(20);
-    logout_btn_->setCursor(Qt::PointingHandCursor);
-    logout_btn_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-    connect(logout_btn_, &QPushButton::clicked, this, &ToolBar::logout_clicked);
-    hl->addWidget(logout_btn_);
+    // MarketLab: the account/credits/plan/UPGRADE/CHAT/LOGOUT cluster is
+    // removed with the account model (FINCEPT_FORK_PLAN.md §5.1, §6).
 
     retranslateUi();
 
@@ -154,13 +117,9 @@ ToolBar::ToolBar(QWidget* parent) : QWidget(parent) {
     clock_timer_->start();
     update_clock();
 
-    connect(&auth::AuthManager::instance(), &auth::AuthManager::auth_state_changed, this,
-            &ToolBar::refresh_user_display);
-
     connect(&ThemeManager::instance(), &ThemeManager::theme_changed, this,
             [this](const ThemeTokens&) { refresh_theme(); });
 
-    refresh_user_display();
     refresh_theme();
 }
 
@@ -173,32 +132,11 @@ void ToolBar::changeEvent(QEvent* e) {
 
 void ToolBar::retranslateUi() {
     if (subtitle_label_)
-        subtitle_label_->setText(tr("  |  PROFESSIONAL RESEARCH DESK"));
+        subtitle_label_->setText(tr("  |  LOCAL-FIRST RESEARCH WORKSPACE"));
     if (live_label_)
         live_label_->setText(tr(" LIVE"));
-    if (plan_btn_)
-        plan_btn_->setToolTip(tr("View Plans & Pricing"));
-    if (upgrade_btn_) {
-        // U+25B4 up-pointing triangle as an icon; only the label translates.
-        // fromUtf8 is required — QStringLiteral would widen each UTF-8 byte
-        // into its own UTF-16 unit and render as mojibake.
-        upgrade_btn_->setText(QString::fromUtf8("\xe2\x96\xb4 ") + tr("UPGRADE"));
-        upgrade_btn_->setToolTip(tr("Upgrade to Fincept Terminal Enterprise — the private edition"));
-    }
-    if (chat_mode_btn_) {
-        // Keep the ⬡ glyph (U+2B21) as a visual icon; only the label after it
-        // translates. Must use fromUtf8 to decode the UTF-8 bytes — wrapping
-        // them in QStringLiteral widens each byte into its own UTF-16 unit and
-        // renders as mojibake ("â¬¡").
-        chat_mode_btn_->setText(QString::fromUtf8("\xe2\xac\xa1 ") + tr("CHAT"));
-        chat_mode_btn_->setToolTip(tr("Switch to Chat Mode (F9)"));
-    }
-    if (logout_btn_)
-        logout_btn_->setText(tr("LOGOUT"));
     // Rebuild menus so the new translator applies to every QAction label.
     rebuild_menus();
-    // Refresh user display so "FREE" / "---" placeholders pick up new locale.
-    refresh_user_display();
 }
 
 void ToolBar::rebuild_menus() {
@@ -232,41 +170,12 @@ void ToolBar::refresh_theme() {
         if (l)
             l->setStyleSheet(QString("color:%1;%2background:transparent;").arg(c, b ? "font-weight:700;" : ""));
     };
-    lbl(fincept_label_, colors::AMBER(), true);
+    lbl(marketlab_label_, colors::AMBER(), true);
     lbl(branding_label_, colors::TEXT_PRIMARY(), true);
     lbl(subtitle_label_, colors::TEXT_SECONDARY());
     lbl(live_dot_, colors::POSITIVE());
     lbl(live_label_, colors::POSITIVE(), true);
     lbl(clock_label_, colors::TEXT_PRIMARY());
-    lbl(user_label_, colors::AMBER());
-    lbl(credits_label_, colors::POSITIVE());
-    if (plan_btn_)
-        plan_btn_->setStyleSheet(QString("QPushButton{color:%1;background:transparent;border:none;padding:0 2px;}"
-                                         "QPushButton:hover{color:%2;}")
-                                     .arg(colors::TEXT_PRIMARY())
-                                     .arg(colors::AMBER()));
-    // Filled rather than outlined — the only solid button on the row, so the
-    // Enterprise CTA reads as the primary action next to LOGOUT and CHAT.
-    if (upgrade_btn_)
-        upgrade_btn_->setStyleSheet(QString("QPushButton{background:%1;color:%2;border:1px solid %1;"
-                                            "padding:0 8px;font-weight:700;}"
-                                            "QPushButton:hover{background:%3;border-color:%3;}")
-                                        .arg(colors::AMBER())
-                                        .arg(colors::BG_BASE())
-                                        .arg(colors::AMBER_DIM()));
-    if (chat_mode_btn_)
-        chat_mode_btn_->setStyleSheet(QString("QPushButton{background:transparent;color:%1;border:1px solid %2;"
-                                              "padding:0 8px;font-weight:700;}"
-                                              "QPushButton:hover{background:%2;color:%3;border-color:%1;}")
-                                          .arg(colors::AMBER())
-                                          .arg(colors::AMBER_DIM())
-                                          .arg(colors::TEXT_PRIMARY()));
-    if (logout_btn_)
-        logout_btn_->setStyleSheet(QString("QPushButton{background:transparent;color:%1;border:1px solid %1;"
-                                           "padding:0 8px;font-weight:700;}"
-                                           "QPushButton:hover{background:%1;color:%2;border-color:%1;}")
-                                       .arg(colors::NEGATIVE())
-                                       .arg(colors::TEXT_PRIMARY()));
 }
 
 void ToolBar::resizeEvent(QResizeEvent* e) {
@@ -275,12 +184,10 @@ void ToolBar::resizeEvent(QResizeEvent* e) {
 }
 
 void ToolBar::apply_responsive_layout(int w) {
-    // Progressive disclosure thresholds: 1200=subtitle, 800=clock+LIVE, 650=credits+chat.
+    // Progressive disclosure thresholds: 1200=subtitle, 800=clock+LIVE.
     bool show_subtitle = (w >= 1200);
     bool show_clock = (w >= 800);
     bool show_live = (w >= 800);
-    bool show_credits = (w >= 650);
-    bool show_chat = (w >= 650);
 
     if (subtitle_label_)
         subtitle_label_->setVisible(show_subtitle);
@@ -290,46 +197,11 @@ void ToolBar::apply_responsive_layout(int w) {
         live_dot_->setVisible(show_live);
     if (live_label_)
         live_label_->setVisible(show_live);
-    if (credits_label_)
-        credits_label_->setVisible(show_credits);
-    if (chat_mode_btn_)
-        chat_mode_btn_->setVisible(show_chat);
-
-    // Two extra separators were added to bracket the inline pushpin bar at
-    // the start of the layout, so the credits/chat separator indices shift by 2.
-    if (separators_.size() >= 7) {
-        separators_[4]->setVisible(show_credits);
-        separators_[5]->setVisible(show_chat);
-    }
 }
 
 void ToolBar::update_clock() {
     auto dt = QDateTime::currentDateTime();
     clock_label_->setText(dt.toString("dd MMM yy").toUpper() + " " + dt.toString("HH:mm:ss"));
-}
-
-void ToolBar::refresh_user_display() {
-    const auto& s = auth::AuthManager::instance().session();
-    if (!s.authenticated) {
-        user_label_->setText("---");
-        credits_label_->setText("---");
-        plan_btn_->setText("---");
-        return;
-    }
-
-    QString name = s.user_info.username.isEmpty() ? s.user_info.email : s.user_info.username;
-    QFontMetrics fm(user_label_->font());
-    user_label_->setText(fm.elidedText(name, Qt::ElideRight, user_label_->maximumWidth() - 4));
-    user_label_->setToolTip(name);
-
-    int credits = static_cast<int>(s.user_info.credit_balance);
-    credits_label_->setText(tr("%1 CR").arg(credits));
-    credits_label_->setStyleSheet(
-        QString("color:%1;background:transparent;")
-            .arg(s.user_info.credit_balance > 0 ? colors::POSITIVE.get() : colors::NEGATIVE.get()));
-
-    QString plan_text = s.account_type().toUpper();
-    plan_btn_->setText(plan_text.isEmpty() ? tr("FREE") : plan_text);
 }
 
 QMenu* ToolBar::build_file_menu() {
@@ -399,6 +271,10 @@ QMenu* ToolBar::build_navigate_menu() {
     };
 
     auto nav = [this](QMenu* menu, const QString& label, const QString& id) {
+        // MarketLab: menu entries respect the capability gate, matching the
+        // command palette and component browser filters.
+        if (!capability::CapabilityManager::instance().is_screen_allowed(id))
+            return;
         menu->addAction(label, this, [this, id]() { emit navigate_to(id); });
     };
 
@@ -410,27 +286,19 @@ QMenu* ToolBar::build_navigate_menu() {
     nav(mkt, tr("Asia Markets"), "asia_markets");
     nav(mkt, tr("Relationship Map"), "relationship_map");
 
-    auto* trd = add_sub(tr("Trading & Portfolio"));
-    nav(trd, tr("Equity Trading"), "equity_trading");
-    nav(trd, tr("Alpha Arena"), "alpha_arena");
-    nav(trd, tr("Prediction Markets"), "polymarket");
+    auto* trd = add_sub(tr("Research & Portfolio"));
     nav(trd, tr("Derivatives"), "derivatives");
-    nav(trd, tr("F&&O"), "fno");
     nav(trd, tr("Watchlist"), "watchlist");
-
-    auto* crypto = add_sub(tr("Crypto"));
-    nav(crypto, tr("Crypto Center"), "crypto_center");
+    nav(trd, tr("Portfolio"), "portfolio");
 
     auto* res = add_sub(tr("Research & Intelligence"));
     nav(res, tr("Equity Research"), "equity_research");
     nav(res, tr("M&A Analytics"), "ma_analytics");
     nav(res, tr("Alt. Investments"), "alt_investments");
     nav(res, tr("Geopolitics"), "geopolitics");
-    nav(res, tr("Maritime"), "maritime");
     nav(res, tr("Surface Analytics"), "surface_analytics");
 
     auto* tools = add_sub(tr("Tools"));
-    nav(tools, tr("Agent Config"), "agent_config");
     nav(tools, tr("MCP Servers"), "mcp_servers");
     nav(tools, tr("Data Mapping"), "data_mapping");
     nav(tools, tr("Data Sources"), "data_sources");
@@ -442,9 +310,7 @@ QMenu* ToolBar::build_navigate_menu() {
 
     m->addSeparator();
 
-    nav(m, tr("Forum"), "forum");
     nav(m, tr("Docs"), "docs");
-    nav(m, tr("Support"), "support");
     nav(m, tr("About"), "about");
 
     return m;
@@ -470,14 +336,9 @@ QMenu* ToolBar::build_view_menu() {
     panels->addAction(tr("Portfolio"), this, [this]() { emit action_triggered("panel_portfolio"); });
     panels->addAction(tr("Markets"), this, [this]() { emit action_triggered("panel_markets"); });
     panels->addSeparator();
-    panels->addAction(tr("Crypto Trading"), this, [this]() { emit action_triggered("panel_crypto"); });
-    panels->addAction(tr("Equity Trading"), this, [this]() { emit action_triggered("panel_equity"); });
-    panels->addAction(tr("Algo Trading"), this, [this]() { emit action_triggered("panel_algo"); });
-    panels->addSeparator();
     panels->addAction(tr("Equity Research"), this, [this]() { emit action_triggered("panel_research"); });
     panels->addAction(tr("Economics"), this, [this]() { emit action_triggered("panel_economics"); });
     panels->addAction(tr("Geopolitics"), this, [this]() { emit action_triggered("panel_geopolitics"); });
-    panels->addAction(tr("AI Chat"), this, [this]() { emit action_triggered("panel_ai_chat"); });
     m->addSeparator();
 
     auto* persp = m->addMenu(tr("Quick Switch"));
@@ -485,17 +346,10 @@ QMenu* ToolBar::build_view_menu() {
     persp->addAction(tr("Save Workspace"), this, [this]() { emit action_triggered("perspective_save"); });
     persp->addSeparator();
 
-    auto* qs_trading = persp->addMenu(tr("Trading"));
-    qs_trading->setStyleSheet(popup_ss());
-    qs_trading->addAction(tr("Crypto Trading"), this, [this]() { emit action_triggered("perspective_trading"); });
-    qs_trading->addAction(tr("Equity Trading"), this, [this]() { emit action_triggered("perspective_equity"); });
-    qs_trading->addAction(tr("Algo Trading"), this, [this]() { emit action_triggered("perspective_algo"); });
-
     auto* qs_research = persp->addMenu(tr("Research"));
     qs_research->setStyleSheet(popup_ss());
     qs_research->addAction(tr("Equity Research"), this, [this]() { emit action_triggered("perspective_research"); });
     qs_research->addAction(tr("Derivatives"), this, [this]() { emit action_triggered("perspective_derivatives"); });
-    qs_research->addAction(tr("F&&O"), this, [this]() { emit action_triggered("perspective_fno"); });
     qs_research->addAction(tr("M&&A Analytics"), this, [this]() { emit action_triggered("perspective_ma"); });
 
     persp->addAction(tr("Portfolio View"), this, [this]() { emit action_triggered("perspective_portfolio"); });
@@ -509,11 +363,6 @@ QMenu* ToolBar::build_view_menu() {
 
     persp->addAction(tr("Geopolitics View"), this, [this]() { emit action_triggered("perspective_geopolitics"); });
 
-    auto* qs_ai = persp->addMenu(tr("AI && Quant"));
-    qs_ai->setStyleSheet(popup_ss());
-    qs_ai->addAction(tr("Quant Lab"), this, [this]() { emit action_triggered("perspective_quant"); });
-    qs_ai->addAction(tr("AI Chat"), this, [this]() { emit action_triggered("perspective_ai"); });
-
     persp->addAction(tr("Tools View"), this, [this]() { emit action_triggered("perspective_tools"); });
     m->addSeparator();
 
@@ -525,17 +374,16 @@ QMenu* ToolBar::build_view_menu() {
 QMenu* ToolBar::build_help_menu() {
     auto* m = new QMenu(tr("Help"), this);
     m->setStyleSheet(popup_ss());
-    m->addAction(tr("About Fincept"), this, [this]() { emit navigate_to("about"); });
+    m->addAction(tr("About MarketLab Terminal"), this, [this]() { emit navigate_to("about"); });
     m->addAction(tr("Help Center"), this, [this]() { emit navigate_to("help"); });
     m->addSeparator();
     m->addAction(tr("Contact Us"), this, [this]() { emit navigate_to("contact"); });
     m->addAction(tr("Terms of Service"), this, [this]() { emit navigate_to("terms"); });
     m->addAction(tr("Privacy Policy"), this, [this]() { emit navigate_to("privacy"); });
     m->addAction(tr("Trademarks"), this, [this]() { emit navigate_to("trademarks"); });
-    m->addSeparator();
-    m->addAction(tr("Check for Updates"), this, [this]() { emit action_triggered("check_updates"); });
-    m->addSeparator();
-    m->addAction(tr("Logout"), this, [this]() { emit action_triggered("logout"); });
+    // MarketLab: "Check for Updates" and "Logout" are removed — automatic
+    // updates are disabled and there is no account session (FINCEPT_FORK_PLAN
+    // §5.1, §10).
     return m;
 }
 

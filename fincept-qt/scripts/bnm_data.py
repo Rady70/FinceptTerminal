@@ -99,7 +99,7 @@ class BNMWrapper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Fincept-Terminal/4.0.2",
+            "User-Agent": "MarketLabTerminal/0.1.0",
             "Accept":     ACCEPT_HEADER,
         })
 

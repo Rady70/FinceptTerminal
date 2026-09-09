@@ -266,13 +266,9 @@ void DocsScreen::build_sidebar() {
     add_item(research, tr("Portfolio"), "portfolio");
     add_item(research, tr("M&A Analytics"), "ma_analytics");
 
-    // ── AI & Quantitative ────────────────────────────────────────────────────
-    auto* ai = add_category(tr("AI & QUANTITATIVE"));
-    add_item(ai, tr("AI Quant Lab"), "ai_quant_lab");
-    add_item(ai, tr("QuantLib Suite"), "quantlib");
-    add_item(ai, tr("AI Chat"), "ai_chat");
-    add_item(ai, tr("Agent Studio"), "agent_config");
-    add_item(ai, tr("Alpha Arena"), "alpha_arena");
+    // ── Quantitative ─────────────────────────────────────────────────────────
+    auto* quant = add_category(tr("QUANTITATIVE"));
+    add_item(quant, tr("QuantLib Suite"), "quantlib");
 
     // ── Data Sources ─────────────────────────────────────────────────────────
     auto* data_cat = add_category(tr("DATA SOURCES"));
@@ -351,12 +347,8 @@ void DocsScreen::build_content_pages() {
     add("portfolio", page_portfolio());
     add("ma_analytics", page_ma_analytics());
 
-    // AI
-    add("ai_quant_lab", page_ai_quant_lab());
+    // Quantitative
     add("quantlib", page_quantlib());
-    add("ai_chat", page_ai_chat());
-    add("agent_config", page_agent_config());
-    add("alpha_arena", page_alpha_arena());
 
     // Data
     add("dbnomics", page_dbnomics());
@@ -475,7 +467,7 @@ DocsScreen::DocsScreen(QWidget* parent) : QWidget(parent) {
     // Brand + version string — shown verbatim, not translated. Read from the
     // running application rather than hardcoded: the literal here said v4.0.0
     // while the app shipped as 4.0.1.
-    breadcrumb_ = new QLabel(QStringLiteral("FINCEPT TERMINAL v%1").arg(QCoreApplication::applicationVersion()));
+    breadcrumb_ = new QLabel(QStringLiteral("MARKETLAB TERMINAL v%1").arg(QCoreApplication::applicationVersion()));
     breadcrumb_->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold;"
                                        " background: transparent; letter-spacing: 0.5px;"
                                        " font-family: 'Consolas','Courier New',monospace;")

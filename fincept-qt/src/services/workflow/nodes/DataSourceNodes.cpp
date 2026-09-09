@@ -1,5 +1,6 @@
 #include "services/workflow/nodes/DataSourceNodes.h"
 
+#include "network/http/ProbeGuard.h"
 #include "python/PythonRunner.h"
 #include "screens/data_sources/ConnectorRegistry.h"
 #include "screens/data_sources/DataSourceTypes.h"
@@ -161,14 +162,35 @@ void register_datasource_nodes(NodeRegistry& registry) {
                      // Try to resolve host/port
                      QString host = final_config.value("host").toString();
                      int port = final_config.value("port").toInt(0);
+                     const QString config_url = final_config.value("url").toString();
                      if (host.isEmpty()) {
                          // try to extract from url
-                         QString url = final_config.value("url").toString();
-                         if (!url.isEmpty()) {
-                             QUrl qurl(url);
+                         if (!config_url.isEmpty()) {
+                             QUrl qurl(config_url);
                              host = qurl.host();
                              port = qurl.port(qurl.scheme() == "https" ? 443 : 80);
                          }
+                     }
+
+                     // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). host
+                     // and url here are node parameters merged over a saved
+                     // connector config, so a workflow authored or imported
+                     // against a Fincept host opens a raw socket to it on every
+                     // run. The destination is configuration-derived, so hiding
+                     // the hosted connectors in the UI does not close this
+                     // route. Fail the node instead of spawning the probe. The
+                     // decision is ProbeGuard's, shared with the TEST button,
+                     // the status poller and the MCP tool.
+                     //
+                     // No divergence to guard against here: `host` below is the
+                     // only value the worker dials, it is the same local judged
+                     // on the line above, and when it came from config_url it is
+                     // exactly QUrl(config_url).host(). The URL is passed too so
+                     // the path-scoped Fincept-Corporation GitHub rules, which a
+                     // bare host cannot express, are still decided.
+                     if (const auto probe = network::ProbeGuard::check(config_url, host); probe.rejected) {
+                         cb(false, {}, probe.error);
+                         return;
                      }
 
                      if (!host.isEmpty() && port > 0) {

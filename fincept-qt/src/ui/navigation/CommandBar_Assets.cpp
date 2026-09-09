@@ -1,16 +1,18 @@
 // src/ui/navigation/CommandBar_Assets.cpp
 //
-// Asset-search mode: switching into a /stock /fund /index search,
-// debounced /market/search calls, and rendering the result list. Also owns
-// the to_yfinance_symbol helper that normalises broker exchange suffixes
-// before publishing the selected symbol onto the event bus.
+// Asset-search mode: switching into a /stock /fund /index search, debounced
+// local (yfinance-backed) searches via MarketSearchService, and rendering
+// the result list. Also owns the to_yfinance_symbol helper that normalises
+// broker exchange suffixes before publishing the selected symbol onto the
+// event bus. MarketLab: the hosted /market/search endpoint is replaced by
+// the local search path (FINCEPT_FORK_PLAN.md §7).
 //
 // Part of the partial-class split of CommandBar.cpp.
 
 #include "core/events/EventBus.h"
 #include "core/keys/KeyConfigManager.h"
 #include "core/session/ScreenStateManager.h"
-#include "network/http/HttpClient.h"
+#include "services/markets/MarketSearchService.h"
 #include "ui/navigation/CommandBar.h"
 #include "ui/navigation/CommandBar_internal.h"
 #include "ui/theme/Theme.h"
@@ -130,32 +132,10 @@ void CommandBar::schedule_asset_search(const QString& query) {
 }
 
 void CommandBar::fire_asset_search(const QString& query) {
-    const QString url = QString("/market/search?q=%1&type=%2&limit=%3").arg(query, active_asset_type_).arg(kMaxResults);
-
-    QPointer<CommandBar> self = this;
-    HttpClient::instance().get(url, [self, query](Result<QJsonDocument> result) {
-        if (!self)
-            return;
-        // Only process if user hasn't changed the query since we fired
-        if (self->pending_query_ != query)
-            return;
-        if (!result.is_ok())
-            return;
-
-        const auto doc = result.value();
-        QJsonArray arr;
-        if (doc.isArray()) {
-            arr = doc.array();
-        } else if (doc.isObject()) {
-            // API might wrap results in { "results": [...] } or { "data": [...] }
-            const auto obj = doc.object();
-            if (obj.contains("results"))
-                arr = obj["results"].toArray();
-            else if (obj.contains("data"))
-                arr = obj["data"].toArray();
-        }
-        self->on_asset_results(arr);
-    });
+    // MarketLab: local yfinance-backed search. request_id = the query string;
+    // stale responses are dropped by the results_ready handler in the
+    // constructor via pending_query_ comparison in on_asset_results callers.
+    services::MarketSearchService::instance().search(query, active_asset_type_, kMaxResults, query);
 }
 
 void CommandBar::on_asset_results(const QJsonArray& results) {

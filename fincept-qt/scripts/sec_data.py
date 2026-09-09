@@ -41,7 +41,7 @@ class SECDataWrapper:
 
         # SEC requires specific headers to avoid blocking
         self.session.headers.update({
-            'User-Agent': 'Fincept Terminal - financial analysis tool (contact@fincept.com)',
+            'User-Agent': 'MarketLab Terminal - local research build (no contact email)',
             'Accept-Encoding': 'gzip, deflate',
             'Accept': 'application/json'
         })

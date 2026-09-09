@@ -1,4 +1,4 @@
-// v003_data_mcp_agents — Data sources, MCP servers, agents, and context recording.
+// v003_data_mcp_agents — Data sources and MCP servers.
 
 #include "storage/sqlite/migrations/MigrationRunner.h"
 
@@ -119,51 +119,6 @@ Result<void> apply_v003(QSqlDatabase& db) {
                 "  tool_name TEXT PRIMARY KEY,"
                 "  category TEXT NOT NULL,"
                 "  is_enabled INTEGER DEFAULT 1,"
-                "  updated_at TEXT DEFAULT (datetime('now'))"
-                ")");
-    if (r.is_err())
-        return r;
-
-    // ── Recorded Contexts (tab data snapshots for AI) ────────────────────────
-    r = sql(db, "CREATE TABLE IF NOT EXISTS recorded_contexts ("
-                "  id TEXT PRIMARY KEY,"
-                "  tab_name TEXT NOT NULL,"
-                "  data_type TEXT NOT NULL,"
-                "  label TEXT,"
-                "  raw_data TEXT NOT NULL,"
-                "  metadata TEXT,"
-                "  data_size INTEGER,"
-                "  tags TEXT,"
-                "  created_at TEXT DEFAULT (datetime('now'))"
-                ")");
-    if (r.is_err())
-        return r;
-
-    sql(db, "CREATE INDEX IF NOT EXISTS idx_contexts_tab ON recorded_contexts(tab_name)");
-
-    // ── Recording Sessions ───────────────────────────────────────────────────
-    r = sql(db, "CREATE TABLE IF NOT EXISTS recording_sessions ("
-                "  id TEXT PRIMARY KEY,"
-                "  tab_name TEXT NOT NULL,"
-                "  is_active INTEGER DEFAULT 1,"
-                "  auto_record INTEGER DEFAULT 0,"
-                "  filters TEXT,"
-                "  started_at TEXT DEFAULT (datetime('now')),"
-                "  ended_at TEXT"
-                ")");
-    if (r.is_err())
-        return r;
-
-    // ── Agent Configs ────────────────────────────────────────────────────────
-    r = sql(db, "CREATE TABLE IF NOT EXISTS agent_configs ("
-                "  id TEXT PRIMARY KEY,"
-                "  name TEXT NOT NULL,"
-                "  description TEXT,"
-                "  config_json TEXT NOT NULL DEFAULT '{}',"
-                "  category TEXT DEFAULT 'general',"
-                "  is_default INTEGER DEFAULT 0,"
-                "  is_active INTEGER DEFAULT 0,"
-                "  created_at TEXT DEFAULT (datetime('now')),"
                 "  updated_at TEXT DEFAULT (datetime('now'))"
                 ")");
     if (r.is_err())

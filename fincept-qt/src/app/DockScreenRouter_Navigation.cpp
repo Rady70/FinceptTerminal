@@ -10,6 +10,7 @@
 #include "app/DockScreenRouter.h"
 #include "app/WindowFrame.h"
 #include "auth/InactivityGuard.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/components/PopularityTracker.h"
 #include "core/keys/WindowCycler.h"
 #include "core/logging/Logger.h"
@@ -51,6 +52,15 @@ void DockScreenRouter::navigate(const QString& id, bool exclusive) {
     // for keyboard/focus safety; this check catches programmatic callers.
     if (auth::InactivityGuard::instance().is_terminal_locked()) {
         LOG_DEBUG("DockRouter", QString("navigate('%1') suppressed — terminal locked").arg(id));
+        return;
+    }
+
+    // MarketLab: the central capability gate. Unavailable screens are denied
+    // here even when called programmatically (MCP tools, workflows, restored
+    // layouts, direct routing) — see FINCEPT_FORK_PLAN.md §5.2.
+    if (!capability::CapabilityManager::instance().is_screen_allowed(id)) {
+        const auto avail = capability::CapabilityManager::instance().screen_availability(id);
+        LOG_WARN("DockRouter", QString("navigate('%1') denied — unavailable in this build: %2").arg(id, avail.reason));
         return;
     }
 
@@ -239,6 +249,13 @@ void DockScreenRouter::tab_into(const QString& id) {
 }
 
 void DockScreenRouter::add_alongside(const QString& primary, const QString& secondary) {
+    // MarketLab: capability gate — both ids must be available in this build.
+    if (!capability::CapabilityManager::instance().is_screen_allowed(primary) ||
+        !capability::CapabilityManager::instance().is_screen_allowed(secondary)) {
+        LOG_WARN("DockRouter",
+                 QString("add_alongside('%1','%2') denied — screen unavailable in this build").arg(primary, secondary));
+        return;
+    }
     // If primary is already open, just add secondary into the next grid slot
     // without resetting the layout. This allows building up to a 2x2 grid
     // (4 panels) incrementally via repeated "add" commands.

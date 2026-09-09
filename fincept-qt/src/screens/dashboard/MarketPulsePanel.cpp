@@ -820,9 +820,16 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
             continue;
         const auto& q = breadth_cache_.value(sym);
         if (q.symbol == "^VIX") {
-            vix = q.price;
+            // A quote with no price is not "VIX 0.00" (FINCEPT_FORK_PLAN.md §4);
+            // leaving vix untouched keeps the panel's existing not-available path.
+            if (q.has_price)
+                vix = q.price;
             continue;
         }
+        // Without a change reading this symbol cannot be counted as advancing,
+        // declining OR unchanged — it is simply not an observation.
+        if (!q.has_change_pct)
+            continue;
         bool in_sp = sp500_set.contains(q.symbol);
         bool in_nq = nasdaq_set.contains(q.symbol);
         if (q.change_pct > 0.3) {
@@ -935,6 +942,10 @@ void MarketPulsePanel::rebuild_movers_from_cache() {
         if (movers_cache_.contains(sym))
             quotes.append(movers_cache_.value(sym));
     }
+    // Drop quotes with no change reading before ranking: a 0.0 default would
+    // sort as "flat" and could take a mover row from a symbol that actually moved.
+    quotes.erase(std::remove_if(quotes.begin(), quotes.end(), [](const auto& q) { return !q.has_change_pct; }),
+                 quotes.end());
     std::sort(quotes.begin(), quotes.end(), [](const auto& a, const auto& b) { return a.change_pct > b.change_pct; });
 
     // Reuse the fixed row pool — text-only updates, no widget churn.
@@ -942,7 +953,8 @@ void MarketPulsePanel::rebuild_movers_from_cache() {
     for (const auto& q : quotes) {
         if (q.change_pct <= 0 || gainers_added >= kMoverRows)
             break;
-        fill_mover_row(gainer_rows_[gainers_added], q.symbol, q.change_pct, format_volume(q.volume));
+        fill_mover_row(gainer_rows_[gainers_added], q.symbol, q.change_pct,
+                       q.has_volume ? format_volume(q.volume) : QString());
         ++gainers_added;
     }
     for (int i = gainers_added; i < gainer_rows_.size(); ++i)
@@ -953,7 +965,7 @@ void MarketPulsePanel::rebuild_movers_from_cache() {
         if (quotes[i].change_pct >= 0)
             continue;
         fill_mover_row(loser_rows_[losers_added], quotes[i].symbol, quotes[i].change_pct,
-                       format_volume(quotes[i].volume));
+                       (quotes[i].has_volume ? format_volume(quotes[i].volume) : QString()));
         ++losers_added;
     }
     for (int i = losers_added; i < loser_rows_.size(); ++i)

@@ -206,14 +206,6 @@ void AppearanceSection::build_ui() {
     vl->addWidget(interface_title_);
     vl->addSpacing(4);
 
-    chat_bubble_toggle_ = new QCheckBox(tr("Show AI Chat Bubble"));
-    chat_bubble_toggle_->setChecked(true);
-    chat_bubble_toggle_->setStyleSheet(check_ss());
-    auto* chat_bubble_row =
-        make_row(tr("AI Chat Bubble"), chat_bubble_toggle_, tr("Floating chat assistant in the bottom-right corner."));
-    capture_row_labels(chat_bubble_row, &chat_bubble_label_, &chat_bubble_desc_);
-    vl->addWidget(chat_bubble_row);
-
     ticker_bar_toggle_ = new QCheckBox(tr("Show Ticker Bar"));
     ticker_bar_toggle_->setChecked(true);
     ticker_bar_toggle_->setStyleSheet(check_ss());
@@ -238,7 +230,6 @@ void AppearanceSection::build_ui() {
     app_font_size_->setAccessibleName(tr("Font size"));
     app_font_family_->setAccessibleName(tr("Font family"));
     app_density_->setAccessibleName(tr("Content density"));
-    chat_bubble_toggle_->setAccessibleName(tr("Show AI chat bubble"));
     ticker_bar_toggle_->setAccessibleName(tr("Show ticker bar"));
     animations_toggle_->setAccessibleName(tr("Enable animations"));
 
@@ -258,7 +249,6 @@ void AppearanceSection::build_ui() {
         repo.set("appearance.font_size", app_font_size_->currentText(), "appearance");
         repo.set("appearance.font_family", app_font_family_->currentText(), "appearance");
         repo.set("appearance.density", app_density_->currentText(), "appearance");
-        repo.set("appearance.show_chat_bubble", chat_bubble_toggle_->isChecked() ? "true" : "false", "appearance");
         repo.set("appearance.show_ticker_bar", ticker_bar_toggle_->isChecked() ? "true" : "false", "appearance");
         repo.set("appearance.animations", animations_toggle_->isChecked() ? "true" : "false", "appearance");
 
@@ -342,7 +332,6 @@ void AppearanceSection::reload() {
     load_combo(app_font_family_, "appearance.font_family", kDefaultFontFamily);
     load_combo(app_density_, "appearance.density", kDefaultDensity);
 
-    load_check(chat_bubble_toggle_, "appearance.show_chat_bubble", true);
     load_check(ticker_bar_toggle_, "appearance.show_ticker_bar", true);
     load_check(animations_toggle_, "appearance.animations", true);
 
@@ -384,13 +373,6 @@ void AppearanceSection::retranslateUi() {
         density_desc_->setText(tr("Controls padding and spacing throughout the UI."));
 
     // Interface rows: row labels, checkbox texts, and descriptions.
-    if (chat_bubble_label_)
-        chat_bubble_label_->setText(tr("AI Chat Bubble"));
-    if (chat_bubble_toggle_)
-        chat_bubble_toggle_->setText(tr("Show AI Chat Bubble"));
-    if (chat_bubble_desc_)
-        chat_bubble_desc_->setText(tr("Floating chat assistant in the bottom-right corner."));
-
     if (ticker_bar_label_)
         ticker_bar_label_->setText(tr("Ticker Bar"));
     if (ticker_bar_toggle_)

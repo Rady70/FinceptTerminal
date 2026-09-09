@@ -160,46 +160,34 @@ QWidget* HelpScreen::build_page() {
                                  .arg(colors::AMBER(), MF));
         text_vl->addWidget(title);
 
-        auto* sub = new QLabel(tr("Find answers, get support, and connect with the Fincept community."));
+        auto* sub = new QLabel(tr("Local-first research workspace — bundled documentation and usage notes."));
         sub->setStyleSheet(
             QString("color: %1; font-size: 12px; background: transparent; %2").arg(colors::TEXT_SECONDARY(), MF));
         text_vl->addWidget(sub);
 
         hl->addLayout(text_vl, 1);
 
-        // Contact chips on the right
+        // MarketLab: the Fincept email / Discord / GitHub contact chips are
+        // replaced by plain text — no external-browser launches exist in this
+        // fork (FINCEPT_FORK_PLAN.md §4, §5.3).
         auto* chips_vl = new QVBoxLayout;
         chips_vl->setSpacing(5);
 
         auto make_chip = [](const QString& icon, const QString& text, const QString& color,
                             const QString& url = {}) -> QWidget* {
-            if (url.isEmpty()) {
-                auto* chip = new QLabel(icon.isEmpty() ? text : QString("%1  %2").arg(icon, text));
-                chip->setStyleSheet(QString("color: %1; font-size: 11px; background: transparent;"
-                                            " font-family:'Consolas','Courier New',monospace;")
-                                        .arg(color));
-                return chip;
-            }
-            auto* chip = new QPushButton(icon.isEmpty() ? text : QString("%1  %2").arg(icon, text));
-            chip->setFlat(true);
-            chip->setCursor(Qt::PointingHandCursor);
-            chip->setStyleSheet(QString("QPushButton { color: %1; font-size: 11px; background: transparent;"
-                                        " border: none; text-align: left; padding: 0;"
-                                        " font-family:'Consolas','Courier New',monospace; }"
-                                        "QPushButton:hover { color: %2; }")
-                                    .arg(color, colors::AMBER()));
-            QObject::connect(chip, &QPushButton::clicked, chip, [url]() { QDesktopServices::openUrl(QUrl(url)); });
+            Q_UNUSED(url);
+            auto* chip = new QLabel(icon.isEmpty() ? text : QString("%1  %2").arg(icon, text));
+            chip->setStyleSheet(QString("color: %1; font-size: 11px; background: transparent;"
+                                        " font-family:'Consolas','Courier New',monospace;")
+                                    .arg(color));
             return chip;
         };
-        // Email + Discord chip text is shown verbatim (URL/handle) — not translated.
-        // Business-hours label IS translated.
-        chips_vl->addWidget(make_chip("✉", "support@fincept.in", colors::CYAN, "mailto:support@fincept.in"));
-        chips_vl->addWidget(make_chip("", "discord.gg/ae87a8ygbN", colors::POSITIVE, "https://discord.gg/ae87a8ygbN"));
-        // No staffed-hours claim: the project has no published support roster,
-        // and the previous "Mon-Fri 9AM-6PM EST" line implied one.
         chips_vl->addWidget(
-            make_chip("", "github.com/Fincept-Corporation/FinceptTerminal", colors::TEXT_TERTIARY,
-                      "https://github.com/Fincept-Corporation/FinceptTerminal/issues"));
+            make_chip("", tr("No account, subscription, or hosted service required"), colors::POSITIVE));
+        chips_vl->addWidget(
+            make_chip("", tr("Fork repository: github.com/Rady70/FinceptTerminal"), colors::TEXT_TERTIARY));
+        chips_vl->addWidget(
+            make_chip("", tr("Upstream: Fincept Terminal v4.5.0 (AGPL-3.0-or-later)"), colors::TEXT_TERTIARY));
         hl->addLayout(chips_vl);
 
         vl->addWidget(hero);
@@ -223,13 +211,12 @@ QWidget* HelpScreen::build_page() {
             QString label;
             QString desc;
         };
+        // MarketLab: quick actions are local only — no account actions, no
+        // external links (FINCEPT_FORK_PLAN.md §4, §5.3, §6).
         const Action actions[] = {
-            {"", "create_account", tr("Create Account"), tr("Register for full access")},
-            {"", "reset_password", tr("Reset Password"), tr("Recover your account")},
-            {"", "documentation", tr("Documentation"), tr("Guides, tutorials & API ref")},
-            {"", "report_bug", tr("Report a Bug"), tr("Open a GitHub issue")},
-            {"", "join_discord", tr("Join Discord"), tr("Community & live support")},
-            {"", "support_tickets", tr("Email Support"), tr("Or open a ticket in the Support tab")},
+            {"", "documentation", tr("Documentation"), tr("Bundled docs — open the Docs screen")},
+            {"", "settings", tr("Settings"), tr("Configure data sources, integrations, and appearance")},
+            {"", "about", tr("About"), tr("Fork identity, upstream base, and capabilities")},
         };
 
         int col = 0, row = 0;
@@ -275,28 +262,13 @@ QWidget* HelpScreen::build_page() {
             btn->setAccessibleName(a.label);
             btn->setToolTip(a.desc);
 
-            // Wire known actions by stable English key (label is localized).
-            // Four of these six buttons had no connect() at all — clicking
-            // Documentation / Report a Bug / Join Discord / Support Tickets did
-            // nothing. The three that map to a public URL now open it; the
-            // in-app ticket view is reachable from the Support tab, which the
-            // description now says.
             const QString key = QString::fromLatin1(a.key);
-            auto open = [btn](const QString& url) {
-                QObject::connect(btn, &QPushButton::clicked, btn, [url]() { QDesktopServices::openUrl(QUrl(url)); });
-            };
-            if (key == "create_account")
-                connect(btn, &QPushButton::clicked, this, &HelpScreen::navigate_register);
-            else if (key == "reset_password")
-                connect(btn, &QPushButton::clicked, this, &HelpScreen::navigate_forgot_password);
-            else if (key == "documentation")
-                open(QStringLiteral("https://github.com/Fincept-Corporation/FinceptTerminal/tree/main/docs"));
-            else if (key == "report_bug")
-                open(QStringLiteral("https://github.com/Fincept-Corporation/FinceptTerminal/issues/new"));
-            else if (key == "join_discord")
-                open(QStringLiteral("https://discord.gg/ae87a8ygbN"));
-            else if (key == "support_tickets")
-                open(QStringLiteral("mailto:support@fincept.in"));
+            if (key == "documentation")
+                connect(btn, &QPushButton::clicked, this, &HelpScreen::navigate_docs);
+            else if (key == "settings")
+                connect(btn, &QPushButton::clicked, this, &HelpScreen::navigate_settings);
+            else if (key == "about")
+                connect(btn, &QPushButton::clicked, this, &HelpScreen::navigate_about);
         }
 
         vl->addLayout(grid);
@@ -315,44 +287,36 @@ QWidget* HelpScreen::build_page() {
             QString a;
         };
         const FAQ faqs[] = {
-            {"", tr("How do I reset my password?"),
-             tr("Click \"Forgot Password\" on the login screen. Enter your email address and we'll "
-                "send you a reset link. The link expires in 24 hours.")},
+            {"", tr("Do I need a Fincept account?"),
+             tr("No. MarketLab Terminal is a local-first fork: the workspace opens without any "
+                "account, subscription, or hosted service.")},
 
-            {"", tr("What is Guest Access?"),
-             tr("Guest access lets you explore the terminal without creating an account. "
-                "Features like trading, portfolio management, and AI analytics require a "
-                "registered account.")},
+            {"", tr("Where does market data come from?"),
+             tr("Public market data (quotes, history, symbol search) comes from independently "
+                "configured public providers such as Yahoo Finance via the bundled Python "
+                "scripts. Sources and retrieval status are displayed with each result.")},
 
-            {"", tr("What is a Credit?"),
-             tr("Credits are the in-app currency used for premium features such as AI analysis, "
-                "advanced data feeds, and quantitative analytics. Free accounts receive a limited "
-                "number of credits on signup. Additional credits can be purchased in Settings → Billing.")},
-
-            {"", tr("How do I connect a broker?"),
-             tr("Navigate to Settings → Brokers, select your broker from the list, and enter your "
-                "API key and secret. Fincept supports 16 brokers including Zerodha, Angel One, "
-                "Upstox, Interactive Brokers, and more.")},
+            {"", tr("Can I place live orders?"),
+             tr("No. This fork exposes no external broker or exchange order route. "
+                "Historical simulation and paper backtests remain available in Backtesting.")},
 
             {"", tr("Why does Python install at first launch?"),
-             tr("Fincept embeds Python 3.11 for its analytics scripts covering equity, "
-                "portfolio, derivatives, and quant analysis. The one-time install happens "
-                "automatically in the background.")},
+             tr("The terminal embeds a Python 3.11 runtime for its public-data and analytics "
+                "scripts. The one-time install happens automatically at first start.")},
 
             {"", tr("What are the system requirements?"),
-             tr("Windows 10+ (x64), macOS 12+, or Linux (glibc 2.31+). 8 GB RAM recommended. "
-                "Active internet required for data feeds. Python 3.11 is installed automatically "
-                "during first-time setup.")},
+             tr("Windows 10+ (x64). 8 GB RAM recommended. Internet access is required only for "
+                "public data feeds; the local workspace opens without any network.")},
 
             {"", tr("Is my data secure?"),
-             tr("Credentials are stored encrypted via SecureStorage (OS keychain on each platform). "
-                "API keys are never logged or sent to Fincept servers — they are used only for "
-                "direct broker connections from your machine.")},
+             tr("Credentials (if you configure any third-party provider) are stored encrypted via "
+                "SecureStorage. No Fincept-hosted service is ever contacted, and provider keys "
+                "are used only for direct connections from your machine.")},
 
-            {"", tr("How do I report a bug?"),
-             tr("Open a ticket in the Support tab with category \"Bug Report\", or file a GitHub "
-                "issue. Include your OS, version, steps to reproduce, and any error messages you "
-                "see. If the app crashed, attach the dump from About → Diagnostics.")},
+            {"", tr("Where is my data stored?"),
+             tr("All state lives under %LOCALAPPDATA%\\com.marketlab.terminal (per profile: data, "
+                "logs, cache, files, workspaces). The official Fincept profile is never read, "
+                "migrated, or modified.")},
         };
 
         for (const auto& f : faqs)
@@ -363,7 +327,7 @@ QWidget* HelpScreen::build_page() {
 
     // ── Getting Started ────────────────────────────────────────────────────────
     {
-        vl->addWidget(section_header(tr("GETTING STARTED"), tr("New to Fincept? Start here")));
+        vl->addWidget(section_header(tr("GETTING STARTED"), tr("First steps with MarketLab Terminal")));
         vl->addSpacing(8);
 
         struct Step {
@@ -372,10 +336,10 @@ QWidget* HelpScreen::build_page() {
             QString detail;
         };
         const Step steps[] = {
-            {"1", tr("Create an account"), tr("Register at fincept.in or use the in-app sign-up.")},
-            {"2", tr("Complete setup"), tr("The setup wizard installs Python and configures your paths.")},
-            {"3", tr("Connect a data source"), tr("Add a broker or enable free data feeds in Data Sources.")},
-            {"4", tr("Explore the terminal"), tr("Browse Markets, Research, AI Chat, and QuantLib tabs.")},
+            {"1", tr("Complete first-time setup"), tr("The setup wizard installs the bundled Python runtime.")},
+            {"2", tr("Open the workspace"), tr("The local dashboard opens directly — no account or login.")},
+            {"3", tr("Fetch public data"), tr("Use Markets, Watchlist, or Equity Research for quotes and history.")},
+            {"4", tr("Configure providers"), tr("Set up optional data providers in Settings.")},
         };
 
         auto* steps_widget = new QWidget(page);
@@ -425,6 +389,8 @@ QWidget* HelpScreen::build_page() {
     }
 
     // ── Contact & Resources ───────────────────────────────────────────────────
+    // MarketLab: plain-text identity only — no external links, email handlers,
+    // or browser launches (FINCEPT_FORK_PLAN.md §4, §5.3).
     {
         vl->addWidget(section_header(tr("CONTACT & RESOURCES")));
         vl->addSpacing(8);
@@ -435,15 +401,13 @@ QWidget* HelpScreen::build_page() {
         struct Contact {
             const char* icon;
             QString label;
-            const char* value; // brand string — URL / handle, not translated
-            const char* url;
+            QString value;
         };
         const Contact contacts[] = {
-            {"✉", tr("Email Support"), "support@fincept.in", "mailto:support@fincept.in"},
-            {"", tr("Discord Server"), "discord.gg/ae87a8ygbN", "https://discord.gg/ae87a8ygbN"},
-            {"", tr("Website"), "fincept.in", "https://fincept.in"},
-            {"", tr("GitHub"), "github.com/Fincept-Corporation/FinceptTerminal",
-             "https://github.com/Fincept-Corporation/FinceptTerminal"},
+            {"", tr("Fork repository"), tr("github.com/Rady70/FinceptTerminal (source only)")},
+            {"", tr("Upstream"), tr("Fincept Terminal v4.5.0 — commit ec88590, AGPL-3.0-or-later")},
+            {"", tr("Support"), tr("Personal research build — no commercial support channel")},
+            {"", tr("Docs"), tr("Bundled Docs screen and About → Diagnostics")},
         };
 
         int ci = 0;
@@ -467,15 +431,10 @@ QWidget* HelpScreen::build_page() {
             lbl->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent; %2")
                                    .arg(colors::TEXT_TERTIARY(), MF));
 
-            auto* val = new QPushButton(c.value);
-            val->setFlat(true);
-            val->setCursor(Qt::PointingHandCursor);
-            val->setStyleSheet(QString("QPushButton { color: %1; font-size: 11px; background: transparent;"
-                                       " border: none; text-align: left; padding: 0; %2 }"
-                                       "QPushButton:hover { color: %3; text-decoration: underline; }")
-                                   .arg(colors::CYAN(), MF, colors::AMBER()));
-            const QString link(c.url);
-            QObject::connect(val, &QPushButton::clicked, val, [link]() { QDesktopServices::openUrl(QUrl(link)); });
+            auto* val = new QLabel(c.value);
+            val->setWordWrap(true);
+            val->setStyleSheet(
+                QString("color: %1; font-size: 11px; background: transparent; %2").arg(colors::CYAN(), MF));
 
             tvl->addWidget(lbl);
             tvl->addWidget(val);

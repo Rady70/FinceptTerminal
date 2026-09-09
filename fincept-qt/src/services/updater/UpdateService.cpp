@@ -147,6 +147,22 @@ bool UpdateService::is_newer(const QString& local, const QString& remote) {
 // ── Public entry point ──────────────────────────────────────────────────────
 
 void UpdateService::check_for_updates(bool silent) {
+    // MarketLab: automatic updates are disabled in this fork (FINCEPT_FORK_PLAN.md
+    // §10) and the upstream manifest lives on a Fincept-owned destination
+    // (raw.githubusercontent.com/Fincept-Corporation). No check is performed
+    // and no network access is attempted; updates are delivered by rebuilding
+    // the fork from source.
+    Q_UNUSED(silent);
+    LOG_INFO("UpdateService", "Automatic updates are disabled in MarketLab Terminal — no update check performed");
+    if (!silent)
+        show_error(QStringLiteral("Automatic updates are disabled in MarketLab Terminal.\n\n"
+                                  "This fork is updated by rebuilding from source; see the fork plan."));
+    emit check_finished(false);
+    return;
+}
+
+#if 0  // upstream update flow — disabled in MarketLab Terminal
+void UpdateService::check_for_updates_upstream(bool silent) {
     if (in_progress_) {
         LOG_INFO("UpdateService", "Check already in progress — ignoring duplicate call");
         return;
@@ -216,6 +232,7 @@ void UpdateService::check_for_updates(bool silent) {
     QNetworkReply* reply = net_.get(req);
     connect(reply, &QNetworkReply::finished, this, &UpdateService::on_manifest_reply_finished);
 }
+#endif // MarketLab: upstream update flow disabled
 
 // ── Manifest signature ──────────────────────────────────────────────────────
 

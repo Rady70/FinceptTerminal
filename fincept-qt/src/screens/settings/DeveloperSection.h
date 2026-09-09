@@ -1,7 +1,6 @@
 #pragma once
 // DeveloperSection.h — DataHub Inspector and other devtools surfaces.
 
-#include <QCheckBox>
 #include <QEvent>
 #include <QLabel>
 #include <QWidget>
@@ -21,9 +20,6 @@ class DeveloperSection : public QWidget {
     /// Called from changeEvent() on QEvent::LanguageChange.
     void retranslateUi();
 
-    QLabel* agentic_title_ = nullptr;
-    QLabel* agentic_desc_ = nullptr;
-    QCheckBox* agentic_toggle_ = nullptr;
     QLabel* inspector_title_ = nullptr;
     QLabel* inspector_desc_ = nullptr;
 };

@@ -148,7 +148,6 @@ DashboardStatusBar::DashboardStatusBar(QWidget* parent) : QWidget(parent) {
     uptime_timer_.setInterval(1000);
     connect(&uptime_timer_, &QTimer::timeout, this, &DashboardStatusBar::update_uptime);
 
-    nam_ = new QNetworkAccessManager(this);
     ping_timer_.setInterval(30000);
     connect(&ping_timer_, &QTimer::timeout, this, &DashboardStatusBar::ping_api);
 
@@ -195,8 +194,7 @@ void DashboardStatusBar::showEvent(QShowEvent* event) {
     // P3: start every owned QTimer here, stop in hideEvent.
     if (!uptime_timer_.isActive())
         uptime_timer_.start();
-    if (!ping_timer_.isActive())
-        ping_timer_.start();
+    // MarketLab: the Fincept API-health ping timer stays off (see ping_api).
     if (!mem_timer_.isActive())
         mem_timer_.start();
     // Kick once immediately so the bar isn't blank on first show.
@@ -280,14 +278,19 @@ void DashboardStatusBar::update_memory() {
 }
 
 void DashboardStatusBar::ping_api() {
-    QNetworkRequest req(QUrl(fincept::AppConfig::instance().api_base_url() + "/health"));
-    req.setTransferTimeout(5000);
-    ping_elapsed_.restart();
-    QNetworkReply* reply = nam_->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-        reply->deleteLater();
-        set_latency(reply->error() == QNetworkReply::NoError ? static_cast<int>(ping_elapsed_.elapsed()) : -1);
-    });
+    // MarketLab: the Fincept API-health widget (GET api.fincept.in/health on a
+    // 30s timer) is removed (FINCEPT_FORK_PLAN.md §5.3, §6 — "remove ...
+    // API-health ... widgets"). The status bar reports local state only; no
+    // network request is ever made from this widget.
+    last_latency_ms_ = -2;
+    if (latency_label_)
+        latency_label_->setText(tr("LAT: ---"));
+    feeds_connected_ = false;
+    if (feeds_label_)
+        feeds_label_->setText(tr("LOCAL"));
+    if (feeds_label_)
+        feeds_label_->setStyleSheet(
+            QString("color:%1;font-weight:bold;background:transparent;").arg(ui::colors::POSITIVE()));
 }
 
 void DashboardStatusBar::set_latency(int ms) {

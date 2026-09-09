@@ -361,52 +361,17 @@ struct ToolDef {
     AuthLevel auth_required = AuthLevel::None;
 
     /// True for state-mutating tools that should always prompt the user
-    /// (e.g. set_setting, set_active_llm, run_python_script, place_order,
+    /// (e.g. set_setting, run_python_script, place_order,
     /// delete_*, file ops). The Phase 6.12 modal triggers regardless of
     /// auth_required when this is set.
     bool is_destructive = false;
 
     // ── Phase 6: Naming convention migration ────────────────────────────
     /// Old names this tool used to have. Lets us migrate names without
-    /// breaking existing LLM workflows / saved chats — McpProvider's name
-    /// resolver tries each alias if the canonical name doesn't match.
+    /// breaking existing saved workflows — McpProvider's name resolver tries
+    /// each alias if the canonical name doesn't match.
     /// New tools leave this empty.
     QStringList legacy_aliases;
-};
-
-// ============================================================================
-// Tool Filter — Phase 6 catalogue subsetting
-// ============================================================================
-//
-// Today's `format_tools_for_openai()` returns ALL ~237 enabled tools on
-// every LLM request — ~100-150 KB of schema per turn. ToolFilter lets
-// callers (LlmService dispatch path, agent tooling, future settings UI)
-// scope the catalogue per-call so:
-//
-//   • prompt cost shrinks for non-cached providers
-//   • the LLM has fewer distractors when picking a tool
-//   • dangerous categories can be excluded by default and lazy-discovered
-//     via the tool_list / tool_describe meta-tools (Phase 6.2).
-
-struct ToolFilter {
-    /// Inclusive — only tools whose category matches one of these are kept.
-    /// Empty = no inclusion filter (all categories pass).
-    QStringList categories;
-
-    /// Exclusive — drop tools whose category matches one of these. Applied
-    /// AFTER `categories` inclusion.
-    QStringList exclude_categories;
-
-    /// Regex include filter on tool name. Empty = no include filter.
-    QStringList name_patterns;
-
-    /// Regex exclude filter on tool name. Applied after include.
-    QStringList exclude_name_patterns;
-
-    /// Hard cap on returned tool count. 0 = no cap.
-    /// Truncation happens after all other filters have run, in the order
-    /// tools were registered (effectively: most-recently-registered last).
-    int max_tools = 0;
 };
 
 // ============================================================================
@@ -460,7 +425,7 @@ struct UnifiedTool {
 // Constants
 // ============================================================================
 
-inline constexpr const char* INTERNAL_SERVER_ID = "fincept-terminal";
-inline constexpr const char* INTERNAL_SERVER_NAME = "Fincept Terminal";
+inline constexpr const char* INTERNAL_SERVER_ID = "marketlab-terminal";
+inline constexpr const char* INTERNAL_SERVER_NAME = "MarketLab Terminal";
 
 } // namespace fincept::mcp

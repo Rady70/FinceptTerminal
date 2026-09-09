@@ -150,10 +150,9 @@ src/
 ├── auth/             # Guest + registered auth, JWT
 ├── python/           # Embedded Python bridge, PythonRunner
 ├── datahub/          # DataHub producers/consumers (see DATAHUB_ARCHITECTURE.md)
-├── services/         # 18 service domains — market data, news, agents, workflow, etc.
+├── services/         # Service domains — market data, news, workflow, etc.
 ├── trading/          # Trading core + 18 broker integrations
 ├── mcp/              # Model Context Protocol infrastructure (24 tool modules)
-├── ai_chat/          # AI chat UI + LlmService
 └── screens/          # 50+ terminal screens, one subdirectory each
 ```
 
@@ -163,9 +162,6 @@ src/
 scripts/
 ├── Analytics/        # Analytics modules — equity, portfolio, derivatives,
 │                     #   fixed income, economics, corporate finance
-├── agents/           # AI agent frameworks (finagent_core, Geopolitics, HedgeFund, …)
-├── ai_quant_lab/     # ML, factor discovery, HFT, RL trading, vision quant
-├── agno_trading/     # Agno-based trading agents
 └── *.py              # 100+ top-level data fetchers (market, gov, economic, alt)
 ```
 

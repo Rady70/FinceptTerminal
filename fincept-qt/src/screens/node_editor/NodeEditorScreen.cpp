@@ -35,6 +35,19 @@
 
 namespace fincept::workflow {
 
+namespace {
+QStringList unknown_node_types(const WorkflowDef& workflow) {
+    QStringList unknown;
+    const auto& registry = NodeRegistry::instance();
+    for (const auto& node : workflow.nodes) {
+        if (!registry.find(node.type) && !unknown.contains(node.type))
+            unknown.append(node.type);
+    }
+    unknown.sort();
+    return unknown;
+}
+} // namespace
+
 NodeEditorScreen::NodeEditorScreen(QWidget* parent)
     : QWidget(parent), undo_stack_(new QUndoStack(this)), auto_save_timer_(new QTimer(this)) {
     build_ui();
@@ -370,6 +383,8 @@ void NodeEditorScreen::wire_signals() {
         LOG_INFO("NodeEditor", QString("Workflow saved: %1").arg(id));
     });
     connect(&svc, &WorkflowService::workflow_loaded, this, [this](const WorkflowDef& wf) {
+        const QStringList unknown = unknown_node_types(wf);
+        current_workflow_read_only_ = !unknown.isEmpty();
         scene_->deserialize(wf);
         toolbar_->set_workflow_name(wf.name);
         current_workflow_id_ = wf.id;
@@ -377,7 +392,17 @@ void NodeEditorScreen::wire_signals() {
         // The stack's commands reference nodes from the previous graph — undoing
         // into them after a load would resurrect foreign nodes / drop live ones.
         reset_undo_history();
-        LOG_INFO("NodeEditor", QString("Workflow loaded: %1").arg(wf.name));
+        if (current_workflow_read_only_) {
+            LOG_WARN("NodeEditor", QString("Workflow loaded read-only; unavailable node types preserved in storage: %1")
+                                       .arg(unknown.join(", ")));
+            QMessageBox::warning(this, tr("Workflow Opened Read-Only"),
+                                 tr("This saved workflow contains unavailable node types (%1). The visible graph is "
+                                    "read-only and will not be auto-saved, executed, exported, or deployed. Its stored "
+                                    "definition remains unchanged.")
+                                     .arg(unknown.join(", ")));
+        } else {
+            LOG_INFO("NodeEditor", QString("Workflow loaded: %1").arg(wf.name));
+        }
     });
     connect(&svc, &WorkflowService::workflow_load_failed, this,
             [](const QString& err) { LOG_ERROR("NodeEditor", QString("Load failed: %1").arg(err)); });
@@ -549,6 +574,8 @@ void NodeEditorScreen::on_clear_workflow() {
         undo_stack_->push(
             new commands::ReplaceGraphCommand(scene_, scene_->serialize(), WorkflowDef{}, tr("Clear workflow")));
         properties_->clear();
+        current_workflow_id_.clear();
+        current_workflow_read_only_ = false;
         LOG_INFO("NodeEditor", "Workflow cleared");
     }
 }
@@ -615,14 +642,29 @@ void NodeEditorScreen::on_import_workflow() {
         wf.edges.append(ed);
     }
 
+    const QStringList unknown = unknown_node_types(wf);
+    current_workflow_read_only_ = !unknown.isEmpty();
+    current_workflow_id_.clear();
     scene_->deserialize(wf);
     toolbar_->set_workflow_name(wf.name);
     properties_->clear();
     reset_undo_history(); // the previous graph's commands no longer apply
+    if (current_workflow_read_only_) {
+        QMessageBox::warning(this, tr("Workflow Imported Read-Only"),
+                             tr("The imported file contains unavailable node types (%1). The source file is unchanged, "
+                                "and this partial view cannot be saved, executed, exported, or deployed.")
+                                 .arg(unknown.join(", ")));
+    }
     LOG_INFO("NodeEditor", QString("Imported workflow: %1").arg(wf.name));
 }
 
 void NodeEditorScreen::on_export_workflow() {
+    if (current_workflow_read_only_) {
+        QMessageBox::warning(this, tr("Read-Only Workflow"),
+                             tr("This workflow contains unavailable node types. Export is disabled to avoid creating a "
+                                "truncated copy."));
+        return;
+    }
     QString path = QFileDialog::getSaveFileName(this, tr("Export Workflow"), "workflow.json",
                                                 tr("JSON Files (*.json);;All Files (*)"));
     if (path.isEmpty())
@@ -674,6 +716,11 @@ void NodeEditorScreen::on_export_workflow() {
 }
 
 void NodeEditorScreen::on_save_workflow() {
+    if (current_workflow_read_only_) {
+        QMessageBox::warning(this, tr("Read-Only Workflow"),
+                             tr("This workflow contains unavailable node types and cannot be overwritten."));
+        return;
+    }
     WorkflowDef wf = scene_->serialize();
     if (current_workflow_id_.isEmpty())
         current_workflow_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -719,6 +766,8 @@ void NodeEditorScreen::on_load_workflow() {
 }
 
 void NodeEditorScreen::on_auto_save() {
+    if (current_workflow_read_only_)
+        return;
     if (scene_->node_items().isEmpty())
         return; // nothing to save
 
@@ -735,6 +784,13 @@ void NodeEditorScreen::on_execute() {
     if (WorkflowService::instance().is_executing()) {
         WorkflowService::instance().stop_execution();
         LOG_INFO("NodeEditor", "Execution stopped by user");
+        return;
+    }
+
+    if (current_workflow_read_only_) {
+        QMessageBox::warning(
+            this, tr("Read-Only Workflow"),
+            tr("This workflow contains unavailable node types and cannot be executed as a partial graph."));
         return;
     }
 
@@ -842,13 +898,10 @@ void NodeEditorScreen::on_show_templates() {
         // Risk & Safety
         tr("9. Daily Risk Monitor — Positions → VaR → loss limit → alert"),
         tr("10. Pre-Trade Compliance — Full validation before order execution"),
-        // Data & AI
-        tr("11. News Sentiment Pipeline — Fetch news → NLP → filter → alert"),
-        tr("12. AI Research Agent — Multi-agent analysis with mediator"),
         // Operations
-        tr("13. Scheduled Report — Daily P&L report to email"),
-        tr("14. Data Export Pipeline — Fetch → transform → CSV export"),
-        tr("15. Webhook Automation — External trigger → process → notify"),
+        tr("11. Scheduled Report — Daily P&L report to email"),
+        tr("12. Data Export Pipeline — Fetch → transform → CSV export"),
+        tr("13. Webhook Automation — External trigger → process → notify"),
     };
 
     bool ok = false;
@@ -1133,70 +1186,7 @@ void NodeEditorScreen::on_show_templates() {
         make_edge(n7.id, "output_main", n9.id, "input_0");
         toolbar_->set_workflow_name("Pre-Trade Compliance");
     } else if (idx == 10) {
-        // ── 11. News Sentiment Pipeline ─────────────────────────────
-        auto n1 = make_node("trigger.news_event", "Tech News", 100, 200);
-        set_param(n1, "keywords", "AAPL,earnings,revenue,guidance");
-        auto n2 = make_node("market.get_news", "Fetch News", 400, 200);
-        set_param(n2, "symbol", "AAPL");
-        set_param(n2, "limit", 20);
-        auto n3 = make_node("transform.filter", "Filter Relevant", 700, 200);
-        set_param(n3, "field", "relevance");
-        set_param(n3, "operator", "greater_than");
-        set_param(n3, "value", "0.7");
-        auto n4 = make_node("agent.single", "Sentiment Agent", 1000, 200);
-        set_param(n4, "agent_type", "economic");
-        set_param(n4, "prompt", "Analyze sentiment of these news articles. Rate bullish/bearish 1-10.");
-        auto n5 = make_node("control.if_else", "Bullish?", 1300, 200);
-        auto n6 = make_node("notify.telegram", "Buy Signal", 1600, 100);
-        auto n7 = make_node("core.set", "Hold", 1600, 350);
-        set_param(n7, "key", "action");
-        set_param(n7, "value", "hold_position");
-        auto n8 = make_node("output.results_display", "Signal", 1900, 100);
-        auto n9 = make_node("output.results_display", "No Action", 1900, 350);
-        make_edge(n1.id, "output_main", n2.id, "input_0");
-        make_edge(n2.id, "output_main", n3.id, "input_0");
-        make_edge(n3.id, "output_main", n4.id, "input_0");
-        make_edge(n4.id, "output_main", n5.id, "input_0");
-        make_edge(n5.id, "output_true", n6.id, "input_0");
-        make_edge(n5.id, "output_false", n7.id, "input_0");
-        make_edge(n6.id, "output_main", n8.id, "input_0");
-        make_edge(n7.id, "output_main", n9.id, "input_0");
-        toolbar_->set_workflow_name("News Sentiment Pipeline");
-    } else if (idx == 11) {
-        // ── 12. AI Research Agent ───────────────────────────────────
-        auto n1 = make_node("trigger.manual", "Start Research", 100, 250);
-        auto n2 = make_node("market.get_quote", "Current Price", 400, 100);
-        set_param(n2, "symbol", "NVDA");
-        auto n3 = make_node("market.get_fundamentals", "Fundamentals", 400, 300);
-        set_param(n3, "symbol", "NVDA");
-        set_param(n3, "type", "overview");
-        auto n4 = make_node("market.get_news", "Recent News", 400, 500);
-        set_param(n4, "symbol", "NVDA");
-        auto n5 = make_node("control.merge", "Combine Data", 700, 250);
-        auto n6 = make_node("agent.single", "Bull Case Agent", 1000, 100);
-        set_param(n6, "agent_type", "investor");
-        set_param(n6, "prompt", "Make the bull case for this stock based on the data.");
-        auto n7 = make_node("agent.single", "Bear Case Agent", 1000, 400);
-        set_param(n7, "agent_type", "hedge_fund");
-        set_param(n7, "prompt", "Make the bear case for this stock. Identify risks.");
-        auto n8 = make_node("agent.mediator", "Synthesize", 1300, 250);
-        set_param(n8, "mode", "debate");
-        set_param(n8, "mediator_prompt", "Synthesize bull and bear cases into a balanced investment thesis.");
-        auto n9 = make_node("output.results_display", "Research Report", 1600, 250);
-        make_edge(n1.id, "output_main", n2.id, "input_0");
-        make_edge(n1.id, "output_main", n3.id, "input_0");
-        make_edge(n1.id, "output_main", n4.id, "input_0");
-        make_edge(n2.id, "output_main", n5.id, "input_0");
-        make_edge(n3.id, "output_main", n5.id, "input_1");
-        make_edge(n4.id, "output_main", n5.id, "input_2");
-        make_edge(n5.id, "output_main", n6.id, "input_0");
-        make_edge(n5.id, "output_main", n7.id, "input_0");
-        make_edge(n6.id, "output_main", n8.id, "input_0");
-        make_edge(n7.id, "output_main", n8.id, "input_1");
-        make_edge(n8.id, "output_main", n9.id, "input_0");
-        toolbar_->set_workflow_name("AI Research Agent");
-    } else if (idx == 12) {
-        // ── 13. Scheduled Report ────────────────────────────────────
+        // ── 11. Scheduled Report ────────────────────────────────────
         auto n1 = make_node("trigger.schedule", "Daily 5 PM", 100, 200);
         set_param(n1, "cron", "0 17 * * 1-5");
         auto n2 = make_node("trading.get_positions", "Positions", 400, 100);
@@ -1215,8 +1205,8 @@ void NodeEditorScreen::on_show_templates() {
         make_edge(n5.id, "output_main", n6.id, "input_0");
         make_edge(n6.id, "output_main", n7.id, "input_0");
         toolbar_->set_workflow_name("Scheduled Daily Report");
-    } else if (idx == 13) {
-        // ── 14. Data Export Pipeline ────────────────────────────────
+    } else if (idx == 11) {
+        // ── 12. Data Export Pipeline ────────────────────────────────
         auto n1 = make_node("trigger.manual", "Start", 100, 200);
         auto n2 = make_node("utility.http_request", "Fetch API Data", 400, 200);
         set_param(n2, "url", "https://api.example.com/data");
@@ -1242,8 +1232,8 @@ void NodeEditorScreen::on_show_templates() {
         make_edge(n5.id, "output_main", n6.id, "input_0");
         make_edge(n6.id, "output_main", n7.id, "input_0");
         toolbar_->set_workflow_name("Data Export Pipeline");
-    } else if (idx == 14) {
-        // ── 15. Webhook Automation ──────────────────────────────────
+    } else if (idx == 12) {
+        // ── 13. Webhook Automation ──────────────────────────────────
         auto n1 = make_node("trigger.webhook", "Incoming Webhook", 100, 200);
         set_param(n1, "path", "/trading-signal");
         set_param(n1, "method", "POST");
@@ -1267,6 +1257,7 @@ void NodeEditorScreen::on_show_templates() {
     }
 
     current_workflow_id_.clear();
+    current_workflow_read_only_ = false;
     // The scene already holds the template; record the swap so Ctrl+Z restores
     // whatever was on the canvas before. (push() re-applies `after`, which
     // rebuilds an identical graph.)
@@ -1275,6 +1266,11 @@ void NodeEditorScreen::on_show_templates() {
 }
 
 void NodeEditorScreen::on_deploy() {
+    if (current_workflow_read_only_) {
+        QMessageBox::warning(this, tr("Read-Only Workflow"),
+                             tr("This workflow contains unavailable node types and cannot be deployed or saved."));
+        return;
+    }
     DeployDialog dlg(toolbar_->workflow_name(), this);
     if (dlg.exec() != QDialog::Accepted)
         return;

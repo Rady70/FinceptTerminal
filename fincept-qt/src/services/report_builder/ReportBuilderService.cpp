@@ -18,7 +18,7 @@ namespace fincept::services {
 
 static constexpr const char* RB_SVC_TAG = "ReportBuilderService";
 static constexpr int kAutosaveIntervalMs = 60'000;
-static constexpr int kLlmWindowMs = 400;
+static constexpr int kToolWindowMs = 400;
 static constexpr int kRecentMax = 10;
 static constexpr const char* kRecentKey = "report_builder/recent";
 static constexpr const char* kCurrentFileKey = "report_builder/current_file";
@@ -330,15 +330,15 @@ ReportBuilderService::ReportBuilderService() {
     connect(autosave_timer_, &QTimer::timeout, this, &ReportBuilderService::trigger_autosave);
     autosave_timer_->start();
 
-    llm_window_timer_ = new QTimer(this);
-    llm_window_timer_->setSingleShot(true);
-    llm_window_timer_->setInterval(kLlmWindowMs);
-    connect(llm_window_timer_, &QTimer::timeout, this, [this]() {
-        // Close the macro we opened in note_llm_mutation().
+    tool_window_timer_ = new QTimer(this);
+    tool_window_timer_->setSingleShot(true);
+    tool_window_timer_->setInterval(kToolWindowMs);
+    connect(tool_window_timer_, &QTimer::timeout, this, [this]() {
+        // Close the macro we opened in note_tool_mutation().
         if (macro_depth_ > 0) {
             macro_depth_ = 0;
             undo_stack_->endMacro();
-            LOG_INFO(RB_SVC_TAG, "LLM macro window closed");
+            LOG_INFO(RB_SVC_TAG, "Tool macro window closed");
         }
     });
 
@@ -347,7 +347,7 @@ ReportBuilderService::ReportBuilderService() {
 
     // Restore current_file_ from settings so the title bar shows the right
     // path on relaunch. (The doc itself comes from autosave below.)
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     current_file_ = s.value(kCurrentFileKey).toString();
 
     // Try to restore from autosave on construction. Failures are silent —
@@ -546,14 +546,14 @@ void ReportBuilderService::end_macro() {
         undo_stack_->endMacro();
 }
 
-void ReportBuilderService::note_llm_mutation() {
+void ReportBuilderService::note_tool_mutation() {
     if (macro_depth_ == 0) {
         macro_depth_ = 1;
-        undo_stack_->beginMacro("AI: report changes");
-        LOG_INFO(RB_SVC_TAG, "LLM macro window opened (400ms)");
+        undo_stack_->beginMacro("Tool-driven report changes");
+        LOG_INFO(RB_SVC_TAG, "Tool macro window opened (400ms)");
     }
     // (Re)start the window timer — extend as long as mutations keep arriving.
-    llm_window_timer_->start();
+    tool_window_timer_->start();
 }
 
 void ReportBuilderService::push_undo(QUndoCommand* cmd) {
@@ -616,7 +616,7 @@ void ReportBuilderService::set_current_file(const QString& path) {
 }
 
 void ReportBuilderService::persist_current_file() {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     s.setValue(kCurrentFileKey, current_file_);
 }
 
@@ -640,20 +640,20 @@ void ReportBuilderService::trigger_autosave() {
 }
 
 void ReportBuilderService::load_recent() const {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     recent_cache_ = s.value(kRecentKey).toStringList();
     recent_loaded_ = true;
 }
 
 void ReportBuilderService::save_recent() const {
-    QSettings s("Fincept", "FinceptTerminal");
+    QSettings s("MarketLab", "MarketLabTerminal");
     s.setValue(kRecentKey, recent_cache_);
 }
 
 // ── apply_template ──────────────────────────────────────────────────────────
 //
 // Templates are large literal data — keeping the table of templates here
-// (out of the screen) means the LLM and manual UI both build the same
+// (out of the screen) means tool-driven and manual UI changes build the same
 // content. The template body lives in ReportBuilderTemplates.cpp so this
 // file stays focused.
 

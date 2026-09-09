@@ -4,6 +4,7 @@
 #include "mcp/tools/DataSourcesTools.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ProbeGuard.h"
 #include "screens/data_sources/ConnectorRegistry.h"
 #include "screens/data_sources/DataSourceTypes.h"
 #include "storage/repositories/DataSourceRepository.h"
@@ -13,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
+#include <QUrl>
 #include <QUuid>
 
 namespace fincept::mcp::tools {
@@ -325,7 +327,7 @@ std::vector<ToolDef> get_data_sources_tools() {
     {
         ToolDef t;
         t.name = "ds_list_connectors";
-        t.description = "List all available connector types with their ID, name, category, "
+        t.description = "List all available data-source connector types with their ID, name, category, "
                         "auth requirement, and testability. Use this to discover valid provider IDs.";
         t.category = "data-sources";
         t.input_schema.properties = QJsonObject{};
@@ -414,7 +416,7 @@ std::vector<ToolDef> get_data_sources_tools() {
     {
         ToolDef t;
         t.name = "ds_connectors_by_category";
-        t.description = "List connector types filtered by category. "
+        t.description = "List available data-source connector types filtered by category. "
                         "Valid categories: database, api, file, streaming, cloud, "
                         "timeseries, market-data, search, warehouse, alt-data, open-banking.";
         t.category = "data-sources";
@@ -516,6 +518,10 @@ std::vector<ToolDef> get_data_sources_tools() {
             // Resolve test host/port from config
             QString host;
             int port = 80;
+            // Kept alongside the resolved host for the containment check below:
+            // the Fincept GitHub-org rules are path-scoped, so only the full
+            // URL — not the host we distil out of it — can decide them.
+            QUrl url_form;
 
             // Try explicit URL fields first
             for (const char* key : {"url", "baseUrl", "endpoint", "wsdlUrl", "serviceRoot", "jobManagerUrl"}) {
@@ -525,6 +531,7 @@ std::vector<ToolDef> get_data_sources_tools() {
                     if (u.isValid() && !u.host().isEmpty()) {
                         host = u.host();
                         port = u.port(u.scheme() == "https" ? 443 : 80);
+                        url_form = u;
                         break;
                     }
                 }
@@ -585,6 +592,25 @@ std::vector<ToolDef> get_data_sources_tools() {
             if (host.isEmpty())
                 return ToolResult::fail("No testable endpoint found in connection config. "
                                         "Ensure required fields (host, url, etc.) are filled in.");
+
+            // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). Everything
+            // resolved above comes out of a saved connector config, so an agent
+            // pointing this tool at a connection that names a Fincept host
+            // would produce exactly the DNS + TCP traffic the fork forbids —
+            // the route is configuration-derived, which is why hiding the
+            // hosted connectors in the UI is not sufficient. The decision is
+            // ProbeGuard's, shared with the TEST button, the status poller and
+            // the workflow node, and unit-tested in tests/tst_direct_clients.cpp.
+            //
+            // Unlike ConnectionTester there is no divergence to guard against
+            // here: `host` below is the ONLY value connectToHost() is ever
+            // handed, and it is the same local judged on the line above — when
+            // it was distilled from a URL it is exactly url_form.host(). The URL
+            // form is passed as well only so the path-scoped
+            // Fincept-Corporation GitHub rules, which a bare host cannot
+            // express, are still decided.
+            if (const auto probe = network::ProbeGuard::check(url_form.toString(), host); probe.rejected)
+                return ToolResult::fail(probe.error);
 
             // TCP probe (synchronous — MCP handlers run off UI thread via McpService)
             QTcpSocket sock;

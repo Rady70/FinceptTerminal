@@ -22,7 +22,6 @@ class NewsDetailPanel : public QWidget {
     explicit NewsDetailPanel(QWidget* parent = nullptr);
 
     void show_article(const services::NewsArticle& article);
-    void show_analysis(const services::NewsAnalysis& analysis);
     void show_related(const QVector<services::NewsArticle>& related);
     void show_monitor_matches(const QVector<QPair<services::NewsMonitor, QStringList>>& matches);
     void show_entities(const services::EntityResult& entities);
@@ -38,7 +37,6 @@ class NewsDetailPanel : public QWidget {
     void changeEvent(QEvent* event) override;
 
   signals:
-    void analyze_requested(const QString& article_url);
     void related_article_clicked(const services::NewsArticle& article);
     void bookmark_requested(const services::NewsArticle& article);
     void panel_closed();
@@ -56,7 +54,6 @@ class NewsDetailPanel : public QWidget {
     // Static header / empty-state / section titles (cached for retranslateUi).
     QLabel* header_title_ = nullptr;
     QLabel* empty_label_ = nullptr;
-    QLabel* ai_title_ = nullptr;
     QLabel* monitor_title_ = nullptr;
     QLabel* related_title_ = nullptr;
     QLabel* entities_section_title_ = nullptr;
@@ -73,27 +70,6 @@ class NewsDetailPanel : public QWidget {
     QLabel* summary_label_ = nullptr;
     QLabel* impact_label_ = nullptr;
     QLabel* tickers_label_ = nullptr;
-
-    // AI analysis section
-    QWidget* analysis_section_ = nullptr;
-    QLabel* ai_fetch_note_ = nullptr; // publisher-block / metadata-only banner
-    QLabel* ai_summary_ = nullptr;
-    QLabel* ai_sentiment_ = nullptr;
-    QLabel* ai_urgency_ = nullptr;
-    QLabel* ai_prediction_ = nullptr;
-    QLabel* ai_confidence_ = nullptr;
-    QLabel* ai_keywords_ = nullptr;
-    QLabel* ai_credits_ = nullptr;
-    QLabel* key_points_title_ = nullptr;
-    QVBoxLayout* key_points_layout_ = nullptr;
-    QLabel* risk_title_ = nullptr;
-    QVBoxLayout* risk_layout_ = nullptr;
-    QLabel* topics_title_ = nullptr;
-    QVBoxLayout* topics_layout_ = nullptr;
-    QLabel* ai_entities_title_ = nullptr;
-    QVBoxLayout* ai_entities_layout_ = nullptr;
-    QPushButton* analyze_btn_ = nullptr;
-    QTimer* analyze_timeout_ = nullptr;
 
     // Monitor matches section
     QWidget* monitor_section_ = nullptr;

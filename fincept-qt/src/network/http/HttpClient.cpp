@@ -1,10 +1,13 @@
 #include "network/http/HttpClient.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
+#include "network/http/HostedPathGuard.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 
 #include <chrono>
@@ -84,6 +87,28 @@ std::string server_message(const QJsonDocument& doc, int status) {
         return prefix.toStdString();
     return (prefix + QStringLiteral(": ") + msg).toStdString();
 }
+
+/// MarketLab containment: every request funnels through this check before it
+/// reaches the network. Fincept-owned destinations yield a typed
+/// HostedServiceUnavailable error and never touch the wire (FINCEPT_FORK_PLAN
+/// §5.3). Relative URLs resolve against base_url_ so a configuration-derived
+/// Fincept route (the default api base URL) is rejected the same way.
+bool reject_hosted_destination(const QString& base_url, const QString& url, const QUrl& qurl,
+                               const HttpClient::JsonCallback& cb, const QObject* context) {
+    if (!network::HostedPathGuard::is_fincept_destination(qurl))
+        return false;
+    const QString err = network::HostedPathGuard::unavailable_error(qurl);
+    LOG_WARN(
+        "HTTP",
+        QString("Rejected request to Fincept-owned destination (%1) — no network access attempted").arg(qurl.host()));
+    const QObject* receiver = context ? context : nullptr;
+    // Deliver on the event loop like handle_reply() would; no network call is
+    // made. context-scoped lifetime mirrors handle_reply()'s contract.
+    QTimer::singleShot(0, receiver, [cb, err]() { cb(Result<QJsonDocument>::err(err.toStdString())); });
+    (void)base_url;
+    (void)url;
+    return true;
+}
 } // namespace
 
 int HttpClient::status_from_error(const std::string& error) {
@@ -113,7 +138,13 @@ HttpClient& HttpClient::instance() {
 }
 
 HttpClient::HttpClient() {
-    nam_ = new QNetworkAccessManager(this);
+    // GuardedNetworkAccessManager, not a raw one: reject_hosted_destination()
+    // below judges the URL each caller hands in, but only the manager sees a
+    // redirect Qt follows on its own — a permitted host answering
+    // "302 Location: https://api.fincept.in/..." is invisible at the call site.
+    // Both checks stay: the call-site one rejects earlier and reports through
+    // the JsonCallback with the URL the caller actually named.
+    nam_ = new network::GuardedNetworkAccessManager(this);
     // Qt disables the transfer timeout by default: a half-open TCP connection
     // never emits finished(), so the callback never runs, nothing is logged and
     // there is no cancel path — the only recovery is restarting the app. Every
@@ -127,7 +158,7 @@ QNetworkRequest HttpClient::build_request(const QString& url, const Headers& ext
     QUrl qurl(full_url);
     QNetworkRequest req{qurl};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    req.setHeader(QNetworkRequest::UserAgentHeader, "FinceptTerminal/4.0");
+    req.setHeader(QNetworkRequest::UserAgentHeader, "MarketLabTerminal/0.1.0");
 
     // Only attach auth on same-host requests — third-party absolute URLs (Slack/Discord/webhooks)
     // share this singleton and must NOT receive X-API-Key / X-Session-Token.
@@ -206,6 +237,9 @@ void HttpClient::handle_reply(QNetworkReply* reply, JsonCallback callback, const
 
 void HttpClient::get(const QString& url, JsonCallback callback, const QObject* context, const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "GET " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    if (reject_hosted_destination(base_url_, url, QUrl(full_url), callback, context))
+        return;
     auto* reply = nam_->get(build_request(url, extra_headers));
     handle_reply(reply, std::move(callback), context);
 }
@@ -213,6 +247,9 @@ void HttpClient::get(const QString& url, JsonCallback callback, const QObject* c
 void HttpClient::post(const QString& url, const QJsonObject& body, JsonCallback callback, const QObject* context,
                       const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "POST " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    if (reject_hosted_destination(base_url_, url, QUrl(full_url), callback, context))
+        return;
     QJsonDocument doc(body);
     auto* reply = nam_->post(build_request(url, extra_headers), doc.toJson());
     handle_reply(reply, std::move(callback), context);
@@ -221,6 +258,9 @@ void HttpClient::post(const QString& url, const QJsonObject& body, JsonCallback 
 void HttpClient::put(const QString& url, const QJsonObject& body, JsonCallback callback, const QObject* context,
                      const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "PUT " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    if (reject_hosted_destination(base_url_, url, QUrl(full_url), callback, context))
+        return;
     QJsonDocument doc(body);
     auto* reply = nam_->put(build_request(url, extra_headers), doc.toJson());
     handle_reply(reply, std::move(callback), context);
@@ -228,6 +268,9 @@ void HttpClient::put(const QString& url, const QJsonObject& body, JsonCallback c
 
 void HttpClient::del(const QString& url, JsonCallback callback, const QObject* context, const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "DELETE " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    if (reject_hosted_destination(base_url_, url, QUrl(full_url), callback, context))
+        return;
     auto* reply = nam_->deleteResource(build_request(url, extra_headers));
     handle_reply(reply, std::move(callback), context);
 }
@@ -235,6 +278,9 @@ void HttpClient::del(const QString& url, JsonCallback callback, const QObject* c
 void HttpClient::del(const QString& url, const QJsonObject& body, JsonCallback callback, const QObject* context,
                      const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "DELETE " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    if (reject_hosted_destination(base_url_, url, QUrl(full_url), callback, context))
+        return;
     QJsonDocument doc(body);
     auto* reply =
         nam_->sendCustomRequest(build_request(url, extra_headers), "DELETE", doc.toJson(QJsonDocument::Compact));

@@ -19,8 +19,11 @@ class HelpScreen : public QWidget {
 
   signals:
     void navigate_back();
-    void navigate_register();
-    void navigate_forgot_password();
+    // MarketLab: local navigation targets replace the upstream
+    // register/forgot-password routing (account flow removed).
+    void navigate_docs();
+    void navigate_settings();
+    void navigate_about();
 
   protected:
     void changeEvent(QEvent* event) override;

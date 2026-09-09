@@ -144,7 +144,7 @@ void LoggingSection::build_ui() {
     tag_title_->setStyleSheet(sub_title_ss());
     vl->addWidget(tag_title_);
 
-    tag_desc_ = new QLabel(tr("Override the log level for a specific tag (e.g. ExchangeService, AgentService)."));
+    tag_desc_ = new QLabel(tr("Override the log level for a specific tag (e.g. ExchangeService, NewsService)."));
     tag_desc_->setStyleSheet(label_ss());
     tag_desc_->setWordWrap(true);
     vl->addWidget(tag_desc_);
@@ -293,7 +293,7 @@ void LoggingSection::retranslateUi() {
     if (tag_title_)
         tag_title_->setText(tr("Per-Tag Overrides"));
     if (tag_desc_)
-        tag_desc_->setText(tr("Override the log level for a specific tag (e.g. ExchangeService, AgentService)."));
+        tag_desc_->setText(tr("Override the log level for a specific tag (e.g. ExchangeService, NewsService)."));
     if (add_btn_)
         add_btn_->setText(tr("+ Add Tag Override"));
     if (save_btn_)

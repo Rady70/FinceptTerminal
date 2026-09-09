@@ -5,6 +5,7 @@
 #include "core/logging/Logger.h"
 #include "core/session/ScreenStateManager.h"
 #include "core/symbol/SymbolDragSource.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "screens/news/NewsCommandBar.h"
 #include "screens/news/NewsDetailPanel.h"
 #include "screens/news/NewsFeedPanel.h"
@@ -21,7 +22,6 @@
 #include "ui/theme/Theme.h"
 
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSettings>
@@ -164,7 +164,6 @@ void NewsScreen::connect_signals() {
     connect(side_panel_, &NewsSidePanel::close_requested, this, &NewsScreen::on_drawer_toggle);
 
     // Detail panel (overlay)
-    connect(detail_panel_, &NewsDetailPanel::analyze_requested, this, &NewsScreen::on_analyze_requested);
     connect(detail_panel_, &NewsDetailPanel::panel_closed, this, &NewsScreen::on_detail_closed);
     connect(detail_panel_, &NewsDetailPanel::bookmark_requested, this, [this](const services::NewsArticle& article) {
         auto r = fincept::NewsArticleRepository::instance().toggle_saved(article.id);
@@ -262,20 +261,6 @@ void NewsScreen::connect_signals() {
             seen_flush_timer_->start();
     });
 
-    // Summarize button
-    connect(command_bar_, &NewsCommandBar::summarize_clicked, this, [this]() {
-        if (filtered_articles_.isEmpty())
-            return;
-        command_bar_->set_summarizing(true);
-        QPointer<NewsScreen> self = this;
-        services::NewsService::instance().summarize_headlines(filtered_articles_, 8, [self](bool ok, QString summary) {
-            if (!self)
-                return;
-            self->command_bar_->set_summarizing(false);
-            if (ok)
-                self->command_bar_->show_summary(summary);
-        });
-    });
     connect(detail_panel_, &NewsDetailPanel::related_article_clicked, this, &NewsScreen::on_related_clicked);
 
     // Ticker strip
@@ -310,8 +295,10 @@ void NewsScreen::connect_signals() {
         auto idx = feed_panel_->list_view()->currentIndex();
         if (idx.isValid()) {
             auto article = feed_panel_->model()->article_at(idx.row());
+            // MarketLab (§11.2): same fetched-content link, reached by shortcut
+            // rather than by click.
             if (!article.link.isEmpty())
-                QDesktopServices::openUrl(QUrl(article.link));
+                network::ExternalUrlGuard::open_external(QUrl(article.link), this);
         }
     });
 
@@ -544,11 +531,6 @@ void NewsScreen::on_article_clicked(const services::NewsArticle& article) {
     detail_panel_->show_article(article);
     feed_panel_->set_selected(article.id);
 
-    // Re-show a previously-run AI analysis for this article, if one was saved.
-    // Only a fresh ANALYZE click re-fetches/overwrites it.
-    if (auto cached = services::NewsService::instance().cached_analysis(article.link))
-        detail_panel_->show_analysis(*cached);
-
     // Find related articles from the same cluster
     for (const auto& cluster : clusters_) {
         if (cluster.lead_article.id == article.id ||
@@ -654,16 +636,6 @@ void NewsScreen::on_monitor_toggled(const QString& id) {
 void NewsScreen::on_monitor_deleted(const QString& id) {
     services::NewsMonitorService::instance().delete_monitor(id);
     update_monitors();
-}
-
-void NewsScreen::on_analyze_requested(const QString& url) {
-    QPointer<NewsScreen> self = this;
-    services::NewsService::instance().analyze_article(url, [self](bool ok, services::NewsAnalysis analysis) {
-        if (!self)
-            return;
-        if (ok)
-            self->detail_panel_->show_analysis(analysis);
-    });
 }
 
 void NewsScreen::on_related_clicked(const services::NewsArticle& article) {

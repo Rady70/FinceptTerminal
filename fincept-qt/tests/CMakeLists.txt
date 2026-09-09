@@ -119,4 +119,69 @@ fincept_add_test(tst_order_validator
     tst_order_validator.cpp
     "${PROJECT_SOURCE_DIR}/src/trading/OrderValidator.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator")
+# MarketLab: capability defaults, screen gating, and the hosted-path deny-list
+# (Qt Core only — two leaf TUs, no service linkage).
+fincept_add_test(tst_marketlab_boundary
+    tst_marketlab_boundary.cpp
+    "${PROJECT_SOURCE_DIR}/src/core/capability/CapabilityManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
+
+# MarketLab: the rejection the two direct clients (QuantLibClient and
+# CloudClient) share. Those clients own their own
+# QNetworkAccessManager, so the shared HttpClient deny-list never sees them and
+# each has to reject for itself — the decision they all call lives in the
+# DirectRouteGuard leaf so it can be linked here against Qt Core alone.
+# Deliberately NOT Qt6::Network: a binary with no network stack in it cannot
+# initiate I/O, which is half of what this suite asserts.
+fincept_add_test(tst_direct_clients
+    tst_direct_clients.cpp
+    "${PROJECT_SOURCE_DIR}/src/network/http/DirectRouteGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/ProbeGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp")
+
+# MarketLab: quote / candle parsing — the missing-vs-zero decision, and the
+# source / retrieval-time / status the result carries (FINCEPT_FORK_PLAN.md §4).
+# src/services/equity/EquityQuoteParse.h is header-only and depends only on Qt
+# Core plus EquityResearchModels.h (also header-only), so this adds one TU and
+# no app sources at all.
+fincept_add_test(tst_equity_parse
+    tst_equity_parse.cpp)
+
+# MarketLab: the same missing-vs-zero decision in the *markets* domain — the
+# history/quote/sparkline boundary every live chart widget and the MCP markets
+# tools read through. MarketDataService.cpp itself pulls PythonRunner,
+# PythonWorker, CacheManager, SettingsRepository, DataHub and Logger, so per the
+# HARD RULE the parsers live in src/services/markets/MarketQuoteParse.h, which
+# is header-only over Qt Core alone. One TU, no app sources.
+fincept_add_test(tst_market_parse
+    tst_market_parse.cpp)
+
+# MarketLab: redirect containment in GuardedNetworkAccessManager.
+#
+# THE ONE EXCEPTION to "a unit test that needs Network is testing the wrong
+# seam", and it is an exception on purpose rather than by drift. That rule was
+# written for pure-logic units, and it still holds for every other target above
+# — tst_direct_clients in particular keeps its Core-only link line precisely so
+# the binary has no network stack to initiate I/O with, and nothing here changes
+# that for any existing suite.
+#
+# This suite asserts a TRANSPORT behaviour, not a decision: that Qt, having
+# followed a 302 without ever re-entering createRequest(), is stopped at the
+# redirect hop. No predicate's return value can prove that, because the defect
+# lived in what Qt did after the predicate had already said yes. Proving it
+# needs a real reply following a real 302 over a real socket, so the test starts
+# its own loopback QTcpServers — it resolves no name, contacts nothing off the
+# machine, and needs no internet.
+#
+# Qt6::Network is added AFTER fincept_add_test() rather than inside it, so the
+# function keeps handing every other target Qt6::Test + Qt6::Core and nothing
+# else. Three leaf TUs: the guard, the deny-list it consults, and Logger for the
+# LOG_WARN in the refusal paths.
+fincept_add_test(tst_redirect_guard
+    tst_redirect_guard.cpp
+    "${PROJECT_SOURCE_DIR}/src/network/http/GuardedNetworkAccessManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_redirect_guard")

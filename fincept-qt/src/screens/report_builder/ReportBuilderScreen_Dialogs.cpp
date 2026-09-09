@@ -433,7 +433,7 @@ void ReportBuilderScreen::on_open() {
     if (!confirm_replace_document(tr("Open Report")))
         return;
     QString path =
-        QFileDialog::getOpenFileName(this, tr("Open Report"), "", tr("Fincept Report (*.fincept);;JSON (*.json)"));
+        QFileDialog::getOpenFileName(this, tr("Open Report"), "", tr("MarketLab Report (*.fincept);;JSON (*.json)"));
     if (path.isEmpty())
         return;
     auto r = Service::instance().load_from(path);
@@ -447,7 +447,7 @@ void ReportBuilderScreen::on_save() {
     QString path = svc.current_file();
     if (path.isEmpty()) {
         path = QFileDialog::getSaveFileName(this, tr("Save Report"), svc.metadata().title,
-                                            tr("Fincept Report (*.fincept);;JSON (*.json)"));
+                                            tr("MarketLab Report (*.fincept);;JSON (*.json)"));
         if (path.isEmpty())
             return;
         // QFileDialog does not append the filter suffix on every platform; a

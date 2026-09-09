@@ -1,6 +1,7 @@
 // src/screens/portfolio/PortfolioCommandBar.cpp
 #include "screens/portfolio/PortfolioCommandBar.h"
 
+#include "core/capability/CapabilityManager.h"
 #include "ui/theme/Theme.h"
 
 #include <QAction>
@@ -344,27 +345,7 @@ void PortfolioCommandBar::build_detail_tabs(QHBoxLayout* layout) {
 }
 
 void PortfolioCommandBar::build_tools_cluster(QHBoxLayout* layout) {
-    auto make_tool_btn = [&](QPushButton*& out, const QString& text, const char* accent, auto signal) {
-        out = new QPushButton(text);
-        out->setFixedHeight(22);
-        out->setMinimumWidth(52);
-        out->setCursor(Qt::PointingHandCursor);
-        out->setProperty("accent", QString(accent));
-        out->setObjectName("pfToolBtn");
-        connect(out, &QPushButton::clicked, this, signal);
-        layout->addWidget(out);
-    };
-
-    // AI = AMBER (brand action). AGENT = CYAN (info-tier).
-    // Custom hex colors (#9D4EDD purple, #00D4AA teal) violated DESIGN_SYSTEM
-    // colour discipline — only AMBER/CYAN/POSITIVE/NEGATIVE/WARNING are allowed.
-    make_tool_btn(ai_btn_, tr("AI"), ui::colors::AMBER(), &PortfolioCommandBar::ai_analyze_requested);
-    make_tool_btn(agent_btn_, tr("AGENT"), ui::colors::CYAN(), &PortfolioCommandBar::agent_run_requested);
-
-    ai_btn_->setToolTip(tr("Open AI analysis of this portfolio"));
-    ai_btn_->setAccessibleName(ai_btn_->toolTip());
-    agent_btn_->setToolTip(tr("Run a configured research agent against this portfolio"));
-    agent_btn_->setAccessibleName(agent_btn_->toolTip());
+    (void)layout;
 }
 
 // ── Styling ──────────────────────────────────────────────────────────────────
@@ -421,16 +402,6 @@ void PortfolioCommandBar::apply_row2_styles() {
     for (auto* btn : detail_btns_) {
         btn->setStyleSheet(tab_qss);
     }
-
-    auto tool_style = [](QPushButton* btn, const char* accent) {
-        btn->setStyleSheet(QString("QPushButton#pfToolBtn { background:transparent; color:%1; border:1px solid %1;"
-                                   "  padding:0 10px; font-size:11px; font-weight:700;"
-                                   "  letter-spacing:0.5px; }"
-                                   "QPushButton#pfToolBtn:hover { background:%1; color:#000; }")
-                               .arg(accent));
-    };
-    tool_style(ai_btn_, ui::colors::AMBER());
-    tool_style(agent_btn_, ui::colors::CYAN());
 }
 
 // ── Dropdown ─────────────────────────────────────────────────────────────────
@@ -582,16 +553,6 @@ void PortfolioCommandBar::retranslateUi() {
         div_btn_->setText(tr("DIV"));
         div_btn_->setToolTip(tr("Record a dividend payment  (Ctrl+D)"));
         div_btn_->setAccessibleName(tr("Record a dividend payment"));
-    }
-    if (ai_btn_) {
-        ai_btn_->setText(tr("AI"));
-        ai_btn_->setToolTip(tr("Open AI analysis of this portfolio"));
-        ai_btn_->setAccessibleName(ai_btn_->toolTip());
-    }
-    if (agent_btn_) {
-        agent_btn_->setText(tr("AGENT"));
-        agent_btn_->setToolTip(tr("Run a configured research agent against this portfolio"));
-        agent_btn_->setAccessibleName(agent_btn_->toolTip());
     }
 
     // Row 2 detail tabs — populated in kDetailButtons order, so iterate by index.

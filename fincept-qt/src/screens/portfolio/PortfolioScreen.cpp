@@ -16,7 +16,6 @@
 #include "screens/portfolio/PortfolioDialogs.h"
 #include "screens/portfolio/PortfolioFFNView.h"
 #include "screens/portfolio/PortfolioHeatmap.h"
-#include "screens/portfolio/PortfolioInsightsPanel.h"
 #include "screens/portfolio/PortfolioOrderPanel.h"
 #include "screens/portfolio/PortfolioPanelHeader.h"
 #include "screens/portfolio/PortfolioPerfChart.h"
@@ -223,20 +222,6 @@ void PortfolioScreen::refresh_theme() {
 void PortfolioScreen::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     reposition_order_panel();
-
-    // Keep the insights dock (and its scrim) glued to the right edge when
-    // the window is resized.
-    if (insights_panel_ && command_bar_) {
-        const int top = command_bar_->height();
-        const int bottom_reserve = status_bar_ ? status_bar_->height() : 0;
-        const int h = qMax(200, height() - top - bottom_reserve);
-        if (insights_scrim_ && insights_scrim_->isVisible())
-            insights_scrim_->setGeometry(0, top, width(), h);
-        if (insights_panel_->isVisible()) {
-            insights_panel_->setFixedHeight(h);
-            insights_panel_->move(width() - insights_panel_->width(), top);
-        }
-    }
 }
 
 const portfolio::HoldingWithQuote* PortfolioScreen::find_holding(const QString& symbol) const {

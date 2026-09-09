@@ -311,7 +311,7 @@ void RelationshipMapScreen::build_ui() {
 
     shl->addStretch();
 
-    status_brand_ = new QLabel(tr("FINCEPT TERMINAL"));
+    status_brand_ = new QLabel(tr("MARKETLAB TERMINAL"));
     status_brand_->setStyleSheet(QString("color: %1; font-size: 9px; font-weight: 700; %2").arg(colors::AMBER(), MF()));
     shl->addWidget(status_brand_);
 
@@ -872,7 +872,7 @@ void RelationshipMapScreen::retranslateUi() {
         status_nodes_->setText(tr("READY"));
     }
     if (status_brand_)
-        status_brand_->setText(tr("FINCEPT TERMINAL"));
+        status_brand_->setText(tr("MARKETLAB TERMINAL"));
     // Legend entry captions come from category_label() — re-apply directly.
     for (const auto& entry : legend_entries_)
         if (entry.first)

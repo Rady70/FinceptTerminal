@@ -60,13 +60,6 @@ ActionPredicate require_more_than_one_monitor() {
 
 // ── Handler helpers ──────────────────────────────────────────────────────────
 
-Result<void> handler_toggle_chat(const CommandContext& ctx) {
-    if (!ctx.focused_frame || ctx.focused_frame->is_locked())
-        return Result<void>::ok(); // inert
-    ctx.focused_frame->toggle_chat_mode_action();
-    return Result<void>::ok();
-}
-
 Result<void> handler_fullscreen(const CommandContext& ctx) {
     if (!ctx.focused_frame)
         return Result<void>::ok();
@@ -510,17 +503,8 @@ void register_builtins() {
     }
 
     // ── Frame-level chrome / view actions ──────────────────────────────────
-
-    register_one(ActionDef{
-        /*id*/ "frame.toggle_chat_mode",
-        /*display*/ "Toggle Chat Mode",
-        /*category*/ "Frame",
-        /*aliases*/ {"chat", "toggle chat"},
-        /*default_hotkey*/ current_key_for(KeyAction::ToggleChat),
-        /*predicate*/ require_unlocked_frame(),
-        /*handler*/ &handler_toggle_chat,
-        /*parameter_slots*/ {},
-    });
+    // MarketLab: "frame.toggle_chat_mode" (hosted Chat Mode) is not
+    // registered — the hosted chat surface is removed (FINCEPT_FORK_PLAN §6).
 
     register_one(ActionDef{
         "frame.toggle_fullscreen",
@@ -966,7 +950,8 @@ QString action_id_for(KeyAction a) {
         case KeyAction::Refresh:
             return QStringLiteral("panel.refresh");
         case KeyAction::ToggleChat:
-            return QStringLiteral("frame.toggle_chat_mode");
+            // MarketLab: hosted Chat Mode is removed; the key is unbound.
+            return QStringLiteral("");
         case KeyAction::FocusMode:
             return QStringLiteral("frame.toggle_focus_mode");
         case KeyAction::Fullscreen:

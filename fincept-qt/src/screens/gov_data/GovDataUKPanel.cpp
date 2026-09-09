@@ -2,11 +2,11 @@
 #include "screens/gov_data/GovDataUKPanel.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "screens/gov_data/GovDataProviderPanel.h"
 #include "services/gov_data/GovDataService.h"
 #include "ui/theme/Theme.h"
 
-#include <QDesktopServices>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -145,7 +145,7 @@ void GovDataUKPanel::build_ui() {
                 return;
             const QString url = item->data(Qt::UserRole).toString();
             if (!url.isEmpty())
-                QDesktopServices::openUrl(QUrl(url));
+                network::ExternalUrlGuard::open_external(QUrl(url));
         },
         Qt::UniqueConnection);
     content_stack_->addWidget(wrap_with_pager(resources_table_, res_pager_, this)); // index 2

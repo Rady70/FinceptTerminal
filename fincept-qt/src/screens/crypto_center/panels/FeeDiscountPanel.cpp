@@ -143,8 +143,8 @@ void FeeDiscountPanel::build_ui() {
     bl->addWidget(savings_value_);
 
     hint_ = new QLabel(
-        tr("Hold ≥ %1 $FNCPT to qualify for the discount on premium screens, "
-           "AI reports, and deep backtests. Projected only — the discount is "
+        tr("Hold ≥ %1 $FNCPT to qualify for the discount on premium screens "
+           "and deep backtests. Projected only — the discount is "
            "not yet applied automatically at checkout.")
             .arg(QLocale::system().toString(static_cast<double>(fincept::billing::FeeDiscountConfig::kThresholdRaw) /
                                                 std::pow(10.0, fincept::billing::FeeDiscountConfig::kThresholdDecimals),
@@ -336,8 +336,8 @@ void FeeDiscountPanel::retranslateUi() {
         savings_caption_->setText(tr("PROJECTED SAVINGS  ·  reference $%1 SKU")
                                       .arg(QLocale::system().toString(FeeDiscountConfig::kReferencePriceUsd, 'f', 2)));
     if (hint_)
-        hint_->setText(tr("Hold ≥ %1 $FNCPT to qualify for the discount on premium screens, "
-                          "AI reports, and deep backtests. Projected only — the discount is "
+        hint_->setText(tr("Hold ≥ %1 $FNCPT to qualify for the discount on premium screens "
+                          "and deep backtests. Projected only — the discount is "
                           "not yet applied automatically at checkout.")
                            .arg(QLocale::system().toString(static_cast<double>(FeeDiscountConfig::kThresholdRaw) /
                                                                std::pow(10.0, FeeDiscountConfig::kThresholdDecimals),

@@ -2,12 +2,12 @@
 #include "screens/gov_data/GovDataProviderPanel.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/ExternalUrlGuard.h"
 #include "services/gov_data/GovDataService.h"
 #include "ui/theme/Theme.h"
 
 #include <QComboBox>
 #include <QCoreApplication>
-#include <QDesktopServices>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
@@ -633,7 +633,8 @@ void GovDataProviderPanel::populate_resources(const QJsonArray& json) {
             open_btn->setFlat(true);
             open_btn->setAccessibleName(tr("Open resource %1 in browser").arg(name));
             open_btn->setToolTip(url);
-            connect(open_btn, &QPushButton::clicked, this, [url]() { QDesktopServices::openUrl(QUrl(url)); });
+            connect(open_btn, &QPushButton::clicked, this,
+                    [url]() { network::ExternalUrlGuard::open_external(QUrl(url)); });
             resources_table_->setCellWidget(i, 4, open_btn);
         }
     }

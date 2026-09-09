@@ -1,7 +1,7 @@
 #pragma once
 // McpProvider.h — Internal tool registry and executor (Qt port)
 // Singleton managing all built-in terminal tools.
-// Tools register handlers invoked by AI chat, agents, or node editor.
+// Tools register handlers invoked by workflows and application features.
 
 #include "mcp/McpTypes.h"
 
@@ -32,7 +32,7 @@ class McpProvider {
 
     // ── Tool Discovery ─────────────────────────────────────────────────────
 
-    /// List all enabled tools as UnifiedTool (for LLM consumption)
+    /// List all enabled tools as UnifiedTool.
     std::vector<UnifiedTool> list_tools() const;
 
     /// List ALL tools including disabled (for management UI)
@@ -49,7 +49,7 @@ class McpProvider {
 
     /// Audit-friendly snapshot of one tool. Carries the bits the self-test /
     /// management UI need to verify wiring — crucially handler-presence, which
-    /// the LLM-facing UnifiedTool snapshot omits. Does not expose the handler
+    /// the UnifiedTool snapshot omits. Does not expose the handler
     /// std::functions themselves (kept inside the registry).
     struct ToolAuditInfo {
         QString name;
@@ -92,7 +92,7 @@ class McpProvider {
     /// thread cancellation tokens through here).
     QFuture<ToolResult> call_tool_async(const QString& name, const QJsonObject& args, ToolContext ctx = {});
 
-    /// Long-running-task entry point, for LLM-originated calls only.
+    /// Long-running-task entry point for callers that understand job receipts.
     ///
     /// Behaves exactly like `call_tool` for tools that haven't opted into the
     /// job protocol (`ToolDef::supports_async`), so the ~580 existing tools and
@@ -106,7 +106,7 @@ class McpProvider {
     ///
     ///     { job_id: "job_00001f", status: "running", tool: "run_agent" }
     ///
-    /// The caller (the LLM) then polls `job_status(job_id, wait_ms)` and collects
+    /// The caller then polls `job_status(job_id, wait_ms)` and collects
     /// with `job_result(job_id)`. That turns a five-minute blocking tool call
     /// into a ~40-token receipt plus a long-poll, instead of holding the
     /// provider HTTP turn open until it times out.
@@ -142,21 +142,10 @@ class McpProvider {
 
     // ── Destructive-tool capability (fail-closed) ─────────────────────────
     //
-    // `is_destructive` used to gate nothing on the chat path. The only consumer
-    // was the AuthChecker installed by AgentService, which denies a destructive
-    // tool ONLY when TerminalMcpBridge::is_call_in_progress() is true. The
-    // interactive LLM tool loop calls McpService::execute_openai_function with
-    // no ScopedCallFlags, so that flag was false and every destructive tool
-    // below AuthLevel::Verified executed with no prompt of any kind.
-    //
-    // The gate now fails closed: a tool that declares `is_destructive` is
+    // The gate fails closed: a tool that declares `is_destructive` is
     // refused unless destructive capability has been granted for the current
-    // context. Two ways to grant it, and both are explicit:
-    //   1. Per call — the agent bridge's destructive capability token
-    //      (TerminalMcpBridge::destructive_token(), echoed back as
-    //      X-MCP-Allow-Destructive and surfaced via is_destructive_allowed()).
-    //      Reused as-is; this is not a second mechanism.
-    //   2. Per session — set_destructive_allowed(true), persisted as
+    // context. Session authorization is explicit through
+    // set_destructive_allowed(true), persisted as
     //      `mcp/allow_destructive_tools`. Defaults to false.
     //
     // AuthLevel::ExplicitConfirm tools additionally trip the >= Verified
@@ -188,31 +177,15 @@ class McpProvider {
     std::optional<ToolResult> check_authorization(const QString& name, AuthLevel auth_required, bool is_destructive,
                                                   bool destructive_declared = true) const;
 
-    // ── LLM Integration ────────────────────────────────────────────────────
-
-    /// Format all enabled tools for OpenAI function calling
-    QJsonArray format_tools_for_openai() const;
-
     /// Parse "serverId__toolName" → { server_id, tool_name }.
     /// Reverses any wire-encoding applied by `encode_tool_name_for_wire` (e.g.
     /// `tool-dot-list` → `tool.list`) so the returned tool_name matches the
     /// registry key.
-    static QPair<QString, QString> parse_openai_function_name(const QString& fn_name);
+    static QPair<QString, QString> parse_wire_function_name(const QString& fn_name);
 
-    /// Encode an internal tool name into a wire-safe form acceptable to every
-    /// supported provider. The tightest common subset (intersection of every
-    /// provider's published validation) is:
+    /// Encode an internal tool name into the portable MCP wire subset:
     ///
     ///   ^[a-zA-Z][a-zA-Z0-9_-]{0,63}$      total length 1..64
-    ///
-    /// Provider-specific rules surveyed (Apr 2026):
-    ///   - OpenAI / Anthropic / Groq / OpenRouter / DeepSeek / xAI / MiniMax:
-    ///     ^[a-zA-Z0-9_-]{1,64}$  (no dots, no leading symbol-only required).
-    ///   - Kimi (Moonshot):
-    ///     ^[a-zA-Z_][a-zA-Z0-9_-]{2,63}$  (must start with a letter or '_';
-    ///     total length 3..64).
-    ///   - Gemini:
-    ///     [a-zA-Z0-9_:.-]{1,128}  (permissive; dots/colons allowed).
     ///
     /// Encoding rules:
     ///   1. Each '.' in the internal name → "-dot-" (no internal tool name uses
@@ -224,10 +197,7 @@ class McpProvider {
     ///      Server prefix `fincept-terminal__` is 18 chars; longer tool names
     ///      are tail-truncated and a 4-char hash suffix preserves uniqueness.
     ///
-    /// `decode_tool_name_from_wire` reverses step 1 only — steps 2 and 3 are
-    /// effectively irreversible, so any tool whose name needs them must be
-    /// looked up by its hash via `find_tool_by_wire_name` (registered when
-    /// `format_tools_for_openai` is called) rather than by string round-trip.
+    /// `decode_tool_name_from_wire` reverses the dotted-name encoding.
     static QString encode_tool_name_for_wire(const QString& tool_name);
     static QString decode_tool_name_from_wire(const QString& wire_name);
 

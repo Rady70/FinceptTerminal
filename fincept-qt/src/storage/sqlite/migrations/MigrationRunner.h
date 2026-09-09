@@ -23,11 +23,13 @@ struct Migration {
 /// Migration files auto-register via static initialization.
 ///
 /// Safety contract (do not weaken — a half-migrated DB is silent data loss):
-///   - A database written by a NEWER build is refused outright. Running an older
-///     binary against a future schema is unrecoverable: v050, for instance, does
-///     `DROP TABLE IF EXISTS aa_competitions`, so an older build would query
-///     tables that no longer exist. `run()` returns an error tagged with
-///     `kErrSchemaNewer` in that case.
+///   - A database written by a NEWER build is detected via `MAX(version)` and
+///     every future migration is skipped with a warning (not an error). This is
+///     the normal state when a released build and a dev build share one AppData
+///     directory; tables this build does not know are simply unused. See the
+///     rationale block at the top of `run()` in MigrationRunner.cpp before
+///     changing this. `kErrSchemaNewer` exists for callers that must classify
+///     it, but `run()` deliberately does not emit it.
 ///   - Before the FIRST forward migration of a session, a consistent snapshot of
 ///     the database file is written to `<db>.pre-v<target>.bak`. Backup failure
 ///     aborts the migration — migrating with no recovery path is the bug this
@@ -89,7 +91,6 @@ class MigrationRunner {
 // Explicit registration functions — call these before Database::open()
 // to ensure MSVC linker doesn't strip the migration translation units.
 void register_migration_v001();
-void register_migration_v002();
 void register_migration_v003();
 void register_migration_v004();
 void register_migration_v005();
@@ -97,32 +98,26 @@ void register_migration_v006();
 void register_migration_v007();
 void register_migration_v008();
 void register_migration_v009();
-void register_migration_v010();
 void register_migration_v011();
 void register_migration_v012();
 void register_migration_v013();
-void register_migration_v014();
 void register_migration_v015();
 void register_migration_v016();
 void register_migration_v017();
 void register_migration_v018();
 void register_migration_v019();
 void register_migration_v020();
-void register_migration_v021();
 void register_migration_v022();
 void register_migration_v023();
-void register_migration_v024();
 void register_migration_v025();
 void register_migration_v026();
 void register_migration_v027();
 void register_migration_v028();
 void register_migration_v029();
-void register_migration_v030();
 void register_migration_v031();
 void register_migration_v032();
 void register_migration_v033();
 void register_migration_v034();
-void register_migration_v035();
 void register_migration_v036();
 void register_migration_v037();
 void register_migration_v038();
@@ -137,7 +132,6 @@ void register_migration_v046();
 void register_migration_v047();
 void register_migration_v048();
 void register_migration_v049();
-void register_migration_v050();
 void register_migration_v051();
 
 } // namespace fincept

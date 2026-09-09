@@ -14,6 +14,7 @@ const QString TAG = "DataSources";
 }
 
 #include "core/session/ScreenStateManager.h"
+#include "network/http/ProbeGuard.h"
 #include "screens/data_sources/ConnectionConfigDialog.h"
 #include "screens/data_sources/ConnectionTester.h"
 #include "screens/data_sources/ConnectorRegistry.h"
@@ -48,6 +49,7 @@ const QString TAG = "DataSources";
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace fincept::screens::datasources {
@@ -494,6 +496,27 @@ void DataSourcesScreen::on_poll_timer() {
         }
         if (host.isEmpty() || port <= 0)
             continue;
+
+        // MarketLab containment (FINCEPT_FORK_PLAN.md §5.3). This poller runs
+        // unattended on a timer, so a connection saved or imported against a
+        // Fincept host would emit DNS + TCP to it every tick with nobody
+        // touching the UI — the destination is configuration-derived, so
+        // hiding the hosted connectors from the connector list does not stop
+        // it. Settle the row as unreachable with the typed error and never
+        // spawn the probe. The decision is ProbeGuard's, shared with the TEST
+        // button, the MCP tool and the workflow node.
+        //
+        // No divergence to guard against here: `cap_host` below is a copy of
+        // this same `host` and is the only value the worker dials — when it
+        // came from probe_url it is exactly QUrl(probe_url).host(). The URL is
+        // passed too so the path-scoped Fincept-Corporation GitHub rules, which
+        // a bare host cannot express, are still decided.
+        if (const auto probe = network::ProbeGuard::check(probe_url, host); probe.rejected) {
+            live_status_cache_[ds.id] = {false, probe.error};
+            update_connection_status_cell(ds.id, false, probe.error);
+            update_detail_panel();
+            continue;
+        }
 
         QPointer<DataSourcesScreen> self = this;
         const QString conn_id = ds.id;

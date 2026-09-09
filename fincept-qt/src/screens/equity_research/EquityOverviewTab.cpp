@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QPainter>
 #include <QScrollArea>
 #include <QSizePolicy>
@@ -43,6 +44,11 @@ namespace {
 constexpr const char* kErrorBannerName = "overviewErrorBanner";
 constexpr const char* kErrorMessageName = "overviewErrorMessage";
 constexpr const char* kRetryButtonName = "overviewRetryButton";
+
+// Style for the chart's provenance strip; %1 is the text colour. Mirrors the
+// value-label shape add_row_ gives every other value on this tab, one size down
+// so it reads as an annotation on the chart rather than as a value in it.
+constexpr const char* kHistSrcStyle = "color:%1;font-size:11px;font-weight:600;background:transparent;border:0;";
 
 /// Show the inline error banner with `message`, or hide it when `message` is
 /// empty. Modelled on MarketPanel::show_error + its [RETRY] affordance.
@@ -303,6 +309,10 @@ EquityOverviewTab::EquityOverviewTab(QWidget* parent) : QWidget(parent) {
     connect(&svc, &services::equity::EquityResearchService::info_loaded, this, &EquityOverviewTab::on_info_loaded);
     connect(&svc, &services::equity::EquityResearchService::historical_loaded, this,
             &EquityOverviewTab::on_historical_loaded);
+    // Emitted immediately before historical_loaded, so the provenance strip is
+    // already correct by the time the bars are drawn.
+    connect(&svc, &services::equity::EquityResearchService::historical_meta_loaded, this,
+            &EquityOverviewTab::on_historical_meta_loaded);
     // Overview waits on three legs (quote / info / historical) and only hides the
     // overlay on success, so any one failing left "LOADING OVERVIEW…" spinning
     // over the tab with no way to dismiss it. Hiding the overlay fixed the spin
@@ -326,6 +336,10 @@ void EquityOverviewTab::set_symbol(const QString& symbol) {
         return;
     current_symbol_ = symbol;
     info_loaded_ = quote_loaded_ = historical_loaded_ = false;
+    // Provenance belongs to the series it describes — carrying the previous
+    // symbol's source line over the new symbol's chart would be a false claim.
+    cached_hist_meta_ = {};
+    render_hist_source();
     set_overview_error(this, QString()); // drop the previous symbol's failure
     loading_overlay_->show_loading(tr("LOADING OVERVIEW…"));
 }
@@ -506,6 +520,14 @@ QWidget* EquityOverviewTab::build_chart_panel() {
     active_period_btn_ = btn_1y_;
     btn_row->addStretch();
 
+    // Provenance for the plotted series, on the same row as the period buttons.
+    // FINCEPT_FORK_PLAN.md §4 requires the displayed result to identify its
+    // source and retrieval status; a chart that cannot say where its bars came
+    // from satisfies neither half.
+    hist_source_label_ = new QLabel(QString::fromUtf8("\xe2\x80\x94"));
+    hist_source_label_->setStyleSheet(QString(kHistSrcStyle).arg(ui::colors::TEXT_TERTIARY()));
+    btn_row->addWidget(hist_source_label_);
+
     vl->addLayout(btn_row);
 
     // Chart widget — prefer KLineChart when WebEngine is available
@@ -676,11 +698,61 @@ void EquityOverviewTab::on_quote_loaded(services::equity::QuoteData q) {
     if (info_loaded_ && quote_loaded_ && historical_loaded_)
         loading_overlay_->hide_loading();
 
-    open_val_->setText(fmt_price(q.open));
-    high_val_->setText(fmt_price(q.high));
-    low_val_->setText(fmt_price(q.low));
-    prev_close_val_->setText(fmt_price(q.prev_close));
-    vol_val_->setText(fmt_large(q.volume));
+    render_quote(q);
+}
+
+// A field the provider did not return is not a reading of zero. These labels
+// already start life at "—" (see add_row_) for exactly that reason — a missing
+// volume must go back to saying "—", not report a session in which nothing
+// traded, and a missing previous close must not print as a price of 0.00.
+void EquityOverviewTab::render_quote(const services::equity::QuoteData& q) {
+    const QString na = QString::fromUtf8("\xe2\x80\x94");
+    open_val_->setText(q.has_open ? fmt_price(q.open) : na);
+    high_val_->setText(q.has_high ? fmt_price(q.high) : na);
+    low_val_->setText(q.has_low ? fmt_price(q.low) : na);
+    prev_close_val_->setText(q.has_prev_close ? fmt_price(q.prev_close) : na);
+    vol_val_->setText(q.has_volume ? fmt_large(q.volume) : na);
+}
+
+void EquityOverviewTab::on_historical_meta_loaded(QString symbol, services::equity::RetrievalMeta meta) {
+    if (symbol != current_symbol_)
+        return;
+    cached_hist_meta_ = meta;
+    render_hist_source();
+}
+
+void EquityOverviewTab::render_hist_source() {
+    if (!hist_source_label_)
+        return;
+
+    const auto& m = cached_hist_meta_;
+    const QString na = QString::fromUtf8("\xe2\x80\x94");
+    if (m.source.isEmpty()) {
+        hist_source_label_->setText(na);
+        hist_source_label_->setToolTip(tr("No price history has been retrieved for this symbol yet."));
+        return;
+    }
+
+    const QDateTime at = m.retrieved_at > 0 ? QDateTime::fromSecsSinceEpoch(m.retrieved_at) : QDateTime();
+    const QString status = services::equity::retrieval_status_text(m.status);
+    hist_source_label_->setText(
+        at.isValid() ? tr("SRC: %1 · %2 · %3").arg(m.source, at.toString(QStringLiteral("hh:mm:ss")), status)
+                     : tr("SRC: %1 · %2").arg(m.source, status));
+
+    QString detail = tr("Source: %1").arg(m.source);
+    detail += QLatin1Char('\n') +
+              (at.isValid() ? tr("Retrieved: %1").arg(at.toString(Qt::ISODate)) : tr("Retrieved: unknown"));
+    detail += QLatin1Char('\n') + tr("Status: %1").arg(status);
+    detail += QLatin1Char('\n') + tr("Bars plotted: %1").arg(m.point_count);
+    if (m.dropped_count > 0)
+        detail += QLatin1Char('\n') + tr("Bars with no close price, not plotted: %1").arg(m.dropped_count);
+    hist_source_label_->setToolTip(detail);
+
+    // .get() rather than the ColorToken itself: the token converts to both
+    // const char* and QString, which makes QString(token) ambiguous.
+    const char* tone =
+        m.status == services::equity::RetrievalStatus::Ok ? ui::colors::TEXT_TERTIARY.get() : ui::colors::AMBER.get();
+    hist_source_label_->setStyleSheet(QString(kHistSrcStyle).arg(tone));
 }
 
 void EquityOverviewTab::on_info_loaded(services::equity::StockInfo info) {
@@ -704,12 +776,8 @@ void EquityOverviewTab::render_info(const services::equity::StockInfo& info) {
     const QString na = tr("N/A");
 
     // Re-render quote and chart with correct currency
-    if (quote_loaded_) {
-        open_val_->setText(fmt_price(cached_quote_.open));
-        high_val_->setText(fmt_price(cached_quote_.high));
-        low_val_->setText(fmt_price(cached_quote_.low));
-        prev_close_val_->setText(fmt_price(cached_quote_.prev_close));
-    }
+    if (quote_loaded_)
+        render_quote(cached_quote_);
     if (historical_loaded_ && !cached_candles_.isEmpty() && candle_canvas_) {
         candle_canvas_->set_candles(cached_candles_,
                                     currency_symbol(current_currency_.isEmpty() ? "USD" : current_currency_));
@@ -812,7 +880,16 @@ void EquityOverviewTab::rebuild_chart(const QVector<services::equity::Candle>& c
             obj[QStringLiteral("high")] = c.high;
             obj[QStringLiteral("low")] = c.low;
             obj[QStringLiteral("close")] = c.close;
-            obj[QStringLiteral("volume")] = static_cast<double>(c.volume);
+            // A bar the provider gave no volume for is not a bar that traded
+            // nothing. Emit null so the boundary stays truthful. (The chart
+            // widget currently flattens it back to 0 with toDouble(); the
+            // PERIOD-row provenance strip is what tells the user the series
+            // came back PARTIAL, and fixing the chart's own volume pane is a
+            // change to ui/charts, not to this tab.)
+            if (c.has_volume)
+                obj[QStringLiteral("volume")] = static_cast<double>(c.volume);
+            else
+                obj[QStringLiteral("volume")] = QJsonValue(QJsonValue::Null);
             arr.append(obj);
         }
         kline_chart_->set_candles(arr);
@@ -933,13 +1010,9 @@ void EquityOverviewTab::retranslateUi() {
     // pick up the new language without a service round-trip.
     if (info_loaded_)
         render_info(cached_info_);
-    if (quote_loaded_) {
-        open_val_->setText(fmt_price(cached_quote_.open));
-        high_val_->setText(fmt_price(cached_quote_.high));
-        low_val_->setText(fmt_price(cached_quote_.low));
-        prev_close_val_->setText(fmt_price(cached_quote_.prev_close));
-        vol_val_->setText(fmt_large(cached_quote_.volume));
-    }
+    if (quote_loaded_)
+        render_quote(cached_quote_);
+    render_hist_source();
 }
 
 } // namespace fincept::screens

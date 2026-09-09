@@ -1,6 +1,7 @@
 #include "screens/news/dialogs/RssFeedManagerDialog.h"
 
 #include "core/logging/Logger.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "screens/news/dialogs/RssFeedEditDialog.h"
 
 #include <QHBoxLayout>
@@ -272,7 +273,7 @@ void RssFeedManagerDialog::on_toggle_enabled() {
 QNetworkAccessManager* RssFeedManagerDialog::nam() {
     // P10 — one manager per dialog, not one per test click.
     if (!nam_)
-        nam_ = new QNetworkAccessManager(this);
+        nam_ = new network::GuardedNetworkAccessManager(this);
     return nam_;
 }
 

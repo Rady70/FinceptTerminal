@@ -62,6 +62,9 @@ class EquityOverviewTab : public QWidget {
   private slots:
     void on_info_loaded(services::equity::StockInfo info);
     void on_historical_loaded(QString symbol, QVector<services::equity::Candle> candles);
+    /// Provenance for the series `on_historical_loaded` is about to receive —
+    /// the service emits it immediately beforehand.
+    void on_historical_meta_loaded(QString symbol, services::equity::RetrievalMeta meta);
     void on_quote_loaded(services::equity::QuoteData quote);
 
   private:
@@ -72,6 +75,15 @@ class EquityOverviewTab : public QWidget {
     /// so retranslateUi can re-render currency / "N/A" fallbacks / recommendation
     /// badge in the new locale without going back to the service.
     void render_info(const services::equity::StockInfo& info);
+
+    /// Apply a quote to the TODAY'S TRADING value labels. A field the provider
+    /// did not return renders as the "—" the labels already start at, never as
+    /// a 0.00 print. Shared by on_quote_loaded, render_info (currency re-render)
+    /// and retranslateUi so the three cannot drift apart.
+    void render_quote(const services::equity::QuoteData& quote);
+
+    /// Render the chart's provenance strip from `cached_hist_meta_`.
+    void render_hist_source();
 
     /// make_panel / add_row register the title and key labels with the
     /// translation map so retranslateUi can re-set them in bulk. The map
@@ -137,6 +149,9 @@ class EquityOverviewTab : public QWidget {
     fincept::ui::KLineChartWidget* kline_chart_ = nullptr;
 #endif
     ResearchCandleCanvas* candle_canvas_ = nullptr;
+    /// Which provider produced the plotted bars, when, and whether the series
+    /// arrived whole (FINCEPT_FORK_PLAN.md §4). Detail in its tooltip.
+    QLabel* hist_source_label_ = nullptr;
     QPushButton* btn_1m_ = nullptr;
     QPushButton* btn_3m_ = nullptr;
     QPushButton* btn_6m_ = nullptr;
@@ -184,6 +199,7 @@ class EquityOverviewTab : public QWidget {
     services::equity::StockInfo cached_info_;
     services::equity::QuoteData cached_quote_;
     QVector<services::equity::Candle> cached_candles_;
+    services::equity::RetrievalMeta cached_hist_meta_;
 
     ui::LoadingOverlay* loading_overlay_ = nullptr;
     bool info_loaded_ = false;

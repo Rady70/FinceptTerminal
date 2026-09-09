@@ -6,7 +6,6 @@
 #include "core/logging/Logger.h"
 #include "mcp/JobRegistry.h"
 #include "mcp/SchemaValidator.h"
-#include "mcp/TerminalMcpBridge.h"
 
 #include <QCoreApplication>
 #include <QFutureWatcher>
@@ -35,7 +34,7 @@ McpProvider& McpProvider::instance() {
     return s;
 }
 
-// Build the LLM-facing snapshot for a tool. Serialises input_schema once —
+// Build the discovery snapshot for a tool. Serialises input_schema once —
 // the QJsonObject copy is cheap (CoW), so list_tools() can hand out copies
 // without re-walking the schema each call.
 static UnifiedTool make_snapshot(const ToolDef& t) {
@@ -506,43 +505,15 @@ QFuture<ToolResult> McpProvider::call_tool_async(const QString& name, const QJso
 }
 
 // ============================================================================
-// LLM Integration
+// Wire-name handling
 // ============================================================================
 
-QJsonArray McpProvider::format_tools_for_openai() const {
-    auto tools = list_tools();
-    QJsonArray result;
-
-    for (const auto& tool : tools) {
-        QJsonObject schema = tool.input_schema;
-        if (schema.isEmpty()) {
-            schema["type"] = "object";
-            schema["properties"] = QJsonObject();
-        }
-
-        QJsonObject fn;
-        fn["name"] = QString(INTERNAL_SERVER_ID) + "__" + encode_tool_name_for_wire(tool.name);
-        fn["description"] = tool.description;
-        fn["parameters"] = schema;
-
-        QJsonObject entry;
-        entry["type"] = "function";
-        entry["function"] = fn;
-        result.append(entry);
-    }
-
-    return result;
-}
-
-QPair<QString, QString> McpProvider::parse_openai_function_name(const QString& fn_name) {
+QPair<QString, QString> McpProvider::parse_wire_function_name(const QString& fn_name) {
     int pos = fn_name.indexOf("__");
     if (pos > 0 && pos < fn_name.length() - 2)
         return {fn_name.left(pos), decode_tool_name_from_wire(fn_name.mid(pos + 2))};
 
-    // Fallback: some models (minimax, certain OpenRouter routes) drop the
-    // "<server>__" prefix and call the tool by its bare advertised name.
-    // Accept either the raw form or the wire-encoded form if it matches
-    // a known internal tool — anything else is still rejected.
+    // Accept a bare internal name for workflow compatibility.
     if (!fn_name.isEmpty()) {
         const QString decoded = decode_tool_name_from_wire(fn_name);
         if (instance().has_tool(decoded))
@@ -553,8 +524,7 @@ QPair<QString, QString> McpProvider::parse_openai_function_name(const QString& f
     return {"", ""};
 }
 
-// Tightest common-subset regex for tool function names across every supported
-// provider (see header for provenance). Each candidate emitted by
+// Portable wire-name regex. Each candidate emitted by
 // encode_tool_name_for_wire MUST match this regex; non-matching names are
 // logged so they can be renamed in source.
 static const QRegularExpression& common_subset_regex() {
@@ -577,9 +547,8 @@ QString McpProvider::encode_tool_name_for_wire(const QString& tool_name) {
         static QSet<QString> warned;
         if (!warned.contains(out)) {
             warned.insert(out);
-            LOG_WARN("McpProvider", QString("Tool name '%1' does not match the provider-safe regex "
-                                            "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$ — Kimi/Anthropic/OpenAI will "
-                                            "reject the request. Rename the tool at source.")
+            LOG_WARN("McpProvider", QString("Tool name '%1' does not match the portable wire regex "
+                                            "^[a-zA-Z][a-zA-Z0-9_-]{0,63}$. Rename the tool at source.")
                                         .arg(out));
         }
     }
@@ -629,13 +598,7 @@ void McpProvider::set_destructive_allowed(bool allowed) {
 }
 
 bool McpProvider::destructive_allowed() {
-    // 1. Per-call capability token — the agent bridge sets a thread_local flag
-    //    for the duration of a call that presented the destructive token.
-    //    Reusing that mechanism rather than adding a parallel one.
-    if (TerminalMcpBridge::is_destructive_allowed())
-        return true;
-
-    // 2. Session grant, seeded once from the persisted setting.
+    // Session grant, seeded once from the persisted setting.
     int v = s_destructive_session_grant.load(std::memory_order_relaxed);
     if (v < 0) {
         v = AppConfig::instance().get(QString::fromLatin1(kDestructiveSettingKey), QVariant(false)).toBool() ? 1 : 0;
@@ -653,9 +616,7 @@ std::optional<ToolResult> McpProvider::check_authorization(const QString& name, 
     // Order of checks:
     //   1. Nothing declared → pass immediately.
     //   2. Declared destructive without capability → REFUSE (fail closed, all
-    //      callers). This runs ahead of the checker because the checker can
-    //      only distinguish agent calls, and the chat path is the one that was
-    //      unguarded.
+    //      callers).
     //   3. Installed checker → its verdict wins for everything else.
     //   4. No checker + AuthLevel >= Verified → fail closed (genuine privilege
     //      escalation that must not happen unauthenticated).
@@ -663,12 +624,7 @@ std::optional<ToolResult> McpProvider::check_authorization(const QString& name, 
         return std::nullopt;
 
     // ── Fail-closed destructive gate ─────────────────────────────────────
-    // Runs BEFORE the caller-installed checker and applies to every caller,
-    // because the checker could only ever see agent-originated calls (it keys
-    // off TerminalMcpBridge::is_call_in_progress()) and the interactive chat
-    // tool loop never sets that flag. See the header for the two ways to grant
-    // the capability. Note this is deliberately caller-agnostic: "which caller
-    // is this" is exactly the distinction that made the old gate a no-op.
+    // Runs BEFORE the caller-installed checker and applies to every caller.
     if (destructive_declared && is_destructive && !destructive_allowed()) {
         LOG_WARN(TAG, QString("Tool '%1' refused: destructive tools are disabled (auth_required=%2). "
                               "Grant the capability to allow it.")

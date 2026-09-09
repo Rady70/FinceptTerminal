@@ -5,6 +5,8 @@
 #include "auth/AuthManager.h"
 #include "core/config/AppConfig.h"
 #include "core/logging/Logger.h"
+#include "network/http/DirectRouteGuard.h"
+#include "network/http/GuardedNetworkAccessManager.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -64,7 +66,7 @@ static QNetworkRequest build_request(const QString& endpoint, const QJsonObject&
     QNetworkRequest req{QUrl(url)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setRawHeader("Accept", "application/json");
-    req.setRawHeader("User-Agent", "FinceptTerminal/4.0.0");
+    req.setRawHeader("User-Agent", "MarketLabTerminal/0.1.0");
 
     auto& auth_mgr = auth::AuthManager::instance();
     if (auth_mgr.is_authenticated())
@@ -133,6 +135,24 @@ mcp::ToolResult QuantLibClient::parse_response(int http_status, const QByteArray
 // ── Async call ───────────────────────────────────────────────────────────────
 
 void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, QuantLibCallback callback) {
+    // MarketLab: the hosted QuantLib suite is Unavailable in this fork
+    // (FINCEPT_FORK_PLAN.md §5.3, §6 — the suite lives at api.fincept.in via a
+    // configuration-derived route and this client uses its OWN
+    // QNetworkAccessManager, so the shared-client deny-list cannot see it).
+    // The composed URL is rejected here before any network access; the local
+    // derivatives calculator is the retained alternative.
+    // The decision is DirectRouteGuard's, shared with ArenaLlmClient and
+    // CloudClient and covered by tests/tst_direct_clients.cpp.
+    {
+        const auto route = network::DirectRouteGuard::check_route(fincept::AppConfig::instance().api_base_url(),
+                                                                  QStringLiteral("/quantlib/") + endpoint);
+        if (route.rejected) {
+            LOG_WARN("QuantLib", QString("Hosted QuantLib call rejected for '%1' — %2").arg(endpoint, route.error));
+            callback(mcp::ToolResult::fail(route.error));
+            return;
+        }
+    }
+
     // Cache GET endpoints (static reference data) and query-param endpoints
     const bool cacheable = is_get_endpoint(endpoint) || is_query_param_endpoint(endpoint);
     if (cacheable) {
@@ -149,7 +169,10 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
             return;
         }
 
-        auto* nam = new QNetworkAccessManager(this);
+        // GuardedNetworkAccessManager, not a raw one: the DirectRouteGuard
+        // check above judges the composed URL and still rejects first, but a
+        // redirect Qt follows by itself never passes through it.
+        auto* nam = new network::GuardedNetworkAccessManager(this);
         QNetworkReply* reply = nullptr;
         if (is_get_endpoint(endpoint)) {
             reply = nam->get(build_request(endpoint));
@@ -189,8 +212,9 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
         return;
     }
 
-    // Non-cacheable POST endpoints
-    auto* nam = new QNetworkAccessManager(this);
+    // Non-cacheable POST endpoints. Guarded manager for the same reason as the
+    // cacheable branch above.
+    auto* nam = new network::GuardedNetworkAccessManager(this);
     auto req = build_request(endpoint);
     QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
     auto* reply = nam->post(req, data);
@@ -224,6 +248,6 @@ void QuantLibClient::call(const QString& endpoint, const QJsonObject& body, Quan
 // NOTE: call_sync() used to live here. It had zero call sites and parked the
 // calling thread in an unbounded `loop.exec()` with no timeout — a permanent
 // UI-freeze hazard for whoever reached for it next. Deleted; use the
-// callback-based call() above. Its declaration in QuantLibClient.h can go too.
+// callback-based call() above.
 
 } // namespace fincept::services

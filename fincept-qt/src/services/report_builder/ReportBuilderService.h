@@ -104,11 +104,11 @@ class ReportBuilderService : public QObject {
     void begin_macro(const QString& description);
     void end_macro();
 
-    /// LLM-burst window: tool handlers call note_llm_mutation() which opens
+    /// Tool-burst window: tool handlers call note_tool_mutation() which opens
     /// a macro on first call and (re)starts a 400ms timer; on timer expiry
-    /// the macro is closed. Result: a chain of LLM mutations within ~400ms
+    /// the macro is closed. Result: a chain of tool mutations within ~400ms
     /// is one Ctrl+Z.
-    void note_llm_mutation();
+    void note_tool_mutation();
 
     // ── File ops ──────────────────────────────────────────────────────────────
 
@@ -158,7 +158,7 @@ class ReportBuilderService : public QObject {
     report::ReportDocument doc_;
     QUndoStack* undo_stack_;
     QTimer* autosave_timer_;
-    QTimer* llm_window_timer_; // single-shot, 400ms; closes the LLM macro
+    QTimer* tool_window_timer_; // single-shot, 400ms; closes the tool macro
     int macro_depth_ = 0;
     QString current_file_;
     QString autosave_path_;

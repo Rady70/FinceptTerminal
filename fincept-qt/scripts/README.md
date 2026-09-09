@@ -1,21 +1,19 @@
 # Python Scripts Library
 
-> Comprehensive collection of data sources, analytics, and AI agents for Fincept Terminal
+> Data-source and analytics scripts for MarketLab Terminal
 
 ## Overview
 
-This directory contains Python scripts powering the backend analytics, data integrations, and AI capabilities of Fincept Terminal. All scripts are executed by the C++ application via the Python bridge (python_runner.cpp).
+This directory contains Python scripts powering MarketLab Terminal's data integrations and local analytics. Production entry points are executed by the C++ application through `PythonRunner`.
 
 ## Directory Structure
 
 ```
 scripts/
-├── agents/              # AI agents for trading and geopolitical analysis
-├── agno_trading/        # Agno trading system framework
-├── ai_quant_lab/        # Quantitative research lab (Qlib, RDAgent)
 ├── Analytics/           # Financial analytics modules
+├── vision_quant/        # Local pattern-analysis tools
 ├── *.py                 # Data source integrations (60+ providers)
-└── README.md           # This file
+└── README.md            # This file
 ```
 
 ## Quick Links
@@ -38,9 +36,6 @@ scripts/
 | Category | Description | Link |
 |----------|-------------|------|
 | 📊 **Analytics** | 80+ modules - equity, portfolio, derivatives, economics | [Analytics/README.md](./Analytics/README.md) |
-| 🤖 **AI Agents** | 30+ agents - hedge funds, investors, geopolitics | [agents/README.md](./agents/README.md) |
-| 🔬 **AI Quant Lab** | Qlib + RDAgent - automated strategy research | [ai_quant_lab/README.md](./ai_quant_lab/README.md) |
-| 🚀 **Agno Trading** | Multi-agent trading system with debates | `agno_trading/` |
 
 ## Key Features
 
@@ -59,13 +54,6 @@ scripts/
 - **Alternative Investments**: Real estate, hedge funds, private capital, crypto
 - **Quantitative**: CFA quant models, rate calculations
 - **Financial Analysis**: Statement analysis, quality metrics, tax analysis
-
-### AI & Machine Learning
-- **Agno Trading**: Multi-agent trading system with debate orchestration
-- **Geopolitical Agents**: Grand Chessboard, Prisoners of Geography frameworks
-- **Investor Personas**: Warren Buffett, Benjamin Graham strategies
-- **Hedge Fund Agents**: Bridgewater, Citadel, Renaissance, Two Sigma
-- **Quant Lab**: Qlib integration, RDAgent for hypothesis generation
 
 ### Backtesting Frameworks
 - **LEAN Engine**: Institutional-grade algorithmic trading
@@ -104,12 +92,6 @@ fincept::python::PythonRunner::instance().run(
 3. Include docstrings and type hints
 4. Update [ANALYTICS.md](./ANALYTICS.md)
 
-### Adding AI Agents
-1. Add to `agents/` with appropriate subdirectory
-2. Use FinAgent core framework
-3. Define persona and strategy
-4. Update [AGENTS.md](./AGENTS.md)
-
 ## Technical Requirements
 
 - **Python Version**: 3.11+
@@ -120,11 +102,10 @@ fincept::python::PythonRunner::instance().run(
 
 ## Project Context
 
-Part of **Fincept Terminal** - a financial intelligence platform built with:
+Part of **MarketLab Terminal**, built with:
 - **UI**: C++20 + Qt6 Widgets
 - **Core**: C++20
 - **Analytics**: Python (embedded runtime)
-- **AI**: Ollama (local LLM), Langchain, multi-provider LLM
 
 ## Documentation
 
@@ -150,4 +131,3 @@ MIT License - Part of Fincept Terminal
 **Python Scripts**: 250+
 **Data Sources**: 60+
 **Analytics Modules**: 15+
-**AI Agents**: 30+

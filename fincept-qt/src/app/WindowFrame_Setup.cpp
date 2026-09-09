@@ -1,17 +1,20 @@
 // src/app/WindowFrame_Setup.cpp
 //
-// Initial setup helpers — auth stack, docking mode, dock screens, and the
-// (currently-stub) app/navigation hooks. Called from the WindowFrame
-// constructor in WindowFrame.cpp.
+// Initial setup helpers — docking mode and dock screens. Called from the
+// WindowFrame constructor in WindowFrame.cpp.
+//
+// MarketLab: the upstream auth stack (login/register/forgot/pricing + info
+// stack) is removed; the workspace is reachable without an account. Screens
+// whose disposition is Unavailable are NOT registered, so they cannot be
+// opened by navigation, shortcuts, restored layouts, MCP calls, workflows,
+// or agents (FINCEPT_FORK_PLAN.md §5.2, §5.4, §6).
 //
 // Part of the partial-class split of WindowFrame.cpp.
 
 #include "app/DockScreenRouter.h"
 #include "app/TerminalShell.h"
 #include "app/WindowFrame.h"
-#include "auth/AuthManager.h"
-#include "auth/InactivityGuard.h"
-#include "auth/lock/LockOverlayController.h"
+#include "core/capability/CapabilityManager.h"
 #include "core/events/EventBus.h"
 #include "core/keys/KeyConfigManager.h"
 #include "core/keys/WindowCycler.h"
@@ -19,25 +22,12 @@
 #include "core/logging/Logger.h"
 #include "core/session/SessionManager.h"
 #include "screens/about/AboutScreen.h"
-#include "screens/agent_config/AgentConfigScreen.h"
-#include "screens/ai_chat/AiChatScreen.h"
-#include "screens/ai_quant_lab/AIQuantLabScreen.h"
 #include "screens/akshare/AkShareScreen.h"
-#include "screens/algo_trading/AlgoTradingScreen.h"
-#include "screens/alpha_arena/AlphaArenaScreen.h"
 #include "screens/alt_investments/AltInvestmentsScreen.h"
 #include "screens/asia_markets/AsiaMarketsScreen.h"
-#include "screens/auth/ForgotPasswordScreen.h"
 #include "screens/auth/LockScreen.h"
-#include "screens/auth/LoginScreen.h"
-#include "screens/auth/PricingScreen.h"
-#include "screens/auth/RegisterScreen.h"
 #include "screens/backtesting/BacktestingScreen.h"
-#include "screens/chat_mode/ChatModeScreen.h"
 #include "screens/code_editor/CodeEditorScreen.h"
-#include "screens/common/ComingSoonScreen.h"
-#include "screens/crypto_center/CryptoCenterScreen.h"
-#include "screens/crypto_trading/CryptoTradingScreen.h"
 #include "screens/dashboard/DashboardScreen.h"
 #include "screens/data_mapping/DataMappingScreen.h"
 #include "screens/data_sources/DataSourcesScreen.h"
@@ -46,11 +36,8 @@
 #include "screens/docs/DocsScreen.h"
 #include "screens/economics/EconomicsScreen.h"
 #include "screens/equity_research/EquityResearchScreen.h"
-#include "screens/equity_trading/EquityTradingScreen.h"
 #include "screens/excel/ExcelScreen.h"
 #include "screens/file_manager/FileManagerScreen.h"
-#include "screens/fno/FnoScreen.h"
-#include "screens/forum/ForumScreen.h"
 #include "screens/geopolitics/GeopoliticsScreen.h"
 #include "screens/gov_data/GovDataScreen.h"
 #include "screens/info/ContactScreen.h"
@@ -59,21 +46,16 @@
 #include "screens/info/TermsScreen.h"
 #include "screens/info/TrademarksScreen.h"
 #include "screens/ma_analytics/MAAnalyticsScreen.h"
-#include "screens/maritime/MaritimeScreen.h"
 #include "screens/markets/MarketsScreen.h"
 #include "screens/mcp_servers/McpServersScreen.h"
 #include "screens/news/NewsScreen.h"
 #include "screens/node_editor/NodeEditorScreen.h"
 #include "screens/notes/NotesScreen.h"
-#include "screens/polymarket/PolymarketScreen.h"
 #include "screens/portfolio/PortfolioScreen.h"
-#include "screens/profile/ProfileScreen.h"
-#include "screens/quantlib/QuantLibScreen.h"
 #include "screens/relationship_map/RelationshipMapScreen.h"
 #include "screens/report_builder/ReportBuilderScreen.h"
 #include "screens/screener/ScreenerScreen.h"
 #include "screens/settings/SettingsScreen.h"
-#include "screens/support/SupportScreen.h"
 #include "screens/surface_analytics/SurfaceAnalyticsScreen.h"
 #include "screens/trade_viz/TradeVizScreen.h"
 #include "screens/watchlist/WatchlistScreen.h"
@@ -83,7 +65,6 @@
 #include "ui/pushpins/PushpinBar.h"
 #include "ui/theme/Theme.h"
 
-#include <QStackedWidget>
 #include <QVBoxLayout>
 
 #include <DockAreaWidget.h>
@@ -91,58 +72,6 @@
 #include <DockWidget.h>
 
 namespace fincept {
-
-void WindowFrame::setup_auth_screens() {
-    auto* login = new screens::LoginScreen;
-    auto* reg = new screens::RegisterScreen;
-    auto* forgot = new screens::ForgotPasswordScreen;
-    auto* pricing = new screens::PricingScreen;
-
-    // Info screens stack (shared between auth and app via master stack index 2)
-    info_stack_ = new QStackedWidget;
-    auto* contact = new screens::ContactScreen;
-    auto* terms = new screens::TermsScreen;
-    auto* privacy = new screens::PrivacyScreen;
-    auto* trademarks = new screens::TrademarksScreen;
-    auto* help = new screens::HelpScreen;
-
-    info_stack_->addWidget(contact);    // index 0
-    info_stack_->addWidget(terms);      // index 1
-    info_stack_->addWidget(privacy);    // index 2
-    info_stack_->addWidget(trademarks); // index 3
-    info_stack_->addWidget(help);       // index 4
-
-    auth_stack_->addWidget(login);       // index 0
-    auth_stack_->addWidget(reg);         // index 1
-    auth_stack_->addWidget(forgot);      // index 2
-    auth_stack_->addWidget(pricing);     // index 3
-    auth_stack_->addWidget(info_stack_); // index 4
-
-    // ── Auth navigation ──────────────────────────────────────────────────────
-    connect(login, &screens::LoginScreen::navigate_register, this, &WindowFrame::show_register);
-    connect(login, &screens::LoginScreen::navigate_forgot_password, this, &WindowFrame::show_forgot_password);
-    connect(reg, &screens::RegisterScreen::navigate_login, this, &WindowFrame::show_login);
-    connect(forgot, &screens::ForgotPasswordScreen::navigate_login, this, &WindowFrame::show_login);
-    connect(pricing, &screens::PricingScreen::navigate_dashboard, this, [this]() {
-        set_shell_visible(true);
-        stack_->setCurrentIndex(1);
-        dock_router_->navigate("dashboard");
-    });
-
-    // ── Info screen navigation ───────────────────────────────────────────────
-    // Back from info → return to previous auth screen (login by default)
-    connect(contact, &screens::ContactScreen::navigate_back, this, &WindowFrame::show_login);
-    connect(terms, &screens::TermsScreen::navigate_back, this, &WindowFrame::show_login);
-    connect(terms, &screens::TermsScreen::navigate_privacy, this, &WindowFrame::show_info_privacy);
-    connect(terms, &screens::TermsScreen::navigate_contact, this, &WindowFrame::show_info_contact);
-    connect(privacy, &screens::PrivacyScreen::navigate_back, this, &WindowFrame::show_login);
-    connect(privacy, &screens::PrivacyScreen::navigate_terms, this, &WindowFrame::show_info_terms);
-    connect(privacy, &screens::PrivacyScreen::navigate_contact, this, &WindowFrame::show_info_contact);
-    connect(trademarks, &screens::TrademarksScreen::navigate_back, this, &WindowFrame::show_login);
-    connect(help, &screens::HelpScreen::navigate_back, this, &WindowFrame::show_login);
-    connect(help, &screens::HelpScreen::navigate_register, this, &WindowFrame::show_register);
-    connect(help, &screens::HelpScreen::navigate_forgot_password, this, &WindowFrame::show_forgot_password);
-}
 
 void WindowFrame::setup_docking_mode() {
     // ADS global config must be set before the first CDockManager is constructed.
@@ -230,47 +159,32 @@ void WindowFrame::setup_docking_mode() {
 void WindowFrame::setup_dock_screens() {
     dock_router_->register_factory("dashboard", []() { return new screens::DashboardScreen; });
     dock_router_->register_factory("markets", []() { return new screens::MarketsScreen; });
-    dock_router_->register_factory("crypto_trading", []() { return new screens::CryptoTradingScreen; });
     dock_router_->register_factory("news", []() { return new screens::NewsScreen; });
-    dock_router_->register_factory("forum", []() { return new screens::ForumScreen; });
     dock_router_->register_factory("watchlist", []() { return new screens::WatchlistScreen; });
 
     // Lazily constructed on first navigation — deferred to avoid startup cost.
     dock_router_->register_factory("report_builder", []() { return new screens::ReportBuilderScreen; });
-    dock_router_->register_factory("profile", []() { return new screens::ProfileScreen; });
     dock_router_->register_factory("settings", []() { return new screens::SettingsScreen; });
     dock_router_->register_factory("about", []() { return new screens::AboutScreen; });
-    dock_router_->register_factory("support", []() { return new screens::SupportScreen; });
     dock_router_->register_factory("notes", []() { return new screens::NotesScreen; });
 
     dock_router_->register_factory("portfolio", []() { return new screens::PortfolioScreen; });
-    dock_router_->register_factory("ai_chat", []() { return new screens::AiChatScreen; });
     dock_router_->register_factory("backtesting", []() { return new screens::BacktestingScreen; });
-    dock_router_->register_factory("algo_trading", []() { return new screens::AlgoTradingScreen; });
     dock_router_->register_factory("node_editor", []() { return new workflow::NodeEditorScreen; });
     dock_router_->register_factory("code_editor", []() { return new screens::CodeEditorScreen; });
-    dock_router_->register_factory("ai_quant_lab", []() { return new screens::AIQuantLabScreen; });
-    dock_router_->register_factory("quantlib", []() { return new screens::QuantLibScreen; });
     dock_router_->register_factory("economics", []() { return new screens::EconomicsScreen; });
-    dock_router_->register_factory("crypto_center", []() { return new screens::CryptoCenterScreen; });
     dock_router_->register_factory("gov_data", []() { return new screens::GovDataScreen; });
     dock_router_->register_factory("dbnomics", []() { return new screens::DBnomicsScreen; });
     dock_router_->register_factory("akshare", []() { return new screens::AkShareScreen; });
     dock_router_->register_factory("asia_markets", []() { return new screens::AsiaMarketsScreen; });
     dock_router_->register_factory("relationship_map", []() { return new screens::RelationshipMapScreen; });
-    dock_router_->register_factory("equity_trading", []() { return new screens::EquityTradingScreen; });
-    dock_router_->register_factory("alpha_arena", []() { return new screens::AlphaArenaScreen; });
-    dock_router_->register_factory("polymarket", []() { return new screens::PolymarketScreen; });
     dock_router_->register_factory("derivatives", []() { return new screens::DerivativesScreen; });
-    dock_router_->register_factory("fno", []() { return new screens::fno::FnoScreen; });
     dock_router_->register_factory("equity_research", []() { return new screens::EquityResearchScreen; });
     dock_router_->register_factory("screener", []() { return new screens::ScreenerScreen; });
     dock_router_->register_factory("ma_analytics", []() { return new screens::MAAnalyticsScreen; });
     dock_router_->register_factory("alt_investments", []() { return new screens::AltInvestmentsScreen; });
     dock_router_->register_factory("geopolitics", []() { return new screens::GeopoliticsScreen; });
-    dock_router_->register_factory("maritime", []() { return new screens::MaritimeScreen; });
     dock_router_->register_factory("surface_analytics", []() { return new fincept::surface::SurfaceAnalyticsScreen; });
-    dock_router_->register_factory("agent_config", []() { return new screens::AgentConfigScreen; });
     dock_router_->register_factory("mcp_servers", []() { return new screens::McpServersScreen; });
     dock_router_->register_factory("data_mapping", []() { return new screens::DataMappingScreen; });
     dock_router_->register_factory("data_sources", []() { return new screens::DataSourcesScreen; });
@@ -293,18 +207,29 @@ void WindowFrame::setup_dock_screens() {
     dock_router_->register_factory("trade_viz", []() { return new screens::TradeVizScreen; });
     dock_router_->register_factory("docs", []() { return new screens::DocsScreen; });
 
-    // Info/legal pages. Static content, but "static" is not "free": setup_auth_screens()
-    // above already builds one of each for info_stack_, so register_screen() here made
-    // a SECOND instance of all five per window, none of them visible at startup.
-    // HelpScreen::build_page() alone is ~110-130 widgets each carrying an inline
-    // setStyleSheet — roughly 1,100 widgets and 1,100 CSS parses per window, paid on
-    // the cold-start path. Factories make the dock copies cost nothing until the user
-    // actually opens the panel; the auth-stack copies stay the only eager instances.
+    // Info/legal pages — static content, lazily constructed on first open.
     dock_router_->register_factory("contact", []() { return new screens::ContactScreen; });
     dock_router_->register_factory("terms", []() { return new screens::TermsScreen; });
     dock_router_->register_factory("privacy", []() { return new screens::PrivacyScreen; });
     dock_router_->register_factory("trademarks", []() { return new screens::TrademarksScreen; });
-    dock_router_->register_factory("help", []() { return new screens::HelpScreen; });
+    dock_router_->register_factory("help", [this]() {
+        auto* help = new screens::HelpScreen;
+        // MarketLab: the Help quick actions navigate to local dock screens.
+        connect(help, &screens::HelpScreen::navigate_docs, this, [this]() { dock_router_->navigate("docs"); });
+        connect(help, &screens::HelpScreen::navigate_settings, this, [this]() { dock_router_->navigate("settings"); });
+        connect(help, &screens::HelpScreen::navigate_about, this, [this]() { dock_router_->navigate("about"); });
+        return help;
+    });
+
+    // MarketLab: screens not registered here (equity_trading, algo_trading,
+    // maritime, forum, support, profile) are Unavailable in this build — see
+    // CapabilityManager::screen_availability for their truthful reasons.
+    for (const QString& id : capability::CapabilityManager::instance().allowed_screens(
+             {QStringLiteral("equity_trading"), QStringLiteral("algo_trading"), QStringLiteral("crypto_trading"),
+              QStringLiteral("fno"), QStringLiteral("quantlib"), QStringLiteral("maritime"), QStringLiteral("forum"),
+              QStringLiteral("support"), QStringLiteral("profile")})) {
+        LOG_WARN("WindowFrame", QString("Unexpected available screen in removal set: %1").arg(id));
+    }
 }
 
 } // namespace fincept

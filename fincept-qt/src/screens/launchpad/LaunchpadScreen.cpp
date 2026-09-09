@@ -95,7 +95,7 @@ LaunchpadScreen* LaunchpadScreen::instance() {
 }
 
 LaunchpadScreen::LaunchpadScreen(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle(tr("Fincept Launchpad"));
+    setWindowTitle(tr("MarketLab Launchpad"));
     setMinimumSize(480, 320);
     resize(480, 320);
 
@@ -271,7 +271,7 @@ void LaunchpadScreen::changeEvent(QEvent* event) {
 }
 
 void LaunchpadScreen::retranslateUi() {
-    setWindowTitle(tr("Fincept Launchpad"));
+    setWindowTitle(tr("MarketLab Launchpad"));
 
     if (greeting_) {
         const QString profile = ProfileManager::instance().active();

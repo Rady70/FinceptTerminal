@@ -36,51 +36,44 @@ QWidget* DocsScreen::page_welcome() {
     vl->setContentsMargins(20, 16, 20, 20);
     vl->setSpacing(12);
 
-    vl->addWidget(make_heading(tr("FINCEPT TERMINAL  —  DOCUMENTATION")));
+    vl->addWidget(make_heading(tr("MARKETLAB TERMINAL  —  DOCUMENTATION")));
     // Version comes from the running application — the hardcoded "v4.0.0" was
     // already stale against the shipped 4.0.1.
     vl->addWidget(make_muted_label(
-        tr("v%1  |  Native C++ Financial Intelligence Terminal").arg(QCoreApplication::applicationVersion())));
+        tr("v%1  |  Local-first C++ Financial Research Workspace").arg(QCoreApplication::applicationVersion())));
 
     auto* sep = new QFrame;
     sep->setFrameShape(QFrame::HLine);
     sep->setStyleSheet(QString("color: %1;").arg(ui::colors::BORDER_DIM()));
     vl->addWidget(sep);
 
-    vl->addWidget(
-        make_section_panel("■", tr("WHAT IS FINCEPT TERMINAL?"),
-                           tr("Fincept Terminal is a professional-grade desktop financial intelligence platform "
-                              "built in native C++ with Qt6. It provides institutional-quality market data, "
-                              "trading capabilities, quantitative research tools, and AI-powered analytics — "
-                              "all in a single unified terminal interface.\n\n"
-                              "With 50+ integrated screens, real-time WebSocket feeds, embedded Python analytics, "
-                              "and 16 broker integrations, Fincept Terminal bridges the gap between "
-                              "retail and institutional tooling."),
-                           ui::colors::AMBER));
+    vl->addWidget(make_section_panel("■", tr("WHAT IS MARKETLAB TERMINAL?"),
+                                     tr("MarketLab Terminal is a local-first fork of Fincept Terminal, a "
+                                        "professional-grade desktop financial intelligence platform "
+                                        "built in native C++ with Qt6. It provides public market data, "
+                                        "quantitative research tools and reproducible analytics — "
+                                        "all in a single unified terminal interface.\n\n"
+                                        "With embedded Python analytics and public-data providers, "
+                                        "MarketLab Terminal bridges the gap between "
+                                        "retail and institutional tooling."),
+                                     ui::colors::AMBER));
 
     vl->addWidget(make_section_panel("■", tr("KEY CAPABILITIES"),
-                                     tr("■  Real-time market data across equities, crypto, forex, commodities\n"
-                                        "■  Multi-exchange crypto trading (Kraken, HyperLiquid, Binance, etc.)\n"
-                                        "■  Paper trading engine with simulated order matching\n"
-                                        "■  1300+ Python analytics scripts (equity, portfolio, derivatives)\n"
-                                        "■  18-module QuantLib quantitative analysis suite (590+ endpoints)\n"
-                                        "■  AI Quant Lab with ML models, factor discovery, HFT, RL trading\n"
-                                        "■  Multiple AI agent frameworks (Geopolitics, Economic, Hedge Fund)\n"
+                                     tr("■  Public market data across equities, crypto, forex, commodities\n"
+                                        "■  Historical simulation (backtesting) — no live order routing\n"
+                                        "■  Python analytics scripts (equity, portfolio, derivatives)\n"
                                         "■  Visual node editor for workflow automation\n"
                                         "■  DBnomics access to 100+ data providers, 500K+ datasets\n"
                                         "■  Surface analytics for derivatives, fixed income, credit, risk\n"
                                         "■  Report builder with drag-and-drop components\n"
-                                        "■  Backtesting with 6 providers and 50+ strategies\n"
-                                        "■  Algorithmic trading with strategy builder and scanner"),
+                                        "■  Local derivatives calculator and analytics"),
                                      ui::colors::POSITIVE));
 
     vl->addWidget(make_section_panel("■", tr("WHO IS THIS FOR?"),
-                                     tr("■  Retail traders seeking institutional-quality tools\n"
-                                        "■  Quantitative researchers and data scientists\n"
+                                     tr("■  Quantitative researchers and data scientists\n"
                                         "■  Portfolio managers and financial analysts\n"
                                         "■  Finance students learning markets and analytics\n"
-                                        "■  Algorithmic trading developers\n"
-                                        "■  Crypto traders needing multi-exchange access\n"
+                                        "■  Local-first users who want no account and no hosted service\n"
                                         "■  Economics researchers working with global datasets"),
                                      ui::colors::INFO));
 
@@ -143,19 +136,18 @@ QWidget* DocsScreen::page_getting_started() {
                                         "Ctrl+P — Take screenshot (saved to home directory)"),
                                      ui::colors::AMBER));
 
-    vl->addWidget(make_section_panel("4", tr("SUBSCRIPTION PLANS"),
-                                     tr("Fincept Terminal offers tiered access:\n\n"
-                                        "■  FREE — Basic market data, limited screens, paper trading\n"
-                                        "■  PRO — Full market data, all screens, real trading, AI chat\n"
-                                        "■  ENTERPRISE — Everything + API access, priority support\n\n"
-                                        "Manage your plan from Settings or the Pricing screen."),
+    vl->addWidget(make_section_panel("4", tr("ACCESS MODEL"),
+                                     tr("MarketLab Terminal requires no account or subscription:\n\n"
+                                        "■  LOCAL WORKSPACE — opens directly, no login or pricing gate\n"
+                                        "■  PUBLIC DATA — quotes and history from public providers\n"
+                                        "■  LOCAL ANALYTICS — research tools and historical simulation\n"
+                                        "■  NO EXECUTION — no external broker or exchange order route"),
                                      ui::colors::AMBER));
 
-    vl->addWidget(
-        make_skill_panel(tr("Explore the Dashboard, set up a watchlist, browse market data"),
-                         tr("Configure broker connections, set up paper trading, explore analytics"),
-                         tr("Deploy algo strategies, use QuantLib suite, build custom workflows"),
-                         tr("Multi-agent AI systems, custom MCP servers, HFT backtesting, node editor automation")));
+    vl->addWidget(make_skill_panel(tr("Explore the Dashboard, set up a watchlist, browse market data"),
+                                   tr("Run historical simulations in Backtesting, explore analytics"),
+                                   tr("Build workflows in the node editor, write notebooks"),
+                                   tr("Custom MCP servers, backtesting, report building, node editor automation")));
 
     vl->addStretch();
     scroll->setWidget(page);
