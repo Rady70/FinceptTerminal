@@ -7,6 +7,7 @@ missingIncludeSystem
 unusedFunction
 # MarketLab fork: inherited upstream findings baselined at the fork point
 # (untouched upstream code; the runner-image cppcheck build exits 1 on them).
+# Entries use cppcheck's id:file:line suppression format.
 # See the Phase 2+3 finalization record in Rady70/Market_Lab.
-src/auth/GoogleDesktopLogin.cpp:38:publicAllocationError
-src/services/sectors/SectorResolver.cpp:231:identicalConditionAfterEarlyExit
+publicAllocationError:src/auth/GoogleDesktopLogin.cpp:38
+identicalConditionAfterEarlyExit:src/services/sectors/SectorResolver.cpp:231
