@@ -230,6 +230,19 @@ def strip_cmake_comments(text: str) -> str:
             position += 1
             continue
         if quoted:
+            if char == "\\" and position + 1 < len(text):
+                if text[position + 1] == "\n":
+                    visible.append(" ")
+                    position += 2
+                    continue
+                if (
+                    text[position + 1] == "\r"
+                    and position + 2 < len(text)
+                    and text[position + 2] == "\n"
+                ):
+                    visible.append(" ")
+                    position += 3
+                    continue
             if char == "\n":
                 # Keep multiline quoted arguments from creating fresh line
                 # anchors for declaration-looking bait. Real quoted scalar
