@@ -10,9 +10,10 @@ name: PR Build (compile + self-test gate)
 #   `v*` tag push, on three platforms at once, in release.yml. Every release
 #   was a blind roll.
 #
-#   This job builds the same configuration release.yml builds, on Windows and
-#   Linux, and runs the headless self-tests. It is the gate that
-#   makes a tag push boring. (macOS is not part of the fork's PR CI.)
+#   This job builds the same configuration release.yml builds on Windows + Linux
+#   and runs the headless self-tests. It is the gate that
+#   makes a tag push boring. macOS PR CI is deferred; this workflow does not
+#   validate macOS.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -58,6 +59,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version gate resolves the Flatpak manifest's pinned source
+          # commit and reads that commit's CMake project version.
+          fetch-depth: 0
+      - name: Install PyYAML for packaging validation
+        run: sudo apt-get update -qq && sudo apt-get install -y python3-yaml
       # CMakeLists.txt project(... VERSION x.y.z) is the source of truth; the
       # flatpak / AppImage / appdata manifests each carry a hand-written copy.
       # A stale copy ships a bundle whose CFBundleVersion / appdata version
@@ -147,7 +154,7 @@ jobs:
             libxcb-shape0-dev libxcb-sync-dev libxcb-xfixes0-dev \
             libxcb-xinerama0 libxcb-xinerama0-dev libxcb-xkb1 \
             libdbus-1-dev libfontconfig1-dev libfreetype6-dev \
-            pkg-config
+            pkg-config python3-yaml
           echo "CC=gcc-12"  >> "$GITHUB_ENV"
           echo "CXX=g++-12" >> "$GITHUB_ENV"
 
@@ -239,6 +246,22 @@ jobs:
         run: |
           cmake --build build --config ${{ env.BUILD_TYPE }} \
             --parallel $(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+
+      - name: Verify staged Linux install
+        if: runner.os == 'Linux'
+        shell: bash
+        working-directory: fincept-qt
+        run: |
+          set -euo pipefail
+          # Validate the install tree produced by CMake, not just source text.
+          STAGE="$(mktemp -d)"
+          trap 'rm -rf "$STAGE"' EXIT
+          cmake --install build \
+            --config "${{ env.BUILD_TYPE }}" \
+            --prefix "$STAGE"
+          /usr/bin/python3 packaging/flatpak/preflight.py \
+            --repo-root .. \
+            --verify-installed "$STAGE"
 
       # ── Headless self-tests ───────────────────────────────────────────────
       # The flag list is discovered from the binary (--selftest-list) with a

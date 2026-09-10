@@ -34,6 +34,8 @@ python -X utf8 marketlab/audit_hosted_paths.py
 
 The built application is `fincept-qt/build/win-dev/MarketLabTerminal.exe`.
 
+Hosted pull-request CI currently covers Windows + Linux. macOS PR CI is deferred and is not validated by the current hosted checks.
+
 ## Project boundaries
 
 - No Fincept-hosted API, cloud-sync, billing, subscription, forum, support, or update path is treated as available.

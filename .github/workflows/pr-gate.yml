@@ -14,6 +14,14 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
+      # pull_request_target must execute only the base repository's contract;
+      # never check out the untrusted pull request head in this workflow.
+      - name: Check out scope decision contract
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
       - name: Evaluate PR scope
         id: check
         uses: actions/github-script@v7
@@ -146,3 +154,12 @@ jobs:
               } catch (e) {}
               core.setOutput('blocked', 'false');
             }
+
+      # Fail closed: this runs even when evaluation fails or emits no output.
+      - name: Enforce scope decision
+        if: always()
+        env:
+          SCOPE_DECISION: ${{ steps.check.outputs.blocked }}
+        shell: bash
+        run: |
+          bash .github/scripts/enforce_scope_decision.sh "${SCOPE_DECISION-}"

@@ -42,14 +42,14 @@ Closes #
 
 ## Architecture / code-quality checklist
 
-- [ ] Builds without errors on my target platform (Windows / macOS / Linux) — state which below
+- [ ] Builds without errors on my target platform — state the actual platform below. Hosted PR CI currently covers Windows + Linux; macOS PR CI is deferred.
 - [ ] UI thread is never blocked (no `waitForFinished()` on main thread) — see CLAUDE.md P1
 - [ ] Timers start/stop in `showEvent()` / `hideEvent()` — see P3
 - [ ] No raw `QProcess` for Python — used `PythonRunner::instance().run()` — see P4
 - [ ] No `print()` in Python scripts — used `logger.info` / `logger.warning` — see P14
 - [ ] No sensitive data (API keys, credentials) committed
 - [ ] DataHub rules (D1–D5) respected if touching data flow
-- [ ] Tested manually on: (Windows / macOS / Linux — pick one)
+- [ ] Tested manually on: (state the actual platform; hosted PR CI covers Windows + Linux, while macOS PR CI is deferred)
 
 ## Screenshots / logs
 <!-- For UI changes include before/after. For bug fixes include the log line that proves the fix. -->
