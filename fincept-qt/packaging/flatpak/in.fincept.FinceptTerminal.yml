@@ -57,7 +57,7 @@ modules:
       # application tree used by this manifest; no mutable branch is needed.
       - type: git
         url: https://github.com/Rady70/FinceptTerminal.git
-        commit: 957a7b9bc43bb2cb0bf0a97078ec00f869c388a5
+        commit: 099858eab0b1fb3a9ae49daa93b645b2313aa440
       # Vendored FetchContent dependencies (no network during build)
       - type: git
         url: https://github.com/QtExcel/QXlsx.git
