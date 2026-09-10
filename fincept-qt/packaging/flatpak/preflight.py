@@ -174,12 +174,32 @@ def remote_contains_commit(repo: Path, remote_text: str, commit: str) -> bool:
     return False
 
 
+def strip_cmake_comments(text: str) -> str:
+    """Remove CMake line and bracket comments before reading declarations."""
+    visible = []
+    position = 0
+    bracket_open = re.compile(r"#\[(=*)\[")
+    while position < len(text):
+        match = bracket_open.search(text, position)
+        if match is None:
+            visible.append(text[position:])
+            break
+        visible.append(text[position:match.start()])
+        closing = "]" + match.group(1) + "]"
+        end = text.find(closing, match.end())
+        if end < 0:
+            # An unterminated bracket comment cannot expose declarations.
+            break
+        position = end + len(closing)
+    return re.sub(r"(?m)#.*$", "", "".join(visible))
+
+
 def project_values(cmake_text: str | None) -> list[str]:
-    return PROJECT_VERSION_RE.findall(cmake_text or "")
+    return PROJECT_VERSION_RE.findall(strip_cmake_comments(cmake_text or ""))
 
 
 def output_names(cmake_text: str | None) -> list[str]:
-    return OUTPUT_NAME_RE.findall(cmake_text or "")
+    return OUTPUT_NAME_RE.findall(strip_cmake_comments(cmake_text or ""))
 
 
 def pinned_source_metadata(repo: Path, commit: str | None) -> tuple[str | None, str | None]:
