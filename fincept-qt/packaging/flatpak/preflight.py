@@ -12,8 +12,10 @@ contract that can be verified without a Linux desktop or flatpak-builder:
   pinned source builds;
 * screenshots are pinned and the desktop entry is internally consistent.
 
-Run ``python preflight.py`` for the complete check, or
-``python preflight.py --version-only --repo-root <repo>`` for the CI gate.
+Run ``python preflight.py`` for the complete check,
+``python preflight.py --version-only --repo-root <repo>`` for the CI gate, or
+``python preflight.py --verify-installed <prefix> --repo-root <repo>`` after
+an actual Linux ``cmake --install``.
 The latter deliberately omits only the existing screenshot and local-image
 checks, which are unrelated to version or executable consistency.
 """
@@ -65,25 +67,25 @@ MAIN_CATEGORIES = {
 }
 INSTALLED_METADATA = (
     (
-        "installed Linux desktop entry",
+        "Linux desktop metadata",
         "fincept-qt/packaging/linux/fincept-terminal.desktop",
         "applications",
         "desktop",
     ),
     (
-        "installed Linux AppStream metadata",
+        "Linux AppStream metadata",
         "fincept-qt/packaging/linux/fincept-terminal.appdata.xml",
         "metainfo",
         "metainfo",
     ),
     (
-        "installed Flatpak desktop entry",
+        "Flatpak desktop metadata",
         "fincept-qt/packaging/flatpak/in.fincept.FinceptTerminal.desktop",
         "applications",
         "desktop",
     ),
     (
-        "installed Flatpak AppStream metadata",
+        "Flatpak AppStream metadata",
         "fincept-qt/packaging/flatpak/in.fincept.FinceptTerminal.metainfo.xml",
         "metainfo",
         "metainfo",
@@ -202,7 +204,7 @@ def remote_contains_commit(repo: Path, remote_text: str, commit: str) -> bool:
 
 
 def strip_cmake_comments(text: str) -> str:
-    """Remove CMake comments and bracket arguments before reading declarations."""
+    """Remove non-code CMake content before reading semantic declarations."""
     visible = []
     line_comment = False
     quoted = False
@@ -228,6 +230,13 @@ def strip_cmake_comments(text: str) -> str:
             position += 1
             continue
         if quoted:
+            if char == "\n":
+                # Keep multiline quoted arguments from creating fresh line
+                # anchors for declaration-looking bait. Real quoted scalar
+                # values, such as OUTPUT_NAME, remain available to the regexes.
+                visible.append(" ")
+                position += 1
+                continue
             visible.append(char)
             if char == "\\" and position + 1 < len(text):
                 visible.append(text[position + 1])
@@ -269,43 +278,32 @@ def output_names(cmake_text: str | None) -> list[str]:
     return OUTPUT_NAME_RE.findall(strip_cmake_comments(cmake_text or ""))
 
 
-def cmake_installs_file(
-    cmake_text: str | None, relative_path: str, destination: str
-) -> bool:
-    """Return whether active CMake installs a metadata source to a destination."""
-    if not cmake_text:
-        return False
-    source = re.escape(relative_path.removeprefix("fincept-qt/"))
-    target = re.escape(destination)
-    active = strip_cmake_comments(cmake_text)
-    return bool(
-        re.search(
-            rf"\binstall\s*\(\s*FILES\b[^)]*{source}"
-            rf"[^)]*DESTINATION\b[^)]*{target}\b",
-            active,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-    )
-
-
 def check_cmake_parser_fixture(repo: Path) -> None:
-    fixture = (
-        repo
-        / "fincept-qt"
-        / "packaging"
-        / "flatpak"
-        / "fixtures"
-        / "cmake_bracket_argument_bait.cmake"
+    fixture_dir = repo / "fincept-qt" / "packaging" / "flatpak" / "fixtures"
+    cases = (
+        (
+            "bracket-argument",
+            "cmake_bracket_argument_bait.cmake",
+            [],
+            [],
+        ),
+        (
+            "quoted-argument",
+            "cmake_quoted_argument_bait.cmake",
+            ["0.1.0"],
+            ["MarketLabTerminal"],
+        ),
     )
-    text = read_text(fixture, "CMake bracket-argument regression fixture")
-    ck(
-        project_values(text) == [],
-        "CMake bracket-argument bait cannot satisfy project version extraction",
-    )
-    ck(
-        output_names(text) == [],
-        "CMake bracket-argument bait cannot satisfy executable extraction",
-    )
+    for name, filename, expected_versions, expected_outputs in cases:
+        text = read_text(fixture_dir / filename, f"CMake {name} regression fixture")
+        ck(
+            project_values(text) == expected_versions,
+            f"CMake {name} fixture extracts only expected project declarations",
+        )
+        ck(
+            output_names(text) == expected_outputs,
+            f"CMake {name} fixture extracts only expected executable declarations",
+        )
 
 
 def pinned_source_metadata(repo: Path, commit: str | None) -> tuple[str | None, str | None]:
@@ -598,25 +596,12 @@ def check_launch_contract(
     )
 
 
-def check_installed_metadata_contract(
-    repo: Path,
-    cmake_text: str | None,
-    pinned_cmake_text: str | None,
-    source_commit: str | None,
-    executable: str | None,
+def check_metadata_source_contract(
+    repo: Path, source_commit: str | None, executable: str | None
 ) -> None:
-    """Check every desktop/AppStream file that cmake --install actually ships."""
+    """Check metadata sources against the executable built by the pinned source."""
     expected = executable or "<unresolved>"
-    for label, relative_path, destination, kind in INSTALLED_METADATA:
-        ck(
-            cmake_installs_file(cmake_text, relative_path, destination),
-            f"working-tree CMake installs {relative_path} to {destination}",
-        )
-        ck(
-            cmake_installs_file(pinned_cmake_text, relative_path, destination),
-            f"pinned-source CMake installs {relative_path} to {destination}",
-        )
-
+    for label, relative_path, _, kind in INSTALLED_METADATA:
         current_text = read_text(repo / relative_path, label)
         pinned_text = pinned_source_file(
             repo,
@@ -674,6 +659,51 @@ def check_installed_metadata_contract(
             )
 
 
+def verify_installed_prefix(repo: Path, prefix: Path) -> None:
+    """Verify the files produced by a real Linux cmake --install invocation."""
+    expected = "MarketLabTerminal"
+    cmake_text = read_text(
+        repo / "fincept-qt" / "CMakeLists.txt",
+        "working-tree CMakeLists.txt for installed verification",
+    )
+    names = output_names(cmake_text)
+    ck(
+        len(names) == 1 and names[0] == expected,
+        f"installed verification expects CMake executable {expected}",
+    )
+    binary = prefix / "bin" / expected
+    ck(binary.is_file(), f"staged executable exists ({binary})")
+    ck(
+        binary.is_file() and os.access(binary, os.X_OK),
+        f"staged executable is executable ({binary})",
+    )
+
+    for label, relative_path, destination, kind in INSTALLED_METADATA:
+        installed = prefix / "share" / destination / Path(relative_path).name
+        text = read_text(installed, f"installed {label}")
+        if kind == "desktop":
+            desktop = parse_desktop_text(text) if text is not None else {}
+            ck(
+                desktop_exec_binary(desktop) == expected,
+                f"installed {label} Exec == {expected}",
+            )
+            ck(
+                desktop.get("StartupWMClass") == expected,
+                f"installed {label} StartupWMClass == {expected}",
+            )
+        else:
+            metainfo = (
+                parse_xml_text(text, f"installed {label}")
+                if text is not None
+                else None
+            )
+            provided = metainfo_binaries(metainfo)
+            ck(
+                len(provided) == 1 and provided[0] == expected,
+                f"installed {label} provides exactly {expected}",
+            )
+
+
 def check_version_field(value: str | None, version: str | None, label: str) -> None:
     if value is None:
         ck(False, f"could not resolve exactly one {label}")
@@ -722,15 +752,35 @@ def parse_release_file(path: Path, label: str):
     return dom, release_versions(dom) if dom is not None else []
 
 
+def report_result(success_message: str) -> int:
+    print(f"\n{len(fails)} failure(s), {len(warns)} warning(s)")
+    for failure in fails:
+        print("  FAIL:", failure)
+    for warning in warns:
+        print("  WARN:", warning)
+    if fails:
+        return 1
+    print(success_message)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     global fails, warns
     fails, warns = [], []
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version-only", action="store_true")
+    parser.add_argument("--verify-installed", type=Path, default=None)
     parser.add_argument("--repo-root", type=Path, default=None)
     args = parser.parse_args(argv)
 
     repo = (args.repo_root or D.parents[2]).resolve()
+    if args.verify_installed is not None:
+        prefix = args.verify_installed
+        if not prefix.is_absolute():
+            prefix = (repo / prefix).resolve()
+        verify_installed_prefix(repo, prefix)
+        return report_result(f"Staged Linux install is consistent with MarketLabTerminal.")
+
     cmake_path = repo / "fincept-qt" / "CMakeLists.txt"
     cmake_text = read_text(cmake_path, "working-tree CMakeLists.txt")
     current_versions = project_values(cmake_text)
@@ -823,12 +873,6 @@ def main(argv: list[str] | None = None) -> int:
     desktop = parse_desktop(flatpak_dir / f"{APPID}.desktop")
     check_desktop_basics(desktop, manifest)
     source_commit = source.get("commit") if isinstance(source, dict) else None
-    pinned_cmake_text = pinned_source_file(
-        repo,
-        source_commit,
-        "fincept-qt/CMakeLists.txt",
-        "pinned application CMakeLists.txt",
-    )
     pinned_desktop_text = pinned_source_file(
         repo, source_commit, "fincept-qt/packaging/flatpak/in.fincept.FinceptTerminal.desktop",
         "pinned Flatpak desktop entry",
@@ -842,12 +886,8 @@ def main(argv: list[str] | None = None) -> int:
     check_launch_contract(
         manifest, desktop, metainfo, pinned_desktop, pinned_metainfo, source_executable
     )
-    check_installed_metadata_contract(
-        repo,
-        cmake_text,
-        pinned_cmake_text,
-        source_commit,
-        source_executable,
+    check_metadata_source_contract(
+        repo, source_commit, source_executable
     )
 
     print("[8] other authoritative packaging version fields")
@@ -878,15 +918,7 @@ def main(argv: list[str] | None = None) -> int:
             f"FINCEPT_VERSION={os.environ['FINCEPT_VERSION']} does not match CMake project version {current_version}",
         )
 
-    print(f"\n{len(fails)} failure(s), {len(warns)} warning(s)")
-    for failure in fails:
-        print("  FAIL:", failure)
-    for warning in warns:
-        print("  WARN:", warning)
-    if fails:
-        return 1
-    print(f"Packaging metadata is consistent with {current_version}.")
-    return 0
+    return report_result(f"Packaging metadata is consistent with {current_version}.")
 
 
 if __name__ == "__main__":
