@@ -1,6 +1,5 @@
 ﻿#include "screens/dashboard/canvas/WidgetRegistry.h"
 
-#include "screens/dashboard/widgets/BrokerHoldingsWidget.h"
 #include "screens/dashboard/widgets/CommoditiesWidget.h"
 #include "screens/dashboard/widgets/CryptoTickerWidget.h"
 #include "screens/dashboard/widgets/CryptoWidget.h"
@@ -149,15 +148,15 @@ WidgetRegistry::WidgetRegistry() {
     // ── Trading ───────────────────────────────────────────────────────────────
     // MarketLab: broker/execution widgets are NOT registered — no order entry,
     // order-cancel, broker-account, or margin surface is exposed on the
-    // dashboard (FINCEPT_FORK_PLAN.md §5.4, §6). Retained broker-adjacent
-    // widgets (holdings) are read-only and show an explicit empty state with
-    // no brokers configured.
-
-    register_widget(
-        {"holdings", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Long-term broker holdings — avg cost, LTP, P&L %"), 6,
-         5, 3, 3, [](const QJsonObject& cfg) { return new widgets::BrokerHoldingsWidget(cfg); }});
+    // dashboard (FINCEPT_FORK_PLAN.md §5.4, §6). This includes the former
+    // `holdings` widget: BrokerHoldingsWidget owns per-row MARKET SELL and
+    // SQUARE OFF ALL order actions via UnifiedTrading::place_order, so it is an
+    // execution surface, not a read-only view. Panel comments claimed it was
+    // read-only; Phase 4 containment removed the registration instead.
+    // FINCEPT_FORK_PLAN.md §6 already drops account/broker surfaces, and no
+    // retained phase integrates a broker account. Saved dashboard tiles that
+    // reference an unregistered widget are preserved unrendered by
+    // DashboardCanvas::load_layout and survive serialization.
 
     // ── Tools ────────────────────────────────────────────────────────────────
     register_widget(

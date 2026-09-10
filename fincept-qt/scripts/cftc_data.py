@@ -7,7 +7,7 @@ import json
 import requests
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import traceback
 import os
 
@@ -76,7 +76,9 @@ class CFTCDataWrapper:
 
             # Energy
             "crude_oil": "067651",
-            "natural_gas": "02365B",
+            # 02365B now belongs to a defunct Permian basis swap; the NYMEX
+            # Henry Hub natural gas contract reports under 023651.
+            "natural_gas": "023651",
             "gasoline": "111659",
             "heating_oil": "022651",
 
@@ -124,7 +126,7 @@ class CFTCDataWrapper:
             "crude": ["CRUDE OIL", "067651"],
             "wti": ["WTI-PHYSICAL", "067651"],
             "brent": ["BRENT LAST DAY", "06765T"],
-            "natural_gas": ["HENRY HUB", "02365B"],
+            "natural_gas": ["NAT GAS NYME", "023651"],
             "corn": ["CORN", "002602"],
             "wheat": ["WHEAT-SRW", "001602"],
             "s&p": ["E-MINI S&P 500", "13874A"],
@@ -187,35 +189,140 @@ class CFTCDataWrapper:
         except:
             return date_str
 
-    def _safe_int(self, value) -> int:
-        """Safely convert value to integer"""
-        if value is None:
-            return 0
+    @staticmethod
+    def _coerce_number(value):
+        """Socrata returns some numeric columns as strings (sometimes
+        comma-grouped). Convert a parseable string to int/float and leave
+        anything else — including None — exactly as it arrived, so a missing
+        cell can never be mistaken for a zero."""
+        if not isinstance(value, str):
+            return value
+        text = value.strip().replace(',', '')
+        if not text:
+            return value
         try:
-            if isinstance(value, str):
-                # Remove commas and convert
-                return int(value.replace(',', ''))
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            return value
+
+    @staticmethod
+    def _to_int(value) -> Optional[int]:
+        """Numeric cell -> int, or None when the cell is absent/non-numeric.
+        Used by the derived views, which must distinguish a genuine zero from a
+        field the report did not carry."""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
             return int(value)
-        except (ValueError, TypeError):
-            return 0
+        if isinstance(value, str):
+            text = value.strip().replace(',', '')
+            if not text:
+                return None
+            try:
+                return int(float(text))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _pick(record: Dict[str, Any], names: tuple) -> Optional[int]:
+        """First present, non-null alias in `names` -> int, else None."""
+        for name in names:
+            if name in record and record[name] is not None:
+                parsed = CFTCDataWrapper._to_int(record[name])
+                if parsed is not None:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _report_family(report_type: Optional[str]) -> str:
+        """Normalise the CLI/report label to the CFTC report family name."""
+        key = (report_type or "legacy").lower()
+        if key.startswith("financial"):
+            return "tff"
+        if key.startswith("tff"):
+            return "tff"
+        if key.startswith("disagg"):
+            return "disaggregated"
+        if key.startswith("legacy"):
+            return "legacy"
+        return key
+
+    # The participant fields the derived views read, per report family.
+    #
+    # The panel labels the first group "commercial" and the second
+    # "non-commercial (speculators)". For legacy that is the CFTC's own split;
+    # for disaggregated the faithful equivalents are Producer/Merchant
+    # (commercial hedgers) and Managed Money (speculators). The TFF/financial
+    # family has no such split at all — it reports Dealer/Intermediary, Asset
+    # Manager/Institutional, and Leveraged Funds — so the derived views refuse
+    # it instead of mislabelling one class or zero-filling the difference.
+    _POSITION_FIELDS = {
+        "legacy": {
+            "commercial_long": ("comm_positions_long_all", "comm_long_all"),
+            "commercial_short": ("comm_positions_short_all", "comm_short_all"),
+            "non_commercial_long": ("noncomm_positions_long_all", "noncomm_long_all"),
+            "non_commercial_short": ("noncomm_positions_short_all", "noncomm_short_all"),
+            "non_reportable_long": ("nonrept_positions_long_all",),
+            "non_reportable_short": ("nonrept_positions_short_all",),
+        },
+        "disaggregated": {
+            "commercial_long": ("prod_merc_positions_long", "prod_merc_positions_long_all"),
+            "commercial_short": ("prod_merc_positions_short", "prod_merc_positions_short_all"),
+            "non_commercial_long": ("m_money_positions_long_all", "m_money_positions_long"),
+            "non_commercial_short": ("m_money_positions_short_all", "m_money_positions_short"),
+            "non_reportable_long": ("nonrept_positions_long_all",),
+            "non_reportable_short": ("nonrept_positions_short_all",),
+        },
+    }
 
     def _build_search_query(self, identifier: str) -> str:
-        """Build search query for CFTC identifier"""
+        """Build the `$where` fragment that selects one contract/market.
+
+        A mapped identifier uses the CFTC contract-market code, which names one
+        contract exactly; the previous free-text name match selected several
+        contracts of the same commodity (GOLD, MICRO GOLD, ...) and let their
+        rows be mixed into a single dated trend. Unmapped free text falls back
+        to a wildcard search, and "all" selects everything."""
         if not identifier or identifier.lower() == "all":
             return ""
 
-        # Check if identifier is in our mappings
-        identifier_lower = identifier.lower()
-        if identifier_lower in self.market_mappings:
-            # Use the exact market name from mappings
-            return self.market_mappings[identifier_lower][0]
+        raw = identifier.strip()
+        key = raw.lower()
 
-        # Check if identifier is a 6-digit code
-        if identifier.isdigit() and len(identifier) == 6:
-            return identifier
+        # The panel's market keys all live in cot_codes. Resolving them there
+        # first matters: a free-text fallback would treat "_" as a LIKE
+        # wildcard ("crude_oil" matched every crude contract) and the aliases
+        # in market_mappings cover only half the panel's keys.
+        code = self.cot_codes.get(key)
+        if code:
+            return f"cftc_contract_market_code = '{code}'"
 
-        # Otherwise use as wildcard search
-        return f"%{identifier}%"
+        mapped = self.market_mappings.get(key)
+        if mapped:
+            name, mapped_code = mapped
+            if mapped_code:
+                return f"cftc_contract_market_code = '{mapped_code}'"
+            safe_name = name.replace("'", "")
+            return f"UPPER(contract_market_name) like UPPER('%{safe_name}%')"
+
+        if raw.isalnum() and len(raw) == 6:
+            return f"cftc_contract_market_code = '{raw}'"
+        if raw.isdigit():
+            return f"cftc_contract_market_code = '{raw}'"
+
+        safe = raw.replace("'", "").replace("_", " ")
+        return (
+            f"(UPPER(contract_market_name) like UPPER('%{safe}%') OR "
+            f"UPPER(commodity) like UPPER('%{safe}%') OR "
+            f"UPPER(cftc_contract_market_code) like UPPER('%{safe}%') OR "
+            f"UPPER(commodity_group_name) like UPPER('%{safe}%') OR "
+            f"UPPER(commodity_subgroup_name) like UPPER('%{safe}%'))"
+        )
 
     # COMMITMENT OF TRADERS (COT) ENDPOINTS
 
@@ -224,10 +331,14 @@ class CFTCDataWrapper:
                      end_date: Optional[str] = None, limit: Optional[int] = 1000) -> Dict[str, Any]:
         """Get Commitment of Traders (COT) data"""
         try:
-            # Default dates
+            # Default dates. A weekly report is up to seven days old, so a
+            # seven-day lookback can miss the most recent release entirely —
+            # which is exactly what happened for every named market in the C++
+            # panel. Any specific market/code therefore defaults to a year;
+            # only the "all" sweep keeps the short window (it would otherwise
+            # overflow the row limit).
             if not start_date:
-                # Default to 1 year ago for specific codes, last week for general
-                if identifier.lower() != "all" and identifier and identifier.replace('-', '').isdigit():
+                if identifier and identifier.lower() != "all":
                     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
                 else:
                     start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -263,8 +374,8 @@ class CFTCDataWrapper:
 
             # Add search filter if identifier is provided
             search_query = self._build_search_query(identifier)
-            if search_query and search_query != "all":
-                where_clause += f" AND (UPPER(contract_market_name) like UPPER('{search_query}') OR UPPER(commodity) like UPPER('{search_query}') OR UPPER(cftc_contract_market_code) like UPPER('{search_query}') OR UPPER(commodity_group_name) like UPPER('{search_query}') OR UPPER(commodity_subgroup_name) like UPPER('{search_query}'))"
+            if search_query:
+                where_clause += f" AND ({search_query})"
 
             # URL encode the where clause
             import urllib.parse
@@ -296,10 +407,13 @@ class CFTCDataWrapper:
                             # Convert percentage strings to decimal
                             try:
                                 clean_record[clean_key] = float(value) / 100
-                            except:
+                            except ValueError:
                                 clean_record[clean_key] = value
                         else:
-                            clean_record[clean_key] = value
+                            # Socrata emits numeric columns as strings for some
+                            # rows; normalise them so the derived arithmetic and
+                            # the panel's statistics see numbers, not strings.
+                            clean_record[clean_key] = self._coerce_number(value)
                     elif value is not None:
                         clean_record[clean_key] = value
 
@@ -311,10 +425,14 @@ class CFTCDataWrapper:
                 "parameters": {
                     "identifier": identifier,
                     "report_type": report_type,
+                    "report_family": self._report_family(report_type),
                     "futures_only": futures_only,
                     "start_date": start_formatted,
                     "end_date": end_formatted,
-                    "limit": limit
+                    "limit": limit,
+                    "source": self.base_url,
+                    "dataset": resource_id,
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 }
             }
 
@@ -392,8 +510,24 @@ class CFTCDataWrapper:
     # MARKET SENTIMENT ANALYSIS ENDPOINTS
 
     def analyze_market_sentiment(self, identifier: str, report_type: str = "disaggregated") -> Dict[str, Any]:
-        """Analyze market sentiment from COT data"""
+        """Analyze market sentiment from COT data.
+
+        Reads the participant fields the given report family actually carries;
+        a family whose fields cannot answer the commercial/non-commercial
+        question (TFF) and a row missing a required field both return a typed
+        error instead of zero-filled positions."""
         try:
+            family = self._report_family(report_type)
+            field_map = self._POSITION_FIELDS.get(family)
+            if field_map is None:
+                return {"error": CFTCError(
+                    "market_sentiment",
+                    f"Derived sentiment is not defined for the '{report_type}' report family. "
+                    "The CFTC financial futures (TFF) report classifies traders as "
+                    "Dealer/Intermediary, Asset Manager/Institutional and Leveraged Funds, so a "
+                    "commercial/non-commercial split would be mislabelled. Use the COT Table view."
+                ).to_dict()}
+
             # Get recent COT data
             cot_result = self.get_cot_data(
                 identifier=identifier,
@@ -416,35 +550,53 @@ class CFTCDataWrapper:
             latest_data = cot_data[0]
             previous_data = cot_data[1] if len(cot_data) > 1 else None
 
+            open_interest = self._to_int(latest_data.get("open_interest_all"))
+            latest = {key: self._pick(latest_data, names) for key, names in field_map.items()}
+            missing = [key for key, value in latest.items() if value is None]
+            if open_interest is None:
+                missing.append("open_interest_all")
+            if missing:
+                return {"error": CFTCError(
+                    "market_sentiment",
+                    "The latest {0} row ({1}) is missing: {2}. Sentiment was not derived — a "
+                    "missing position is not zero.".format(
+                        family, latest_data.get("report_date_as_yyyy_mm_dd", "unknown date"), ", ".join(missing))
+                ).to_dict()}
+
             # Calculate sentiment metrics
             sentiment_analysis = {
                 "latest_report": latest_data.get("report_date_as_yyyy_mm_dd"),
                 "market_name": latest_data.get("market_and_exchange_names", ""),
-                "open_interest": latest_data.get("open_interest_all", 0),
+                "open_interest": open_interest,
                 "change_in_oi": 0,
                 "commercial_positions": {
-                    "long": latest_data.get("comm_long_all", 0),
-                    "short": latest_data.get("comm_short_all", 0),
-                    "net": latest_data.get("comm_long_all", 0) - latest_data.get("comm_short_all", 0)
+                    "long": latest["commercial_long"],
+                    "short": latest["commercial_short"],
+                    "net": latest["commercial_long"] - latest["commercial_short"]
                 },
                 "non_commercial_positions": {
-                    "long": latest_data.get("noncomm_long_all", 0),
-                    "short": latest_data.get("noncomm_short_all", 0),
-                    "net": latest_data.get("noncomm_long_all", 0) - latest_data.get("noncomm_short_all", 0)
+                    "long": latest["non_commercial_long"],
+                    "short": latest["non_commercial_short"],
+                    "net": latest["non_commercial_long"] - latest["non_commercial_short"]
                 },
                 "non_reportable_positions": {
-                    "long": latest_data.get("nonreportable_long_all", 0),
-                    "short": latest_data.get("nonreportable_short_all", 0)
+                    "long": latest["non_reportable_long"],
+                    "short": latest["non_reportable_short"]
                 }
             }
 
-            # Calculate week-over-week changes if previous data exists
+            # Calculate week-over-week changes only when the previous week also
+            # carries every field; a gap leaves the block absent, never zero.
             if previous_data:
-                sentiment_analysis["change_in_oi"] = latest_data.get("open_interest_all", 0) - previous_data.get("open_interest_all", 0)
-                sentiment_analysis["commercial_positions"]["long_change"] = latest_data.get("comm_long_all", 0) - previous_data.get("comm_long_all", 0)
-                sentiment_analysis["commercial_positions"]["short_change"] = latest_data.get("comm_short_all", 0) - previous_data.get("comm_short_all", 0)
-                sentiment_analysis["non_commercial_positions"]["long_change"] = latest_data.get("noncomm_long_all", 0) - previous_data.get("noncomm_long_all", 0)
-                sentiment_analysis["non_commercial_positions"]["short_change"] = latest_data.get("noncomm_short_all", 0) - previous_data.get("noncomm_short_all", 0)
+                previous = {key: self._pick(previous_data, names) for key, names in field_map.items()}
+                previous_oi = self._to_int(previous_data.get("open_interest_all"))
+                if previous_oi is not None:
+                    sentiment_analysis["change_in_oi"] = open_interest - previous_oi
+                if all(value is not None for value in previous.values()):
+                    sentiment_analysis["commercial_positions"]["long_change"] = latest["commercial_long"] - previous["commercial_long"]
+                    sentiment_analysis["commercial_positions"]["short_change"] = latest["commercial_short"] - previous["commercial_short"]
+                    sentiment_analysis["non_commercial_positions"]["long_change"] = latest["non_commercial_long"] - previous["non_commercial_long"]
+                    sentiment_analysis["non_commercial_positions"]["short_change"] = latest["non_commercial_short"] - previous["non_commercial_short"]
 
             # Calculate sentiment scores
             total_oi = sentiment_analysis["open_interest"]
@@ -470,7 +622,10 @@ class CFTCDataWrapper:
                 "data": sentiment_analysis,
                 "parameters": {
                     "identifier": identifier,
-                    "report_type": report_type
+                    "report_type": report_type,
+                    "report_family": family,
+                    "source": self.base_url,
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
                 }
             }
 
@@ -478,8 +633,21 @@ class CFTCDataWrapper:
             return {"error": CFTCError("market_sentiment", str(e)).to_dict()}
 
     def get_position_summary(self, identifier: str, report_type: str = "disaggregated") -> Dict[str, Any]:
-        """Get summary of current positions for a market"""
+        """Get summary of current positions for a market.
+
+        Same rules as the sentiment view: family-specific fields, numeric
+        coercion, and a typed error when a required field is missing."""
         try:
+            family = self._report_family(report_type)
+            field_map = self._POSITION_FIELDS.get(family)
+            if field_map is None:
+                return {"error": CFTCError(
+                    "position_summary",
+                    f"Position classes are not defined for the '{report_type}' report family. "
+                    "The CFTC financial futures (TFF) report uses Dealer/Intermediary, Asset "
+                    "Manager/Institutional and Leveraged Funds classes. Use the COT Table view."
+                ).to_dict()}
+
             # Get latest COT data
             cot_result = self.get_cot_data(
                 identifier=identifier,
@@ -495,39 +663,57 @@ class CFTCDataWrapper:
             if not cot_data:
                 return {"error": CFTCError("position_summary", f"No position data available: {identifier}").to_dict()}
 
-            # Get most recent data
+            # Get most recent data. get_cot_data orders ASC, so sort before
+            # picking — otherwise this returns the OLDEST row of the window and
+            # reports it as "current positions".
+            cot_data.sort(key=lambda x: x.get("report_date_as_yyyy_mm_dd", ""), reverse=True)
             latest = cot_data[0]
+
+            open_interest = self._to_int(latest.get("open_interest_all"))
+            values = {key: self._pick(latest, names) for key, names in field_map.items()}
+            missing = [key for key, value in values.items() if value is None]
+            if open_interest is None:
+                missing.append("open_interest_all")
+            if missing:
+                return {"error": CFTCError(
+                    "position_summary",
+                    "The latest {0} row is missing: {1}. No summary was derived — a missing "
+                    "position is not zero.".format(family, ", ".join(missing))
+                ).to_dict()}
+
+            def pct(value: int) -> Optional[float]:
+                return (value / open_interest) * 100 if open_interest > 0 else None
 
             # Build position summary
             summary = {
                 "report_date": latest.get("report_date_as_yyyy_mm_dd"),
                 "market_name": latest.get("market_and_exchange_names", ""),
-                "open_interest": latest.get("open_interest_all", 0),
+                "open_interest": open_interest,
                 "positions": {
                     "commercial": {
-                        "long": latest.get("comm_long_all", 0),
-                        "short": latest.get("comm_short_all", 0),
-                        "net": latest.get("comm_long_all", 0) - latest.get("comm_short_all", 0),
+                        "long": values["commercial_long"],
+                        "short": values["commercial_short"],
+                        "net": values["commercial_long"] - values["commercial_short"],
                         "pct_of_oi": {
-                            "long": (latest.get("comm_long_all", 0) / latest.get("open_interest_all", 1)) * 100,
-                            "short": (latest.get("comm_short_all", 0) / latest.get("open_interest_all", 1)) * 100
+                            "long": pct(values["commercial_long"]),
+                            "short": pct(values["commercial_short"]),
                         }
                     },
                     "non_commercial": {
-                        "long": latest.get("noncomm_long_all", 0),
-                        "short": latest.get("noncomm_short_all", 0),
-                        "net": latest.get("noncomm_long_all", 0) - latest.get("noncomm_short_all", 0),
+                        "long": values["non_commercial_long"],
+                        "short": values["non_commercial_short"],
+                        "net": values["non_commercial_long"] - values["non_commercial_short"],
                         "pct_of_oi": {
-                            "long": (latest.get("noncomm_long_all", 0) / latest.get("open_interest_all", 1)) * 100,
-                            "short": (latest.get("noncomm_short_all", 0) / latest.get("open_interest_all", 1)) * 100
+                            "long": pct(values["non_commercial_long"]),
+                            "short": pct(values["non_commercial_short"]),
                         }
                     },
                     "non_reportable": {
-                        "long": latest.get("nonreportable_long_all", 0),
-                        "short": latest.get("nonreportable_short_all", 0),
+                        "long": values["non_reportable_long"],
+                        "short": values["non_reportable_short"],
                         "pct_of_oi": {
-                            "long": (latest.get("nonreportable_long_all", 0) / latest.get("open_interest_all", 1)) * 100,
-                            "short": (latest.get("nonreportable_short_all", 0) / latest.get("open_interest_all", 1)) * 100
+                            "long": pct(values["non_reportable_long"]),
+                            "short": pct(values["non_reportable_short"]),
                         }
                     }
                 }
@@ -538,7 +724,10 @@ class CFTCDataWrapper:
                 "data": summary,
                 "parameters": {
                     "identifier": identifier,
-                    "report_type": report_type
+                    "report_type": report_type,
+                    "report_family": family,
+                    "source": self.base_url,
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
                 }
             }
 
@@ -588,14 +777,30 @@ class CFTCDataWrapper:
 
     def get_cot_historical_trend(self, identifier: str, report_type: str = "disaggregated",
                                 period: int = 52) -> Dict[str, Any]:
-        """Get historical COT trend data for analysis"""
+        """Get historical COT trend data for analysis.
+
+        Each point carries the family's actual fields. A field the report did
+        not carry stays null in the point (and the derived net stays null when
+        either leg is missing) instead of being zero-filled, so a gap is
+        distinguishable from a genuine zero position. The TFF family has no
+        commercial/non-commercial split and returns a typed error."""
         try:
+            family = self._report_family(report_type)
+            field_map = self._POSITION_FIELDS.get(family)
+            if field_map is None:
+                return {"error": CFTCError(
+                    "cot_historical_trend",
+                    f"Historical trend is not defined for the '{report_type}' report family. "
+                    "The CFTC financial futures (TFF) report uses Dealer/Intermediary, Asset "
+                    "Manager/Institutional and Leveraged Funds classes. Use the COT Table view."
+                ).to_dict()}
+
             # Get historical data
             cot_result = self.get_cot_data(
                 identifier=identifier,
                 report_type=report_type,
                 start_date=(datetime.now() - timedelta(weeks=period)).strftime("%Y-%m-%d"),
-                limit=period
+                limit=period * 3
             )
 
             if not cot_result.get("success"):
@@ -608,33 +813,23 @@ class CFTCDataWrapper:
             # Process trend data
             trend_data = []
             for record in cot_data:
-                # Handle different field names across report types
-                # Legacy reports use: noncomm_positions_long_all, comm_positions_long_all
-                # Disaggregated reports may use different naming
-                open_interest = self._safe_int(record.get("open_interest_all", 0))
-
-                # Commercial positions
-                comm_long = self._safe_int(record.get("comm_positions_long_all") or record.get("comm_long_all", 0))
-                comm_short = self._safe_int(record.get("comm_positions_short_all") or record.get("comm_short_all", 0))
-
-                # Non-commercial positions
-                noncomm_long = self._safe_int(record.get("noncomm_positions_long_all") or record.get("noncomm_long_all", 0))
-                noncomm_short = self._safe_int(record.get("noncomm_positions_short_all") or record.get("noncomm_short_all", 0))
-
+                values = {key: self._pick(record, names) for key, names in field_map.items()}
                 trend_point = {
                     "date": record.get("report_date_as_yyyy_mm_dd"),
-                    "open_interest": open_interest,
-                    "commercial_long": comm_long,
-                    "commercial_short": comm_short,
-                    "commercial_net": comm_long - comm_short,
-                    "non_commercial_long": noncomm_long,
-                    "non_commercial_short": noncomm_short,
-                    "non_commercial_net": noncomm_long - noncomm_short
+                    "open_interest": self._to_int(record.get("open_interest_all")),
+                    "commercial_long": values["commercial_long"],
+                    "commercial_short": values["commercial_short"],
+                    "commercial_net": (values["commercial_long"] - values["commercial_short"])
+                    if values["commercial_long"] is not None and values["commercial_short"] is not None else None,
+                    "non_commercial_long": values["non_commercial_long"],
+                    "non_commercial_short": values["non_commercial_short"],
+                    "non_commercial_net": (values["non_commercial_long"] - values["non_commercial_short"])
+                    if values["non_commercial_long"] is not None and values["non_commercial_short"] is not None else None,
                 }
                 trend_data.append(trend_point)
 
             # Sort by date
-            trend_data.sort(key=lambda x: x["date"])
+            trend_data.sort(key=lambda x: x["date"] or "")
 
             return {
                 "success": True,
@@ -642,7 +837,10 @@ class CFTCDataWrapper:
                 "parameters": {
                     "identifier": identifier,
                     "report_type": report_type,
-                    "period": period
+                    "report_family": family,
+                    "period": period,
+                    "source": self.base_url,
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
                 }
             }
 

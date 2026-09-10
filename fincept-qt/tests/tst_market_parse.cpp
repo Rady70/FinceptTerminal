@@ -21,6 +21,7 @@
 // drags a candlestick chart's price axis to zero behind a plausible-looking
 // axis ladder.
 
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "screens/report_builder/ReportQuoteFormat.h"
 #include "services/markets/MarketQuoteParse.h"
 
@@ -75,6 +76,7 @@ class TstMarketParse : public QObject {
     void eps_reading_survives_across_both_payloads();
     void eps_reading_survives_the_opposite_arrival_order();
     void report_quote_keeps_missing_and_zero_apart();
+    void market_cell_format_keeps_missing_and_zero_apart();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -383,6 +385,53 @@ void TstMarketParse::report_quote_keeps_missing_and_zero_apart() {
     QCOMPARE(zc.value(QStringLiteral("high")), QStringLiteral("0.00"));
     QCOMPARE(zc.value(QStringLiteral("volume")), QStringLiteral("0"));
     QCOMPARE(zc.value(QStringLiteral("status")), QString::fromLatin1(kQuoteStatusOk));
+}
+
+// ── Markets table cell formatting ────────────────────────────────────────────
+
+void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
+    // MarketPanel and ScreenerScreen read QuoteData directly; without the
+    // presence flags a missing field prints as "$0.00" / "+0.00%" / "0" — a
+    // reading, and an alarming one, for a value that never arrived. These are
+    // the helpers both screens now format through.
+    const QuoteData partial = parse_quote_object(obj_from(R"({
+        "symbol": "AAPL", "name": "Apple Inc.", "price": null, "change": null,
+        "change_percent": null, "high": null, "low": null, "volume": null
+    })"),
+                                                  QStringLiteral("cache (yfinance)"), 1757340000);
+
+    const QString na = QStringLiteral("--");
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_price, partial.price, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_arrow_text(partial.has_change, partial.change, 2), na);
+    QCOMPARE(fincept::screens::quote_arrow_text(partial.has_change_pct, partial.change_pct, 2, QStringLiteral("%")),
+             na);
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_high, partial.high, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_low, partial.low, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_volume_text(partial), na);
+
+    // A genuine zero is a reading and renders as one.
+    const QuoteData zeroed = parse_quote_object(obj_from(R"({
+        "symbol": "HALT", "price": 0, "change": 0, "change_percent": 0,
+        "high": 0, "low": 0, "volume": 0
+    })"),
+                                                 QStringLiteral("yfinance"), 1757340000);
+    QCOMPARE(fincept::screens::quote_field_text(zeroed.has_price, zeroed.price, 2, QStringLiteral("$")),
+             QStringLiteral("$0.00"));
+    QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
+             QStringLiteral("+0.00%"));
+
+    // Provenance and status travel with the row; a stale row says so.
+    const QString partial_prov = fincept::screens::quote_provenance_text(partial);
+    QVERIFY(partial_prov.contains(QStringLiteral("cache (yfinance)")));
+    QVERIFY(partial_prov.contains(QStringLiteral("Status: PARTIAL")));
+    QVERIFY(partial_prov.contains(QStringLiteral("Retrieved: ")));
+    QVERIFY(!partial_prov.contains(QStringLiteral("Retrieved: unknown")));
+
+    QuoteData stale = zeroed;
+    stale.status = QString::fromLatin1(kQuoteStatusStale);
+    const QString stale_prov = fincept::screens::quote_provenance_text(stale);
+    QVERIFY(stale_prov.contains(QStringLiteral("Status: STALE")));
+    QVERIFY(stale_prov.contains(QStringLiteral("refresh failed")));
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)

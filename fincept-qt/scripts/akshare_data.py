@@ -448,43 +448,9 @@ def main():
 
 # ==================== CLI ====================
 if __name__ == "__main__":
-    import sys
-    import json
-
-    # Get wrapper instance
-    wrapper = AKShareDataWrapper()
-
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: python akshare_data.py <endpoint> [args...]"}))
-        sys.exit(1)
-
-    endpoint = sys.argv[1]
-    args = sys.argv[2:] if len(sys.argv) > 2 else []
-
-    # Handle get_all_endpoints
-    if endpoint == "get_all_endpoints":
-        if hasattr(wrapper, 'get_all_available_endpoints'):
-            result = wrapper.get_all_available_endpoints()
-        elif hasattr(wrapper, 'get_all_endpoints'):
-            result = wrapper.get_all_endpoints()
-        else:
-            result = {"success": False, "error": "Endpoint list not available"}
-        print(json.dumps(result, ensure_ascii=True))
-        sys.exit(0)
-
-    # Dynamic method resolution
-    method_name = f"get_{endpoint}" if not endpoint.startswith("get_") else endpoint
-
-    if hasattr(wrapper, method_name):
-        method = getattr(wrapper, method_name)
-        try:
-            try:
-                result = method(*args)
-            except TypeError:
-                result = method()
-            print(json.dumps(result, ensure_ascii=True))
-        except Exception as e:
-            print(json.dumps({"success": False, "error": str(e), "endpoint": endpoint}))
-    else:
-        print(json.dumps({"success": False, "error": f"Unknown endpoint: {endpoint}. Method '{method_name}' not found."}))
+    # The catalog advertised by get_all_endpoints is exactly endpoint_map's key
+    # set; the previous inline dispatcher ignored that map and derived a method
+    # name ("china_gdp" -> get_china_gdp), so most advertised endpoints failed
+    # with "Unknown endpoint". Route the CLI through main()/endpoint_map.
+    main()
 

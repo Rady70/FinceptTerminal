@@ -295,6 +295,16 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         return;
     }
 
+    // CFTC scripts report failures as {"error": {...}} (or a plain string).
+    // EconomicsService does not flatten object error envelopes, so surface the
+    // nested message here rather than degrading to a generic empty-data state.
+    if (result.data.contains("error")) {
+        const QJsonValue err = result.data["error"];
+        const QString message = err.isString() ? err.toString() : err.toObject()["error"].toString();
+        show_error(message.isEmpty() ? tr("CFTC request failed") : message);
+        return;
+    }
+
     // Table/trend views are time series — restore the aggregate stat row that
     // the sentiment view hides.
     if (!request_id.startsWith("cftc_sent_"))
@@ -312,8 +322,9 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
     }
 
     // COT table or historical trend — data is an array
-    // cot_data rows: flat dict with date, open_interest_all, comm_long_all, etc.
-    // trend rows: { "date", "open_interest", "commercial_net", "non_commercial_net", ... }
+    // cot_data rows: flat dict with report_date/market/open_interest_all and the
+    // report family's participant fields (see the mapping below).
+    // trend rows: { "date", "open_interest", "commercial_net", ... }
     QJsonArray rows = result.data["data"].toArray();
 
     if (rows.isEmpty()) {
@@ -323,27 +334,63 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         return;
     }
 
-    // For COT table, keep only the most useful columns for display
-    // (the raw records have 40+ fields — we pick the key ones)
+    // For COT table, keep only the most useful columns for display. Which
+    // participant columns exist depends on the report family: legacy carries
+    // commercial/non-commercial, disaggregated carries producer-merchant /
+    // managed-money, and the financial (TFF) family carries dealer /
+    // asset-manager / leveraged-money. Missing cells stay null and render as
+    // "—" (never as a fabricated 0).
     if (request_id.startsWith("cftc_cot_")) {
+        // Read the family from the result payload (authoritative for the row
+        // set that actually arrived) and fall back to the combo only for a
+        // cached result written before parameters.report_family existed. Using
+        // the live combo alone could mis-map an in-flight fetch when the user
+        // changes the report type while it is running.
+        const QJsonObject params = result.data.value("parameters").toObject();
+        QString family = params.value("report_family").toString();
+        if (family.isEmpty())
+            family = report_type_combo_->currentData().toString();
+        const QString report_label = params.value("report_type").toString(report_type_combo_->currentText());
         QJsonArray clean;
         for (const auto& v : rows) {
             const auto obj = v.toObject();
+            auto pick = [&obj](const QStringList& keys) -> QJsonValue {
+                for (const QString& key : keys) {
+                    const QJsonValue value = obj.value(key);
+                    if (!value.isUndefined() && !value.isNull())
+                        return value;
+                }
+                return {};
+            };
+
             QJsonObject row;
-            row["date"] = obj["report_date_as_yyyy_mm_dd"];
-            row["market"] = obj["market_and_exchange_names"];
-            row["open_interest"] = obj["open_interest_all"];
-            row["comm_long"] =
-                obj["comm_long_all"].isUndefined() ? obj["comm_positions_long_all"] : obj["comm_long_all"];
-            row["comm_short"] =
-                obj["comm_short_all"].isUndefined() ? obj["comm_positions_short_all"] : obj["comm_short_all"];
-            row["noncomm_long"] =
-                obj["noncomm_long_all"].isUndefined() ? obj["noncomm_positions_long_all"] : obj["noncomm_long_all"];
-            row["noncomm_short"] =
-                obj["noncomm_short_all"].isUndefined() ? obj["noncomm_positions_short_all"] : obj["noncomm_short_all"];
+            row["date"] = pick({"report_date_as_yyyy_mm_dd"});
+            row["market"] = pick({"market_and_exchange_names"});
+            row["open_interest"] = pick({"open_interest_all"});
+
+            if (family == "disaggregated") {
+                row["prod_merc_long"] = pick({"prod_merc_positions_long", "prod_merc_positions_long_all"});
+                row["prod_merc_short"] = pick({"prod_merc_positions_short", "prod_merc_positions_short_all"});
+                row["m_money_long"] = pick({"m_money_positions_long_all", "m_money_positions_long"});
+                row["m_money_short"] = pick({"m_money_positions_short_all", "m_money_positions_short"});
+            } else if (family == "tff" || family == "financial") {
+                row["dealer_long"] = pick({"dealer_positions_long_all", "dealer_positions_long"});
+                row["dealer_short"] = pick({"dealer_positions_short_all", "dealer_positions_short"});
+                row["asset_mgr_long"] = pick({"asset_mgr_positions_long", "asset_mgr_positions_long_all"});
+                row["asset_mgr_short"] = pick({"asset_mgr_positions_short", "asset_mgr_positions_short_all"});
+                row["lev_money_long"] = pick({"lev_money_positions_long", "lev_money_positions_long_all"});
+                row["lev_money_short"] = pick({"lev_money_positions_short", "lev_money_positions_short_all"});
+                row["other_rept_long"] = pick({"other_rept_positions_long", "other_rept_positions_long_all"});
+                row["other_rept_short"] = pick({"other_rept_positions_short", "other_rept_positions_short_all"});
+            } else {
+                row["comm_long"] = pick({"comm_positions_long_all", "comm_long_all"});
+                row["comm_short"] = pick({"comm_positions_short_all", "comm_short_all"});
+                row["noncomm_long"] = pick({"noncomm_positions_long_all", "noncomm_long_all"});
+                row["noncomm_short"] = pick({"noncomm_positions_short_all", "noncomm_short_all"});
+            }
             clean.append(row);
         }
-        display(clean, "CFTC COT: " + market_combo_->currentText() + " (" + report_type_combo_->currentText() + ")");
+        display(clean, "CFTC COT: " + market_combo_->currentText() + " (" + report_label + ")");
     } else {
         // Historical trend — rows already have clean keys
         display(rows, "CFTC Historical Trend: " + market_combo_->currentText());
@@ -362,8 +409,9 @@ void CftcPanel::show_sentiment(const QJsonObject& s) {
     sent_market_lbl_->setText(s["market_name"].toString(market_combo_->currentText()));
     sent_date_lbl_->setText(tr("Report: %1").arg(s["latest_report"].toString("—")));
 
-    const double oi = s["open_interest"].toDouble();
-    sent_oi_lbl_->setText(oi > 0 ? QString::number(static_cast<qint64>(oi)) : "—");
+    const QJsonValue oi_value = s.value("open_interest");
+    const double oi = oi_value.isDouble() ? oi_value.toDouble() : 0.0;
+    sent_oi_lbl_->setText(oi_value.isDouble() ? QString::number(static_cast<qint64>(oi)) : "—");
 
     const QString oi_trend = s["overall_sentiment"].toObject()["oi_trend"].toString();
     sent_oi_trend_->setText(oi_trend.isEmpty() ? "—" : oi_trend.toUpper());
@@ -386,17 +434,23 @@ void CftcPanel::show_sentiment(const QJsonObject& s) {
     // NB: QString::arg(qlonglong, int fieldWidth) — the previous `.arg(v, 'd')`
     // passed the *char literal* 'd' (=100) as the field width, padding every
     // net-position number with 100 leading spaces. Format the number first.
+    // A net that the provider did not return stays "—", never a fabricated 0.
     const QJsonObject comm = s["commercial_positions"].toObject();
-    const double comm_net = comm["net"].toDouble();
-    sent_comm_net_->setText(tr("Net: %1%2")
-                                .arg(comm_net >= 0 ? QStringLiteral("+") : QString())
-                                .arg(QString::number(static_cast<qint64>(comm_net))));
+    const QJsonValue comm_net_value = comm.value("net");
+    const double comm_net = comm_net_value.isDouble() ? comm_net_value.toDouble() : 0.0;
+    sent_comm_net_->setText(comm_net_value.isDouble() ? tr("Net: %1%2")
+                                                            .arg(comm_net >= 0 ? QStringLiteral("+") : QString())
+                                                            .arg(QString::number(static_cast<qint64>(comm_net)))
+                                                      : tr("Net: —"));
 
     const QJsonObject noncomm = s["non_commercial_positions"].toObject();
-    const double noncomm_net = noncomm["net"].toDouble();
-    sent_noncomm_net_->setText(tr("Net: %1%2")
-                                   .arg(noncomm_net >= 0 ? QStringLiteral("+") : QString())
-                                   .arg(QString::number(static_cast<qint64>(noncomm_net))));
+    const QJsonValue noncomm_net_value = noncomm.value("net");
+    const double noncomm_net = noncomm_net_value.isDouble() ? noncomm_net_value.toDouble() : 0.0;
+    sent_noncomm_net_->setText(noncomm_net_value.isDouble()
+                                   ? tr("Net: %1%2")
+                                         .arg(noncomm_net >= 0 ? QStringLiteral("+") : QString())
+                                         .arg(QString::number(static_cast<qint64>(noncomm_net)))
+                                   : tr("Net: —"));
 
     // Populate the shared table too (one summary row) so CSV export still has
     // something to write, then switch the stack to the sentiment card view.
@@ -404,9 +458,9 @@ void CftcPanel::show_sentiment(const QJsonObject& s) {
     QJsonObject row;
     row["market"] = s["market_name"].toString(market_combo_->currentText());
     row["report_date"] = s["latest_report"];
-    row["open_interest"] = oi;
-    row["comm_net"] = comm_net;
-    row["noncomm_net"] = noncomm_net;
+    row["open_interest"] = oi_value;
+    row["comm_net"] = comm_net_value;
+    row["noncomm_net"] = noncomm_net_value;
     row["comm_bias"] = comm_bias;
     row["noncomm_bias"] = noncomm_bias;
     row["oi_trend"] = oi_trend;
