@@ -19,7 +19,10 @@ on:
       - 'fincept-qt/.clang-tidy'
       - 'fincept-qt/.clang-format'
       - 'fincept-qt/.cppcheck-suppressions'
+      - '.github/workflows/pr-gate.yml'
       - '.github/workflows/lint.yml'
+      - '.github/scripts/enforce_scope_decision.sh'
+      - '.github/scripts/test_scope_decision.sh'
   workflow_dispatch:
 
 concurrency:
@@ -35,6 +38,20 @@ env:
   QT_MODULES: "qtcharts qtwebsockets qtmultimedia qtwebengine qtwebchannel qtpositioning qtserialport"
 
 jobs:
+  # ── scope-decision-contract ─────────────────────────────────────────────────
+  # This ordinary pull_request job tests the changed contract from the PR
+  # checkout. The pull_request_target scope gate intentionally tests its base
+  # definition only; it must not execute untrusted PR code.
+  scope-decision-contract:
+    name: scope-decision-contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test fail-closed scope decision contract
+        shell: bash
+        run: bash .github/scripts/test_scope_decision.sh
+
   # ── clang-format ─────────────────────────────────────────────────────────────
   clang-format:
     name: clang-format
