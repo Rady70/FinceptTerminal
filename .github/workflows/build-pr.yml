@@ -259,7 +259,7 @@ jobs:
           cmake --install build \
             --config "${{ env.BUILD_TYPE }}" \
             --prefix "$STAGE"
-          python3 packaging/flatpak/preflight.py \
+          /usr/bin/python3 packaging/flatpak/preflight.py \
             --repo-root .. \
             --verify-installed "$STAGE"
 
