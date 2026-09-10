@@ -2,7 +2,7 @@ id: in.fincept.FinceptTerminal
 runtime: org.kde.Platform
 runtime-version: '6.8'
 sdk: org.kde.Sdk
-command: FinceptTerminal
+command: MarketLabTerminal
 
 finish-args:
   # Network — market data, configured APIs, news feeds,
@@ -54,11 +54,10 @@ modules:
       # Flathub's linter REQUIRES a commit alongside a tag ("this is an error
       # for new submissions if a commit is missing with a tag") — tags are
       # mutable, so the commit is what makes the build reproducible.
-      # MarketLab fork source. The verified implementation ref and commit below
-      # pin the exact application tree used by this manifest.
+      # MarketLab fork source. The immutable commit below pins the exact
+      # application tree used by this manifest; no mutable branch is needed.
       - type: git
         url: https://github.com/Rady70/FinceptTerminal.git
-        branch: marketlab/local-first-v0.1
         commit: f4f4ea470c85698100b8b15b5275d9be19c1dbc9
       # Vendored FetchContent dependencies (no network during build)
       - type: git

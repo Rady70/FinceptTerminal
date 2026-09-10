@@ -27,7 +27,7 @@
     <color type="primary" scheme_preference="light">#f59e0b</color>
     <color type="primary" scheme_preference="dark">#1a1a2e</color>
   </branding>
-  <provides><binary>FinceptTerminal</binary></provides>
+  <provides><binary>MarketLabTerminal</binary></provides>
   <releases>
     <release version="0.1.0" date="2026-09-09">
       <description><p>Local-first MarketLab baseline with the former assistant, model-provider, agent, voice-assistant, and related hosted subsystems removed.</p></description>

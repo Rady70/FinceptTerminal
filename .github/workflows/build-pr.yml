@@ -63,6 +63,8 @@ jobs:
           # The version gate resolves the Flatpak manifest's pinned source
           # commit and reads that commit's CMake project version.
           fetch-depth: 0
+      - name: Install PyYAML for packaging validation
+        run: sudo apt-get update -qq && sudo apt-get install -y python3-yaml
       # CMakeLists.txt project(... VERSION x.y.z) is the source of truth; the
       # flatpak / AppImage / appdata manifests each carry a hand-written copy.
       # A stale copy ships a bundle whose CFBundleVersion / appdata version
