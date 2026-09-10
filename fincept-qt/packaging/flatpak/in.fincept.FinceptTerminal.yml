@@ -51,9 +51,8 @@ modules:
       - cmake --install _build
     sources:
       # Main repository.
-      # Flathub's linter REQUIRES a commit alongside a tag ("this is an error
-      # for new submissions if a commit is missing with a tag") — tags are
-      # mutable, so the commit is what makes the build reproducible.
+      # Flathub's linter requires a full commit for a reproducible git source;
+      # the manifest deliberately uses no mutable named ref here.
       # MarketLab fork source. The immutable commit below pins the exact
       # application tree used by this manifest; no mutable branch is needed.
       - type: git
