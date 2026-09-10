@@ -556,7 +556,7 @@ void MarketPanel::populate(const QVector<services::QuoteData>& quotes) {
         const QString provenance = quote_provenance_text(q);
         for (int col_index = 0; col_index < cols.size(); ++col_index) {
             if (auto* cell = table_->item(row, col_index))
-                cell->setToolTip(provenance);
+                cell->setToolTip(merge_quote_provenance(cell->toolTip(), provenance));
         }
         if (q.status == QLatin1String(services::kQuoteStatusStale)) {
             if (auto* sym_cell = table_->item(row, 0))

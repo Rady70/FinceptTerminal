@@ -28,10 +28,13 @@ class TickerBar : public QWidget {
         QString symbol{};
         double price = 0;
         double change = 0;
+        // Presence at the handoff: a missing field must not render as 0.00.
+        bool has_price = false;
+        bool has_change = false;
 
         // ── Derived (do not set from outside) ──
-        // The `{}` are load-bearing: callers brace-init only the first three
-        // fields, and -Wmissing-field-initializers (fatal on Linux/macOS under
+        // The `{}` are load-bearing: callers brace-init a prefix of the fields,
+        // and -Wmissing-field-initializers (fatal on Linux/macOS under
         // -Wextra -Werror) flags every omitted member that lacks an NSDMI.
         QString price_text{};
         QString change_text{};

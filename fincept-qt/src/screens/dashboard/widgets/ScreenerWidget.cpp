@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QFrame>
@@ -210,23 +211,39 @@ void ScreenerWidget::apply_filter() {
     QVector<services::QuoteData> sorted = all_quotes_;
     int idx = filter_combo_ ? filter_combo_->currentIndex() : 0;
 
+    // Missing readings sort last in every ordering, so a quote the provider
+    // did not fully return can never rank among real movers (the same rule
+    // ScreenerScreen applies).
+    auto sort_rows = [&sorted](auto has, auto value, bool descending) {
+        std::stable_sort(sorted.begin(), sorted.end(), [&](const services::QuoteData& a, const services::QuoteData& b) {
+            const bool a_has = has(a);
+            const bool b_has = has(b);
+            if (a_has != b_has)
+                return a_has;
+            if (!a_has)
+                return false;
+            return descending ? value(a) > value(b) : value(a) < value(b);
+        });
+    };
+
     switch (idx) {
         case 0: // % change asc (top gainers first)
-            std::sort(sorted.begin(), sorted.end(),
-                      [](const auto& a, const auto& b) { return a.change_pct > b.change_pct; });
+            sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; }, true);
             break;
         case 1: // % change desc (top losers first)
-            std::sort(sorted.begin(), sorted.end(),
-                      [](const auto& a, const auto& b) { return a.change_pct < b.change_pct; });
+            sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; },
+                      false);
             break;
         case 2: // volume desc
-            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.volume > b.volume; });
+            sort_rows([](const auto& q) { return q.has_volume; }, [](const auto& q) { return q.volume; }, true);
             break;
         case 3: // price desc
-            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.price > b.price; });
+            sort_rows([](const auto& q) { return q.has_price; }, [](const auto& q) { return q.price; }, true);
             break;
         case 4: // price asc
-            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.price < b.price; });
+            sort_rows([](const auto& q) { return q.has_price; }, [](const auto& q) { return q.price; }, false);
+            break;
+        default:
             break;
     }
 
@@ -270,21 +287,26 @@ void ScreenerWidget::render_rows(const QVector<services::QuoteData>& rows) {
         sym->setObjectName("scSym");
         rl->addWidget(sym, 2);
 
-        auto* price = new QLabel(QString("$%1").arg(q.price, 0, 'f', 2));
+        auto* price = new QLabel(fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")));
         price->setObjectName("scPrice");
         price->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         rl->addWidget(price, 2);
 
-        auto* chg = new QLabel(QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2));
-        chg->setObjectName(q.change_pct > 0   ? QStringLiteral("scChgPos")
-                           : q.change_pct < 0 ? QStringLiteral("scChgNeg")
-                                              : QStringLiteral("scChgFlat"));
+        auto* chg =
+            new QLabel(fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%")));
+        chg->setObjectName(q.has_change_pct && q.change_pct > 0   ? QStringLiteral("scChgPos")
+                           : q.has_change_pct && q.change_pct < 0 ? QStringLiteral("scChgNeg")
+                                                                  : QStringLiteral("scChgFlat"));
         chg->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         rl->addWidget(chg, 1);
 
-        // Format volume: e.g. 45.2M
+        // Format volume: e.g. 45.2M. Missing stays "--"; a genuine zero is "0".
         QString vol_str;
-        if (q.volume >= 1e9)
+        if (!q.has_volume)
+            vol_str = QStringLiteral("--");
+        else if (q.volume <= 0)
+            vol_str = QStringLiteral("0");
+        else if (q.volume >= 1e9)
             vol_str = QString("%1B").arg(q.volume / 1e9, 0, 'f', 1);
         else if (q.volume >= 1e6)
             vol_str = QString("%1M").arg(q.volume / 1e6, 0, 'f', 1);

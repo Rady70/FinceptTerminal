@@ -352,7 +352,7 @@ void ScreenerScreen::render_rows(const QVector<services::QuoteData>& rows) {
         const QString provenance = fincept::screens::quote_provenance_text(q);
         for (int c = 0; c < table_->columnCount(); ++c) {
             if (auto* cell = table_->item(r, c))
-                cell->setToolTip(provenance);
+                cell->setToolTip(fincept::screens::merge_quote_provenance(cell->toolTip(), provenance));
         }
     }
 

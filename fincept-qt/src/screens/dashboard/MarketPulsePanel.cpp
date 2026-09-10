@@ -3,6 +3,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "screens/dashboard/widgets/LoadingOverlay.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
@@ -856,14 +857,22 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     auto update_row = [](MarketPulsePanel::BreadthRow& row, int adv, int dec) {
         if (!row.adv)
             return;
+        const int total = adv + dec;
+        if (total == 0) {
+            // No observation in this index: the counts are unavailable, not 0,
+            // and the bar is neutral rather than fully red.
+            row.adv->setText(QStringLiteral("--"));
+            row.dec->setText(QStringLiteral("--"));
+            if (auto* layout = qobject_cast<QHBoxLayout*>(row.green->parentWidget()->layout())) {
+                layout->setStretch(0, 50);
+                layout->setStretch(1, 50);
+            }
+            return;
+        }
         row.adv->setText(QString::number(adv));
         row.dec->setText(QString::number(dec));
-        int total = adv + dec;
-        if (total == 0)
-            total = 1;
-        int adv_pct = static_cast<int>((double(adv) / total) * 100);
-        auto* layout = qobject_cast<QHBoxLayout*>(row.green->parentWidget()->layout());
-        if (layout) {
+        const int adv_pct = static_cast<int>((double(adv) / total) * 100);
+        if (auto* layout = qobject_cast<QHBoxLayout*>(row.green->parentWidget()->layout())) {
             layout->setStretch(0, adv_pct);
             layout->setStretch(1, 100 - adv_pct);
         }
@@ -873,9 +882,31 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     update_row(sp500_row_, sp500_adv, sp500_dec);
 
     // ── Fear & Greed score ──
-    int total_stocks = bullish + bearish + neutral_count;
-    if (total_stocks == 0)
-        total_stocks = 1;
+    const int total_stocks = bullish + bearish + neutral_count;
+    if (total_stocks == 0) {
+        // Quotes arrived but none carried a change reading: there is no
+        // observation set to score. A fabricated 50/"NEUTRAL" here would be a
+        // market claim from no data.
+        fg_sentiment_key_.clear();
+        if (fg_score_val_)
+            fg_score_val_->setText(QStringLiteral("--"));
+        if (fg_sentiment_)
+            fg_sentiment_->setText(QStringLiteral("—"));
+        const QString neutral_color = ui::colors::TEXT_DIM();
+        if (neutral_color != fg_applied_color_) {
+            fg_applied_color_ = neutral_color;
+            if (fg_score_val_)
+                fg_score_val_->setStyleSheet(
+                    QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;")
+                        .arg(neutral_color));
+            if (fg_sentiment_)
+                fg_sentiment_->setStyleSheet(
+                    QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; "
+                            "background: transparent;")
+                        .arg(neutral_color));
+        }
+        return;
+    }
     int score = 50 + static_cast<int>(((bullish - bearish) / static_cast<double>(total_stocks)) * 50);
     if (vix > 0) {
         if (vix > 30)
@@ -974,12 +1005,14 @@ void MarketPulsePanel::rebuild_movers_from_cache() {
 
 void MarketPulsePanel::rebuild_snapshot_from_cache() {
     auto fmt_price = [](const services::QuoteData& q) -> QString {
+        if (!q.has_price)
+            return QStringLiteral("--");
         if (q.price >= 1000)
             return QString("$%1K").arg(q.price / 1000.0, 0, 'f', 1);
         return QString("%1").arg(q.price, 0, 'f', 2);
     };
     auto fmt_chg = [](const services::QuoteData& q) -> QString {
-        return QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2);
+        return fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"));
     };
     auto update_stat = [&](const QString& sym, StatRow& row) {
         if (!snapshot_cache_.contains(sym) || !row.val)
@@ -987,7 +1020,11 @@ void MarketPulsePanel::rebuild_snapshot_from_cache() {
         const auto& q = snapshot_cache_.value(sym);
         row.val->setText(fmt_price(q));
         row.chg->setText(fmt_chg(q));
-        QString chg_color = q.change_pct >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
+        // Missing is dim; a genuine zero is neutral, never an upward move.
+        const QString chg_color = !q.has_change_pct  ? ui::colors::TEXT_DIM()
+                                  : q.change_pct > 0 ? ui::colors::POSITIVE()
+                                  : q.change_pct < 0 ? ui::colors::NEGATIVE()
+                                                     : ui::colors::TEXT_PRIMARY();
         row.chg->setStyleSheet(
             QString("color: %1; font-size: 8px; font-weight: bold; background: transparent;").arg(chg_color));
     };

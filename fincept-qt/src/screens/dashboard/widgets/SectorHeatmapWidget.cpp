@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QFrame>
@@ -155,8 +156,15 @@ void SectorHeatmapWidget::populate(const QVector<services::QuoteData>& quotes) {
         Cell& c = cell_at(idx);
         c.frame->setVisible(true);
 
-        const int intensity = static_cast<int>(std::min(std::abs(q.change_pct) * 60.0, 200.0));
-        QColor tint(q.change_pct >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE());
+        // A missing change is not a flat sector: keep the tile neutral/dim and
+        // show "--" rather than tinting and colouring a fabricated 0%.
+        const bool has_change = q.has_change_pct;
+        const double change_pct = has_change ? q.change_pct : 0.0;
+        const int intensity = has_change ? static_cast<int>(std::min(std::abs(change_pct) * 60.0, 200.0)) : 0;
+        QColor tint = !has_change      ? QColor(ui::colors::TEXT_DIM())
+                      : change_pct > 0 ? QColor(ui::colors::POSITIVE())
+                      : change_pct < 0 ? QColor(ui::colors::NEGATIVE())
+                                       : QColor(ui::colors::TEXT_PRIMARY());
         tint.setAlpha(40 + intensity);
         const QString bg = QString("background: %1; border: 1px solid %2; border-radius: 2px;")
                                .arg(tint.name(QColor::HexArgb), ui::colors::BORDER_DIM());
@@ -172,12 +180,15 @@ void SectorHeatmapWidget::populate(const QVector<services::QuoteData>& quotes) {
             c.name->setText(display);
         c.name->setToolTip(QString("%1  (%2)").arg(display, q.symbol));
 
-        c.chg->setText(QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2));
-        const int sign = q.change_pct >= 0 ? 1 : -1;
+        c.chg->setText(fincept::screens::quote_signed_text(has_change, change_pct, 2, QStringLiteral("%")));
+        // +1 up, -1 down, 0 neutral or unavailable — zero is not an upward move.
+        const int sign = !has_change ? 0 : change_pct > 0 ? 1 : change_pct < 0 ? -1 : 0;
         if (sign != c.last_sign) {
             c.last_sign = sign;
             c.chg->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;")
-                                     .arg(sign > 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
+                                     .arg(sign > 0   ? ui::colors::POSITIVE()
+                                          : sign < 0 ? ui::colors::NEGATIVE()
+                                                     : ui::colors::TEXT_PRIMARY()));
         }
     }
 

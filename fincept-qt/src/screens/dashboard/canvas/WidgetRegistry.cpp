@@ -52,10 +52,11 @@ WidgetRegistry::WidgetRegistry() {
     // Existing widgets ignore it until they opt into configurable behaviour.
 
     // ── Markets ───────────────────────────────────────────────────────────────
-    register_widget({"indices", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Indices"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Major global indices — SPY, QQQ, DIA, IWM"),
-                     4, 5, 3, 4, [](const QJsonObject&) { return widgets::create_indices_widget(); }});
+    register_widget(
+        {"indices", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Indices"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Major global indices — S&P 500, Dow, Nasdaq, Russell"),
+         4, 5, 3, 4, [](const QJsonObject&) { return widgets::create_indices_widget(); }});
 
     register_widget({"forex", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Forex Pairs"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
@@ -96,8 +97,8 @@ WidgetRegistry::WidgetRegistry() {
     register_widget(
         {"stock_quote", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Quote"),
          QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Single stock detail — price, volume, chart"), 4, 5, 2,
-         3, [](const QJsonObject& cfg) {
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Single stock detail — price, daily range, volume"), 4,
+         5, 2, 3, [](const QJsonObject& cfg) {
              const QString sym = cfg.value("symbol").toString("AAPL");
              return new widgets::StockQuoteWidget(sym);
          }});
@@ -108,11 +109,11 @@ WidgetRegistry::WidgetRegistry() {
                                        "Candlestick chart for a single ticker — set symbol via gear icon"),
                      5, 5, 3, 4, [](const QJsonObject& cfg) { return new widgets::DashboardCandleWidget(cfg); }});
 
-    register_widget(
-        {"screener", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Screener"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Filter stocks by fundamentals and technicals"), 6, 5, 3,
-         4, [](const QJsonObject&) { return new widgets::ScreenerWidget; }});
+    register_widget({"screener", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Screener"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Sort a fixed large-cap basket by % change, volume, or price"),
+                     6, 5, 3, 4, [](const QJsonObject&) { return new widgets::ScreenerWidget; }});
 
     // MarketLab: the hosted Economic Calendar widget is removed
     // (FINCEPT_FORK_PLAN.md §5.3, §6).
@@ -131,19 +132,20 @@ WidgetRegistry::WidgetRegistry() {
 
     register_widget({"performance", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Performance"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio P&L — today, week, month, YTD"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Benchmark daily moves and spreads — S&P, Nasdaq, Dow, Russell, VIX, Gold"),
                      4, 5, 3, 4, [](const QJsonObject&) { return new widgets::PerformanceWidget; }});
 
-    register_widget(
-        {"portfolio_summary", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio Summary"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings overview with allocation breakdown"), 6, 4, 2,
-         3, [](const QJsonObject&) { return new widgets::PortfolioSummaryWidget; }});
-
-    register_widget({"risk_metrics", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Risk Metrics"),
+    register_widget({"portfolio_summary", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio Summary"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Volatility, beta, drawdown, Sharpe ratio"),
-                     4, 5, 3, 4, [](const QJsonObject&) { return new widgets::RiskMetricsWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings value and P&L"), 6, 4, 2, 3,
+                     [](const QJsonObject&) { return new widgets::PortfolioSummaryWidget; }});
+
+    register_widget(
+        {"risk_metrics", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Risk Metrics"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "VIX regime, high-beta daily moves, and change spreads"),
+         4, 5, 3, 4, [](const QJsonObject&) { return new widgets::RiskMetricsWidget; }});
 
     // ── Trading ───────────────────────────────────────────────────────────────
     // MarketLab: broker/execution widgets are NOT registered — no order entry,
@@ -224,7 +226,9 @@ QString WidgetRegistry::category_tr(const QString& category) {
 }
 
 void WidgetRegistry::register_widget(WidgetMeta meta) {
-    registry_.insert(meta.type_id, std::move(meta));
+    // QMap::insert takes const refs (no rvalue overload), so moving would not
+    // avoid a copy and trips performance-move-const-arg.
+    registry_.insert(meta.type_id, meta);
 }
 
 const WidgetMeta* WidgetRegistry::find(const QString& type_id) const {

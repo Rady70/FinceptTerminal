@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QDialog>
@@ -218,38 +219,50 @@ void StockQuoteWidget::hub_unsubscribe_all() {
 }
 
 void StockQuoteWidget::populate(const services::QuoteData& q) {
-    price_label_->setText(QString("$%1").arg(q.price, 0, 'f', 2));
+    const bool has_move = q.has_change_pct || q.has_change;
+    const double move = q.has_change_pct ? q.change_pct : q.change;
+    // Positive, negative, neutral and unavailable are distinct: missing is
+    // dim with no arrow, a genuine zero is neutral with a flat marker.
+    const QString color = !has_move  ? ui::colors::TEXT_DIM()
+                          : move > 0 ? ui::colors::POSITIVE()
+                          : move < 0 ? ui::colors::NEGATIVE()
+                                     : ui::colors::TEXT_PRIMARY();
+    const QString arrow = !has_move  ? QStringLiteral("—")
+                          : move > 0 ? QString(QChar(0x25B2))
+                          : move < 0 ? QString(QChar(0x25BC))
+                                     : QString(QChar(0x2022));
 
-    bool positive = q.change_pct >= 0;
-    QString color = positive ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
-
-    arrow_label_->setText(positive ? QString(QChar(0x25B2)) : QString(QChar(0x25BC)));
+    price_label_->setText(fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")));
+    arrow_label_->setText(arrow);
     arrow_label_->setStyleSheet(QString("color: %1; font-size: 12px; background: transparent;").arg(color));
 
-    change_label_->setText(QString("%1%2 (%3%4%)")
-                               .arg(positive ? "+" : "")
-                               .arg(q.change, 0, 'f', 2)
-                               .arg(positive ? "+" : "")
-                               .arg(q.change_pct, 0, 'f', 2));
+    change_label_->setText(QString("%1 (%2)").arg(
+        fincept::screens::quote_signed_text(q.has_change, q.change, 2),
+        fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))));
     change_label_->setStyleSheet(
         QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
 
     price_label_->setStyleSheet(
         QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;").arg(color));
 
-    auto fmt = [](double v) { return v > 0 ? QString("$%1").arg(v, 0, 'f', 2) : QString("--"); };
     // The batch quote snapshot carries last/change/high/low/volume but no
     // session open. Showing `high` here (as this did previously) prints a
     // wrong number under an "OPEN" heading — on a trading terminal that is
     // worse than showing nothing.
     open_val_->setText(QStringLiteral("--"));
     open_val_->setToolTip(tr("Session open is not available in the batch quote feed"));
-    high_val_->setText(fmt(q.high));
-    low_val_->setText(fmt(q.low));
-    prev_val_->setText(fmt(q.price - q.change));
+    high_val_->setText(fincept::screens::quote_field_text(q.has_high, q.high, 2, QStringLiteral("$")));
+    low_val_->setText(fincept::screens::quote_field_text(q.has_low, q.low, 2, QStringLiteral("$")));
+    prev_val_->setText(q.has_price && q.has_change
+                           ? fincept::screens::quote_field_text(true, q.price - q.change, 2, QStringLiteral("$"))
+                           : QStringLiteral("--"));
 
-    // Format volume
-    if (q.volume >= 1e9)
+    // Format volume; missing stays "--" and a genuine zero is "0".
+    if (!q.has_volume)
+        volume_val_->setText(QStringLiteral("--"));
+    else if (q.volume <= 0)
+        volume_val_->setText(QStringLiteral("0"));
+    else if (q.volume >= 1e9)
         volume_val_->setText(QString("%1B").arg(q.volume / 1e9, 0, 'f', 1));
     else if (q.volume >= 1e6)
         volume_val_->setText(QString("%1M").arg(q.volume / 1e6, 0, 'f', 1));

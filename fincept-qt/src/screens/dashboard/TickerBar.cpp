@@ -166,9 +166,18 @@ void TickerBar::rebuild_entry_cache() {
 
     total_width_ = 0;
     for (auto& e : entries_) {
-        e.price_text = QString::number(e.price, 'f', 2);
-        e.change_text = QString("%1%2%").arg(e.change >= 0 ? "+" : "").arg(e.change, 0, 'f', 2);
-        e.change_col = QColor(ui::change_color(e.change));
+        e.price_text = e.has_price ? QString::number(e.price, 'f', 2) : QStringLiteral("--");
+        if (!e.has_change) {
+            e.change_text = QStringLiteral("--");
+            e.change_col = QColor(ui::colors::TEXT_DIM());
+        } else if (e.change == 0) {
+            // A genuine zero change is neutral, not an upward move.
+            e.change_text = QStringLiteral("0.00%");
+            e.change_col = QColor(ui::colors::TEXT_PRIMARY());
+        } else {
+            e.change_text = QString("%1%2%").arg(e.change >= 0 ? "+" : "").arg(e.change, 0, 'f', 2);
+            e.change_col = QColor(e.change > 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE());
+        }
 
         e.symbol_width = ticker_fm_.horizontalAdvance(e.symbol);
         e.price_width = ticker_fm_.horizontalAdvance(e.price_text);

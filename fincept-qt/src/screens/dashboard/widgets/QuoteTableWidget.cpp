@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <cmath>
@@ -96,15 +97,23 @@ void QuoteTableWidget::render_from_cache() {
             continue;
         const auto& q = it.value();
         QString display_name = label_map_.value(q.symbol, q.symbol);
-        QString price_str = QString::number(q.price, 'f', price_decimals_);
-        double chg_abs = q.change;
-        QString chg_str = QString("%1%2").arg(chg_abs >= 0 ? "+" : "").arg(chg_abs, 0, 'f', price_decimals_);
-        QString pct_str = QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2);
+        // Missing fields render as "--"; a genuine zero is a reading and keeps
+        // its number. A zero change is neutral, never painted as an upward move.
+        const QString price_str = fincept::screens::quote_field_text(q.has_price, q.price, price_decimals_);
+        const QString chg_str = fincept::screens::quote_signed_text(q.has_change, q.change, price_decimals_);
+        const QString pct_str =
+            fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"));
 
         table_->add_row({display_name, price_str, chg_str, pct_str});
         int row = table_->rowCount() - 1;
-        table_->set_cell_color(row, 2, ui::change_color(q.change_pct));
-        table_->set_cell_color(row, 3, ui::change_color(q.change_pct));
+        const bool has_move = q.has_change_pct || q.has_change;
+        const double move = q.has_change_pct ? q.change_pct : q.change;
+        const QString color = !has_move  ? ui::colors::TEXT_DIM
+                              : move > 0 ? ui::colors::POSITIVE
+                              : move < 0 ? ui::colors::NEGATIVE
+                                         : ui::colors::TEXT_PRIMARY;
+        table_->set_cell_color(row, 2, color);
+        table_->set_cell_color(row, 3, color);
     }
 }
 

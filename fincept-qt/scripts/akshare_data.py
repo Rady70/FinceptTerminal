@@ -10,8 +10,17 @@ Coverage: 95%+ of available AKShare endpoints across all data categories
 
 import sys
 import json
-import pandas as pd
-import akshare as ak
+try:
+    import pandas as pd
+except ImportError:
+    # The usage/catalog path must work before the data stack is installed;
+    # data endpoints fail cleanly through their own guards instead.
+    pd = None
+
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta, date
 import traceback
@@ -390,11 +399,15 @@ def main():
     wrapper = AKShareDataWrapper()
 
     if len(sys.argv) < 2:
+        catalog = wrapper.get_all_available_endpoints()
+        endpoints = catalog.get("data", {}).get("available_endpoints", [])
         print(json.dumps({
             "error": "Usage: python akshare_data.py <endpoint> [args...]",
-            "available_endpoints": wrapper.get_all_available_endpoints()["available_endpoints"]
+            "available_endpoints": endpoints
         }, indent=2))
-        return
+        # Usage error: the sibling scripts (e.g. akshare_index.py) exit 1 here
+        # so a missing endpoint argument is never mistaken for a result.
+        sys.exit(1)
 
     endpoint = sys.argv[1]
     args = sys.argv[2:] if len(sys.argv) > 2 else []

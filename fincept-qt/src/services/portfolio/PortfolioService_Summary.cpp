@@ -192,6 +192,16 @@ bool PortfolioService::try_broker_quotes(const QString& portfolio_id, const QVec
                         q.high = bq.high;
                         q.low = bq.low;
                         q.volume = bq.volume;
+                        // BrokerQuote has no presence concept, so the flag can
+                        // only assert "the broker sent this field" — every
+                        // consumer would otherwise treat the whole quote as
+                        // absent (all flags default false).
+                        q.has_price = true;
+                        q.has_change = true;
+                        q.has_change_pct = true;
+                        q.has_high = true;
+                        q.has_low = true;
+                        q.has_volume = true;
                         quote_map.insert(yf_key, q);
                     }
                     LOG_INFO("PortfolioSvc", QString("Broker quotes: %1 of %2 for portfolio %3")
@@ -252,11 +262,17 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         h.sector = asset.sector.isEmpty() ? SectorResolver::instance().sector_for(asset.symbol) : asset.sector;
 
         auto it = quote_map.find(asset.symbol);
-        if (it != quote_map.end()) {
+        const bool live_quote = it != quote_map.end() && it->has_price;
+        if (live_quote) {
             h.current_price = it->price;
-            h.day_change = it->change;
-            h.day_change_percent = it->change_pct;
-            total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
+            // Only a quote that actually carries a change adds to the day
+            // totals; a missing change must not contribute a fabricated 0.
+            if (it->has_change) {
+                h.day_change = it->change;
+                total_day += h.day_change * h.quantity;
+                total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
+            }
+            h.day_change_percent = it->has_change_pct ? it->change_pct : 0.0;
         } else {
             // Fallback to avg buy price if no quote (broker missed the symbol,
             // or yfinance returned nothing).
@@ -269,12 +285,15 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
 
         total_mv += h.market_value;
         total_cost += h.cost_basis;
-        total_day += h.day_change * h.quantity;
 
-        if (h.unrealized_pnl >= 0)
-            summary.gainers++;
-        else
-            summary.losers++;
+        // Classification requires a live price; an unpriced holding is neither
+        // a gainer nor a loser.
+        if (live_quote) {
+            if (h.unrealized_pnl >= 0)
+                summary.gainers++;
+            else
+                summary.losers++;
+        }
 
         summary.holdings.append(h);
     }

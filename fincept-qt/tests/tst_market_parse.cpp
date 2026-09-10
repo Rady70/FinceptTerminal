@@ -419,6 +419,16 @@ void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
              QStringLiteral("$0.00"));
     QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
              QStringLiteral("+0.00%"));
+    // A genuine zero volume is a reading; only a missing volume is "--".
+    QCOMPARE(fincept::screens::quote_volume_text(zeroed), QStringLiteral("0"));
+    QCOMPARE(fincept::screens::quote_volume_text(partial), na);
+
+    // Provenance is appended to a cell's existing tooltip, never replaces it.
+    QCOMPARE(fincept::screens::merge_quote_provenance(QStringLiteral("Apple Inc.  (AAPL)"),
+                                                      QStringLiteral("Source: yfinance")),
+             QStringLiteral("Apple Inc.  (AAPL)\nSource: yfinance"));
+    QCOMPARE(fincept::screens::merge_quote_provenance(QString(), QStringLiteral("Source: yfinance")),
+             QStringLiteral("Source: yfinance"));
 
     // Provenance and status travel with the row; a stale row says so.
     const QString partial_prov = fincept::screens::quote_provenance_text(partial);

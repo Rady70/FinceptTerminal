@@ -252,6 +252,25 @@ class CFTCDataWrapper:
             return "legacy"
         return key
 
+    # Identifier/metadata fields keep their exact provider representation (a
+    # contract-market code such as "088691" or "13874A" is an identifier, not
+    # a number); only measured quantities are normalised from string form.
+    _STRING_METADATA_KEYS = frozenset({
+        "id",
+        "report_date_as_yyyy_mm_dd",
+        "market_and_exchange_names",
+        "commodity",
+        "commodity_name",
+        "commodity_group_name",
+        "commodity_subgroup_name",
+        "contract_units",
+        "futonly_or_combined",
+        "cftc_contract_market_code",
+        "cftc_market_code",
+        "cftc_commodity_code",
+        "cftc_region_code",
+    })
+
     # The participant fields the derived views read, per report family.
     #
     # The panel labels the first group "commercial" and the second
@@ -410,10 +429,15 @@ class CFTCDataWrapper:
                             except ValueError:
                                 clean_record[clean_key] = value
                         else:
-                            # Socrata emits numeric columns as strings for some
-                            # rows; normalise them so the derived arithmetic and
-                            # the panel's statistics see numbers, not strings.
-                            clean_record[clean_key] = self._coerce_number(value)
+                            if clean_key in self._STRING_METADATA_KEYS:
+                                # Preserve identifiers/metadata byte-for-byte.
+                                clean_record[clean_key] = value
+                            else:
+                                # Socrata emits numeric columns as strings for
+                                # some rows; normalise those so the derived
+                                # arithmetic and the panel's statistics see
+                                # numbers, not strings.
+                                clean_record[clean_key] = self._coerce_number(value)
                     elif value is not None:
                         clean_record[clean_key] = value
 
@@ -568,7 +592,6 @@ class CFTCDataWrapper:
                 "latest_report": latest_data.get("report_date_as_yyyy_mm_dd"),
                 "market_name": latest_data.get("market_and_exchange_names", ""),
                 "open_interest": open_interest,
-                "change_in_oi": 0,
                 "commercial_positions": {
                     "long": latest["commercial_long"],
                     "short": latest["commercial_short"],
@@ -585,13 +608,17 @@ class CFTCDataWrapper:
                 }
             }
 
-            # Calculate week-over-week changes only when the previous week also
-            # carries every field; a gap leaves the block absent, never zero.
+            # Week-over-week comparisons exist only when the previous week
+            # carries the same measured field. A comparison that cannot be made
+            # stays absent, and the OI trend / activity that depend on it stay
+            # "unavailable" — never a fabricated 0 / "decreasing" / "low".
+            previous_oi = self._to_int(previous_data.get("open_interest_all")) if previous_data else None
+            oi_change = None
+            if previous_oi is not None:
+                oi_change = open_interest - previous_oi
+                sentiment_analysis["change_in_oi"] = oi_change
             if previous_data:
                 previous = {key: self._pick(previous_data, names) for key, names in field_map.items()}
-                previous_oi = self._to_int(previous_data.get("open_interest_all"))
-                if previous_oi is not None:
-                    sentiment_analysis["change_in_oi"] = open_interest - previous_oi
                 if all(value is not None for value in previous.values()):
                     sentiment_analysis["commercial_positions"]["long_change"] = latest["commercial_long"] - previous["commercial_long"]
                     sentiment_analysis["commercial_positions"]["short_change"] = latest["commercial_short"] - previous["commercial_short"]
@@ -605,16 +632,43 @@ class CFTCDataWrapper:
                 sentiment_analysis["non_commercial_long_pct"] = (sentiment_analysis["non_commercial_positions"]["long"] / total_oi) * 100
                 sentiment_analysis["non_reportable_long_pct"] = (sentiment_analysis["non_reportable_positions"]["long"] / total_oi) * 100
 
-            # Determine overall sentiment
+            # Determine overall sentiment. An exact-zero net is genuinely
+            # neutral, not bearish; an unavailable comparison is "unavailable",
+            # not "decreasing", and activity is only derived when the change
+            # percent it needs actually exists.
+            def _bias(net: int) -> str:
+                if net > 0:
+                    return "bullish"
+                if net < 0:
+                    return "bearish"
+                return "neutral"
+
             net_commercial = sentiment_analysis["commercial_positions"]["net"]
             net_non_commercial = sentiment_analysis["non_commercial_positions"]["net"]
-            oi_change_pct = (sentiment_analysis["change_in_oi"] / total_oi * 100) if total_oi > 0 else 0
+            if oi_change is None:
+                oi_trend = "unavailable"
+                activity_level = "unavailable"
+            else:
+                if oi_change > 0:
+                    oi_trend = "increasing"
+                elif oi_change < 0:
+                    oi_trend = "decreasing"
+                else:
+                    oi_trend = "unchanged"
+                oi_change_pct = (oi_change / total_oi * 100) if total_oi > 0 else None
+                if oi_change_pct is None:
+                    activity_level = "unavailable"
+                else:
+                    sentiment_analysis["oi_change_pct"] = oi_change_pct
+                    activity_level = ("high" if abs(oi_change_pct) > 5
+                                      else "moderate" if abs(oi_change_pct) > 1
+                                      else "low")
 
             sentiment_analysis["overall_sentiment"] = {
-                "commercial_bias": "bullish" if net_commercial > 0 else "bearish",
-                "non_commercial_bias": "bullish" if net_non_commercial > 0 else "bearish",
-                "oi_trend": "increasing" if oi_change_pct > 0 else "decreasing",
-                "activity_level": "high" if abs(oi_change_pct) > 5 else "moderate" if abs(oi_change_pct) > 1 else "low"
+                "commercial_bias": _bias(net_commercial),
+                "non_commercial_bias": _bias(net_non_commercial),
+                "oi_trend": oi_trend,
+                "activity_level": activity_level
             }
 
             return {

@@ -150,6 +150,14 @@ jobs:
       # FINCEPT_DEV_BUILD=ON turns the unity build OFF. That is REQUIRED here:
       # with unity ON the compile database contains only unity_*.cxx entries,
       # so clang-tidy cannot find a compile command for an individual .cpp.
+      #
+      # CMAKE_DISABLE_PRECOMPILE_HEADERS=ON is also REQUIRED: the app target
+      # uses target_precompile_headers(), so a normal compile command carries
+      # `-include .../cmake_pch.hxx`; the PCH is a byproduct of a full compile
+      # that this lint job never performs, and clang-tidy then dies with
+      # "PCH file not found" on every changed file instead of analysing it.
+      # Disabling PCH for this lint-only build removes the flag entirely; it
+      # does not affect any release/CI build artifact.
       - name: Configure (generate compile_commands.json)
         working-directory: fincept-qt
         run: |
@@ -159,6 +167,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             -DFINCEPT_DEV_BUILD=ON \
             -DFINCEPT_BUILD_INSTALLER=OFF \
             -DDEPLOY_QT=OFF

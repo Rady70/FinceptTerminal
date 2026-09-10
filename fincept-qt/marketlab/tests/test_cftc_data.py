@@ -144,6 +144,17 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertNotIn("comm_positions_short_all", clean, "missing cell must not become zero")
         self.assertNotIn("noncomm_positions_long_all", clean, "null cell must not become zero")
 
+    def test_identifier_fields_keep_leading_zero_contract_code(self):
+        # "088691" is an identifier; converting it to a number would drop the
+        # leading zero and change the contract identity.
+        self._serve([raw_legacy_row()])
+        result = self.wrapper.get_cot_data("gold", "legacy")
+        clean = result["data"][0]
+        self.assertEqual(clean["cftc_contract_market_code"], "088691")
+        self.assertIsInstance(clean["cftc_contract_market_code"], str)
+        self.assertEqual(clean["report_date_as_yyyy_mm_dd"], "2026-09-01")
+        self.assertEqual(clean["commodity"], "GOLD")
+
     def test_empty_response_is_an_error_not_empty_success(self):
         self._serve([])
         result = self.wrapper.get_cot_data("gold", "legacy")
@@ -194,6 +205,38 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertEqual(result["data"]["report_date"], "2026-09-01")
         self.assertEqual(result["data"]["open_interest"], 1000)
         self.assertEqual(result["data"]["positions"]["commercial"]["net"], 200)
+
+    def test_sentiment_unavailable_comparison_stays_unavailable(self):
+        # A single row cannot support a week-over-week comparison: the change
+        # must stay absent and the trend/activity that depend on it unavailable.
+        self._serve([raw_legacy_row()])
+        result = self.wrapper.analyze_market_sentiment("gold", "legacy")
+        self.assertTrue(result.get("success"), result)
+        data = result["data"]
+        self.assertNotIn("change_in_oi", data)
+        self.assertNotIn("oi_change_pct", data)
+        self.assertEqual(data["overall_sentiment"]["oi_trend"], "unavailable")
+        self.assertEqual(data["overall_sentiment"]["activity_level"], "unavailable")
+
+    def test_sentiment_zero_oi_change_is_unchanged_not_decreasing(self):
+        older = raw_legacy_row(report_date="2026-08-25", oi="1000")
+        newer = raw_legacy_row(report_date="2026-09-01", oi="1000")
+        self._serve([older, newer])
+        result = self.wrapper.analyze_market_sentiment("gold", "legacy")
+        data = result["data"]
+        self.assertEqual(data["change_in_oi"], 0)
+        self.assertEqual(data["overall_sentiment"]["oi_trend"], "unchanged")
+        self.assertEqual(data["overall_sentiment"]["activity_level"], "low")
+
+    def test_sentiment_zero_net_is_neutral_not_bearish(self):
+        row = raw_legacy_row(comm_long="300", comm_short="300", noncomm_long="200", noncomm_short="200")
+        self._serve([row])
+        result = self.wrapper.analyze_market_sentiment("gold", "legacy")
+        data = result["data"]
+        self.assertEqual(data["commercial_positions"]["net"], 0)
+        self.assertEqual(data["non_commercial_positions"]["net"], 0)
+        self.assertEqual(data["overall_sentiment"]["commercial_bias"], "neutral")
+        self.assertEqual(data["overall_sentiment"]["non_commercial_bias"], "neutral")
 
     def test_disaggregated_sentiment_uses_producer_and_money_fields(self):
         self._serve([raw_disaggregated_row()])

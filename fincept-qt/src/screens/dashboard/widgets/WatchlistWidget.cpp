@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QJsonArray>
@@ -180,12 +181,18 @@ void WatchlistWidget::render_from_cache() {
         if (it == row_cache_.constEnd())
             continue;
         const auto& q = it.value();
-        table_->add_row({q.symbol, QString("$%1").arg(q.price, 0, 'f', 2),
-                         QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2),
-                         QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)});
+        table_->add_row({q.symbol, fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")),
+                         fincept::screens::quote_signed_text(q.has_change, q.change, 2),
+                         fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))});
         int row = table_->rowCount() - 1;
-        table_->set_cell_color(row, 2, ui::change_color(q.change_pct));
-        table_->set_cell_color(row, 3, ui::change_color(q.change_pct));
+        const bool has_move = q.has_change_pct || q.has_change;
+        const double move = q.has_change_pct ? q.change_pct : q.change;
+        const QString color = !has_move  ? ui::colors::TEXT_DIM
+                              : move > 0 ? ui::colors::POSITIVE
+                              : move < 0 ? ui::colors::NEGATIVE
+                                         : ui::colors::TEXT_PRIMARY;
+        table_->set_cell_color(row, 2, color);
+        table_->set_cell_color(row, 3, color);
     }
 }
 

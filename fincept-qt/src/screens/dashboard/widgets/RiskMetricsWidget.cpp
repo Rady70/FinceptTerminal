@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QFrame>
@@ -238,7 +239,7 @@ void RiskMetricsWidget::populate(const QVector<services::QuoteData>& quotes) {
         map[q.symbol] = &q;
 
     // VIX
-    if (map.contains("^VIX")) {
+    if (map.contains("^VIX") && map["^VIX"]->has_price) {
         double vix = map["^VIX"]->price;
         vix_value_->setText(QString::number(vix, 'f', 2));
         QString regime, color;
@@ -270,6 +271,17 @@ void RiskMetricsWidget::populate(const QVector<services::QuoteData>& quotes) {
         vix_bar_fill_->setStyleSheet(QString("color: %1; font-size: 8px; background: transparent; margin-left: %2px;")
                                          .arg(color)
                                          .arg(margin_left));
+    } else if (vix_value_) {
+        // No price reading is not "VIX 0.00" (which reads as LOW VOLATILITY).
+        const QString dim = ui::colors::TEXT_DIM();
+        vix_value_->setText(QStringLiteral("--"));
+        vix_value_->setStyleSheet(
+            QString("color: %1; font-size: 22px; font-weight: bold; background: transparent;").arg(dim));
+        vix_regime_->setText(QStringLiteral("—"));
+        vix_regime_->setStyleSheet(
+            QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;").arg(dim));
+        vix_bar_fill_->setStyleSheet(
+            QString("color: %1; font-size: 8px; background: transparent; margin-left: 0px;").arg(dim));
     }
 
     // High-beta stocks
@@ -280,49 +292,53 @@ void RiskMetricsWidget::populate(const QVector<services::QuoteData>& quotes) {
             continue;
         const auto& q = *map[sym];
 
-        double chg = q.change_pct;
-        QString chg_str = QString("%1%2%").arg(chg >= 0 ? "+" : "").arg(chg, 0, 'f', 2);
-        QString chg_col = chg > 0   ? ui::colors::POSITIVE()
-                          : chg < 0 ? ui::colors::NEGATIVE()
-                                    : ui::colors::TEXT_PRIMARY();
-        stock_rows_[i].chg_pct->setText(chg_str);
-        stock_rows_[i].chg_pct->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(chg_col));
+        if (!q.has_change_pct) {
+            stock_rows_[i].chg_pct->setText(QStringLiteral("--"));
+            stock_rows_[i].chg_pct->setStyleSheet(
+                QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
+                    .arg(ui::colors::TEXT_DIM()));
+        } else {
+            const double chg = q.change_pct;
+            stock_rows_[i].chg_pct->setText(fincept::screens::quote_signed_text(true, chg, 2, QStringLiteral("%")));
+            const QString chg_col = chg > 0   ? ui::colors::POSITIVE()
+                                    : chg < 0 ? ui::colors::NEGATIVE()
+                                              : ui::colors::TEXT_PRIMARY();
+            stock_rows_[i].chg_pct->setStyleSheet(
+                QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(chg_col));
+        }
 
-        // Hi/Lo as range: H/L
-        if (q.high > 0 && q.low > 0) {
+        // Hi/Lo as range: H/L — presence flags, not a value sentinel.
+        if (q.has_high && q.has_low) {
             stock_rows_[i].hi_lo->setText(QString("H%1 L%2").arg(q.high, 0, 'f', 0).arg(q.low, 0, 'f', 0));
+        } else {
+            stock_rows_[i].hi_lo->setText(QStringLiteral("--"));
         }
     }
 
-    // Spread proxies
-    auto spread_str = [](double a, double b) -> QString {
-        double diff = a - b;
-        return QString("%1%2%").arg(diff >= 0 ? "+" : "").arg(diff, 0, 'f', 2);
-    };
-    auto spread_color = [](double a, double b) -> QString {
-        double diff = a - b;
-        return diff > 0 ? ui::colors::POSITIVE() : diff < 0 ? ui::colors::NEGATIVE() : ui::colors::TEXT_PRIMARY();
+    // Spread proxies — only when both operands carry a change reading.
+    auto spread_pair = [&](const QString& a_sym, const QString& b_sym, QLabel* label) {
+        if (!label)
+            return;
+        const bool available =
+            map.contains(a_sym) && map.contains(b_sym) && map[a_sym]->has_change_pct && map[b_sym]->has_change_pct;
+        if (!available) {
+            label->setText(QStringLiteral("--"));
+            label->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
+                                     .arg(ui::colors::TEXT_DIM()));
+            return;
+        }
+        const double diff = map[a_sym]->change_pct - map[b_sym]->change_pct;
+        label->setText(fincept::screens::quote_signed_text(true, diff, 2, QStringLiteral("%")));
+        const QString color = diff > 0   ? ui::colors::POSITIVE()
+                              : diff < 0 ? ui::colors::NEGATIVE()
+                                         : ui::colors::TEXT_PRIMARY();
+        label->setStyleSheet(
+            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(color));
     };
 
-    if (map.contains("SPY") && map.contains("QQQ")) {
-        spy_qqq_spread_->setText(spread_str(map["SPY"]->change_pct, map["QQQ"]->change_pct));
-        spy_qqq_spread_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                .arg(spread_color(map["SPY"]->change_pct, map["QQQ"]->change_pct)));
-    }
-    if (map.contains("SPY") && map.contains("IWM")) {
-        spy_iwm_spread_->setText(spread_str(map["SPY"]->change_pct, map["IWM"]->change_pct));
-        spy_iwm_spread_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                .arg(spread_color(map["SPY"]->change_pct, map["IWM"]->change_pct)));
-    }
-    if (map.contains("SPY") && map.contains("TLT")) {
-        equity_bond_lbl_->setText(spread_str(map["SPY"]->change_pct, map["TLT"]->change_pct));
-        equity_bond_lbl_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                .arg(spread_color(map["SPY"]->change_pct, map["TLT"]->change_pct)));
-    }
+    spread_pair("SPY", "QQQ", spy_qqq_spread_);
+    spread_pair("SPY", "IWM", spy_iwm_spread_);
+    spread_pair("SPY", "TLT", equity_bond_lbl_);
 }
 
 void RiskMetricsWidget::retranslateUi() {

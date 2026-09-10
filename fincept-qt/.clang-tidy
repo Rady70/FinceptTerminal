@@ -74,7 +74,9 @@ CheckOptions:
   - key: performance-unnecessary-value-param.AllowedTypes
     value: ''
 
-HeaderFilterRegex: '^(?!.*(/moc_|/qrc_|/ui_)).*\.(h|hpp)$'
-
-# Suppress warnings in Qt-generated files (moc_, qrc_, ui_) and third-party
-ExcludeHeaderFilterRegex: '.*(moc_|qrc_|ui_|/vendor/).*'
+# Header diagnostics are not reported for Qt-generated files (moc_, qrc_, ui_)
+# or third-party/vendor headers. clang-tidy 18 (the CI pin) supports only
+# HeaderFilterRegex — `ExcludeHeaderFilterRegex` landed in LLVM 19 and made
+# every clang-tidy 18 invocation fail with "unknown key", so the exclusion is
+# folded into this negative lookahead instead.
+HeaderFilterRegex: '^(?!.*(/moc_|/qrc_|/ui_|/vendor/)).*\.(h|hpp)$'

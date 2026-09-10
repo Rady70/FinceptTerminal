@@ -57,12 +57,21 @@ inline QString quote_arrow_text(bool has, double value, int precision, const QSt
     return QStringLiteral("%1 %2%3").arg(arrow).arg(std::abs(value), 0, 'f', precision).arg(suffix);
 }
 
-/// A volume cell through the shared compact formatter, or the placeholder.
-/// format_compact_volume already answers "--" for a non-positive reading.
+/// A volume cell. Missing stays the placeholder; a genuine zero is a reading
+/// and renders as "0" (format_compact_volume's "--" for <= 0 would make an
+/// actual zero volume indistinguishable from an absent one).
 inline QString quote_volume_text(const services::QuoteData& q) {
     if (!q.has_volume)
         return quote_na();
+    if (q.volume <= 0)
+        return QStringLiteral("0");
     return fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume));
+}
+
+/// Combine a cell's existing tooltip (e.g. the Markets panel's full-name
+/// tooltip) with the row provenance instead of replacing it.
+inline QString merge_quote_provenance(const QString& existing, const QString& provenance) {
+    return existing.isEmpty() ? provenance : existing + QLatin1Char('\n') + provenance;
 }
 
 /// Which provider produced the row, when it answered, and whether the reading

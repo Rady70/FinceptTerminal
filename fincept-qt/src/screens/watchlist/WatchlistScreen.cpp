@@ -773,7 +773,10 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
                                   : kNA,
                  q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
                  q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
-                 q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)) : kNA});
+                 q.has_volume
+                     ? (q.volume <= 0 ? QStringLiteral("0") // a genuine zero reading
+                                      : fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)))
+                     : kNA});
 
             int row = table_->rowCount() - 1;
 
@@ -786,8 +789,14 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             table_->set_cell_numeric(row, 6, q.low);        // LOW
             table_->set_cell_numeric(row, 7, q.volume);     // VOLUME
 
-            // Green = good, Red = bad
-            QString chg_color = q.change_pct >= 0 ? colors::POSITIVE : colors::NEGATIVE;
+            // Green = up, Red = down, neutral/dim = no change or no reading.
+            // A missing change must never be painted as a positive move.
+            const bool has_move = q.has_change_pct || q.has_change;
+            const double move = q.has_change_pct ? q.change_pct : q.change;
+            const QString chg_color = !has_move  ? colors::TEXT_DIM
+                                      : move > 0 ? colors::POSITIVE
+                                      : move < 0 ? colors::NEGATIVE
+                                                 : colors::TEXT_PRIMARY;
             table_->set_cell_color(row, 3, chg_color);
             table_->set_cell_color(row, 4, chg_color);
 
