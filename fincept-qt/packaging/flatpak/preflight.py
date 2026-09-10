@@ -154,7 +154,7 @@ def remote_commit_refs(remote_text: str, wanted: str) -> list[str]:
     return [
         parts[1]
         for line in remote_text.splitlines()
-        if len(parts := line.split()) >= 2 and parts[0] == wanted
+        if len(parts := line.split()) >= 2 and parts[0].lower() == wanted.lower()
     ]
 
 
@@ -168,7 +168,7 @@ def remote_contains_commit(repo: Path, remote_text: str, commit: str) -> bool:
         parts = line.split()
         if len(parts) < 2 or not FULL_SHA_RE.fullmatch(parts[0]):
             continue
-        ancestor = run_git(repo, "merge-base", "--is-ancestor", commit, parts[0])
+        ancestor = run_git(repo, "merge-base", "--is-ancestor", commit.lower(), parts[0])
         if ancestor is not None and ancestor.returncode == 0:
             return True
     return False
@@ -177,21 +177,55 @@ def remote_contains_commit(repo: Path, remote_text: str, commit: str) -> bool:
 def strip_cmake_comments(text: str) -> str:
     """Remove CMake line and bracket comments before reading declarations."""
     visible = []
+    line_comment = False
+    quoted = False
+    bracket_close = None
     position = 0
     bracket_open = re.compile(r"#\[(=*)\[")
     while position < len(text):
-        match = bracket_open.search(text, position)
-        if match is None:
-            visible.append(text[position:])
-            break
-        visible.append(text[position:match.start()])
-        closing = "]" + match.group(1) + "]"
-        end = text.find(closing, match.end())
-        if end < 0:
-            # An unterminated bracket comment cannot expose declarations.
-            break
-        position = end + len(closing)
-    return re.sub(r"(?m)#.*$", "", "".join(visible))
+        if bracket_close is not None:
+            if text.startswith(bracket_close, position):
+                position += len(bracket_close)
+                bracket_close = None
+            else:
+                if text[position] == "\n":
+                    visible.append("\n")
+                position += 1
+            continue
+        char = text[position]
+        if line_comment:
+            if char == "\n":
+                visible.append(char)
+                line_comment = False
+            position += 1
+            continue
+        if quoted:
+            visible.append(char)
+            if char == "\\" and position + 1 < len(text):
+                visible.append(text[position + 1])
+                position += 2
+            else:
+                if char == '"':
+                    quoted = False
+                position += 1
+            continue
+        if char == '"':
+            quoted = True
+            visible.append(char)
+            position += 1
+            continue
+        if char == "#":
+            match = bracket_open.match(text, position)
+            if match:
+                bracket_close = "]" + match.group(1) + "]"
+                position = match.end()
+            else:
+                line_comment = True
+                position += 1
+            continue
+        visible.append(char)
+        position += 1
+    return "".join(visible)
 
 
 def project_values(cmake_text: str | None) -> list[str]:
@@ -348,7 +382,7 @@ def check_application_source(repo: Path, manifest: dict, origin_url: str):
     ck(len(sources) > 0, f"found {len(sources)} git sources")
     for name, source in sources:
         raw_url = source.get("url", "")
-        url = raw_url.rsplit("/", 1)[-1] if raw_url else "missing-url"
+        url = raw_url.rsplit("/", 1)[-1] if isinstance(raw_url, str) and raw_url else "missing-url"
         ck(bool(raw_url), f"{name}:{url} url declared")
         if "tag" in source:
             ck("commit" in source, f"{name}:{url} has tag -> must also have commit")
@@ -434,11 +468,17 @@ def check_application_source(repo: Path, manifest: dict, origin_url: str):
 
 
 def metainfo_binaries(metainfo) -> list[str]:
+    if metainfo is None:
+        return []
     return [
         node.firstChild.nodeValue.strip()
-        for node in metainfo.getElementsByTagName("binary")
-        if node.firstChild and node.firstChild.nodeValue
-    ] if metainfo is not None else []
+        for provides in metainfo.getElementsByTagName("provides")
+        for node in provides.childNodes
+        if node.nodeType == Node.ELEMENT_NODE
+        and node.tagName == "binary"
+        and node.firstChild
+        and node.firstChild.nodeValue
+    ]
 
 
 def desktop_exec_binary(desktop: dict) -> str:
