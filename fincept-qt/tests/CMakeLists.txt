@@ -170,6 +170,12 @@ fincept_add_test(tst_economics_envelope
 fincept_add_test(tst_cftc_net_format
     tst_cftc_net_format.cpp)
 
+# MarketLab: portfolio presentation rules — trend direction, contribution
+# availability and presence-aware ordering keep missing, zero and directional
+# states distinct. Header-only over plain types; no app sources.
+fincept_add_test(tst_portfolio_rules
+    tst_portfolio_rules.cpp)
+
 # MarketLab: redirect containment in GuardedNetworkAccessManager.
 #
 # THE ONE EXCEPTION to "a unit test that needs Network is testing the wrong
@@ -198,4 +204,4 @@ fincept_add_test(tst_redirect_guard
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_redirect_guard")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_redirect_guard")

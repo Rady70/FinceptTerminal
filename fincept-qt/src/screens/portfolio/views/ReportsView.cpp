@@ -1,6 +1,7 @@
 // src/screens/portfolio/views/ReportsView.cpp
 #include "screens/portfolio/views/ReportsView.h"
 
+#include "screens/portfolio/PortfolioDisplayRules.h"
 #include "storage/repositories/PortfolioRepository.h"
 #include "ui/theme/Theme.h"
 
@@ -280,7 +281,13 @@ void ReportsView::update_summary() {
                                       ui::colors::BG_SURFACE(), ui::colors::TEXT_SECONDARY(), ui::colors::AMBER()));
 
     auto sorted = summary_.holdings;
-    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.weight > b.weight; });
+    // Present (priced) holdings first, then by weight; an unpriced row's
+    // hidden fallback weight never determines the displayed order.
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        if (a.has_live_price != b.has_live_price)
+            return a.has_live_price;
+        return a.weight > b.weight;
+    });
 
     breakdown->setRowCount(sorted.size());
     for (int r = 0; r < sorted.size(); ++r) {
@@ -361,7 +368,13 @@ void ReportsView::update_transactions() {
 
 void ReportsView::update_attribution() {
     auto sorted = summary_.holdings;
-    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.weight > b.weight; });
+    // Present (priced) holdings first, then by weight; an unpriced row's
+    // hidden fallback weight never determines the displayed order.
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        if (a.has_live_price != b.has_live_price)
+            return a.has_live_price;
+        return a.weight > b.weight;
+    });
 
     // Attribution weights and contributions are derived from the same partially
     // valued holdings as the totals above; qualify the section when coverage is
@@ -401,7 +414,10 @@ void ReportsView::update_attribution() {
             continue;
         }
 
-        double contribution = (total_pnl != 0) ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0;
+        // A zero total P&L makes each holding's share undefined (gains and
+        // losses cancel out); that is unavailable, not a fabricated 0%.
+        const bool contribution_available = fincept::screens::portfolio_contribution_available(total_pnl);
+        double contribution = contribution_available ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0.0;
 
         const char* ret_color = h.unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
                                 : h.unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
@@ -423,8 +439,11 @@ void ReportsView::update_attribution() {
                 .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
                 .arg(QString::number(h.unrealized_pnl_percent, 'f', 2)),
             ret_color);
-        set(3, QString("%1%2%").arg(contribution > 0 ? "+" : "").arg(QString::number(contribution, 'f', 1)),
-            contrib_color);
+        set(3,
+            contribution_available
+                ? QString("%1%2%").arg(contribution > 0 ? "+" : "").arg(QString::number(contribution, 'f', 1))
+                : QStringLiteral("--"),
+            contribution_available ? contrib_color : ui::colors::TEXT_TERTIARY);
         set(4, QString("%1 %2").arg(currency_, QString::number(h.unrealized_pnl, 'f', 2)), ret_color);
         set(5, status, status_color);
     }

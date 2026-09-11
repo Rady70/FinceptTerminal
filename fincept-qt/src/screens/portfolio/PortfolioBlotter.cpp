@@ -3,6 +3,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/portfolio/PortfolioDisplayRules.h"
 #include "screens/portfolio/PortfolioSparkline.h"
 #include "services/markets/MarketDataService.h"
 #include "storage/repositories/SettingsRepository.h"
@@ -301,6 +302,14 @@ void PortfolioBlotter::fetch_sparklines() {
 }
 
 void PortfolioBlotter::repaint_sparkline_cells() {
+    // Day-change observations live on the holdings; key them once so the
+    // direction rule can fall back to the observed change when the history is
+    // too short for a trend.
+    QHash<QString, const portfolio::HoldingWithQuote*> by_symbol;
+    by_symbol.reserve(holdings_.size());
+    for (const auto& h : holdings_)
+        by_symbol.insert(h.symbol, &h);
+
     for (int r = 0; r < table_->rowCount(); ++r) {
         auto* item = table_->item(r, kColSymbol);
         if (!item)
@@ -317,8 +326,17 @@ void PortfolioBlotter::repaint_sparkline_cells() {
         if (state == SparklineState::Loaded && sparkline_cache_.contains(sym)) {
             const auto& prices = sparkline_cache_[sym];
             w->set_data(prices);
-            bool up = prices.size() >= 2 ? prices.last() >= prices.first() : true;
-            w->set_color(QColor(up ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
+            const auto* holding = by_symbol.value(sym, nullptr);
+            const bool has_day_change = holding && holding->has_day_change;
+            const double day_change = holding ? holding->day_change : 0.0;
+            const int dir = fincept::screens::portfolio_trend_direction(
+                static_cast<int>(prices.size()), prices.isEmpty() ? 0.0 : prices.first(),
+                prices.isEmpty() ? 0.0 : prices.last(), has_day_change, day_change);
+            const char* dir_color = dir == 1    ? ui::colors::POSITIVE
+                                    : dir == -1 ? ui::colors::NEGATIVE
+                                    : dir == 0  ? ui::colors::TEXT_PRIMARY
+                                                : ui::colors::TEXT_TERTIARY;
+            w->set_color(QColor(dir_color));
         } else {
             QVector<double> dash(6, 0.0);
             w->set_data(dash);
@@ -409,25 +427,30 @@ void PortfolioBlotter::update_row_price(const QString& symbol, double ltp, doubl
             const double mkt_val = ltp * h.quantity;
             const double pnl = mkt_val - h.cost_basis;
             const double pnl_pct = h.cost_basis > 0 ? (pnl / h.cost_basis) * 100.0 : 0.0;
-            const char* pnl_color = pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
+            // Strict zero neutrality: only a signed value is green/red, and
+            // only a signed value gets a "+".
+            const char* pnl_color = pnl > 0   ? ui::colors::POSITIVE
+                                    : pnl < 0 ? ui::colors::NEGATIVE
+                                              : ui::colors::TEXT_PRIMARY;
             if (auto* mv = table_->item(r, kColMktVal))
                 mv->setText(format_value(mkt_val));
             if (auto* pnl_item = table_->item(r, kColPnl)) {
-                pnl_item->setText(QString("%1%2").arg(pnl >= 0 ? "+" : "").arg(format_value(pnl)));
+                pnl_item->setText(QString("%1%2").arg(pnl > 0 ? "+" : "").arg(format_value(pnl)));
                 // Recolour too: a tick that flipped a position from green to
                 // red kept the stale green foreground until the next full poll.
                 pnl_item->setForeground(QColor(pnl_color));
             }
             if (auto* pnl_pct_item = table_->item(r, kColPnlPct)) {
-                pnl_pct_item->setText(
-                    QString("%1%2%").arg(pnl_pct >= 0 ? "+" : "").arg(format_value(pnl_pct)));
+                pnl_pct_item->setText(QString("%1%2%").arg(pnl_pct > 0 ? "+" : "").arg(format_value(pnl_pct)));
                 pnl_pct_item->setForeground(QColor(pnl_color));
             }
         }
         if (auto* chg = table_->item(r, kColChgPct)) {
             // Signed, matching how populate_table renders the same column.
-            chg->setText(QString("%1%2%").arg(change_pct >= 0 ? "+" : "").arg(format_value(change_pct)));
-            chg->setForeground(QColor(change_pct >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
+            chg->setText(QString("%1%2%").arg(change_pct > 0 ? "+" : "").arg(format_value(change_pct)));
+            chg->setForeground(QColor(change_pct > 0   ? ui::colors::POSITIVE()
+                                      : change_pct < 0 ? ui::colors::NEGATIVE()
+                                                       : ui::colors::TEXT_PRIMARY()));
         }
         break;
     }
@@ -597,39 +620,60 @@ void PortfolioBlotter::populate_table() {
     invalidate_view_cache();
     update_weight_header();
 
-    // Sort
+    // Sort. For every market-derived column, a missing reading stays after the
+    // present ones in both directions and never orders by the hidden fallback
+    // value the cell displays as unavailable (an unpriced holding's price,
+    // market value, P&L and weight all come from the average-cost fallback).
     bool asc = (sort_dir_ == portfolio::SortDirection::Asc);
     auto cmp = [&](const portfolio::HoldingWithQuote& a, const portfolio::HoldingWithQuote& b) {
-        double va = 0, vb = 0;
+        if (sort_col_ == portfolio::SortColumn::Symbol)
+            return asc ? a.symbol < b.symbol : a.symbol > b.symbol;
+
+        bool has_a = false;
+        bool has_b = false;
+        double va = 0.0;
+        double vb = 0.0;
         switch (sort_col_) {
             case portfolio::SortColumn::Symbol:
-                return asc ? a.symbol < b.symbol : a.symbol > b.symbol;
+                break; // handled above
             case portfolio::SortColumn::Price:
+                has_a = a.has_live_price;
+                has_b = b.has_live_price;
                 va = a.current_price;
                 vb = b.current_price;
                 break;
             case portfolio::SortColumn::Change:
+                has_a = a.has_day_change_percent;
+                has_b = b.has_day_change_percent;
                 va = a.day_change_percent;
                 vb = b.day_change_percent;
                 break;
             case portfolio::SortColumn::Pnl:
+                has_a = a.has_live_price;
+                has_b = b.has_live_price;
                 va = a.unrealized_pnl;
                 vb = b.unrealized_pnl;
                 break;
             case portfolio::SortColumn::PnlPct:
+                has_a = a.has_live_price;
+                has_b = b.has_live_price;
                 va = a.unrealized_pnl_percent;
                 vb = b.unrealized_pnl_percent;
                 break;
             case portfolio::SortColumn::Weight:
+                has_a = a.has_live_price;
+                has_b = b.has_live_price;
                 va = a.weight;
                 vb = b.weight;
                 break;
             case portfolio::SortColumn::MarketValue:
+                has_a = a.has_live_price;
+                has_b = b.has_live_price;
                 va = a.market_value;
                 vb = b.market_value;
                 break;
         }
-        return asc ? va < vb : va > vb;
+        return fincept::screens::portfolio_sort_before(has_a, va, has_b, vb, asc);
     };
     std::stable_sort(sorted_.begin(), sorted_.end(), cmp);
 
@@ -735,24 +779,16 @@ void PortfolioBlotter::populate_table() {
         if (state == SparklineState::Loaded && sparkline_cache_.contains(h.symbol)) {
             const auto& prices = sparkline_cache_[h.symbol];
             sparkline->set_data(prices);
-            if (prices.size() >= 2) {
-                const char* dir = prices.last() > prices.first()   ? ui::colors::POSITIVE
-                                  : prices.last() < prices.first() ? ui::colors::NEGATIVE
-                                                                   : ui::colors::TEXT_PRIMARY;
-                sparkline->set_color(QColor(dir));
-            } else if (h.has_day_change) {
-                // A single point cannot show a trend; fall back to the observed
-                // day change, with exact zero neutral and up/down only for a
-                // strictly signed value. A missing change is never "up".
-                const char* dir = h.day_change > 0   ? ui::colors::POSITIVE
-                                  : h.day_change < 0 ? ui::colors::NEGATIVE
-                                                     : ui::colors::TEXT_PRIMARY;
-                sparkline->set_color(QColor(dir));
-            } else {
-                // Neither a two-point history nor a day-change observation:
-                // direction is unavailable, so stay neutral/dim.
-                sparkline->set_color(QColor(ui::colors::TEXT_TERTIARY()));
-            }
+            // Same pure rule as the asynchronous repaint: two-point history
+            // first, then the observed day change, otherwise unavailable.
+            const int dir = fincept::screens::portfolio_trend_direction(
+                static_cast<int>(prices.size()), prices.isEmpty() ? 0.0 : prices.first(),
+                prices.isEmpty() ? 0.0 : prices.last(), h.has_day_change, h.day_change);
+            const char* dir_color = dir == 1    ? ui::colors::POSITIVE
+                                    : dir == -1 ? ui::colors::NEGATIVE
+                                    : dir == 0  ? ui::colors::TEXT_PRIMARY
+                                                : ui::colors::TEXT_TERTIARY;
+            sparkline->set_color(QColor(dir_color));
         } else if (state == SparklineState::Failed) {
             // Show flat dash line in muted color to indicate unavailable data
             QVector<double> dash(6, 0.0);
