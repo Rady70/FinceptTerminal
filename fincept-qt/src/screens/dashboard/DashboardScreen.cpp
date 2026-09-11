@@ -310,7 +310,7 @@ void DashboardScreen::rebuild_ticker_from_cache() {
         if (!ticker_cache_.contains(sym))
             continue;
         const auto& q = ticker_cache_.value(sym);
-        entries.append({q.symbol, q.price, q.change, q.has_price, q.has_change});
+        entries.append({q.symbol, q.price, q.change, q.change_pct, q.has_price, q.has_change, q.has_change_pct});
     }
     if (!entries.isEmpty())
         ticker_bar_->set_data(entries);

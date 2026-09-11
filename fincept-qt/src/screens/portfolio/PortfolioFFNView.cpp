@@ -499,6 +499,10 @@ void PortfolioFFNView::update_overview() {
 
     double pnl_pct = summary_.total_unrealized_pnl_percent;
     double win_rate = summary_.total_positions > 0 ? summary_.gainers * 100.0 / summary_.total_positions : 0.0;
+    // Unpriced holdings are valued at average cost; mark the total-value row
+    // partial so it is not read as a fully observed market value.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
 
     // Benchmark (SPY) column — "--" until set_benchmark() has delivered closes.
     const BenchStats bench = compute_bench_stats(benchmark_closes_);
@@ -533,7 +537,8 @@ void PortfolioFFNView::update_overview() {
              pnl_pct >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
             {tr("Win Rate"), fmt(win_rate) + "%", "--", ui::colors::CYAN},
             {tr("Positions"), QString::number(summary_.total_positions), "--", ui::colors::CYAN},
-            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value), "--", ui::colors::WARNING},
+            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value) + partial_note, "--",
+             ui::colors::WARNING},
             {tr("Cost Basis"), currency_ + " " + fmt(summary_.total_cost_basis), "--", ui::colors::TEXT_SECONDARY},
         };
     } else {
@@ -561,7 +566,8 @@ void PortfolioFFNView::update_overview() {
              sharpe >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
             {tr("Win Rate"), fmt(win_rate) + "%", "--", ui::colors::CYAN},
             {tr("Positions"), QString::number(summary_.total_positions), "--", ui::colors::CYAN},
-            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value), "--", ui::colors::WARNING},
+            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value) + partial_note, "--",
+             ui::colors::WARNING},
             {tr("Cost Basis"), currency_ + " " + fmt(summary_.total_cost_basis), "--", ui::colors::TEXT_SECONDARY},
             {tr("FFN Deep Metrics"), tr("Click RUN FFN ANALYSIS for full stats"), "--", ui::colors::AMBER},
         };

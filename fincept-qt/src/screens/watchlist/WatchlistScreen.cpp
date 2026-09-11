@@ -415,7 +415,7 @@ QWidget* WatchlistScreen::build_main_panel() {
     table_->set_headers(
         {tr("SYMBOL"), tr("NAME"), tr("PRICE"), tr("CHANGE"), tr("CHG %"), tr("HIGH"), tr("LOW"), tr("VOLUME")});
     table_->set_column_widths({100, 160, 100, 90, 80, 90, 90, 110});
-    table_->setSortingEnabled(true); // opt-in: WatchlistScreen stamps numeric EditRole values
+    table_->setSortingEnabled(true); // opt-in: WatchlistScreen stamps presence-aware numeric sort keys
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
 
@@ -675,6 +675,9 @@ void WatchlistScreen::rebuild_from_cache() {
         table_->clear_data();
         for (const auto& s : stocks_) {
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
+            const int row = table_->rowCount() - 1;
+            for (int c = 2; c < table_->columnCount(); ++c)
+                table_->set_cell_numeric(row, c, 0.0, false);
         }
         table_->setSortingEnabled(true);
         update_empty_state();
@@ -768,37 +771,43 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             table_->add_row(
                 {q.symbol, q.name.isEmpty() ? s.name : q.name,
                  q.has_price ? QString("$%1").arg(q.price, 0, 'f', 2) : kNA,
-                 q.has_change ? QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2) : kNA,
-                 q.has_change_pct ? QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
+                 q.has_change ? QString("%1%2").arg(q.change > 0 ? "+" : "").arg(q.change, 0, 'f', 2) : kNA,
+                 q.has_change_pct ? QString("%1%2%").arg(q.change_pct > 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
                                   : kNA,
                  q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
                  q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
-                 q.has_volume
-                     ? (q.volume <= 0 ? QStringLiteral("0") // a genuine zero reading
+                 q.has_volume && q.volume >= 0
+                     ? (q.volume == 0 ? QStringLiteral("0") // a genuine zero reading
                                       : fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)))
                      : kNA});
 
             int row = table_->rowCount() - 1;
 
-            // Stamp numeric EditRole values so Qt sorts by magnitude,
-            // not by the display string ("$2.5M" vs "$999K" etc.).
-            table_->set_cell_numeric(row, 2, q.price);      // PRICE
-            table_->set_cell_numeric(row, 3, q.change);     // CHANGE
-            table_->set_cell_numeric(row, 4, q.change_pct); // CHG %
-            table_->set_cell_numeric(row, 5, q.high);       // HIGH
-            table_->set_cell_numeric(row, 6, q.low);        // LOW
-            table_->set_cell_numeric(row, 7, q.volume);     // VOLUME
+            // Stamp presence-aware numeric sort keys so Qt sorts by magnitude,
+            // not by the display string ("$2.5M" vs "$999K" etc.). The display
+            // text is preserved and a missing reading sorts apart from a real
+            // zero — it has no value to compare, rather than a 0.
+            table_->set_cell_numeric(row, 2, q.price, q.has_price);                    // PRICE
+            table_->set_cell_numeric(row, 3, q.change, q.has_change);                  // CHANGE
+            table_->set_cell_numeric(row, 4, q.change_pct, q.has_change_pct);          // CHG %
+            table_->set_cell_numeric(row, 5, q.high, q.has_high);                      // HIGH
+            table_->set_cell_numeric(row, 6, q.low, q.has_low);                        // LOW
+            table_->set_cell_numeric(row, 7, q.volume, q.has_volume && q.volume >= 0); // VOLUME
 
-            // Green = up, Red = down, neutral/dim = no change or no reading.
-            // A missing change must never be painted as a positive move.
-            const bool has_move = q.has_change_pct || q.has_change;
-            const double move = q.has_change_pct ? q.change_pct : q.change;
-            const QString chg_color = !has_move  ? colors::TEXT_DIM
-                                      : move > 0 ? colors::POSITIVE
-                                      : move < 0 ? colors::NEGATIVE
-                                                 : colors::TEXT_PRIMARY;
-            table_->set_cell_color(row, 3, chg_color);
-            table_->set_cell_color(row, 4, chg_color);
+            // Green = up, Red = down, neutral/dim = zero or no reading. Each
+            // cell derives its colour from its own field, so a missing CHG%
+            // never borrows the absolute change's direction.
+            auto move_color = [](bool has, double value) -> QString {
+                if (!has)
+                    return colors::TEXT_DIM;
+                if (value > 0)
+                    return colors::POSITIVE;
+                if (value < 0)
+                    return colors::NEGATIVE;
+                return colors::TEXT_PRIMARY;
+            };
+            table_->set_cell_color(row, 3, move_color(q.has_change, q.change));
+            table_->set_cell_color(row, 4, move_color(q.has_change_pct, q.change_pct));
 
             // Provenance for this row — which provider produced these numbers,
             // when, and whether it is a live print or the last cached one.
@@ -815,6 +824,10 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         } else {
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
             const int row = table_->rowCount() - 1;
+            // No quote at all: stamp every numeric column as missing so the row
+            // sorts with the other "--" readings instead of as zeros.
+            for (int c = 2; c < table_->columnCount(); ++c)
+                table_->set_cell_numeric(row, c, 0.0, false);
             for (int c = 0; c < table_->columnCount(); ++c) {
                 if (auto* cell = table_->item(row, c))
                     cell->setToolTip(tr("No quote has been retrieved for this symbol yet."));
@@ -992,8 +1005,12 @@ void WatchlistScreen::on_export_csv() {
             << num(q.price, q.has_price) << ',' << num(q.change, q.has_change) << ','
             << num(q.change_pct, q.has_change_pct) << ',' << num(q.high, q.has_high) << ',' << num(q.low, q.has_low)
             << ','
-            << (q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
-                             : QString())
+            // A genuine zero volume exports as "0"; a malformed negative volume
+            // exports as an empty field, exactly like a missing one.
+            << (q.has_volume && q.volume >= 0
+                    ? (q.volume == 0 ? QStringLiteral("0")
+                                     : fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)))
+                    : QString())
             << '\n';
     }
 }

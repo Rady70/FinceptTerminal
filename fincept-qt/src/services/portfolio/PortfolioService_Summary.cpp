@@ -192,16 +192,12 @@ bool PortfolioService::try_broker_quotes(const QString& portfolio_id, const QVec
                         q.high = bq.high;
                         q.low = bq.low;
                         q.volume = bq.volume;
-                        // BrokerQuote has no presence concept, so the flag can
-                        // only assert "the broker sent this field" — every
-                        // consumer would otherwise treat the whole quote as
-                        // absent (all flags default false).
-                        q.has_price = true;
-                        q.has_change = true;
-                        q.has_change_pct = true;
-                        q.has_high = true;
-                        q.has_low = true;
-                        q.has_volume = true;
+                        // BrokerQuote carries no field-presence information, so
+                        // the quote cannot honestly certify any of these fields
+                        // as present. The empty presence flags make
+                        // finalize_summary treat the row as unpriced and the
+                        // aggregate partial; the broker adapter itself is out
+                        // of scope for this corrective pass.
                         quote_map.insert(yf_key, q);
                     }
                     LOG_INFO("PortfolioSvc", QString("Broker quotes: %1 of %2 for portfolio %3")
@@ -250,6 +246,8 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
     double total_cost = 0;
     double total_day = 0;
     double total_prev = 0; // previous-close value of PRICED holdings only (day% base)
+    int priced_positions = 0;     // holdings with a live current price
+    int day_change_positions = 0; // holdings with a real day-change observation
 
     for (const auto& asset : assets) {
         portfolio::HoldingWithQuote h;
@@ -264,10 +262,12 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         auto it = quote_map.find(asset.symbol);
         const bool live_quote = it != quote_map.end() && it->has_price;
         if (live_quote) {
+            ++priced_positions;
             h.current_price = it->price;
             // Only a quote that actually carries a change adds to the day
             // totals; a missing change must not contribute a fabricated 0.
             if (it->has_change) {
+                ++day_change_positions;
                 h.day_change = it->change;
                 total_day += h.day_change * h.quantity;
                 total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
@@ -313,6 +313,10 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
     // denominator, diluting the day % whenever any symbol failed to quote.
     summary.total_day_change_percent = (total_prev > 0) ? (total_day / total_prev) * 100.0 : 0;
     summary.total_positions = assets.size();
+    // Coverage travels with the totals so a consumer can label a partial
+    // aggregate instead of presenting it as complete.
+    summary.priced_positions = priced_positions;
+    summary.day_change_positions = day_change_positions;
     summary.last_updated = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
     // Cache the result (P11)

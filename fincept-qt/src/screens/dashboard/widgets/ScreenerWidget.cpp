@@ -300,11 +300,12 @@ void ScreenerWidget::render_rows(const QVector<services::QuoteData>& rows) {
         chg->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         rl->addWidget(chg, 1);
 
-        // Format volume: e.g. 45.2M. Missing stays "--"; a genuine zero is "0".
+        // Format volume: e.g. 45.2M. Missing stays "--"; a genuine zero is
+        // "0"; a negative volume is malformed and unavailable, not zero.
         QString vol_str;
-        if (!q.has_volume)
+        if (!q.has_volume || q.volume < 0)
             vol_str = QStringLiteral("--");
-        else if (q.volume <= 0)
+        else if (q.volume == 0)
             vol_str = QStringLiteral("0");
         else if (q.volume >= 1e9)
             vol_str = QString("%1B").arg(q.volume / 1e9, 0, 'f', 1);

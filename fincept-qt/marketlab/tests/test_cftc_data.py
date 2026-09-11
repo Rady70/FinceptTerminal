@@ -265,6 +265,25 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertEqual(points[1]["commercial_net"], 200)
         self.assertIn("retrieved_at", result["parameters"])
 
+    def test_disaggregated_trend_uses_family_terminology(self):
+        self._serve([raw_disaggregated_row(prod_long="500", prod_short="200",
+                                           money_long="700", money_short="300")])
+        result = self.wrapper.get_cot_historical_trend("gold", "disaggregated", 8)
+
+        self.assertTrue(result.get("success"), result)
+        point = result["data"][0]
+        # Disaggregated trend points must name Producer/Merchant and Managed
+        # Money fields; reusing the legacy commercial names would mislabel the
+        # very data they carry.
+        self.assertEqual(point["prod_merc_long"], 500)
+        self.assertEqual(point["prod_merc_short"], 200)
+        self.assertEqual(point["prod_merc_net"], 300)
+        self.assertEqual(point["m_money_long"], 700)
+        self.assertEqual(point["m_money_short"], 300)
+        self.assertEqual(point["m_money_net"], 400)
+        self.assertNotIn("commercial_net", point)
+        self.assertNotIn("non_commercial_net", point)
+
     def test_search_query_builder_mapping_and_wildcard(self):
         self.assertEqual(self.wrapper._build_search_query("all"), "")
         self.assertEqual(self.wrapper._build_search_query("gold"),

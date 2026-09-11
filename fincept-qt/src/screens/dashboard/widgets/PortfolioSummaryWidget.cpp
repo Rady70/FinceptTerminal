@@ -366,6 +366,7 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
     double total_cost = 0;
     double day_pnl = 0;
     int change_readings = 0;
+    int priced_count = 0;
 
     // Clear list
     while (list_layout_->count() > 0) {
@@ -382,6 +383,8 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
         // documented fallback PortfolioService uses) and must not be presented
         // as a live $0.00 market value or a fabricated loss.
         const bool priced = q && q->has_price;
+        if (priced)
+            ++priced_count;
         const double price = priced ? q->price : h.avg_cost;
         const double value = price * h.shares;
         const double cost = h.avg_cost * h.shares;
@@ -433,19 +436,38 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
     }
     list_layout_->addStretch();
 
-    total_value_lbl_->setText(sym + QString::number(total_value, 'f', 0));
+    // Coverage: the headline totals include unpriced holdings at average cost,
+    // and the day total sums only holdings with a change reading. Both are
+    // labelled partial when the required inputs are incomplete instead of
+    // being presented as fully observed values.
+    const bool value_partial = priced_count < holdings.size();
+    const bool day_partial = change_readings > 0 && change_readings < holdings.size();
+
+    total_value_lbl_->setText(sym + QString::number(total_value, 'f', 0) +
+                              (value_partial ? tr(" (partial)") : QString()));
+    total_value_lbl_->setToolTip(
+        value_partial ? tr("Holdings without a current quote are valued at average cost and are included in this "
+                           "total.")
+                      : QString());
     num_holdings_lbl_->setText(QString::number(holdings.size()));
 
     const double total_pnl = total_value - total_cost;
-    const QString day_str = change_readings == 0 ? QStringLiteral("--")
-                            : day_pnl > 0        ? QStringLiteral("+") + sym + QString::number(day_pnl, 'f', 0)
-                            : day_pnl < 0        ? QStringLiteral("-") + sym + QString::number(-day_pnl, 'f', 0)
-                                                 : sym + QStringLiteral("0");
-    const QString tot_str = total_pnl > 0   ? QStringLiteral("+") + sym + QString::number(total_pnl, 'f', 0)
-                            : total_pnl < 0 ? QStringLiteral("-") + sym + QString::number(-total_pnl, 'f', 0)
-                                            : sym + QStringLiteral("0");
+    const QString day_str = change_readings == 0
+                                ? QStringLiteral("--")
+                                : (day_pnl > 0   ? QStringLiteral("+") + sym + QString::number(day_pnl, 'f', 0)
+                                   : day_pnl < 0 ? QStringLiteral("-") + sym + QString::number(-day_pnl, 'f', 0)
+                                                 : sym + QStringLiteral("0")) +
+                                      (day_partial ? tr(" (partial)") : QString());
+    const QString tot_str = (total_pnl > 0   ? QStringLiteral("+") + sym + QString::number(total_pnl, 'f', 0)
+                             : total_pnl < 0 ? QStringLiteral("-") + sym + QString::number(-total_pnl, 'f', 0)
+                                             : sym + QStringLiteral("0")) +
+                            (value_partial ? tr(" (partial)") : QString());
 
     day_pnl_lbl_->setText(day_str);
+    day_pnl_lbl_->setToolTip(
+        day_partial
+            ? tr("Only %1 of %2 holdings carried a day-change reading.").arg(change_readings).arg(holdings.size())
+            : QString());
     day_pnl_lbl_->setStyleSheet(QString("color: %1; font-size: 13px; font-weight: bold; background: transparent;")
                                     .arg(change_readings == 0 ? ui::colors::TEXT_DIM()
                                          : day_pnl > 0        ? ui::colors::POSITIVE()

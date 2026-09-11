@@ -833,11 +833,15 @@ class CFTCDataWrapper:
                                 period: int = 52) -> Dict[str, Any]:
         """Get historical COT trend data for analysis.
 
-        Each point carries the family's actual fields. A field the report did
-        not carry stays null in the point (and the derived net stays null when
-        either leg is missing) instead of being zero-filled, so a gap is
-        distinguishable from a genuine zero position. The TFF family has no
-        commercial/non-commercial split and returns a typed error."""
+        Each point carries the family's actual fields under that family's own
+        participant vocabulary: legacy emits commercial / non-commercial,
+        disaggregated emits producer-merchant / managed-money (the faithful
+        equivalents), so a trend row is never labelled with another report
+        family's class names. A field the report did not carry stays null in
+        the point (and the derived net stays null when either leg is missing)
+        instead of being zero-filled, so a gap is distinguishable from a
+        genuine zero position. The TFF family has no commercial/non-commercial
+        split and returns a typed error."""
         try:
             family = self._report_family(report_type)
             field_map = self._POSITION_FIELDS.get(family)
@@ -864,21 +868,25 @@ class CFTCDataWrapper:
             if not cot_data:
                 return {"error": CFTCError("cot_historical_trend", f"No historical COT data: {identifier}").to_dict()}
 
-            # Process trend data
+            # Process trend data. The emitted participant keys follow the
+            # family's own vocabulary; the internal field names do not change.
+            group_a, group_b = ("commercial", "non_commercial") if family == "legacy" else ("prod_merc", "m_money")
             trend_data = []
             for record in cot_data:
                 values = {key: self._pick(record, names) for key, names in field_map.items()}
+                a_long = values["commercial_long"]
+                a_short = values["commercial_short"]
+                b_long = values["non_commercial_long"]
+                b_short = values["non_commercial_short"]
                 trend_point = {
                     "date": record.get("report_date_as_yyyy_mm_dd"),
                     "open_interest": self._to_int(record.get("open_interest_all")),
-                    "commercial_long": values["commercial_long"],
-                    "commercial_short": values["commercial_short"],
-                    "commercial_net": (values["commercial_long"] - values["commercial_short"])
-                    if values["commercial_long"] is not None and values["commercial_short"] is not None else None,
-                    "non_commercial_long": values["non_commercial_long"],
-                    "non_commercial_short": values["non_commercial_short"],
-                    "non_commercial_net": (values["non_commercial_long"] - values["non_commercial_short"])
-                    if values["non_commercial_long"] is not None and values["non_commercial_short"] is not None else None,
+                    f"{group_a}_long": a_long,
+                    f"{group_a}_short": a_short,
+                    f"{group_a}_net": (a_long - a_short) if a_long is not None and a_short is not None else None,
+                    f"{group_b}_long": b_long,
+                    f"{group_b}_short": b_short,
+                    f"{group_b}_net": (b_long - b_short) if b_long is not None and b_short is not None else None,
                 }
                 trend_data.append(trend_point)
 

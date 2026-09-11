@@ -222,22 +222,34 @@ void ReportsView::update_summary() {
 
     auto fmt = [](double v, int dp = 2) { return QString::number(v, 'f', dp); };
 
+    // Unpriced holdings are valued at average cost; mark the totals partial so
+    // a report card is not read as fully observed market value / P&L.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
+
     add_card(0, 0, tr("PORTFOLIO"), summary_.portfolio.name.toUpper(), ui::colors::AMBER);
-    add_card(0, 1, tr("TOTAL VALUE"), QString("%1 %2").arg(currency_, fmt(summary_.total_market_value)),
+    add_card(0, 1, tr("TOTAL VALUE"), QString("%1 %2%3").arg(currency_, fmt(summary_.total_market_value), partial_note),
              ui::colors::WARNING);
     add_card(0, 2, tr("COST BASIS"), QString("%1 %2").arg(currency_, fmt(summary_.total_cost_basis)), ui::colors::CYAN);
     add_card(0, 3, tr("UNREALIZED P&L"),
-             QString("%1%2").arg(summary_.total_unrealized_pnl >= 0 ? "+" : "").arg(fmt(summary_.total_unrealized_pnl)),
-             summary_.total_unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE);
+             QString("%1%2%3")
+                 .arg(summary_.total_unrealized_pnl > 0 ? "+" : "")
+                 .arg(fmt(summary_.total_unrealized_pnl))
+                 .arg(partial_note),
+             summary_.total_unrealized_pnl > 0   ? ui::colors::POSITIVE
+             : summary_.total_unrealized_pnl < 0 ? ui::colors::NEGATIVE
+                                                 : ui::colors::TEXT_PRIMARY);
 
     add_card(1, 0, tr("POSITIONS"), QString::number(summary_.total_positions), ui::colors::TEXT_PRIMARY);
     add_card(1, 1, tr("GAINERS"), QString::number(summary_.gainers), ui::colors::POSITIVE);
     add_card(1, 2, tr("LOSERS"), QString::number(summary_.losers), ui::colors::NEGATIVE);
     add_card(1, 3, tr("RETURN"),
              QString("%1%2%")
-                 .arg(summary_.total_unrealized_pnl_percent >= 0 ? "+" : "")
+                 .arg(summary_.total_unrealized_pnl_percent > 0 ? "+" : "")
                  .arg(fmt(summary_.total_unrealized_pnl_percent)),
-             summary_.total_unrealized_pnl_percent >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE);
+             summary_.total_unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
+             : summary_.total_unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
+                                                         : ui::colors::TEXT_PRIMARY);
 
     layout->addLayout(grid);
 

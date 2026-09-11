@@ -463,16 +463,24 @@ void AnalyticsSectorsView::update_overview() {
 void AnalyticsSectorsView::update_kpi_strip(const QVector<SectorInfo>& sectors) {
     kpi_sectors_->setText(QString::number(sectors.size()));
     kpi_positions_->setText(QString::number(summary_.total_positions));
-    kpi_market_value_->setText(format_money(summary_.total_market_value));
-    const QString sign = summary_.total_unrealized_pnl >= 0 ? "+" : "";
-    kpi_pnl_->setText(QString("%1%2  (%3)")
+    // Unpriced holdings are valued at average cost by the service; mark the
+    // market-value KPI partial so it is not read as fully observed.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    kpi_market_value_->setText(format_money(summary_.total_market_value) +
+                               (price_partial ? tr(" (partial)") : QString()));
+    const QString sign = summary_.total_unrealized_pnl > 0 ? "+" : "";
+    // The P&L KPI is built on the same priced coverage as the market value, so
+    // it carries the same partial qualifier when holdings are unpriced.
+    kpi_pnl_->setText(QString("%1%2  (%3)%4")
                           .arg(sign)
                           .arg(QLocale::system().toString(summary_.total_unrealized_pnl, 'f', 2))
-                          .arg(format_pct(summary_.total_unrealized_pnl_percent, true)));
-    kpi_pnl_->setStyleSheet(
-        QString("color:%1; font-size:%2px; font-weight:700;")
-            .arg(summary_.total_unrealized_pnl >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE())
-            .arg(ui::fonts::font_px(2)));
+                          .arg(format_pct(summary_.total_unrealized_pnl_percent, true))
+                          .arg(price_partial ? tr(" (partial)") : QString()));
+    kpi_pnl_->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700;")
+                                .arg(summary_.total_unrealized_pnl > 0   ? ui::colors::POSITIVE()
+                                     : summary_.total_unrealized_pnl < 0 ? ui::colors::NEGATIVE()
+                                                                         : ui::colors::TEXT_PRIMARY())
+                                .arg(ui::fonts::font_px(2)));
 }
 
 void AnalyticsSectorsView::update_donut(const QVector<SectorInfo>& sectors) {

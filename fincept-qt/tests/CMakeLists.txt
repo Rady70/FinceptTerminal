@@ -164,6 +164,12 @@ fincept_add_test(tst_market_parse
 fincept_add_test(tst_economics_envelope
     tst_economics_envelope.cpp)
 
+# MarketLab: the CFTC net-position sign rule — a positive net gets "+", an
+# exact zero is neutral and must not render as "+0". Header-only over Qt Core;
+# no app sources.
+fincept_add_test(tst_cftc_net_format
+    tst_cftc_net_format.cpp)
+
 # MarketLab: redirect containment in GuardedNetworkAccessManager.
 #
 # THE ONE EXCEPTION to "a unit test that needs Network is testing the wrong

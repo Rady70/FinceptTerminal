@@ -75,18 +75,21 @@ WidgetRegistry::WidgetRegistry() {
 
     register_widget({"sector_heatmap", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Sector Heatmap"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "S&P 500 sector performance heatmap"), 6, 5,
-                     3, 4, [](const QJsonObject&) { return new widgets::SectorHeatmapWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Daily moves of a fixed sector-ETF basket (11 SPDR sectors + SOXX)"),
+                     6, 5, 3, 4, [](const QJsonObject&) { return new widgets::SectorHeatmapWidget; }});
 
-    register_widget({"top_movers", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top Movers"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Biggest gainers and losers today"), 6, 5, 3,
-                     4, [](const QJsonObject&) { return new widgets::TopMoversWidget; }});
+    register_widget(
+        {"top_movers", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top Movers"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top daily gainers/losers in a fixed 12-symbol basket"),
+         6, 5, 3, 4, [](const QJsonObject&) { return new widgets::TopMoversWidget; }});
 
     register_widget({"sentiment", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Sentiment"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Fear & greed, bull/bear indicators"), 4, 4,
-                     2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Bull/bear score over a fixed 25-symbol basket; not an external index"),
+                     4, 4, 2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
 
     // ── Research ──────────────────────────────────────────────────────────────
     register_widget({"news", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "News Feed"),

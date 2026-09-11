@@ -409,7 +409,8 @@ void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
     QCOMPARE(fincept::screens::quote_field_text(partial.has_low, partial.low, 2, QStringLiteral("$")), na);
     QCOMPARE(fincept::screens::quote_volume_text(partial), na);
 
-    // A genuine zero is a reading and renders as one.
+    // A genuine zero is a reading and renders as one — but with no "+" sign
+    // and no up/down arrow, because zero is neither positive nor negative.
     const QuoteData zeroed = parse_quote_object(obj_from(R"({
         "symbol": "HALT", "price": 0, "change": 0, "change_percent": 0,
         "high": 0, "low": 0, "volume": 0
@@ -417,11 +418,31 @@ void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
                                                  QStringLiteral("yfinance"), 1757340000);
     QCOMPARE(fincept::screens::quote_field_text(zeroed.has_price, zeroed.price, 2, QStringLiteral("$")),
              QStringLiteral("$0.00"));
+    QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change, zeroed.change, 2), QStringLiteral("0.00"));
     QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
-             QStringLiteral("+0.00%"));
+             QStringLiteral("0.00%"));
+    QCOMPARE(fincept::screens::quote_arrow_text(zeroed.has_change, zeroed.change, 2),
+             QString::fromUtf8("\xe2\x80\xa2 0.00"));
+    QCOMPARE(fincept::screens::quote_arrow_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
+             QString::fromUtf8("\xe2\x80\xa2 0.00%"));
     // A genuine zero volume is a reading; only a missing volume is "--".
     QCOMPARE(fincept::screens::quote_volume_text(zeroed), QStringLiteral("0"));
     QCOMPARE(fincept::screens::quote_volume_text(partial), na);
+
+    // The sign is added only for a strictly signed value.
+    QCOMPARE(fincept::screens::quote_signed_text(true, 1.5, 2, QStringLiteral("%")), QStringLiteral("+1.50%"));
+    QCOMPARE(fincept::screens::quote_signed_text(true, -1.5, 2, QStringLiteral("%")), QStringLiteral("-1.50%"));
+    QCOMPARE(fincept::screens::quote_arrow_text(true, 1.5, 2), QString::fromUtf8("\xe2\x96\xb2 1.50"));
+    QCOMPARE(fincept::screens::quote_arrow_text(true, -1.5, 2), QString::fromUtf8("\xe2\x96\xbc 1.50"));
+
+    // A negative volume is malformed: unavailable, never clamped to a real 0.
+    const QuoteData negative_volume = parse_quote_object(obj_from(R"({
+        "symbol": "BADV", "price": 10, "change": 0, "change_percent": 0,
+        "high": 0, "low": 0, "volume": -5
+    })"),
+                                                         QStringLiteral("yfinance"), 1757340000);
+    QVERIFY2(!negative_volume.has_volume, "a negative volume is unavailable, not a reading");
+    QCOMPARE(fincept::screens::quote_volume_text(negative_volume), na);
 
     // Provenance is appended to a cell's existing tooltip, never replaces it.
     QCOMPARE(fincept::screens::merge_quote_provenance(QStringLiteral("Apple Inc.  (AAPL)"),

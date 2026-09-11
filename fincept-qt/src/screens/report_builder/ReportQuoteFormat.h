@@ -31,7 +31,7 @@ inline QMap<QString, QString> quote_report_config(const fincept::services::Quote
     c[QStringLiteral("name")] = q.name;
     c[QStringLiteral("high")] = q.has_high ? QString::number(q.high, 'f', 2) : QString();
     c[QStringLiteral("low")] = q.has_low ? QString::number(q.low, 'f', 2) : QString();
-    c[QStringLiteral("volume")] = q.has_volume ? QString::number(q.volume, 'f', 0) : QString();
+    c[QStringLiteral("volume")] = q.has_volume && q.volume >= 0 ? QString::number(q.volume, 'f', 0) : QString();
     c[QStringLiteral("status")] = q.status;
     return c;
 }

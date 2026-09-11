@@ -39,31 +39,38 @@ inline QString quote_field_text(bool has, double value, int precision, const QSt
 }
 
 /// A signed change/percent cell ("+1.23" / "-0.45%"), or the placeholder.
+/// Zero is neither positive nor negative: the sign is added only when the
+/// value is strictly greater than zero, so an exact zero renders "0.00".
 inline QString quote_signed_text(bool has, double value, int precision, const QString& suffix = {}) {
     if (!has)
         return quote_na();
     return QStringLiteral("%1%2%3")
-        .arg(value >= 0 ? QStringLiteral("+") : QString())
+        .arg(value > 0 ? QStringLiteral("+") : QString())
         .arg(value, 0, 'f', precision)
         .arg(suffix);
 }
 
 /// The Markets panels' arrow-prefixed change cell ("▲ 1.23" / "▼ 3.75"), or
-/// the placeholder.
+/// the placeholder. Zero gets a flat marker, not an up or down arrow: an
+/// unchanged reading must not be presented as a move in either direction.
 inline QString quote_arrow_text(bool has, double value, int precision, const QString& suffix = {}) {
     if (!has)
         return quote_na();
-    const QString arrow = value >= 0 ? QString::fromUtf8("\xe2\x96\xb2") : QString::fromUtf8("\xe2\x96\xbc");
+    const QString arrow = value > 0   ? QString::fromUtf8("\xe2\x96\xb2")
+                          : value < 0 ? QString::fromUtf8("\xe2\x96\xbc")
+                                      : QString::fromUtf8("\xe2\x80\xa2");
     return QStringLiteral("%1 %2%3").arg(arrow).arg(std::abs(value), 0, 'f', precision).arg(suffix);
 }
 
 /// A volume cell. Missing stays the placeholder; a genuine zero is a reading
 /// and renders as "0" (format_compact_volume's "--" for <= 0 would make an
-/// actual zero volume indistinguishable from an absent one).
+/// actual zero volume indistinguishable from an absent one). A negative
+/// volume is malformed — it cannot be a real reading, so it is treated as
+/// unavailable rather than attributed to the instrument as zero.
 inline QString quote_volume_text(const services::QuoteData& q) {
-    if (!q.has_volume)
+    if (!q.has_volume || q.volume < 0)
         return quote_na();
-    if (q.volume <= 0)
+    if (q.volume == 0)
         return QStringLiteral("0");
     return fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume));
 }

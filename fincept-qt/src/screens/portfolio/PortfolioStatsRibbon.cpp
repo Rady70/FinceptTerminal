@@ -189,34 +189,73 @@ void PortfolioStatsRibbon::set_summary(const portfolio::PortfolioSummary& s) {
         // Add thousands separator for readability on large NAVs.
         return QLocale().toString(v, 'f', dp);
     };
-    auto color_tok = [](double v) -> const char* { return v >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE; };
+    auto color_tok = [](double v) -> const char* {
+        // Zero is neutral, not a gain: only a strictly signed value is green/red.
+        return v > 0 ? ui::colors::POSITIVE : v < 0 ? ui::colors::NEGATIVE : ui::colors::TEXT_PRIMARY;
+    };
+
+    // Coverage flags travel with the summary. When a holding has no live price
+    // (or no day-change reading) the matching aggregate is a partial sum of the
+    // observed holdings, and the label says so rather than presenting it as a
+    // complete market value or day P&L.
+    const bool value_partial = s.priced_positions < s.total_positions;
+    const bool pnl_partial = s.priced_positions < s.total_positions;
+    const bool day_observed = s.day_change_positions > 0;
+    const bool day_partial = day_observed && s.day_change_positions < s.total_positions;
 
     // ── Cell 1: PORTFOLIO VALUE ──────────────────────────────────────────────
     // Value: amber (brand value, neutral semantics). Sub: position count.
     value_cell_.value->setText(QString("%1  %2").arg(fmt(s.total_market_value), s.portfolio.currency));
     apply_hero_value_color(value_cell_, ui::colors::AMBER(), 24);
-    value_cell_.sub->setText(tr("▲ %1 positions").arg(s.total_positions));
+    if (value_partial) {
+        value_cell_.sub->setText(tr("▲ %1 positions · %2/%3 priced (partial)")
+                                     .arg(s.total_positions)
+                                     .arg(s.priced_positions)
+                                     .arg(s.total_positions));
+        value_cell_.sub->setToolTip(
+            tr("Holdings without a current quote are valued at average cost and are included in this total."));
+    } else {
+        value_cell_.sub->setText(tr("▲ %1 positions").arg(s.total_positions));
+        value_cell_.sub->setToolTip(QString());
+    }
 
     // ── Cell 2: UNREALIZED P&L ───────────────────────────────────────────────
     pnl_cell_.value->setText(
-        QString("%1%2").arg(s.total_unrealized_pnl >= 0 ? "+" : "").arg(fmt(s.total_unrealized_pnl)));
+        QString("%1%2").arg(s.total_unrealized_pnl > 0 ? "+" : "").arg(fmt(s.total_unrealized_pnl)));
     apply_hero_value_color(pnl_cell_, color_tok(s.total_unrealized_pnl), 20);
-    pnl_cell_.sub->setText(QString("%1%2%   ▲ %3   ▼ %4")
-                               .arg(s.total_unrealized_pnl_percent >= 0 ? "+" : "")
-                               .arg(QString::number(s.total_unrealized_pnl_percent, 'f', 2))
-                               .arg(s.gainers)
-                               .arg(s.losers));
+    pnl_cell_.sub->setText(
+        QString("%1%2%   ▲ %3   ▼ %4%5")
+            .arg(s.total_unrealized_pnl_percent > 0 ? "+" : "")
+            .arg(QString::number(s.total_unrealized_pnl_percent, 'f', 2))
+            .arg(s.gainers)
+            .arg(s.losers)
+            .arg(pnl_partial ? tr("   (partial — %1/%2 priced)").arg(s.priced_positions).arg(s.total_positions)
+                             : QString()));
     pnl_cell_.sub->setStyleSheet(QString("color:%1; font-size:11px; font-weight:600; background:transparent;")
                                      .arg(color_tok(s.total_unrealized_pnl)));
 
     // ── Cell 3: TODAY ────────────────────────────────────────────────────────
-    day_cell_.value->setText(QString("%1%2").arg(s.total_day_change >= 0 ? "+" : "").arg(fmt(s.total_day_change)));
-    apply_hero_value_color(day_cell_, color_tok(s.total_day_change), 20);
-    day_cell_.sub->setText(QString("%1%2%")
-                               .arg(s.total_day_change_percent >= 0 ? "+" : "")
-                               .arg(QString::number(s.total_day_change_percent, 'f', 2)));
-    day_cell_.sub->setStyleSheet(QString("color:%1; font-size:11px; font-weight:600; background:transparent;")
-                                     .arg(color_tok(s.total_day_change)));
+    if (!day_observed) {
+        // No holding carried a day-change observation: the day total is
+        // unavailable, not a genuine zero.
+        day_cell_.value->setText(QStringLiteral("--"));
+        apply_hero_value_color(day_cell_, ui::colors::TEXT_DIM(), 20);
+        day_cell_.sub->setText(tr("No day-change readings · %1 positions").arg(s.total_positions));
+        day_cell_.sub->setStyleSheet(
+            QString("color:%1; font-size:11px; font-weight:600; background:transparent;").arg(ui::colors::TEXT_DIM()));
+    } else {
+        day_cell_.value->setText(QString("%1%2").arg(s.total_day_change > 0 ? "+" : "").arg(fmt(s.total_day_change)));
+        apply_hero_value_color(day_cell_, color_tok(s.total_day_change), 20);
+        day_cell_.sub->setText(
+            QString("%1%2%%3")
+                .arg(s.total_day_change_percent > 0 ? "+" : "")
+                .arg(QString::number(s.total_day_change_percent, 'f', 2))
+                .arg(day_partial
+                         ? tr("   (partial — %1/%2 with day change)").arg(s.day_change_positions).arg(s.total_positions)
+                         : QString()));
+        day_cell_.sub->setStyleSheet(QString("color:%1; font-size:11px; font-weight:600; background:transparent;")
+                                         .arg(color_tok(s.total_day_change)));
+    }
 
     // CONC chip uses summary as a fallback while ComputedMetrics is loading;
     // ComputedMetrics overrides it below if/when it arrives.
@@ -299,9 +338,49 @@ void PortfolioStatsRibbon::retranslateUi() {
     apply_chip_tooltips();
 
     if (last_summary_.has_value()) {
-        // Re-render the "▲ %1 positions" sub-line under PORTFOLIO VALUE.
-        if (value_cell_.sub)
-            value_cell_.sub->setText(tr("▲ %1 positions").arg(last_summary_->total_positions));
+        // Re-render the tr()-bearing value and sub lines so a language change
+        // is reflected immediately; colours and the metric chips are left as
+        // they were (set_metrics owns those).
+        const auto& s = *last_summary_;
+        auto fmt = [](double v, int dp = 2) { return QLocale().toString(v, 'f', dp); };
+        const bool value_partial = s.priced_positions < s.total_positions;
+        const bool day_observed = s.day_change_positions > 0;
+        const bool day_partial = day_observed && s.day_change_positions < s.total_positions;
+
+        if (value_cell_.sub) {
+            value_cell_.sub->setText(value_partial ? tr("▲ %1 positions · %2/%3 priced (partial)")
+                                                         .arg(s.total_positions)
+                                                         .arg(s.priced_positions)
+                                                         .arg(s.total_positions)
+                                                   : tr("▲ %1 positions").arg(s.total_positions));
+        }
+        if (pnl_cell_.sub) {
+            pnl_cell_.sub->setText(
+                QString("%1%2%   ▲ %3   ▼ %4%5")
+                    .arg(s.total_unrealized_pnl_percent > 0 ? "+" : "")
+                    .arg(QString::number(s.total_unrealized_pnl_percent, 'f', 2))
+                    .arg(s.gainers)
+                    .arg(s.losers)
+                    .arg(value_partial
+                             ? tr("   (partial — %1/%2 priced)").arg(s.priced_positions).arg(s.total_positions)
+                             : QString()));
+        }
+        if (day_cell_.value && day_cell_.sub) {
+            if (!day_observed) {
+                day_cell_.value->setText(QStringLiteral("--"));
+                day_cell_.sub->setText(tr("No day-change readings · %1 positions").arg(s.total_positions));
+            } else {
+                day_cell_.value->setText(
+                    QString("%1%2").arg(s.total_day_change > 0 ? "+" : "").arg(fmt(s.total_day_change)));
+                day_cell_.sub->setText(QString("%1%2%%3")
+                                           .arg(s.total_day_change_percent > 0 ? "+" : "")
+                                           .arg(QString::number(s.total_day_change_percent, 'f', 2))
+                                           .arg(day_partial ? tr("   (partial — %1/%2 with day change)")
+                                                                  .arg(s.day_change_positions)
+                                                                  .arg(s.total_positions)
+                                                            : QString()));
+            }
+        }
     }
 }
 

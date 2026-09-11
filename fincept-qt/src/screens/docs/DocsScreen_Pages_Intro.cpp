@@ -203,23 +203,24 @@ QWidget* DocsScreen::page_dashboard() {
     sep->setStyleSheet(QString("color: %1;").arg(ui::colors::BORDER_DIM()));
     vl->addWidget(sep);
 
-    vl->addWidget(make_section_panel(
-        "■", tr("OVERVIEW"),
-        tr("The Dashboard is your primary workspace. It features a draggable widget grid "
-           "where you can arrange market widgets, a scrolling ticker bar showing live prices, "
-           "a market pulse panel with sector performance, and a status bar showing connection state."),
-        ui::colors::AMBER));
+    vl->addWidget(
+        make_section_panel("■", tr("OVERVIEW"),
+                           tr("The Dashboard is your primary workspace. It features a draggable widget grid "
+                              "where you can arrange market widgets, a scrolling ticker bar showing live prices, "
+                              "a market pulse panel (proxy-basket breadth, movers, snapshot), and a status bar "
+                              "showing connection state."),
+                           ui::colors::AMBER));
 
     vl->addWidget(make_section_panel("■", tr("AVAILABLE WIDGETS"),
                                      tr("■  Stock Quote — Real-time price, change, volume for any symbol\n"
                                         "■  Watchlist — Your tracked symbols with live updates\n"
-                                        "■  Top Movers — Biggest gainers and losers of the session\n"
-                                        "■  Market Sentiment — Bull/bear indicators and fear/greed index\n"
+                                        "■  Top Movers — Gainers/losers within a fixed 12-symbol basket\n"
+                                        "■  Market Sentiment — Bull/bear score over a fixed 25-symbol basket\n"
                                         "■  News — Latest headlines with sentiment tagging\n"
                                         "■  Economic Calendar — Upcoming economic events and releases\n"
-                                        "■  Sector Heatmap — Visual sector performance map\n"
-                                        "■  Performance — Portfolio return tracking\n"
-                                        "■  Risk Metrics — VaR, Sharpe, beta, drawdown indicators\n"
+                                        "■  Sector Heatmap — Daily-move map of a fixed sector-ETF basket\n"
+                                        "■  Performance — Benchmark daily moves and spreads\n"
+                                        "■  Risk Metrics — VIX regime, high-beta moves, change spreads\n"
                                         "■  Screener — Quick stock screener with filters\n"
                                         "■  Quote Table — Multi-symbol comparison table\n"
                                         "■  Quick Trade — One-click trade entry\n"

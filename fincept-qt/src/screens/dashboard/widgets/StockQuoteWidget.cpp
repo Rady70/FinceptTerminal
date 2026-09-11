@@ -219,18 +219,18 @@ void StockQuoteWidget::hub_unsubscribe_all() {
 }
 
 void StockQuoteWidget::populate(const services::QuoteData& q) {
-    const bool has_move = q.has_change_pct || q.has_change;
-    const double move = q.has_change_pct ? q.change_pct : q.change;
-    // Positive, negative, neutral and unavailable are distinct: missing is
-    // dim with no arrow, a genuine zero is neutral with a flat marker.
-    const QString color = !has_move  ? ui::colors::TEXT_DIM()
-                          : move > 0 ? ui::colors::POSITIVE()
-                          : move < 0 ? ui::colors::NEGATIVE()
-                                     : ui::colors::TEXT_PRIMARY();
-    const QString arrow = !has_move  ? QStringLiteral("—")
-                          : move > 0 ? QString(QChar(0x25B2))
-                          : move < 0 ? QString(QChar(0x25BC))
-                                     : QString(QChar(0x2022));
+    // The change line leads with the absolute change, so the arrow and colour
+    // follow that field's own reading. A missing change is dim with no
+    // direction; the percent shown in parentheses never supplies a direction
+    // the leading field did not.
+    const QString color = !q.has_change  ? ui::colors::TEXT_DIM()
+                          : q.change > 0 ? ui::colors::POSITIVE()
+                          : q.change < 0 ? ui::colors::NEGATIVE()
+                                         : ui::colors::TEXT_PRIMARY();
+    const QString arrow = !q.has_change  ? QStringLiteral("—")
+                          : q.change > 0 ? QString(QChar(0x25B2))
+                          : q.change < 0 ? QString(QChar(0x25BC))
+                                         : QString(QChar(0x2022));
 
     price_label_->setText(fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")));
     arrow_label_->setText(arrow);
@@ -242,8 +242,10 @@ void StockQuoteWidget::populate(const services::QuoteData& q) {
     change_label_->setStyleSheet(
         QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
 
-    price_label_->setStyleSheet(
-        QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;").arg(color));
+    // A missing price placeholder must stay visibly unavailable; the change
+    // direction only tints a price that actually arrived.
+    price_label_->setStyleSheet(QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;")
+                                    .arg(q.has_price ? color : QString(ui::colors::TEXT_DIM())));
 
     // The batch quote snapshot carries last/change/high/low/volume but no
     // session open. Showing `high` here (as this did previously) prints a
@@ -257,10 +259,11 @@ void StockQuoteWidget::populate(const services::QuoteData& q) {
                            ? fincept::screens::quote_field_text(true, q.price - q.change, 2, QStringLiteral("$"))
                            : QStringLiteral("--"));
 
-    // Format volume; missing stays "--" and a genuine zero is "0".
-    if (!q.has_volume)
+    // Format volume; missing stays "--" and a genuine zero is "0". A negative
+    // volume is malformed and renders unavailable, never as a real zero.
+    if (!q.has_volume || q.volume < 0)
         volume_val_->setText(QStringLiteral("--"));
-    else if (q.volume <= 0)
+    else if (q.volume == 0)
         volume_val_->setText(QStringLiteral("0"));
     else if (q.volume >= 1e9)
         volume_val_->setText(QString("%1B").arg(q.volume / 1e9, 0, 'f', 1));

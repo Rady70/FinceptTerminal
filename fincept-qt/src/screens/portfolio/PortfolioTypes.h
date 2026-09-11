@@ -88,6 +88,12 @@ struct PortfolioSummary {
     int total_positions = 0;
     int gainers = 0;
     int losers = 0;
+    // Observation coverage for the aggregates above: how many holdings had a
+    // live price and how many had a real day-change reading. When these are
+    // below total_positions the market-value / P&L / day totals are partial
+    // (unpriced holdings are shown at average cost) and must be labelled so.
+    int priced_positions = 0;
+    int day_change_positions = 0;
     QString last_updated;
 };
 

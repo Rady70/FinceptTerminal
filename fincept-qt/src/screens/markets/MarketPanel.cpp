@@ -486,12 +486,18 @@ void MarketPanel::populate(const QVector<services::QuoteData>& quotes) {
 
     for (int row = 0; row < count; ++row) {
         const auto& q = quotes[row];
-        // A missing change is neither up nor down — keep the cell neutral
-        // rather than colouring a fabricated zero. Prefer the percent reading
-        // when it arrived, otherwise the absolute change.
-        const bool has_move = q.has_change_pct || q.has_change;
-        const bool pos = (q.has_change_pct ? q.change_pct : q.change) >= 0;
-        const QString cc = !has_move ? ui::colors::TEXT_DIM() : (pos ? ui::colors::POSITIVE() : ui::colors::NEGATIVE());
+        // Each change column derives its colour from its own reading: a
+        // missing field is dim (never coloured by the other field), a genuine
+        // zero is neutral, and only a strictly signed value is green/red.
+        auto move_color = [](bool has, double value) -> QString {
+            if (!has)
+                return ui::colors::TEXT_DIM();
+            if (value > 0)
+                return ui::colors::POSITIVE();
+            if (value < 0)
+                return ui::colors::NEGATIVE();
+            return ui::colors::TEXT_PRIMARY();
+        };
         int prec = q.price > 1.0 ? 2 : 4;
 
         auto mk = [](const QString& s, const QString& c,
@@ -532,9 +538,12 @@ void MarketPanel::populate(const QVector<services::QuoteData>& quotes) {
             else if (col == "LAST")
                 table_->setItem(row, ci, mk(quote_field_text(q.has_price, q.price, prec, cur), ui::colors::AMBER()));
             else if (col == "CHG")
-                table_->setItem(row, ci, mk(quote_arrow_text(q.has_change, q.change, 2), cc));
+                table_->setItem(row, ci,
+                                mk(quote_arrow_text(q.has_change, q.change, 2), move_color(q.has_change, q.change)));
             else if (col == "CHG%")
-                table_->setItem(row, ci, mk(quote_arrow_text(q.has_change_pct, q.change_pct, 2, "%"), cc));
+                table_->setItem(row, ci,
+                                mk(quote_arrow_text(q.has_change_pct, q.change_pct, 2, "%"),
+                                   move_color(q.has_change_pct, q.change_pct)));
             else if (col == "HIGH")
                 table_->setItem(row, ci,
                                 mk(quote_field_text(q.has_high, q.high, 2, cur), ui::colors::TEXT_SECONDARY()));

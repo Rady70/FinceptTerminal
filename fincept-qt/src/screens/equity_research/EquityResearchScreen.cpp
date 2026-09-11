@@ -539,12 +539,22 @@ void EquityResearchScreen::update_quote_bar(const services::equity::QuoteData& q
     price_label_->setText(q.has_price ? QString("%1%2").arg(cs).arg(q.price, 0, 'f', 2) : na);
 
     if (q.has_change || q.has_change_pct) {
-        bool up = q.has_change_pct ? q.change_pct >= 0 : q.change >= 0;
-        QString arrow = up ? "\xe2\x96\xb2" : "\xe2\x96\xbc"; // ▲ or ▼
-        QString chg_color = up ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
-        const QString abs_part = q.has_change ? QString("%1%2").arg(up ? "+" : "").arg(q.change, 0, 'f', 2) : na;
+        // The line shows the absolute change and the percent side by side.
+        // Each part is rendered only from its own field; the arrow/colour
+        // follow the absolute change when present, otherwise the percent, and
+        // an exact zero is neutral (no "+", flat marker).
+        const bool by_pct = !q.has_change && q.has_change_pct;
+        const double dir_value = by_pct ? q.change_pct : q.change;
+        const QString arrow = dir_value > 0   ? QString::fromUtf8("\xe2\x96\xb2")
+                              : dir_value < 0 ? QString::fromUtf8("\xe2\x96\xbc")
+                                              : QString::fromUtf8("\xe2\x80\xa2");
+        const QString chg_color = dir_value > 0   ? ui::colors::POSITIVE()
+                                  : dir_value < 0 ? ui::colors::NEGATIVE()
+                                                  : ui::colors::TEXT_PRIMARY();
+        const QString abs_part =
+            q.has_change ? QString("%1%2").arg(q.change > 0 ? "+" : "").arg(q.change, 0, 'f', 2) : na;
         const QString pct_part =
-            q.has_change_pct ? QString("%1%2%").arg(arrow).arg(qAbs(q.change_pct), 0, 'f', 2) : arrow + na;
+            q.has_change_pct ? QString("%1 %2%").arg(arrow).arg(qAbs(q.change_pct), 0, 'f', 2) : na;
         change_label_->setText(QString("%1  %2").arg(abs_part, pct_part));
         change_label_->setStyleSheet(QString("font-size:13px; font-weight:600; color:%1;").arg(chg_color));
     } else {
@@ -566,7 +576,7 @@ void EquityResearchScreen::update_quote_bar(const services::equity::QuoteData& q
         return QString::number(static_cast<qint64>(v));
     };
 
-    vol_label_->setText(tr("VOL: %1").arg(q.has_volume ? fmt_vol(q.volume) : na));
+    vol_label_->setText(tr("VOL: %1").arg(q.has_volume && q.volume >= 0 ? fmt_vol(q.volume) : na));
     hl_label_->setText(tr("H:%1  L:%2")
                            .arg(q.has_high ? QString("%1%2").arg(cs).arg(q.high, 0, 'f', 2) : na,
                                 q.has_low ? QString("%1%2").arg(cs).arg(q.low, 0, 'f', 2) : na));

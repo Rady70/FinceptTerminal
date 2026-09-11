@@ -384,7 +384,7 @@ QWidget* MarketPulsePanel::build_section_header(const QString& title, const QStr
     // Title is the English source key — keep it intact for retranslateUi().
     // Comparison must match the *source* string, not the translated one.
     SectionHeader* sh = nullptr;
-    if (title == "MARKET BREADTH")
+    if (title == "BASKET BREADTH")
         sh = &sh_breadth_;
     else if (title == "TOP GAINERS")
         sh = &sh_gainers_;
@@ -418,7 +418,10 @@ QWidget* MarketPulsePanel::build_fear_greed_section() {
     auto* hrl = new QHBoxLayout(header_row);
     hrl->setContentsMargins(0, 0, 0, 0);
 
-    fg_header_label_ = new QLabel(tr("FEAR & GREED INDEX"));
+    fg_header_label_ = new QLabel(tr("BASKET SENTIMENT (PROXY)"));
+    fg_header_label_->setToolTip(
+        tr("Computed from a fixed proxy basket of ~50 symbols; it is not the CNN Fear & Greed Index "
+           "and not full exchange breadth."));
     hrl->addWidget(fg_header_label_);
     hrl->addStretch();
 
@@ -462,7 +465,7 @@ QWidget* MarketPulsePanel::build_breadth_section() {
     vl->setContentsMargins(0, 0, 0, 0);
     vl->setSpacing(0);
 
-    vl->addWidget(build_section_header("MARKET BREADTH", QChar(0x2593), ui::colors::CYAN()));
+    vl->addWidget(build_section_header("BASKET BREADTH", QChar(0x2593), ui::colors::CYAN()));
 
     auto* bars = new QWidget(this);
     auto* bl = new QVBoxLayout(bars);
@@ -514,9 +517,9 @@ QWidget* MarketPulsePanel::build_breadth_section() {
         bl->addWidget(rw);
     };
 
-    make_row("NYSE", nyse_row_);
-    make_row("NASDAQ", nasdaq_row_);
-    make_row("S&P 500", sp500_row_);
+    make_row("NYSE (PROXY)", nyse_row_);
+    make_row("NASDAQ (PROXY)", nasdaq_row_);
+    make_row("S&P 500 (PROXY)", sp500_row_);
 
     vl->addWidget(bars);
     return w;
@@ -562,8 +565,13 @@ void MarketPulsePanel::fill_mover_row(const MoverRow& row, const QString& symbol
         return;
     row.container->setVisible(true);
     row.symbol->setText(symbol);
-    row.arrow->setText(change >= 0 ? QString(QChar(0x25B2)) : QString(QChar(0x25BC)));
-    row.change->setText(QString("%1%2%").arg(change >= 0 ? "+" : "").arg(change, 0, 'f', 2));
+    // Zero is neutral here too: a flat reading gets the flat marker and no
+    // "+" sign if such a row is ever filled (the current callers pass only
+    // strictly positive gainers and strictly negative losers).
+    row.arrow->setText(change > 0   ? QString(QChar(0x25B2))
+                       : change < 0 ? QString(QChar(0x25BC))
+                                    : QString(QChar(0x2022)));
+    row.change->setText(QString("%1%2%").arg(change > 0 ? "+" : "").arg(change, 0, 'f', 2));
     row.volume->setText(volume.isEmpty() ? QString() : tr("VOL: %1").arg(volume));
 }
 
@@ -805,10 +813,13 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     if (breadth_cache_.isEmpty())
         return;
 
-    // Classify basket into 3 groups mirroring real exchange composition.
-    int sp500_adv = 0, sp500_dec = 0;
-    int nasdaq_adv = 0, nasdaq_dec = 0;
-    int nyse_adv = 0, nyse_dec = 0;
+    // Classify the fixed proxy basket into its three membership groups. The
+    // observation counts are tracked independently of the advance/decline
+    // split: a symbol whose change reading arrived counts as observed even
+    // when its move is too small to be classified as an advance or decline.
+    int sp500_adv = 0, sp500_dec = 0, sp500_obs = 0;
+    int nasdaq_adv = 0, nasdaq_dec = 0, nasdaq_obs = 0;
+    int nyse_adv = 0, nyse_dec = 0, nyse_obs = 0;
     double vix = -1;
     int bullish = 0, bearish = 0, neutral_count = 0;
 
@@ -828,11 +839,17 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
             continue;
         }
         // Without a change reading this symbol cannot be counted as advancing,
-        // declining OR unchanged — it is simply not an observation.
+        // declining, unchanged or observed — it is simply not an observation.
         if (!q.has_change_pct)
             continue;
         bool in_sp = sp500_set.contains(q.symbol);
         bool in_nq = nasdaq_set.contains(q.symbol);
+        if (in_sp)
+            ++sp500_obs;
+        else if (in_nq)
+            ++nasdaq_obs;
+        else
+            ++nyse_obs;
         if (q.change_pct > 0.3) {
             if (in_sp)
                 ++sp500_adv;
@@ -854,32 +871,37 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
         }
     }
 
-    auto update_row = [](MarketPulsePanel::BreadthRow& row, int adv, int dec) {
+    auto update_row = [](MarketPulsePanel::BreadthRow& row, int adv, int dec, int observed) {
         if (!row.adv)
             return;
-        const int total = adv + dec;
-        if (total == 0) {
-            // No observation in this index: the counts are unavailable, not 0,
+        if (observed == 0) {
+            // No observation in this group: the counts are unavailable, not 0,
             // and the bar is neutral rather than fully red.
             row.adv->setText(QStringLiteral("--"));
             row.dec->setText(QStringLiteral("--"));
+            row.adv->setToolTip(MarketPulsePanel::tr("No change readings in this proxy group"));
             if (auto* layout = qobject_cast<QHBoxLayout*>(row.green->parentWidget()->layout())) {
                 layout->setStretch(0, 50);
                 layout->setStretch(1, 50);
             }
             return;
         }
+        // A fully observed flat group is a real 0/0 result, not a gap: the
+        // counts render as 0 and the bar stays neutral.
+        const int classified = adv + dec;
         row.adv->setText(QString::number(adv));
         row.dec->setText(QString::number(dec));
-        const int adv_pct = static_cast<int>((double(adv) / total) * 100);
+        row.adv->setToolTip(
+            MarketPulsePanel::tr("%1 proxy symbols in this group carried a change reading").arg(observed));
+        const int adv_pct = classified > 0 ? static_cast<int>((double(adv) / classified) * 100) : 50;
         if (auto* layout = qobject_cast<QHBoxLayout*>(row.green->parentWidget()->layout())) {
             layout->setStretch(0, adv_pct);
             layout->setStretch(1, 100 - adv_pct);
         }
     };
-    update_row(nyse_row_, nyse_adv, nyse_dec);
-    update_row(nasdaq_row_, nasdaq_adv, nasdaq_dec);
-    update_row(sp500_row_, sp500_adv, sp500_dec);
+    update_row(nyse_row_, nyse_adv, nyse_dec, nyse_obs);
+    update_row(nasdaq_row_, nasdaq_adv, nasdaq_dec, nasdaq_obs);
+    update_row(sp500_row_, sp500_adv, sp500_dec, sp500_obs);
 
     // ── Fear & Greed score ──
     const int total_stocks = bullish + bearish + neutral_count;
@@ -1134,14 +1156,14 @@ void MarketPulsePanel::retranslateUi() {
     if (header_title_)
         header_title_->setText(tr("MARKET PULSE"));
     if (fg_header_label_)
-        fg_header_label_->setText(tr("FEAR & GREED INDEX"));
+        fg_header_label_->setText(tr("BASKET SENTIMENT (PROXY)"));
 
     auto set_sh = [](SectionHeader& sh) {
         if (!sh.title)
             return;
         const QString& k = sh.source_key;
-        if (k == QLatin1String("MARKET BREADTH"))
-            sh.title->setText(tr("MARKET BREADTH"));
+        if (k == QLatin1String("BASKET BREADTH"))
+            sh.title->setText(tr("BASKET BREADTH"));
         else if (k == QLatin1String("TOP GAINERS"))
             sh.title->setText(tr("TOP GAINERS"));
         else if (k == QLatin1String("TOP LOSERS"))

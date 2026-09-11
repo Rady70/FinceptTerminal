@@ -185,14 +185,20 @@ void WatchlistWidget::render_from_cache() {
                          fincept::screens::quote_signed_text(q.has_change, q.change, 2),
                          fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))});
         int row = table_->rowCount() - 1;
-        const bool has_move = q.has_change_pct || q.has_change;
-        const double move = q.has_change_pct ? q.change_pct : q.change;
-        const QString color = !has_move  ? ui::colors::TEXT_DIM
-                              : move > 0 ? ui::colors::POSITIVE
-                              : move < 0 ? ui::colors::NEGATIVE
-                                         : ui::colors::TEXT_PRIMARY;
-        table_->set_cell_color(row, 2, color);
-        table_->set_cell_color(row, 3, color);
+        // Each displayed field is coloured from its own flag and value; a
+        // missing CHG cell is never painted with the CHG% direction, and a
+        // genuine zero is neutral rather than a move.
+        auto move_color = [](bool has, double value) -> QString {
+            if (!has)
+                return ui::colors::TEXT_DIM;
+            if (value > 0)
+                return ui::colors::POSITIVE;
+            if (value < 0)
+                return ui::colors::NEGATIVE;
+            return ui::colors::TEXT_PRIMARY;
+        };
+        table_->set_cell_color(row, 2, move_color(q.has_change, q.change));
+        table_->set_cell_color(row, 3, move_color(q.has_change_pct, q.change_pct));
     }
 }
 

@@ -6,10 +6,13 @@
 // sentiment response: { "success": true, "data": { "commercial_positions": {...},
 //                       "non_commercial_positions": {...}, "overall_sentiment": {...} } }
 // trend response: { "success": true, "data": [{ "date", "open_interest",
-//                   "commercial_net", "non_commercial_net", ... }] }
+//                   "<family participant>_long/short/net", ... }] }
+//                   legacy: commercial_* / non_commercial_*;
+//                   disaggregated: prod_merc_* / m_money_*
 #include "screens/economics/panels/CftcPanel.h"
 
 #include "core/logging/Logger.h"
+#include "screens/economics/panels/CftcNetFormat.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/theme/Theme.h"
 
@@ -146,6 +149,10 @@ static QString sentiment_state_text(const QString& state) {
 
 CftcPanel::CftcPanel(QWidget* parent) : EconPanelBase(kCftcSourceId, kCftcColor, parent) {
     build_base_ui(this);
+    // The shared generic stat row is never meaningful for CFTC views (see
+    // on_result); hide it from construction so it is not visible before the
+    // first response or after an error either.
+    set_stats_visible(false);
     build_sentiment_widget();
     // Localize fixed combo item text (report types / views) to the active language.
     retranslateUi();
@@ -348,9 +355,10 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         return;
     }
 
-    // CFTC scripts report failures as {"error": {...}} (or a plain string).
-    // EconomicsService does not flatten object error envelopes, so surface the
-    // nested message here rather than degrading to a generic empty-data state.
+    // CFTC scripts can still surface an error object if a payload slips past
+    // the service classifier; treat it as a failure rather than an empty-data
+    // state. EconomicsService itself already classifies the object-shaped
+    // {"error": {...}} envelope as a failed, uncacheable result.
     if (result.data.contains("error")) {
         const QJsonValue err = result.data["error"];
         const QString message = err.isString() ? err.toString() : err.toObject()["error"].toString();
@@ -366,10 +374,11 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
     const QString market_label = market_label_for_key(request_market);
     const QJsonObject params = result.data.value("parameters").toObject();
 
-    // Table/trend views are time series — restore the aggregate stat row that
-    // the sentiment view hides.
-    if (!request_id.startsWith("cftc_sent_"))
-        set_stats_visible(true);
+    // The shared generic stat row (LATEST/CHANGE/MIN/MAX/AVG) picks a value
+    // field per row heuristically. CFTC COT, sentiment and trend rows are
+    // multi-field reports, so that row would present an arbitrary participant
+    // or net column as the report's "LATEST"/"AVG"; hide it for every view.
+    set_stats_visible(false);
 
     // Sentiment view: data is an object, not an array
     if (request_id.startsWith("cftc_sent_")) {
@@ -388,13 +397,12 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
     // COT table or historical trend — data is an array
     // cot_data rows: flat dict with report_date/market/open_interest_all and the
     // report family's participant fields (see the mapping below).
-    // trend rows: { "date", "open_interest", "commercial_net", ... }
+    // trend rows use the report family's own participant keys (legacy:
+    // commercial_*, disaggregated: prod_merc_* / m_money_*).
     QJsonArray rows = result.data["data"].toArray();
 
     if (rows.isEmpty()) {
-        const QString err_str =
-            result.data.contains("error") ? result.data["error"].toObject()["error"].toString() : "";
-        show_empty(err_str.isEmpty() ? tr("No data returned — try a different market or report type") : err_str);
+        show_empty(tr("No data returned — try a different market or report type"));
         return;
     }
 
@@ -494,23 +502,17 @@ void CftcPanel::show_sentiment(const QJsonObject& s, const QString& family, cons
     // passed the *char literal* 'd' (=100) as the field width, padding every
     // net-position number with 100 leading spaces. Format the number first.
     // A net that the provider did not return stays "—", never a fabricated 0;
-    // an exact zero renders as an explicit "+0" and is labelled NEUTRAL above.
+    // see cftc_signed_net() for the strictly-positive-only "+" rule.
     const QJsonObject comm = s["commercial_positions"].toObject();
     const QJsonValue comm_net_value = comm.value("net");
     const double comm_net = comm_net_value.isDouble() ? comm_net_value.toDouble() : 0.0;
-    sent_comm_net_->setText(comm_net_value.isDouble() ? tr("Net: %1%2")
-                                                            .arg(comm_net >= 0 ? QStringLiteral("+") : QString())
-                                                            .arg(QString::number(static_cast<qint64>(comm_net)))
-                                                      : tr("Net: —"));
+    sent_comm_net_->setText(comm_net_value.isDouble() ? tr("Net: %1").arg(cftc_signed_net(comm_net)) : tr("Net: —"));
 
     const QJsonObject noncomm = s["non_commercial_positions"].toObject();
     const QJsonValue noncomm_net_value = noncomm.value("net");
     const double noncomm_net = noncomm_net_value.isDouble() ? noncomm_net_value.toDouble() : 0.0;
-    sent_noncomm_net_->setText(noncomm_net_value.isDouble()
-                                   ? tr("Net: %1%2")
-                                         .arg(noncomm_net >= 0 ? QStringLiteral("+") : QString())
-                                         .arg(QString::number(static_cast<qint64>(noncomm_net)))
-                                   : tr("Net: —"));
+    sent_noncomm_net_->setText(noncomm_net_value.isDouble() ? tr("Net: %1").arg(cftc_signed_net(noncomm_net))
+                                                            : tr("Net: —"));
 
     // Populate the shared table too (one summary row) so CSV export still has
     // something to write, then switch the stack to the sentiment card view.
@@ -525,8 +527,6 @@ void CftcPanel::show_sentiment(const QJsonObject& s, const QString& family, cons
     row["noncomm_bias"] = noncomm_bias;
     row["oi_trend"] = oi_trend;
     rows.append(row);
-    // A one-row snapshot has no meaningful LATEST/CHANGE/MIN/MAX/AVG.
-    set_stats_visible(false);
     display(rows, "CFTC Sentiment: " + market_label);
     show_content_page(sentiment_page_);
 
