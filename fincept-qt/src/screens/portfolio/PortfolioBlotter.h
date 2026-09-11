@@ -43,6 +43,10 @@ class PortfolioBlotter : public QWidget {
     void build_pagination_footer();
     void populate_table();
     void retranslateUi();
+    /// Re-labels the WT% header with the partial qualifier when any holding lacks
+    /// a current price (its weight is fallback-derived). Called from populate and
+    /// retranslate so the qualifier survives a language change.
+    void update_weight_header();
     void apply_filter();
     void on_header_clicked(int section);
     void on_row_clicked(int row, int col);

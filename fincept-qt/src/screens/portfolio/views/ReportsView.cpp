@@ -363,6 +363,15 @@ void ReportsView::update_attribution() {
     auto sorted = summary_.holdings;
     std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.weight > b.weight; });
 
+    // Attribution weights and contributions are derived from the same partially
+    // valued holdings as the totals above; qualify the section when coverage is
+    // incomplete. Rows without a current price render every market-derived cell
+    // unavailable below instead of showing fallback artifacts as observations.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    if (attr_title_)
+        attr_title_->setText(tr("PERFORMANCE ATTRIBUTION") +
+                             (price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString()));
+
     attr_table_->setRowCount(sorted.size());
 
     double total_pnl = summary_.total_unrealized_pnl;
@@ -378,6 +387,19 @@ void ReportsView::update_attribution() {
                 item->setForeground(QColor(color));
             attr_table_->setItem(r, col, item);
         };
+
+        if (!h.has_live_price) {
+            // The service substituted average cost: weight, return,
+            // contribution and P&L would all be fallback artifacts, and the
+            // "NEUTRAL" banding would be an artifact of the substituted price.
+            set(0, h.symbol, ui::colors::CYAN);
+            set(1, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(2, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(3, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(4, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(5, tr("NO CURRENT PRICE"), ui::colors::TEXT_TERTIARY);
+            continue;
+        }
 
         double contribution = (total_pnl != 0) ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0;
 

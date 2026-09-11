@@ -595,6 +595,7 @@ void PortfolioBlotter::populate_table() {
 
     sorted_ = holdings_;
     invalidate_view_cache();
+    update_weight_header();
 
     // Sort
     bool asc = (sort_dir_ == portfolio::SortDirection::Asc);
@@ -734,8 +735,24 @@ void PortfolioBlotter::populate_table() {
         if (state == SparklineState::Loaded && sparkline_cache_.contains(h.symbol)) {
             const auto& prices = sparkline_cache_[h.symbol];
             sparkline->set_data(prices);
-            bool up = prices.size() >= 2 ? prices.last() >= prices.first() : h.day_change >= 0;
-            sparkline->set_color(QColor(up ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
+            if (prices.size() >= 2) {
+                const char* dir = prices.last() > prices.first()   ? ui::colors::POSITIVE
+                                  : prices.last() < prices.first() ? ui::colors::NEGATIVE
+                                                                   : ui::colors::TEXT_PRIMARY;
+                sparkline->set_color(QColor(dir));
+            } else if (h.has_day_change) {
+                // A single point cannot show a trend; fall back to the observed
+                // day change, with exact zero neutral and up/down only for a
+                // strictly signed value. A missing change is never "up".
+                const char* dir = h.day_change > 0   ? ui::colors::POSITIVE
+                                  : h.day_change < 0 ? ui::colors::NEGATIVE
+                                                     : ui::colors::TEXT_PRIMARY;
+                sparkline->set_color(QColor(dir));
+            } else {
+                // Neither a two-point history nor a day-change observation:
+                // direction is unavailable, so stay neutral/dim.
+                sparkline->set_color(QColor(ui::colors::TEXT_TERTIARY()));
+            }
         } else if (state == SparklineState::Failed) {
             // Show flat dash line in muted color to indicate unavailable data
             QVector<double> dash(6, 0.0);
@@ -748,8 +765,13 @@ void PortfolioBlotter::populate_table() {
             sparkline->set_color(QColor(ui::colors::TEXT_TERTIARY()));
         }
 
-        // WT%
-        set_cell(kColWeight, QString("%1%").arg(format_value(h.weight, 1)));
+        // WT%: the service computes weights from fallback-inclusive market
+        // values, so an unpriced holding's weight is unavailable; the header
+        // carries the partial qualifier for the remaining weights.
+        if (h.has_live_price)
+            set_cell(kColWeight, QString("%1%").arg(format_value(h.weight, 1)));
+        else
+            set_cell(kColWeight, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
 
         // Highlight selected row
         if (h.symbol == selected_symbol_) {
@@ -891,6 +913,17 @@ void PortfolioBlotter::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
 }
 
+void PortfolioBlotter::update_weight_header() {
+    if (!table_)
+        return;
+    auto* item = table_->horizontalHeaderItem(kColWeight);
+    if (!item)
+        return;
+    const bool weights_partial = std::any_of(holdings_.begin(), holdings_.end(),
+                                             [](const portfolio::HoldingWithQuote& h) { return !h.has_live_price; });
+    item->setText(weights_partial ? tr("WT% (partial)") : tr("WT%"));
+}
+
 void PortfolioBlotter::retranslateUi() {
     // Column headers — same source-key array used in build_ui().
     if (table_) {
@@ -899,6 +932,9 @@ void PortfolioBlotter::retranslateUi() {
         for (int i = 0; i < kColumnCount; ++i)
             headers << tr(kColumnKeys[i]);
         table_->setHorizontalHeaderLabels(headers);
+        // setHorizontalHeaderLabels() resets the WT% cell; reapply the
+        // partial qualifier so a language change does not silently drop it.
+        update_weight_header();
     }
 
     if (btn_first_) {

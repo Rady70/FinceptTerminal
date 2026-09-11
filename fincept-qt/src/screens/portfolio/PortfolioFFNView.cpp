@@ -565,15 +565,18 @@ void PortfolioFFNView::update_overview() {
         // Rough Sharpe estimate in percent units; mirrors PortfolioService's
         // kDefaultRiskFreeRate (0.04 → 4%) — keep in sync if that default changes.
         constexpr double kRoughRfRatePct = 4.0;
-        double sharpe = have_day_observations && ann_vol > 0.01 ? (pnl_pct - kRoughRfRatePct) / ann_vol : 0.0;
+        // A Sharpe with a zero (or near-zero) volatility denominator is
+        // undefined, not zero: an all-flat observation set still has no ratio.
+        const bool sharpe_available = have_day_observations && ann_vol > 0.01;
+        double sharpe = sharpe_available ? (pnl_pct - kRoughRfRatePct) / ann_vol : 0.0;
 
         rows = {
             {tr("Total Return (unrealized)"), pct_str(pnl_pct / 100.0) + partial_note, "--", sign_color(pnl_pct)},
             {tr("Annualized Volatility (est.)"),
              have_day_observations ? pct_str(ann_vol / 100.0) : QStringLiteral("--"), bench_pct(bench.volatility),
              ui::colors::CYAN},
-            {tr("Sharpe Ratio (est.)"), have_day_observations ? fmt(sharpe) : QStringLiteral("--"),
-             bench_num(bench.sharpe), sign_color(sharpe)},
+            {tr("Sharpe Ratio (est.)"), sharpe_available ? fmt(sharpe) : QStringLiteral("--"), bench_num(bench.sharpe),
+             sharpe_available ? sign_color(sharpe) : ui::colors::TEXT_TERTIARY},
             {tr("Win Rate (priced)"), win_rate_text, "--", ui::colors::CYAN},
             {tr("Positions"), QString::number(summary_.total_positions), "--", ui::colors::CYAN},
             {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value) + partial_note, "--",
