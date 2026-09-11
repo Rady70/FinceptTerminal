@@ -257,16 +257,19 @@ void ReportsView::update_summary() {
 
     layout->addLayout(grid);
 
-    // Holdings breakdown
-    auto* breakdown_title = new QLabel(tr("HOLDINGS BREAKDOWN"));
+    // Holdings breakdown. Priced-row weights are computed against a total that
+    // includes average-cost fallback values, so the section and its WEIGHT
+    // column carry the partial qualifier when coverage is incomplete.
+    const QString coverage_note = price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString();
+    auto* breakdown_title = new QLabel(tr("HOLDINGS BREAKDOWN") + coverage_note);
     breakdown_title->setStyleSheet(
         QString("color:%1; font-size:10px; font-weight:700; letter-spacing:1px;").arg(ui::colors::TEXT_SECONDARY()));
     layout->addWidget(breakdown_title);
 
     auto* breakdown = new QTableWidget;
     breakdown->setColumnCount(6);
-    breakdown->setHorizontalHeaderLabels(
-        {tr("SYMBOL"), tr("QTY"), tr("AVG COST"), tr("CURRENT"), tr("P&L"), tr("WEIGHT")});
+    breakdown->setHorizontalHeaderLabels({tr("SYMBOL"), tr("QTY"), tr("AVG COST"), tr("CURRENT"), tr("P&L"),
+                                          price_partial ? tr("WEIGHT (partial)") : tr("WEIGHT")});
     breakdown->setSelectionMode(QAbstractItemView::NoSelection);
     breakdown->setEditTriggers(QAbstractItemView::NoEditTriggers);
     breakdown->setShowGrid(false);
@@ -281,12 +284,12 @@ void ReportsView::update_summary() {
                                       ui::colors::BG_SURFACE(), ui::colors::TEXT_SECONDARY(), ui::colors::AMBER()));
 
     auto sorted = summary_.holdings;
-    // Present (priced) holdings first, then by weight; an unpriced row's
-    // hidden fallback weight never determines the displayed order.
+    // Present (priced) holdings first, then by weight; two unavailable rows
+    // are comparator-equivalent (stable order), so no row is ever ranked by
+    // its hidden fallback weight.
     std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
-        if (a.has_live_price != b.has_live_price)
-            return a.has_live_price;
-        return a.weight > b.weight;
+        return fincept::screens::portfolio_sort_before(a.has_live_price, a.weight, b.has_live_price, b.weight,
+                                                       /*ascending=*/false);
     });
 
     breakdown->setRowCount(sorted.size());
@@ -368,12 +371,12 @@ void ReportsView::update_transactions() {
 
 void ReportsView::update_attribution() {
     auto sorted = summary_.holdings;
-    // Present (priced) holdings first, then by weight; an unpriced row's
-    // hidden fallback weight never determines the displayed order.
+    // Present (priced) holdings first, then by weight; two unavailable rows
+    // are comparator-equivalent (stable order), so no row is ever ranked by
+    // its hidden fallback weight.
     std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
-        if (a.has_live_price != b.has_live_price)
-            return a.has_live_price;
-        return a.weight > b.weight;
+        return fincept::screens::portfolio_sort_before(a.has_live_price, a.weight, b.has_live_price, b.weight,
+                                                       /*ascending=*/false);
     });
 
     // Attribution weights and contributions are derived from the same partially

@@ -23,7 +23,9 @@
 # signal about the unit, not about this file: extract the pure logic into a small
 # header (or a leaf .cpp) and test that. Do not grow the link line.
 #
-# Current cost of the whole suite: 3 executables, 5 translation units.
+# The suite grows target-by-target; each registration below names the leaf it
+# pins, so read this list (and the STATUS line at the bottom) for the current
+# size instead of a hardcoded count.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Qt Test ships with every Qt installation, so this adds no new dependency.
