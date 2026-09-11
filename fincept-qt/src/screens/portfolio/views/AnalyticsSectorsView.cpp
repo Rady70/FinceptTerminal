@@ -639,11 +639,13 @@ void AnalyticsSectorsView::update_performers(const QVector<SectorInfo>& sectors)
         lay->setSpacing(12);
     }
 
-    // Identify interesting sectors
+    // Identify interesting sectors. `worst` is seeded from the same first
+    // sector as `best` (nothing has been compared yet); a value copy keeps the
+    // two independent, and avoids repeating the identical expression.
     SectorInfo largest = sectors.first(); // already weight-sorted desc
     SectorInfo smallest = sectors.last();
     SectorInfo best = sectors.first();
-    SectorInfo worst = sectors.first();
+    SectorInfo worst = best;
     for (const auto& s : sectors) {
         if (s.pnl_percent > best.pnl_percent)
             best = s;
