@@ -261,6 +261,7 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
 
         auto it = quote_map.find(asset.symbol);
         const bool live_quote = it != quote_map.end() && it->has_price;
+        h.has_live_price = live_quote;
         if (live_quote) {
             ++priced_positions;
             h.current_price = it->price;
@@ -268,6 +269,7 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
             // totals; a missing change must not contribute a fabricated 0.
             if (it->has_change) {
                 ++day_change_positions;
+                h.has_day_change = true;
                 h.day_change = it->change;
                 total_day += h.day_change * h.quantity;
                 total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
@@ -325,11 +327,22 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         summary_cache_[portfolio_id] = {summary, QDateTime::currentSecsSinceEpoch()};
     }
 
-    // Save snapshot for performance history
-    QString today = QDate::currentDate().toString(Qt::ISODate);
-    PortfolioRepository::instance().save_snapshot(portfolio_id, summary.total_market_value, summary.total_cost_basis,
-                                                  summary.total_unrealized_pnl, summary.total_unrealized_pnl_percent,
-                                                  today);
+    // Save snapshot for performance history — only when every holding has a
+    // live price. A snapshot has no coverage metadata, so persisting a partial
+    // valuation (unpriced holdings at average cost) would turn a transient
+    // missing quote into a durable historical datapoint that later reads as
+    // complete. The partial case is skipped, not written as a normal point.
+    if (priced_positions == assets.size()) {
+        QString today = QDate::currentDate().toString(Qt::ISODate);
+        PortfolioRepository::instance().save_snapshot(portfolio_id, summary.total_market_value,
+                                                      summary.total_cost_basis, summary.total_unrealized_pnl,
+                                                      summary.total_unrealized_pnl_percent, today);
+    } else {
+        LOG_INFO("PortfolioSvc", QString("Skipping valuation snapshot for %1: %2 of %3 holdings priced")
+                                     .arg(portfolio_id)
+                                     .arg(priced_positions)
+                                     .arg(assets.size()));
+    }
 
     emit summary_loaded(summary);
 }

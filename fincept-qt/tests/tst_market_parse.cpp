@@ -77,6 +77,7 @@ class TstMarketParse : public QObject {
     void eps_reading_survives_the_opposite_arrival_order();
     void report_quote_keeps_missing_and_zero_apart();
     void market_cell_format_keeps_missing_and_zero_apart();
+    void missing_readings_sort_last_in_both_directions();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -463,6 +464,28 @@ void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
     const QString stale_prov = fincept::screens::quote_provenance_text(stale);
     QVERIFY(stale_prov.contains(QStringLiteral("Status: STALE")));
     QVERIFY(stale_prov.contains(QStringLiteral("refresh failed")));
+}
+
+// ── Watchlist ordering ───────────────────────────────────────────────────────
+
+void TstMarketParse::missing_readings_sort_last_in_both_directions() {
+    // Ascending: present values first, missing last.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, false, 0.0, false));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, true, 5.0, false));
+    // Descending: the same rule — a missing reading never rises above a real
+    // observation just because the user reversed the sort.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, false, 0.0, true));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, true, 5.0, true));
+
+    // A genuine zero is a present reading: it outranks missing, and it orders
+    // by value against other present readings.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 0.0, false, 0.0, false));
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 0.0, true, 5.0, false));
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, true, 0.0, true));
+
+    // Two missing readings are equivalent in both directions.
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, false));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, true));
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)

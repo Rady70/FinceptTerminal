@@ -540,23 +540,40 @@ void EquityResearchScreen::update_quote_bar(const services::equity::QuoteData& q
 
     if (q.has_change || q.has_change_pct) {
         // The line shows the absolute change and the percent side by side.
-        // Each part is rendered only from its own field; the arrow/colour
-        // follow the absolute change when present, otherwise the percent, and
-        // an exact zero is neutral (no "+", flat marker).
-        const bool by_pct = !q.has_change && q.has_change_pct;
-        const double dir_value = by_pct ? q.change_pct : q.change;
-        const QString arrow = dir_value > 0   ? QString::fromUtf8("\xe2\x96\xb2")
-                              : dir_value < 0 ? QString::fromUtf8("\xe2\x96\xbc")
-                                              : QString::fromUtf8("\xe2\x80\xa2");
-        const QString chg_color = dir_value > 0   ? ui::colors::POSITIVE()
-                                  : dir_value < 0 ? ui::colors::NEGATIVE()
-                                                  : ui::colors::TEXT_PRIMARY();
-        const QString abs_part =
-            q.has_change ? QString("%1%2").arg(q.change > 0 ? "+" : "").arg(q.change, 0, 'f', 2) : na;
-        const QString pct_part =
-            q.has_change_pct ? QString("%1 %2%").arg(arrow).arg(qAbs(q.change_pct), 0, 'f', 2) : na;
-        change_label_->setText(QString("%1  %2").arg(abs_part, pct_part));
-        change_label_->setStyleSheet(QString("font-size:13px; font-weight:600; color:%1;").arg(chg_color));
+        // Each part is rendered and coloured only from its own field: a
+        // missing part stays unavailable and a present part never takes the
+        // other field's direction.
+        auto part_color = [](bool has, double value) -> QString {
+            if (!has)
+                return ui::colors::TEXT_SECONDARY();
+            if (value > 0)
+                return ui::colors::POSITIVE();
+            if (value < 0)
+                return ui::colors::NEGATIVE();
+            return ui::colors::TEXT_PRIMARY();
+        };
+        auto part_arrow = [](bool has, double value) -> QString {
+            if (!has)
+                return QString();
+            if (value > 0)
+                return QString::fromUtf8("\xe2\x96\xb2");
+            if (value < 0)
+                return QString::fromUtf8("\xe2\x96\xbc");
+            return QString::fromUtf8("\xe2\x80\xa2");
+        };
+        const QString abs_arrow = part_arrow(q.has_change, q.change);
+        const QString abs_text = q.has_change
+                                     ? (abs_arrow.isEmpty() ? QString() : abs_arrow + QLatin1Char(' ')) +
+                                           QString("%1%2").arg(q.change > 0 ? "+" : "").arg(q.change, 0, 'f', 2)
+                                     : na;
+        const QString pct_arrow = part_arrow(q.has_change_pct, q.change_pct);
+        const QString pct_text = q.has_change_pct ? (pct_arrow.isEmpty() ? QString() : pct_arrow + QLatin1Char(' ')) +
+                                                        QString("%1%").arg(qAbs(q.change_pct), 0, 'f', 2)
+                                                  : na;
+        change_label_->setText(QStringLiteral("<span style='color:%1;'>%2</span> <span style='color:%3;'>(%4)</span>")
+                                   .arg(part_color(q.has_change, q.change), abs_text.toHtmlEscaped(),
+                                        part_color(q.has_change_pct, q.change_pct), pct_text.toHtmlEscaped()));
+        change_label_->setStyleSheet(QStringLiteral("font-size:13px; font-weight:600;"));
     } else {
         // No previousClose came back, so there is no move to report — neither
         // direction nor magnitude. Say so instead of drawing a green 0.00.

@@ -49,6 +49,7 @@ class TstEquityParse : public QObject {
     void opt_num_distinguishes_missing_from_zero();
     void quote_missing_fields_are_not_zero();
     void quote_genuine_zero_volume_is_present();
+    void negative_volume_is_malformed_not_a_reading();
     void candles_keep_missing_volume_and_drop_missing_close();
     void provenance_rides_on_the_result();
 };
@@ -148,6 +149,31 @@ void TstEquityParse::quote_genuine_zero_volume_is_present() {
     const QuoteData missing = parse_quote_json(obj_from(R"({"symbol": "HALT", "volume": null})"));
     QCOMPARE(missing.volume, q.volume);
     QVERIFY(missing.has_volume != q.has_volume);
+}
+
+void TstEquityParse::negative_volume_is_malformed_not_a_reading() {
+    // A count cannot be negative: the malformed cell is recorded as absent (so
+    // provenance reports Partial) rather than presented as a complete quote
+    // whose UI then has to guess whether negative volume means "unavailable".
+    const QuoteData negative = parse_quote_json(obj_from(R"({
+        "symbol": "BADV", "price": 10.0, "change": 0.0, "change_percent": 0.0,
+        "open": 10.0, "high": 10.0, "low": 10.0, "previous_close": 10.0,
+        "volume": -5, "timestamp": 1757340000
+    })"),
+                                                QStringLiteral("yfinance"));
+    QVERIFY2(!negative.has_volume, "a negative volume is unavailable, not a reading");
+    QCOMPARE(negative.volume, 0.0);
+    QCOMPARE(negative.status, RetrievalStatus::Partial);
+
+    // The same rule holds for candle bars.
+    CandleParseStats stats;
+    const QVector<Candle> candles = parse_candles_json(
+        array_from(R"([{"timestamp": 1757172800, "open": 3.0, "high": 4.0, "low": 2.5, "close": 3.5, "volume": -1}])"),
+        &stats);
+    QCOMPARE(candles.size(), qsizetype(1));
+    QVERIFY2(!candles.at(0).has_volume, "a negative bar volume is unavailable, not zero");
+    QCOMPARE(candles.at(0).volume, Q_INT64_C(0));
+    QCOMPARE(stats.incomplete, 1);
 }
 
 // ── Candles ──────────────────────────────────────────────────────────────────

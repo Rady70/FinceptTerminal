@@ -61,6 +61,21 @@ inline bool take_num(const QJsonObject& o, const char* key, double& out, bool& h
     return false;
 }
 
+/// Volume twin of the markets rule: a count cannot be negative, so a negative
+/// volume is malformed and is recorded as absent — the quote (or candle) then
+/// reports Partial instead of presenting the malformed cell as complete, while
+/// a genuine zero stays a present reading.
+inline bool take_volume(const QJsonObject& o, double& out, bool& has) {
+    if (!take_num(o, "volume", out, has))
+        return false;
+    if (out < 0) {
+        has = false;
+        out = 0;
+        return false;
+    }
+    return true;
+}
+
 } // namespace detail
 
 /// Label for a result served out of the local cache. "cache" on its own hides
@@ -99,7 +114,7 @@ inline QuoteData parse_quote_json(const QJsonObject& o, const QString& source = 
     missing += detail::take_num(o, "high", q.high, q.has_high) ? 0 : 1;
     missing += detail::take_num(o, "low", q.low, q.has_low) ? 0 : 1;
     missing += detail::take_num(o, "previous_close", q.prev_close, q.has_prev_close) ? 0 : 1;
-    missing += detail::take_num(o, "volume", q.volume, q.has_volume) ? 0 : 1;
+    missing += detail::take_volume(o, q.volume, q.has_volume) ? 0 : 1;
 
     // A provider error envelope is not a quote with eight missing fields — it
     // is a failed retrieval, and saying so is the whole point of the status.
@@ -141,11 +156,11 @@ inline QVector<Candle> parse_candles_json(const QJsonArray& arr, CandleParseStat
         missing += detail::take_num(o, "high", c.high, c.has_high) ? 0 : 1;
         missing += detail::take_num(o, "low", c.low, c.has_low) ? 0 : 1;
 
-        if (const auto vol = opt_num(o, "volume")) {
+        if (const auto vol = opt_num(o, "volume"); vol && *vol >= 0) {
             c.volume = static_cast<qint64>(*vol);
             c.has_volume = true;
         } else {
-            c.has_volume = false;
+            c.has_volume = false; // absent, or a malformed negative count
             ++missing;
         }
 

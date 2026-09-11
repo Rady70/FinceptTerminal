@@ -453,6 +453,15 @@ QVector<AnalyticsSectorsView::SectorInfo> AnalyticsSectorsView::compute_sectors(
 
 void AnalyticsSectorsView::update_overview() {
     auto sectors = compute_sectors();
+    // Sector values, weights and P&L are computed from the same holdings the
+    // service values at average cost when a quote is missing, so the derived
+    // sections carry the partial qualifier alongside the KPI strip.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString();
+    if (donut_title_)
+        donut_title_->setText(tr("SECTOR ALLOCATION") + partial_note);
+    if (table_title_)
+        table_title_->setText(tr("SECTOR BREAKDOWN") + partial_note);
     update_kpi_strip(sectors);
     update_donut(sectors);
     update_sector_table(sectors);

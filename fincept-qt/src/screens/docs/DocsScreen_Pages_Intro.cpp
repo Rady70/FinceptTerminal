@@ -212,29 +212,33 @@ QWidget* DocsScreen::page_dashboard() {
                            ui::colors::AMBER));
 
     vl->addWidget(make_section_panel("■", tr("AVAILABLE WIDGETS"),
-                                     tr("■  Stock Quote — Real-time price, change, volume for any symbol\n"
+                                     tr("■  Stock Quote — Price, change and volume for a single symbol\n"
+                                        "■  Market Indices — Major global indices\n"
+                                        "■  Forex Pairs — Major currency pairs\n"
+                                        "■  Crypto Markets — Top cryptocurrencies\n"
+                                        "■  Commodities — Gold, oil, natural gas, copper\n"
+                                        "■  Quote Strip — Configurable live quote list\n"
                                         "■  Watchlist — Your tracked symbols with live updates\n"
+                                        "■  Screener — Fixed large-cap basket sorted by % change, volume or price\n"
+                                        "■  Candle Chart — Candlestick chart for a single ticker\n"
                                         "■  Top Movers — Gainers/losers within a fixed 12-symbol basket\n"
-                                        "■  Market Sentiment — Bull/bear score over a fixed 25-symbol basket\n"
-                                        "■  News — Latest headlines with sentiment tagging\n"
-                                        "■  Economic Calendar — Upcoming economic events and releases\n"
                                         "■  Sector Heatmap — Daily-move map of a fixed sector-ETF basket\n"
+                                        "■  Market Sentiment — Bull/bear score over a fixed 25-symbol basket\n"
                                         "■  Performance — Benchmark daily moves and spreads\n"
                                         "■  Risk Metrics — VIX regime, high-beta moves, change spreads\n"
-                                        "■  Screener — Quick stock screener with filters\n"
-                                        "■  Quote Table — Multi-symbol comparison table\n"
-                                        "■  Quick Trade — One-click trade entry\n"
-                                        "■  Indices — Major index tracking (S&P 500, NASDAQ, DOW)\n"
-                                        "■  Forex — Currency pair rates\n"
-                                        "■  Crypto — Top cryptocurrency prices\n"
-                                        "■  Commodities — Gold, oil, silver, natural gas\n"
-                                        "■  Portfolio Summary — Holdings overview with allocation"),
+                                        "■  Portfolio Summary — Holdings value and P&L (partial when unpriced)\n"
+                                        "■  News Feed / News — Category — Headlines with category filtering\n"
+                                        "■  Sparklines — Configurable sparkline strip\n"
+                                        "■  Web Scraper — Scrape tables from a URL\n"
+                                        "■  Notes — Recent/favorite financial notes\n"
+                                        "■  Recent Files — Recently saved exports and reports\n"
+                                        "■  Live TV / Streams — Financial TV and custom streams"),
                                      ui::colors::POSITIVE));
 
     vl->addWidget(
         make_section_panel("■", tr("REAL-WORLD USAGE"),
-                           tr("■  Morning routine: Check top movers, review overnight news, scan economic calendar\n"
-                              "■  Active trading: Pin stock quote + quick trade widgets, monitor watchlist\n"
+                           tr("■  Morning routine: Check top movers and review overnight news\n"
+                              "■  Active monitoring: Pin stock quote + quote strip widgets, monitor the watchlist\n"
                               "■  Portfolio management: Use portfolio summary + risk metrics + performance\n"
                               "■  Sector rotation: Combine sector heatmap + top movers + indices"),
                            ui::colors::INFO));
@@ -244,8 +248,7 @@ QWidget* DocsScreen::page_dashboard() {
         tr("Customize your grid layout. Add multiple watchlists for different sectors. Use the market pulse panel."),
         tr("Build specialized layouts for different strategies (day trading vs swing). Use risk metrics + performance "
            "together."),
-        tr("Create multi-monitor layouts. Combine dashboard with algo trading feeds. Use economic calendar for "
-           "event-driven setups.")));
+        tr("Create multi-monitor layouts. Combine dashboard widgets with the retained research screens.")));
 
     vl->addStretch();
     scroll->setWidget(page);

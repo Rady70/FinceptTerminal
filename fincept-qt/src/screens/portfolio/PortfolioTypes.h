@@ -73,6 +73,13 @@ struct HoldingWithQuote {
     double day_change = 0;
     double day_change_percent = 0;
     double weight = 0; // % of total portfolio
+
+    // Per-holding observation state. When has_live_price is false, current_price
+    // and market_value are the average-cost fallback, P&L is zero only because
+    // the price is unknown, and weight includes the fallback value — a consumer
+    // that shows these fields must say so (or show them as unavailable).
+    bool has_live_price = false;
+    bool has_day_change = false;
 };
 
 struct PortfolioSummary {

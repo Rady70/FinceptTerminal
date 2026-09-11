@@ -7,6 +7,7 @@
 #include "core/symbol/SymbolDragSource.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/backtesting/BacktestingService.h"
 #include "services/cloud/CloudSyncEngine.h"
 #include "ui/formatting/NumberFormat.h"
@@ -18,6 +19,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QHideEvent>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -31,6 +33,9 @@
 #include <QSplitter>
 #include <QTextStream>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <numeric>
 
 namespace fincept::screens {
 
@@ -415,7 +420,13 @@ QWidget* WatchlistScreen::build_main_panel() {
     table_->set_headers(
         {tr("SYMBOL"), tr("NAME"), tr("PRICE"), tr("CHANGE"), tr("CHG %"), tr("HIGH"), tr("LOW"), tr("VOLUME")});
     table_->set_column_widths({100, 160, 100, 90, 80, 90, 90, 110});
-    table_->setSortingEnabled(true); // opt-in: WatchlistScreen stamps presence-aware numeric sort keys
+    // The screen owns the row ordering (see populate_table): a missing reading
+    // stays after present ones in BOTH directions, which Qt's built-in item
+    // comparator cannot express because descending reverses its result.
+    table_->setSortingEnabled(false);
+    table_->horizontalHeader()->setSortIndicatorShown(true);
+    table_->horizontalHeader()->setSectionsClickable(true);
+    connect(table_->horizontalHeader(), &QHeaderView::sectionClicked, this, &WatchlistScreen::on_header_clicked);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
 
@@ -670,16 +681,11 @@ void WatchlistScreen::rebuild_from_cache() {
             quotes.append(row_cache_.value(s.symbol));
     }
     if (quotes.isEmpty()) {
-        // No data yet — show placeholder rows.
-        table_->setSortingEnabled(false);
+        // No data yet — show placeholder rows in the watchlist's natural order.
         table_->clear_data();
         for (const auto& s : stocks_) {
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
-            const int row = table_->rowCount() - 1;
-            for (int c = 2; c < table_->columnCount(); ++c)
-                table_->set_cell_numeric(row, c, 0.0, false);
         }
-        table_->setSortingEnabled(true);
         update_empty_state();
         return;
     }
@@ -746,10 +752,19 @@ void WatchlistScreen::hub_unsubscribe_all() {
     hub_active_ = false;
 }
 
+void WatchlistScreen::on_header_clicked(int column) {
+    if (sort_column_ == column)
+        sort_order_ = sort_order_ == Qt::AscendingOrder ? Qt::DescendingOrder : Qt::AscendingOrder;
+    else {
+        sort_column_ = column;
+        sort_order_ = Qt::DescendingOrder;
+    }
+    if (auto* header = table_->horizontalHeader())
+        header->setSortIndicator(sort_column_, sort_order_);
+    rebuild_from_cache();
+}
+
 void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes) {
-    // Disable sorting during population to prevent per-row re-sorting
-    // (avoids both visual flickering and O(n log n) overhead per insert).
-    table_->setSortingEnabled(false);
     table_->clear_data();
 
     // Build a map for quick lookup
@@ -758,7 +773,77 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         quote_map[q.symbol] = q;
     }
 
-    for (const auto& s : stocks_) {
+    // Sort the row order here rather than delegating to Qt's item comparator:
+    // a missing reading must stay after present ones in both ascending and
+    // descending order, and only a screen-owned comparator can express that.
+    QVector<int> order(stocks_.size());
+    std::iota(order.begin(), order.end(), 0);
+    if (sort_column_ >= 0) {
+        const int column = sort_column_;
+        const bool descending = sort_order_ == Qt::DescendingOrder;
+        auto quote_at = [&](int idx) -> const services::QuoteData* {
+            const auto it = quote_map.constFind(stocks_[idx].symbol);
+            return it == quote_map.constEnd() ? nullptr : &it.value();
+        };
+        auto numeric_field = [](int col, const services::QuoteData* q, bool& has, double& value) {
+            has = false;
+            value = 0.0;
+            if (!q)
+                return;
+            switch (col) {
+                case 2:
+                    has = q->has_price;
+                    value = q->price;
+                    break;
+                case 3:
+                    has = q->has_change;
+                    value = q->change;
+                    break;
+                case 4:
+                    has = q->has_change_pct;
+                    value = q->change_pct;
+                    break;
+                case 5:
+                    has = q->has_high;
+                    value = q->high;
+                    break;
+                case 6:
+                    has = q->has_low;
+                    value = q->low;
+                    break;
+                case 7:
+                    has = q->has_volume && q->volume >= 0;
+                    value = q->volume;
+                    break;
+                default:
+                    break;
+            }
+        };
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+            if (column <= 1) {
+                const QString& as = column == 0 ? stocks_[a].symbol : stocks_[a].name;
+                const QString& bs = column == 0 ? stocks_[b].symbol : stocks_[b].name;
+                const int c = QString::compare(as, bs, Qt::CaseInsensitive);
+                if (c == 0)
+                    return a < b;
+                return descending ? c > 0 : c < 0;
+            }
+            bool ha = false;
+            bool hb = false;
+            double va = 0.0;
+            double vb = 0.0;
+            numeric_field(column, quote_at(a), ha, va);
+            numeric_field(column, quote_at(b), hb, vb);
+            if (ha != hb)
+                return ha; // missing-last in both directions
+            if (!ha || va == vb)
+                return a < b;
+            return fincept::screens::quote_missing_last_before(ha, va, hb, vb, descending);
+        });
+    }
+
+    for (int idx : order) {
+        const auto& s = stocks_[idx];
         auto it = quote_map.find(s.symbol);
         if (it != quote_map.end()) {
             const auto& q = it.value();
@@ -782,17 +867,6 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
                      : kNA});
 
             int row = table_->rowCount() - 1;
-
-            // Stamp presence-aware numeric sort keys so Qt sorts by magnitude,
-            // not by the display string ("$2.5M" vs "$999K" etc.). The display
-            // text is preserved and a missing reading sorts apart from a real
-            // zero — it has no value to compare, rather than a 0.
-            table_->set_cell_numeric(row, 2, q.price, q.has_price);                    // PRICE
-            table_->set_cell_numeric(row, 3, q.change, q.has_change);                  // CHANGE
-            table_->set_cell_numeric(row, 4, q.change_pct, q.has_change_pct);          // CHG %
-            table_->set_cell_numeric(row, 5, q.high, q.has_high);                      // HIGH
-            table_->set_cell_numeric(row, 6, q.low, q.has_low);                        // LOW
-            table_->set_cell_numeric(row, 7, q.volume, q.has_volume && q.volume >= 0); // VOLUME
 
             // Green = up, Red = down, neutral/dim = zero or no reading. Each
             // cell derives its colour from its own field, so a missing CHG%
@@ -824,19 +898,12 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         } else {
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
             const int row = table_->rowCount() - 1;
-            // No quote at all: stamp every numeric column as missing so the row
-            // sorts with the other "--" readings instead of as zeros.
-            for (int c = 2; c < table_->columnCount(); ++c)
-                table_->set_cell_numeric(row, c, 0.0, false);
             for (int c = 0; c < table_->columnCount(); ++c) {
                 if (auto* cell = table_->item(row, c))
                     cell->setToolTip(tr("No quote has been retrieved for this symbol yet."));
             }
         }
     }
-
-    // Re-enable sorting — Qt will apply the current sort column/order once.
-    table_->setSortingEnabled(true);
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────

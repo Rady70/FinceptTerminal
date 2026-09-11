@@ -241,12 +241,15 @@ void ReportsView::update_summary() {
                                                  : ui::colors::TEXT_PRIMARY);
 
     add_card(1, 0, tr("POSITIONS"), QString::number(summary_.total_positions), ui::colors::TEXT_PRIMARY);
-    add_card(1, 1, tr("GAINERS"), QString::number(summary_.gainers), ui::colors::POSITIVE);
-    add_card(1, 2, tr("LOSERS"), QString::number(summary_.losers), ui::colors::NEGATIVE);
+    // Gainers/losers classify priced holdings only; name that in the card so
+    // the counts are not read against the full position count.
+    add_card(1, 1, tr("GAINERS (PRICED)"), QString::number(summary_.gainers), ui::colors::POSITIVE);
+    add_card(1, 2, tr("LOSERS (PRICED)"), QString::number(summary_.losers), ui::colors::NEGATIVE);
     add_card(1, 3, tr("RETURN"),
-             QString("%1%2%")
+             QString("%1%2%3")
                  .arg(summary_.total_unrealized_pnl_percent > 0 ? "+" : "")
-                 .arg(fmt(summary_.total_unrealized_pnl_percent)),
+                 .arg(fmt(summary_.total_unrealized_pnl_percent))
+                 .arg(partial_note),
              summary_.total_unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
              : summary_.total_unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
                                                          : ui::colors::TEXT_PRIMARY);
@@ -295,16 +298,25 @@ void ReportsView::update_summary() {
         set(0, h.symbol, ui::colors::CYAN);
         set(1, fmt(h.quantity, h.quantity == std::floor(h.quantity) ? 0 : 2));
         set(2, fmt(h.avg_buy_price));
-        set(3, fmt(h.current_price));
-        const char* pc = h.unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        set(4,
-            QString("%1%2 (%3%4%)")
-                .arg(h.unrealized_pnl >= 0 ? "+" : "")
-                .arg(fmt(h.unrealized_pnl))
-                .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
-                .arg(fmt(h.unrealized_pnl_percent)),
-            pc);
-        set(5, QString("%1%").arg(fmt(h.weight, 1)));
+        if (!h.has_live_price) {
+            // The service substitutes average cost for a missing quote; showing
+            // it under CURRENT (with zero P&L and a normal weight) would present
+            // the fallback as an observed market value.
+            set(3, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(4, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(5, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+        } else {
+            set(3, fmt(h.current_price));
+            const char* pc = h.unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
+            set(4,
+                QString("%1%2 (%3%4%)")
+                    .arg(h.unrealized_pnl >= 0 ? "+" : "")
+                    .arg(fmt(h.unrealized_pnl))
+                    .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
+                    .arg(fmt(h.unrealized_pnl_percent)),
+                pc);
+            set(5, QString("%1%").arg(fmt(h.weight, 1)));
+        }
     }
     layout->addWidget(breakdown, 1);
 }

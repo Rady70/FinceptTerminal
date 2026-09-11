@@ -143,8 +143,9 @@ void StockQuoteWidget::apply_styles() {
     price_label_->setStyleSheet(QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;")
                                     .arg(ui::colors::TEXT_PRIMARY()));
     arrow_label_->setStyleSheet("font-size: 12px; background: transparent;");
-    change_label_->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;")
-                                     .arg(ui::colors::TEXT_SECONDARY()));
+    // The change line's colours are per-field rich-text spans (see populate()),
+    // so its stylesheet deliberately carries no colour of its own.
+    change_label_->setStyleSheet("font-size: 11px; font-weight: bold; background: transparent;");
     ticker_label_->setStyleSheet(
         QString("color: %1; font-size: 14px; font-weight: bold; background: transparent;").arg(ui::colors::AMBER()));
     sep_->setStyleSheet(QString("background: %1;").arg(ui::colors::BORDER_DIM()));
@@ -219,33 +220,48 @@ void StockQuoteWidget::hub_unsubscribe_all() {
 }
 
 void StockQuoteWidget::populate(const services::QuoteData& q) {
-    // The change line leads with the absolute change, so the arrow and colour
-    // follow that field's own reading. A missing change is dim with no
-    // direction; the percent shown in parentheses never supplies a direction
-    // the leading field did not.
-    const QString color = !q.has_change  ? ui::colors::TEXT_DIM()
-                          : q.change > 0 ? ui::colors::POSITIVE()
-                          : q.change < 0 ? ui::colors::NEGATIVE()
-                                         : ui::colors::TEXT_PRIMARY();
-    const QString arrow = !q.has_change  ? QStringLiteral("—")
-                          : q.change > 0 ? QString(QChar(0x25B2))
-                          : q.change < 0 ? QString(QChar(0x25BC))
-                                         : QString(QChar(0x2022));
+    // Each part of the combined change line is styled from its own field: the
+    // absolute change and the percent change carry separate presence flags and
+    // colours, so a missing part stays dim and a present part is never styled
+    // from the other field.
+    auto dir_color = [](bool has, double value) -> QString {
+        if (!has)
+            return ui::colors::TEXT_DIM();
+        if (value > 0)
+            return ui::colors::POSITIVE();
+        if (value < 0)
+            return ui::colors::NEGATIVE();
+        return ui::colors::TEXT_PRIMARY();
+    };
+    const bool has_arrow = q.has_change || q.has_change_pct;
+    const double arrow_value = q.has_change ? q.change : q.change_pct;
+    const QString arrow = !has_arrow        ? QStringLiteral("—")
+                          : arrow_value > 0 ? QString(QChar(0x25B2))
+                          : arrow_value < 0 ? QString(QChar(0x25BC))
+                                            : QString(QChar(0x2022));
 
     price_label_->setText(fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")));
     arrow_label_->setText(arrow);
-    arrow_label_->setStyleSheet(QString("color: %1; font-size: 12px; background: transparent;").arg(color));
+    arrow_label_->setStyleSheet(
+        QString("color: %1; font-size: 12px; background: transparent;").arg(dir_color(has_arrow, arrow_value)));
 
-    change_label_->setText(QString("%1 (%2)").arg(
-        fincept::screens::quote_signed_text(q.has_change, q.change, 2),
-        fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))));
-    change_label_->setStyleSheet(
-        QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
+    const QString abs_text = fincept::screens::quote_signed_text(q.has_change, q.change, 2);
+    const QString pct_text =
+        fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"));
+    change_label_->setText(QStringLiteral("<span style='color:%1;'>%2</span> "
+                                          "<span style='color:%3;'>(%4)</span>")
+                               .arg(dir_color(q.has_change, q.change), abs_text.toHtmlEscaped(),
+                                    dir_color(q.has_change_pct, q.change_pct), pct_text.toHtmlEscaped()));
 
-    // A missing price placeholder must stay visibly unavailable; the change
-    // direction only tints a price that actually arrived.
-    price_label_->setStyleSheet(QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;")
-                                    .arg(q.has_price ? color : QString(ui::colors::TEXT_DIM())));
+    // A missing price placeholder stays unavailable; a valid price is tinted by
+    // whichever move field is present and is never dimmed because the other is
+    // missing.
+    const QString price_color = !q.has_price       ? QString(ui::colors::TEXT_DIM())
+                                : q.has_change     ? dir_color(true, q.change)
+                                : q.has_change_pct ? dir_color(true, q.change_pct)
+                                                   : QString(ui::colors::TEXT_PRIMARY());
+    price_label_->setStyleSheet(
+        QString("color: %1; font-size: 28px; font-weight: bold; background: transparent;").arg(price_color));
 
     // The batch quote snapshot carries last/change/high/low/volume but no
     // session open. Showing `high` here (as this did previously) prints a

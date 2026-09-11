@@ -54,6 +54,9 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     void on_export_csv();
     void on_import_csv();
     void refresh_theme();
+    /// Presence-aware user sorting: toggles/selects the sort column and
+    /// repopulates in the computed order (see populate_table).
+    void on_header_clicked(int column);
 
   private:
     void build_ui();
@@ -105,6 +108,12 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     ui::DataTable* table_ = nullptr;
     QLabel* empty_label_ = nullptr; // guidance shown in place of a blank grid
     QSplitter* splitter_ = nullptr;
+
+    // User sort state. The screen owns the row ordering so a missing reading
+    // stays last in BOTH directions; Qt's built-in item comparator would
+    // reverse that rule when the user selects descending.
+    int sort_column_ = -1;
+    Qt::SortOrder sort_order_ = Qt::DescendingOrder;
 
     /// Show/hide the empty-state guidance based on the current selection.
     void update_empty_state();

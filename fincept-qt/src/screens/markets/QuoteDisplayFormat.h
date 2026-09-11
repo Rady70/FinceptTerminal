@@ -62,6 +62,17 @@ inline QString quote_arrow_text(bool has, double value, int precision, const QSt
     return QStringLiteral("%1 %2%3").arg(arrow).arg(std::abs(value), 0, 'f', precision).arg(suffix);
 }
 
+/// Missing-last ordering for an optional numeric reading, independent of the
+/// table's sort direction: a missing reading never sorts above a present one in
+/// either order. Returns true when `a` should come before `b`.
+inline bool quote_missing_last_before(bool has_a, double a, bool has_b, double b, bool descending) {
+    if (has_a != has_b)
+        return has_a; // present first (missing last) in both directions
+    if (!has_a || a == b)
+        return false;
+    return descending ? a > b : a < b;
+}
+
 /// A volume cell. Missing stays the placeholder; a genuine zero is a reading
 /// and renders as "0" (format_compact_volume's "--" for <= 0 would make an
 /// actual zero volume indistinguishable from an absent one). A negative
