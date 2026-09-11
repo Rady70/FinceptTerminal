@@ -355,10 +355,10 @@ void QuantStatsView::update_metrics() {
         double pnl_pct = summary_.total_unrealized_pnl_percent;
         double day_pct = summary_.total_day_change_percent;
         rows.push_back({"", tr("Unrealized P&L %"), pct_str(pnl_pct) + pnl_partial_note, "--", pnl_pct >= 0});
-        rows.push_back({"", tr("Day Change %"),
-                        day_observed ? pct_str(day_pct) + (day_partial ? tr(" (partial)") : QString())
-                                     : QStringLiteral("--"),
-                        "--", day_observed && day_pct >= 0});
+        rows.push_back(
+            {"", tr("Day Change %"),
+             day_observed ? pct_str(day_pct) + (day_partial ? tr(" (partial)") : QString()) : QStringLiteral("--"),
+             "--", day_observed && day_pct >= 0});
         rows.push_back({"", tr("Total Positions"), QString::number(summary_.total_positions), "--", true});
         rows.push_back({"", tr("Gainers"), QString::number(summary_.gainers), "--", true});
         rows.push_back({"", tr("Losers"), QString::number(summary_.losers), "--", summary_.losers == 0});

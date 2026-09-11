@@ -123,7 +123,10 @@ void DataTable::set_cell_numeric(int row, int col, double value, bool has) {
     auto* numeric = new NumericTableWidgetItem(it->text(), value, has);
     numeric->setToolTip(it->toolTip());
     numeric->setForeground(it->foreground());
-    numeric->setTextAlignment(it->textAlignment());
+    // Copy the alignment through the stored role rather than the deprecated
+    // setTextAlignment(int) overload (Qt 6.4+ exposes a Qt::Alignment
+    // overload; the role copy works for either representation).
+    numeric->setData(Qt::TextAlignmentRole, it->data(Qt::TextAlignmentRole));
     numeric->setFont(it->font());
     setItem(row, col, numeric);
 }
