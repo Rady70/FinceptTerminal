@@ -260,9 +260,14 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         h.sector = asset.sector.isEmpty() ? SectorResolver::instance().sector_for(asset.symbol) : asset.sector;
 
         auto it = quote_map.find(asset.symbol);
-        const bool live_quote = it != quote_map.end() && it->has_price;
-        h.has_live_price = live_quote;
-        if (live_quote) {
+        // A STALE row is a cached value served after a failed refresh: it is
+        // explicitly not a current observation, so it can neither price the
+        // portfolio nor qualify a valuation snapshot. It is treated like any
+        // other missing quote (average-cost fallback, partial aggregate).
+        const bool current_quote =
+            it != quote_map.end() && it->has_price && it->status != QLatin1String(kQuoteStatusStale);
+        h.has_live_price = current_quote;
+        if (current_quote) {
             ++priced_positions;
             h.current_price = it->price;
             // Only a quote that actually carries a change adds to the day
@@ -274,10 +279,11 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
                 total_day += h.day_change * h.quantity;
                 total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
             }
+            h.has_day_change_percent = it->has_change_pct;
             h.day_change_percent = it->has_change_pct ? it->change_pct : 0.0;
         } else {
-            // Fallback to avg buy price if no quote (broker missed the symbol,
-            // or yfinance returned nothing).
+            // Fallback to avg buy price if no current quote (broker missed the
+            // symbol, yfinance returned nothing, or the cached row is stale).
             h.current_price = asset.avg_buy_price;
         }
 
@@ -288,12 +294,13 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         total_mv += h.market_value;
         total_cost += h.cost_basis;
 
-        // Classification requires a live price; an unpriced holding is neither
-        // a gainer nor a loser.
-        if (live_quote) {
-            if (h.unrealized_pnl >= 0)
+        // Classification requires a current price; an unpriced (or stale)
+        // holding is neither a gainer nor a loser. An exact zero P&L is
+        // neutral and is counted as neither.
+        if (current_quote) {
+            if (h.unrealized_pnl > 0)
                 summary.gainers++;
-            else
+            else if (h.unrealized_pnl < 0)
                 summary.losers++;
         }
 

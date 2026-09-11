@@ -379,17 +379,18 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
     bool alt = false;
     for (const auto& h : holdings) {
         const services::QuoteData* q = qmap.value(h.symbol, nullptr);
-        // An unpriced quote falls back to the holding's average cost (the same
-        // documented fallback PortfolioService uses) and must not be presented
-        // as a live $0.00 market value or a fabricated loss.
-        const bool priced = q && q->has_price;
+        // A stale cached row is a value served after a failed refresh — not a
+        // current price — so it falls into the same average-cost fallback as a
+        // missing quote and never counts as a priced/day-change observation.
+        const bool current = q && q->has_price && q->status != QLatin1String(services::kQuoteStatusStale);
+        const bool priced = current;
         if (priced)
             ++priced_count;
         const double price = priced ? q->price : h.avg_cost;
         const double value = price * h.shares;
         const double cost = h.avg_cost * h.shares;
         const double pnl = value - cost;
-        if (q && q->has_change) {
+        if (current && q->has_change) {
             day_pnl += q->change * h.shares;
             ++change_readings;
         }

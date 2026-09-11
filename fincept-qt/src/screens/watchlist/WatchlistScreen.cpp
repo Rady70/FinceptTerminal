@@ -681,9 +681,12 @@ void WatchlistScreen::rebuild_from_cache() {
             quotes.append(row_cache_.value(s.symbol));
     }
     if (quotes.isEmpty()) {
-        // No data yet — show placeholder rows in the watchlist's natural order.
+        // No data yet — placeholder rows still honour the active sort so the
+        // header indicator matches the visible order.
         table_->clear_data();
-        for (const auto& s : stocks_) {
+        const QVector<int> order = sorted_row_order({});
+        for (int idx : order) {
+            const auto& s = stocks_[idx];
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
         }
         update_empty_state();
@@ -764,6 +767,65 @@ void WatchlistScreen::on_header_clicked(int column) {
     rebuild_from_cache();
 }
 
+QVector<int> WatchlistScreen::sorted_row_order(const QMap<QString, services::QuoteData>& quote_map) const {
+    QVector<int> order(stocks_.size());
+    std::iota(order.begin(), order.end(), 0);
+    if (sort_column_ < 0)
+        return order;
+
+    // One key per row, built from the *displayed* name and the presence-aware
+    // numeric reading for the active column. An empty quote map (no cached
+    // quotes) still yields keys, so the placeholder view honours SYMBOL/NAME
+    // sorting instead of silently falling back to natural order.
+    QVector<fincept::screens::QuoteSortKey> keys;
+    keys.reserve(stocks_.size());
+    for (const auto& s : stocks_) {
+        fincept::screens::QuoteSortKey key;
+        key.symbol = s.symbol;
+        const auto it = quote_map.constFind(s.symbol);
+        const services::QuoteData* q = it == quote_map.constEnd() ? nullptr : &it.value();
+        key.name = fincept::screens::quote_watchlist_row_name(q ? q->name : QString(), s.name);
+        if (q) {
+            switch (sort_column_) {
+                case 2:
+                    key.has_value = q->has_price;
+                    key.value = q->price;
+                    break;
+                case 3:
+                    key.has_value = q->has_change;
+                    key.value = q->change;
+                    break;
+                case 4:
+                    key.has_value = q->has_change_pct;
+                    key.value = q->change_pct;
+                    break;
+                case 5:
+                    key.has_value = q->has_high;
+                    key.value = q->high;
+                    break;
+                case 6:
+                    key.has_value = q->has_low;
+                    key.value = q->low;
+                    break;
+                case 7:
+                    key.has_value = q->has_volume && q->volume >= 0;
+                    key.value = q->volume;
+                    break;
+                default:
+                    break;
+            }
+        }
+        keys.append(key);
+    }
+
+    const int column = sort_column_;
+    const bool descending = sort_order_ == Qt::DescendingOrder;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return fincept::screens::quote_sort_before(column, descending, keys[a], keys[b]);
+    });
+    return order;
+}
+
 void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes) {
     table_->clear_data();
 
@@ -773,74 +835,9 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         quote_map[q.symbol] = q;
     }
 
-    // Sort the row order here rather than delegating to Qt's item comparator:
-    // a missing reading must stay after present ones in both ascending and
-    // descending order, and only a screen-owned comparator can express that.
-    QVector<int> order(stocks_.size());
-    std::iota(order.begin(), order.end(), 0);
-    if (sort_column_ >= 0) {
-        const int column = sort_column_;
-        const bool descending = sort_order_ == Qt::DescendingOrder;
-        auto quote_at = [&](int idx) -> const services::QuoteData* {
-            const auto it = quote_map.constFind(stocks_[idx].symbol);
-            return it == quote_map.constEnd() ? nullptr : &it.value();
-        };
-        auto numeric_field = [](int col, const services::QuoteData* q, bool& has, double& value) {
-            has = false;
-            value = 0.0;
-            if (!q)
-                return;
-            switch (col) {
-                case 2:
-                    has = q->has_price;
-                    value = q->price;
-                    break;
-                case 3:
-                    has = q->has_change;
-                    value = q->change;
-                    break;
-                case 4:
-                    has = q->has_change_pct;
-                    value = q->change_pct;
-                    break;
-                case 5:
-                    has = q->has_high;
-                    value = q->high;
-                    break;
-                case 6:
-                    has = q->has_low;
-                    value = q->low;
-                    break;
-                case 7:
-                    has = q->has_volume && q->volume >= 0;
-                    value = q->volume;
-                    break;
-                default:
-                    break;
-            }
-        };
-        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-            if (column <= 1) {
-                const QString& as = column == 0 ? stocks_[a].symbol : stocks_[a].name;
-                const QString& bs = column == 0 ? stocks_[b].symbol : stocks_[b].name;
-                const int c = QString::compare(as, bs, Qt::CaseInsensitive);
-                if (c == 0)
-                    return a < b;
-                return descending ? c > 0 : c < 0;
-            }
-            bool ha = false;
-            bool hb = false;
-            double va = 0.0;
-            double vb = 0.0;
-            numeric_field(column, quote_at(a), ha, va);
-            numeric_field(column, quote_at(b), hb, vb);
-            if (ha != hb)
-                return ha; // missing-last in both directions
-            if (!ha || va == vb)
-                return a < b;
-            return fincept::screens::quote_missing_last_before(ha, va, hb, vb, descending);
-        });
-    }
+    // The screen owns the row order (see sorted_row_order): a missing reading
+    // stays after present ones in both ascending and descending order.
+    const QVector<int> order = sorted_row_order(quote_map);
 
     for (int idx : order) {
         const auto& s = stocks_[idx];

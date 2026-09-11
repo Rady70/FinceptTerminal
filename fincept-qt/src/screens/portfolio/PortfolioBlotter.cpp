@@ -675,34 +675,52 @@ void PortfolioBlotter::populate_table() {
         // QTY
         set_cell(kColQty, format_value(h.quantity, h.quantity == std::floor(h.quantity) ? 0 : 2));
 
-        // LAST (price)
-        set_cell(kColLast, format_value(h.current_price));
+        // LAST (price) and MKT VAL. The service values an unpriced (missing or
+        // stale) holding at average cost; presenting that under LAST/MKT VAL
+        // would be a fabricated reading, so those cells read unavailable.
+        if (h.has_live_price) {
+            set_cell(kColLast, format_value(h.current_price));
+            set_cell(kColMktVal, format_value(h.market_value), ui::colors::WARNING);
+        } else {
+            set_cell(kColLast, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set_cell(kColMktVal, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+        }
 
         // AVG COST
         set_cell(kColAvgCost, format_value(h.avg_buy_price));
 
-        // MKT VAL
-        set_cell(kColMktVal, format_value(h.market_value), ui::colors::WARNING);
-
         // COST BASIS
         set_cell(kColCostBasis, format_value(h.cost_basis));
 
-        // P&L
-        const char* pnl_color = h.unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        set_cell(kColPnl, QString("%1%2").arg(h.unrealized_pnl >= 0 ? "+" : "").arg(format_value(h.unrealized_pnl)),
-                 pnl_color);
+        // P&L and P&L%: unavailable without a current price (zero there would
+        // be an artifact of the fallback, not a flat position). Zero is neutral.
+        if (h.has_live_price) {
+            const char* pnl_color = h.unrealized_pnl > 0   ? ui::colors::POSITIVE
+                                    : h.unrealized_pnl < 0 ? ui::colors::NEGATIVE
+                                                           : ui::colors::TEXT_PRIMARY;
+            set_cell(kColPnl, QString("%1%2").arg(h.unrealized_pnl > 0 ? "+" : "").arg(format_value(h.unrealized_pnl)),
+                     pnl_color);
+            set_cell(kColPnlPct,
+                     QString("%1%2%")
+                         .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
+                         .arg(format_value(h.unrealized_pnl_percent)),
+                     pnl_color);
+        } else {
+            set_cell(kColPnl, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set_cell(kColPnlPct, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+        }
 
-        // P&L%
-        set_cell(
-            kColPnlPct,
-            QString("%1%2%").arg(h.unrealized_pnl_percent >= 0 ? "+" : "").arg(format_value(h.unrealized_pnl_percent)),
-            pnl_color);
-
-        // CHG%
-        const char* chg_color = h.day_change_percent >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        set_cell(kColChgPct,
-                 QString("%1%2%").arg(h.day_change_percent >= 0 ? "+" : "").arg(format_value(h.day_change_percent)),
-                 chg_color);
+        // CHG%: unavailable when the percent was not observed.
+        if (h.has_day_change_percent) {
+            const char* chg_color = h.day_change_percent > 0   ? ui::colors::POSITIVE
+                                    : h.day_change_percent < 0 ? ui::colors::NEGATIVE
+                                                               : ui::colors::TEXT_PRIMARY;
+            set_cell(kColChgPct,
+                     QString("%1%2%").arg(h.day_change_percent > 0 ? "+" : "").arg(format_value(h.day_change_percent)),
+                     chg_color);
+        } else {
+            set_cell(kColChgPct, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+        }
 
         // TREND — show loaded data, a pending shimmer, or a failure dash.
         // Reuse the row's existing sparkline widget when there is one.

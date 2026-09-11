@@ -307,12 +307,16 @@ void ReportsView::update_summary() {
             set(5, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
         } else {
             set(3, fmt(h.current_price));
-            const char* pc = h.unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
+            // Zero is neutral: it is not a gain, so it gets no "+" and the
+            // primary colour rather than the positive one.
+            const char* pc = h.unrealized_pnl > 0   ? ui::colors::POSITIVE
+                             : h.unrealized_pnl < 0 ? ui::colors::NEGATIVE
+                                                    : ui::colors::TEXT_PRIMARY;
             set(4,
                 QString("%1%2 (%3%4%)")
-                    .arg(h.unrealized_pnl >= 0 ? "+" : "")
+                    .arg(h.unrealized_pnl > 0 ? "+" : "")
                     .arg(fmt(h.unrealized_pnl))
-                    .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
+                    .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
                     .arg(fmt(h.unrealized_pnl_percent)),
                 pc);
             set(5, QString("%1%").arg(fmt(h.weight, 1)));
@@ -377,8 +381,12 @@ void ReportsView::update_attribution() {
 
         double contribution = (total_pnl != 0) ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0;
 
-        const char* ret_color = h.unrealized_pnl_percent >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        const char* contrib_color = contribution >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
+        const char* ret_color = h.unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
+                                : h.unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
+                                                               : ui::colors::TEXT_PRIMARY;
+        const char* contrib_color = contribution > 0   ? ui::colors::POSITIVE
+                                    : contribution < 0 ? ui::colors::NEGATIVE
+                                                       : ui::colors::TEXT_PRIMARY;
         QString status = h.unrealized_pnl_percent > 5    ? tr("OUTPERFORM")
                          : h.unrealized_pnl_percent < -5 ? tr("UNDERPERFORM")
                                                          : tr("NEUTRAL");
@@ -390,10 +398,10 @@ void ReportsView::update_attribution() {
         set(1, QString("%1%").arg(QString::number(h.weight, 'f', 1)));
         set(2,
             QString("%1%2%")
-                .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
+                .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
                 .arg(QString::number(h.unrealized_pnl_percent, 'f', 2)),
             ret_color);
-        set(3, QString("%1%2%").arg(contribution >= 0 ? "+" : "").arg(QString::number(contribution, 'f', 1)),
+        set(3, QString("%1%2%").arg(contribution > 0 ? "+" : "").arg(QString::number(contribution, 'f', 1)),
             contrib_color);
         set(4, QString("%1 %2").arg(currency_, QString::number(h.unrealized_pnl, 'f', 2)), ret_color);
         set(5, status, status_color);

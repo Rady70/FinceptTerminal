@@ -77,9 +77,13 @@ struct HoldingWithQuote {
     // Per-holding observation state. When has_live_price is false, current_price
     // and market_value are the average-cost fallback, P&L is zero only because
     // the price is unknown, and weight includes the fallback value — a consumer
-    // that shows these fields must say so (or show them as unavailable).
+    // that shows these fields must say so (or show them as unavailable). A
+    // stale cached quote is not a live price. has_day_change_percent records
+    // whether the percentage was actually observed (day_change_percent stays
+    // 0.0 otherwise and must not be read as a real flat move).
     bool has_live_price = false;
     bool has_day_change = false;
+    bool has_day_change_percent = false;
 };
 
 struct PortfolioSummary {

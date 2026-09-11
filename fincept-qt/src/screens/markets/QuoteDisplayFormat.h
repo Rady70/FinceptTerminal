@@ -73,6 +73,40 @@ inline bool quote_missing_last_before(bool has_a, double a, bool has_b, double b
     return descending ? a > b : a < b;
 }
 
+/// The name a watchlist row actually displays: the provider's name when it
+/// supplied one, otherwise the locally stored name. Sorting must use this same
+/// string, or the table would order by a value the user cannot see.
+inline QString quote_watchlist_row_name(const QString& provider_name, const QString& stored_name) {
+    return provider_name.isEmpty() ? stored_name : provider_name;
+}
+
+/// One watchlist row's sort inputs. `name` is the *displayed* name; a numeric
+/// column's reading is present only when `has_value` is true (a missing cell
+/// carries no number, so it sorts last in either direction).
+struct QuoteSortKey {
+    QString symbol;
+    QString name;
+    bool has_value = false;
+    double value = 0.0;
+};
+
+/// Comparator for the watchlist table's screen-owned ordering. Returns true
+/// when `a` should come before `b`; missing numeric readings stay last in both
+/// ascending and descending order. `column`: 0 SYMBOL, 1 NAME, 2..7 numerics.
+inline bool quote_sort_before(int column, bool descending, const QuoteSortKey& a, const QuoteSortKey& b) {
+    if (column <= 1) {
+        const QString& as = column == 0 ? a.symbol : a.name;
+        const QString& bs = column == 0 ? b.symbol : b.name;
+        const int c = QString::compare(as, bs, Qt::CaseInsensitive);
+        return descending ? c > 0 : c < 0;
+    }
+    if (a.has_value != b.has_value)
+        return a.has_value;
+    if (!a.has_value || a.value == b.value)
+        return false;
+    return descending ? a.value > b.value : a.value < b.value;
+}
+
 /// A volume cell. Missing stays the placeholder; a genuine zero is a reading
 /// and renders as "0" (format_compact_volume's "--" for <= 0 would make an
 /// actual zero volume indistinguishable from an absent one). A negative

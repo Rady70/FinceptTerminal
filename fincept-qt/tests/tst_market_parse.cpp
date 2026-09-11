@@ -78,6 +78,7 @@ class TstMarketParse : public QObject {
     void report_quote_keeps_missing_and_zero_apart();
     void market_cell_format_keeps_missing_and_zero_apart();
     void missing_readings_sort_last_in_both_directions();
+    void watchlist_sort_seam_uses_display_rules();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -486,6 +487,52 @@ void TstMarketParse::missing_readings_sort_last_in_both_directions() {
     // Two missing readings are equivalent in both directions.
     QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, false));
     QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, true));
+}
+
+void TstMarketParse::watchlist_sort_seam_uses_display_rules() {
+    using fincept::screens::QuoteSortKey;
+    using fincept::screens::quote_sort_before;
+    using fincept::screens::quote_watchlist_row_name;
+
+    // The displayed name is the provider name when present; sorting must use
+    // that same string rather than the hidden stored name.
+    QCOMPARE(quote_watchlist_row_name(QStringLiteral("Apple Inc."), QStringLiteral("AAPL stored")),
+             QStringLiteral("Apple Inc."));
+    QCOMPARE(quote_watchlist_row_name(QString(), QStringLiteral("AAPL stored")), QStringLiteral("AAPL stored"));
+
+    auto row = [](const QString& symbol, const QString& name, bool has, double value) {
+        QuoteSortKey k;
+        k.symbol = symbol;
+        k.name = name;
+        k.has_value = has;
+        k.value = value;
+        return k;
+    };
+
+    // NAME sorting follows the provided display name.
+    const QuoteSortKey zebra = row(QStringLiteral("ZZZ"), QStringLiteral("Zebra Corp"), false, 0.0);
+    const QuoteSortKey apple = row(QStringLiteral("AAA"), QStringLiteral("Apple Inc."), false, 0.0);
+    QVERIFY(quote_sort_before(1, false, apple, zebra));
+    QVERIFY(!quote_sort_before(1, false, zebra, apple));
+    QVERIFY(quote_sort_before(0, false, apple, zebra));
+
+    // Numeric primary column: missing stays last in both directions, and a
+    // real zero outranks missing (it is an observation).
+    const QuoteSortKey present5 = row(QStringLiteral("P5"), QString(), true, 5.0);
+    const QuoteSortKey present0 = row(QStringLiteral("P0"), QString(), true, 0.0);
+    const QuoteSortKey missing = row(QStringLiteral("M"), QString(), false, 0.0);
+    QVERIFY(quote_sort_before(2, false, present5, missing));
+    QVERIFY(quote_sort_before(2, true, present5, missing));
+    QVERIFY(!quote_sort_before(2, false, missing, present5));
+    QVERIFY(!quote_sort_before(2, true, missing, present5));
+    QVERIFY(quote_sort_before(2, true, present5, present0));
+    QVERIFY(quote_sort_before(2, false, present0, present5));
+    QVERIFY(quote_sort_before(2, true, present0, missing));
+
+    // Two missing readings are equivalent; stable sort keeps the stored order.
+    const QuoteSortKey missing2 = row(QStringLiteral("M2"), QString(), false, 0.0);
+    QVERIFY(!quote_sort_before(2, false, missing, missing2));
+    QVERIFY(!quote_sort_before(2, true, missing, missing2));
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)
