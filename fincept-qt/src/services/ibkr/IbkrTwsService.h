@@ -42,6 +42,12 @@ class IbkrTwsService : public QObject {
     /// `MARKETLAB_IBKR_CONFIG` override).
     IbkrTwsConfig config() const;
 
+    /// True only when the symbol is explicitly listed in the local
+    /// configuration's `symbols`. Automatic consumers (the watchlist action and
+    /// the Equity Research candle route) use this so the optional provider is
+    /// never applied to instruments the Phase 5 qualification did not cover.
+    bool routes_symbol(const QString& symbol) const;
+
     /// Connect, reach readiness, report runtime identity, disconnect.
     void probe(ProbeCallback cb);
     /// Same, against an explicit non-secret endpoint. Used by the qualification

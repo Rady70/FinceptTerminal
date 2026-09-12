@@ -62,14 +62,18 @@ class TstIbkrParse : public QObject {
   private slots:
     void identity_reads_observed_runtime_facts();
     void classification_keeps_failed_feeds_distinct();
+    void classification_carries_both_attempt_diagnostics();
     void quote_maps_last_against_previous_close();
     void quote_missing_last_is_not_a_price();
+    void quote_zero_or_negative_last_is_not_a_price();
+    void quote_zero_close_never_becomes_a_change();
     void quote_missing_close_has_no_change();
     void quote_volume_zero_is_a_reading_and_negative_is_not();
     void quote_status_preserves_the_observed_feed();
     void quote_result_carries_the_symbol_it_answers_for();
     void history_drops_bars_without_timestamp_or_close();
     void history_keeps_presence_and_rejects_negative_volume();
+    void history_rejects_zero_prices_and_nonpositive_ohlc();
     void failure_envelope_becomes_a_typed_failure();
     void probe_payload_maps_connection_readiness_and_pin();
 };
@@ -120,6 +124,34 @@ void TstIbkrParse::classification_keeps_failed_feeds_distinct() {
     const IbkrTwsClassification timed_out = ibkr_classification_from_json(
         obj_from(R"({"usable": false, "status": "TIMEOUT", "entitlement": "UNKNOWN", "timed_out": true})"));
     QVERIFY(timed_out.timed_out);
+
+    const IbkrTwsClassification values_invalid = ibkr_classification_from_json(
+        obj_from(R"({"usable": false, "status": "VALUES_INVALID", "entitlement": "UNKNOWN", "validation_reason": "BAR_OHLC_RELATION_INVALID"})"));
+    QCOMPARE(values_invalid.status, QStringLiteral("VALUES_INVALID"));
+    QCOMPARE(values_invalid.validation_reason, QStringLiteral("BAR_OHLC_RELATION_INVALID"));
+}
+
+void TstIbkrParse::classification_carries_both_attempt_diagnostics() {
+    const IbkrTwsClassification classification = ibkr_classification_from_json(obj_from(R"({
+        "usable": false,
+        "feed": null,
+        "status": "NOT_ENTITLED",
+        "entitlement": "BLOCKED",
+        "value_present": false,
+        "live_market_data_status": "NOT_ENTITLED",
+        "live_usable_market_data": "BLOCKED_FOR_ENTITLEMENT",
+        "delayed_attempted": true,
+        "delayed_market_data_status": "ERROR",
+        "delayed_usable_market_data": "FAIL",
+        "delayed_error_code": 322,
+        "delayed_error_message": "Error processing request"
+    })"));
+    QVERIFY(!classification.usable);
+    QCOMPARE(classification.live_status, QStringLiteral("NOT_ENTITLED"));
+    QVERIFY(classification.delayed_attempted);
+    QCOMPARE(classification.delayed_status, QStringLiteral("ERROR"));
+    QCOMPARE(classification.delayed_error_code.toInt(), 322);
+    QCOMPARE(classification.delayed_error_message, QStringLiteral("Error processing request"));
 }
 
 void TstIbkrParse::quote_maps_last_against_previous_close() {
@@ -160,6 +192,32 @@ void TstIbkrParse::quote_missing_close_has_no_change() {
     QVERIFY(quote.has_price);
     QVERIFY(!quote.has_change);
     QVERIFY(!quote.has_change_pct);
+}
+
+void TstIbkrParse::quote_zero_or_negative_last_is_not_a_price() {
+    // A zero or negative last is not a reading; it must not appear in PRICE or
+    // produce a directional change even if a payload reaches this boundary
+    // without the wrapper's validation layer.
+    const QuoteData zero = ibkr_quote_from_snapshot(obj_from(R"({"last": 0.0, "close": 225.0})"), usable("DELAYED"), 1);
+    QVERIFY(!zero.has_price);
+    QVERIFY(!zero.has_change);
+    QCOMPARE(zero.price, 0.0);
+
+    const QuoteData negative =
+        ibkr_quote_from_snapshot(obj_from(R"({"last": -2.0, "close": 225.0})"), usable("DELAYED"), 1);
+    QVERIFY(!negative.has_price);
+    QVERIFY(!negative.has_change);
+}
+
+void TstIbkrParse::quote_zero_close_never_becomes_a_change() {
+    // The reference snapshot validator rejects a non-positive close; without
+    // it, last=100, close=0 would fabricate change=+100.
+    const QuoteData quote =
+        ibkr_quote_from_snapshot(obj_from(R"({"last": 100.0, "close": 0.0})"), usable("DELAYED"), 1);
+    QVERIFY(quote.has_price);
+    QVERIFY(!quote.has_change);
+    QVERIFY(!quote.has_change_pct);
+    QCOMPARE(quote.change, 0.0);
 }
 
 void TstIbkrParse::quote_volume_zero_is_a_reading_and_negative_is_not() {
@@ -217,6 +275,31 @@ void TstIbkrParse::history_drops_bars_without_timestamp_or_close() {
     QVERIFY(points.first().has_high);
     QVERIFY(points.first().has_low);
     QVERIFY(points.first().has_volume);
+}
+
+void TstIbkrParse::history_rejects_zero_prices_and_nonpositive_ohlc() {
+    const QJsonArray bars = array_from(R"([
+        {"timestamp": 0, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.0, "volume": 1},
+        {"timestamp": 1785974400, "open": 1.0, "high": 1.2, "low": 0.9, "close": 0.0, "volume": 1},
+        {"timestamp": 1786060800, "open": 0.0, "high": 1.2, "low": 0.9, "close": 1.1, "volume": 1},
+        {"timestamp": 1786147200, "open": -1.0, "high": 1.2, "low": 0.9, "close": 1.1, "volume": 1},
+        {"timestamp": 1786233600, "open": 1.0, "high": 1.2, "low": 0.9, "close": 1.1, "volume": 1}
+    ])");
+    int dropped = 0;
+    const QVector<HistoryPoint> points = ibkr_history_points(bars, &dropped);
+    // A non-positive timestamp or close is not a price point and drops the
+    // bar; a non-positive open/high/low keeps the bar but records the field as
+    // absent, never as a 0.0 reading.
+    QCOMPARE(points.size(), 3);
+    QCOMPARE(dropped, 2);
+    QVERIFY(!points[0].has_open);
+    QCOMPARE(points[0].open, 0.0);
+    QVERIFY(!points[1].has_open);
+    QCOMPARE(points[1].open, 0.0);
+    QCOMPARE(points[2].timestamp, Q_INT64_C(1786233600));
+    QVERIFY(points[2].has_open);
+    QVERIFY(points[2].has_high);
+    QVERIFY(points[2].has_low);
 }
 
 void TstIbkrParse::history_keeps_presence_and_rejects_negative_volume() {

@@ -24,6 +24,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 namespace fincept::services::ibkr {
@@ -43,6 +44,11 @@ struct IbkrTwsConfig {
     int port = 7496;
     int client_id = 71;
     QString tws_version;
+    /// Instruments explicitly routed to IBKR. Empty means the optional
+    /// provider is not selected for any symbol, so no automatic consumer
+    /// routes to it; the qualification self-test and explicit API calls may
+    /// still name a symbol directly.
+    QStringList symbols;
 
     bool is_configured() const { return !trading_desk_root.trimmed().isEmpty(); }
 };
@@ -70,7 +76,7 @@ struct IbkrTwsIdentity {
 struct IbkrTwsClassification {
     bool usable = false;
     QString feed;        ///< LIVE | FROZEN | DELAYED | DELAYED_FROZEN | HISTORICAL
-    QString status;      ///< feed name when usable, else NOT_ENTITLED / NO_VALUE / ERROR / TIMEOUT / NO_DATA
+    QString status;      ///< feed name when usable, else NOT_ENTITLED / NO_VALUE / ERROR / TIMEOUT / NO_DATA / VALUES_INVALID / STALE
     QString entitlement; ///< AVAILABLE | DELAYED | BLOCKED | UNKNOWN
     bool value_present = false;
     bool delayed_fallback = false;
@@ -78,6 +84,17 @@ struct IbkrTwsClassification {
     QJsonValue error_code;
     QString error_message;
     QString error_class;
+    QString validation_reason; ///< wrapper value/identity validation token, "OK" when it passed
+    // Both snapshot attempts stay visible: a deciding live entitlement block
+    // must not hide a genuine delayed-attempt failure.
+    QString live_status;
+    QString live_usable;
+    bool delayed_attempted = false;
+    QString delayed_status;
+    QString delayed_usable;
+    QString delayed_validation_reason;
+    QJsonValue delayed_error_code;
+    QString delayed_error_message;
 };
 
 struct IbkrTwsProbeResult {
@@ -153,6 +170,15 @@ inline IbkrTwsClassification ibkr_classification_from_json(const QJsonObject& o)
     classification.error_code = o.value(QLatin1String("error_code"));
     classification.error_message = o.value(QLatin1String("error_message")).toString();
     classification.error_class = o.value(QLatin1String("error_class")).toString();
+    classification.validation_reason = o.value(QLatin1String("validation_reason")).toString();
+    classification.live_status = o.value(QLatin1String("live_market_data_status")).toString();
+    classification.live_usable = o.value(QLatin1String("live_usable_market_data")).toString();
+    classification.delayed_attempted = o.value(QLatin1String("delayed_attempted")).toBool(false);
+    classification.delayed_status = o.value(QLatin1String("delayed_market_data_status")).toString();
+    classification.delayed_usable = o.value(QLatin1String("delayed_usable_market_data")).toString();
+    classification.delayed_validation_reason = o.value(QLatin1String("delayed_validation_reason")).toString();
+    classification.delayed_error_code = o.value(QLatin1String("delayed_error_code"));
+    classification.delayed_error_message = o.value(QLatin1String("delayed_error_message")).toString();
     return classification;
 }
 
@@ -172,17 +198,25 @@ inline QuoteData ibkr_quote_from_snapshot(const QJsonObject& snapshot, const Ibk
     out.retrieved_at = retrieved_at;
     out.status = classification.status.isEmpty() ? QStringLiteral("UNKNOWN") : classification.status;
 
+    // The wrapper's validation layer already blocks a non-positive/non-finite
+    // price, but this boundary must not turn a supplied zero into a reading even
+    // if a future payload reaches it without that layer: a price of 0 is not a
+    // price, and close=0 must never produce change=last.
     take_num(snapshot, "last", out.price, out.has_price);
+    if (out.has_price && !(out.price > 0.0)) {
+        out.has_price = false;
+        out.price = 0.0;
+    }
     double close = 0.0;
     bool has_close = false;
     take_num(snapshot, "close", close, has_close);
+    if (has_close && !(close > 0.0))
+        has_close = false;
     if (out.has_price && has_close) {
         out.change = out.price - close;
         out.has_change = true;
-        if (close != 0.0) {
-            out.change_pct = out.change / close * 100.0;
-            out.has_change_pct = true;
-        }
+        out.change_pct = out.change / close * 100.0;
+        out.has_change_pct = true;
     }
     double volume = 0.0;
     if (take_volume(snapshot, volume, out.has_volume))
@@ -193,9 +227,10 @@ inline QuoteData ibkr_quote_from_snapshot(const QJsonObject& snapshot, const Ibk
 }
 
 /// Bars → HistoryPoint, dropping (not zero-filling) a bar that is not a price
-/// point. A bar without a timestamp has no position on an axis and a bar
-/// without a close is not a price; both are counted in `dropped` so the caller
-/// can report a partial series truthfully.
+/// point. A bar without a positive timestamp has no position on an axis and a
+/// bar without a positive close is not a price; both are counted in `dropped`
+/// so the caller can report a partial series truthfully. Zero or negative
+/// open/high/low are treated as absent, never plotted as readings.
 inline QVector<HistoryPoint> ibkr_history_points(const QJsonArray& bars, int* dropped = nullptr) {
     QVector<HistoryPoint> points;
     points.reserve(bars.size());
@@ -206,16 +241,26 @@ inline QVector<HistoryPoint> ibkr_history_points(const QJsonArray& bars, int* dr
             continue;
         }
         const QJsonObject bar = value.toObject();
-        if (!bar.value(QLatin1String("timestamp")).isDouble() || !bar.value(QLatin1String("close")).isDouble()) {
+        const double timestamp = bar.value(QLatin1String("timestamp")).toDouble(0.0);
+        const double close = bar.value(QLatin1String("close")).toDouble(0.0);
+        if (!bar.value(QLatin1String("timestamp")).isDouble() || !bar.value(QLatin1String("close")).isDouble() ||
+            !(timestamp > 0.0) || !(close > 0.0)) {
             ++dropped_count;
             continue;
         }
         HistoryPoint point;
-        point.timestamp = static_cast<qint64>(bar.value(QLatin1String("timestamp")).toDouble());
-        point.close = bar.value(QLatin1String("close")).toDouble();
-        take_num(bar, "open", point.open, point.has_open);
-        take_num(bar, "high", point.high, point.has_high);
-        take_num(bar, "low", point.low, point.has_low);
+        point.timestamp = static_cast<qint64>(timestamp);
+        point.close = close;
+        auto take_positive = [&bar](const char* key, double& out, bool& has) {
+            take_num(bar, key, out, has);
+            if (has && !(out > 0.0)) {
+                has = false;
+                out = 0.0;
+            }
+        };
+        take_positive("open", point.open, point.has_open);
+        take_positive("high", point.high, point.has_high);
+        take_positive("low", point.low, point.has_low);
         double volume = 0.0;
         if (take_volume(bar, volume, point.has_volume))
             point.volume = static_cast<qint64>(volume);

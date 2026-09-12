@@ -146,6 +146,8 @@ class IBKRTWSReadOnlyAdapter:
         return True
 
     def disconnect(self) -> None:
+        if _scenario() == "disconnect_fail":
+            return
         self._connected = False
 
     def get_runtime_metadata(self) -> dict:
@@ -168,6 +170,20 @@ class IBKRTWSReadOnlyAdapter:
             return []
         if scenario == "contract_ambiguous":
             return [_contract_row(1, contract.symbol), _contract_row(2, contract.symbol)]
+        if scenario == "contract_wrong_currency":
+            row = _contract_row(265598, contract.symbol)
+            row["currency"] = "EUR"
+            return [row]
+        if scenario == "contract_wrong_type":
+            row = _contract_row(265598, contract.symbol)
+            row["security_type"] = "OPT"
+            return [row]
+        if scenario == "contract_zero_conid":
+            return [_contract_row(0, contract.symbol)]
+        if scenario == "contract_missing_exchange":
+            row = _contract_row(265598, contract.symbol)
+            row["exchange"] = ""
+            return [row]
         return [_contract_row(265598, contract.symbol)]
 
     def set_market_data_type(self, market_data_type: int) -> None:
@@ -204,6 +220,46 @@ class IBKRTWSReadOnlyAdapter:
                 "ibkr_error_message": "Error processing request",
                 "ibkr_error_class": "ERROR",
             }
+        if scenario == "crossed_book":
+            result = _delayed_pass()
+            result.update({"bid": 227.0, "ask": 226.0})
+            return result
+        if scenario == "zero_price":
+            result = _delayed_pass()
+            result.update({"last": 0.0})
+            return result
+        if scenario == "negative_price":
+            result = _delayed_pass()
+            result.update({"bid": -2.0})
+            return result
+        if scenario == "non_finite":
+            result = _delayed_pass()
+            result["last"] = float("nan")
+            return result
+        if scenario == "negative_size":
+            result = _delayed_pass()
+            result.update({"volume": -5.0})
+            return result
+        if scenario == "error_with_values":
+            result = _delayed_pass()
+            result.update({"market_data_status": "ERROR", "usable_market_data": "FAIL",
+                           "ibkr_error_code": 322, "ibkr_error_message": "Error processing request",
+                           "ibkr_error_class": "ERROR"})
+            return result
+        if scenario == "live_blocked_delayed_error":
+            if self._market_data_type == 1:
+                return _blocked(1)
+            return {
+                "request_transport": "PASS",
+                "market_data_type": 3,
+                "market_data_entitlement": "UNKNOWN",
+                "usable_market_data": "FAIL",
+                "market_data_status": "ERROR",
+                "value_present": False,
+                "ibkr_error_code": 322,
+                "ibkr_error_message": "Error processing request",
+                "ibkr_error_class": "ERROR",
+            }
         if scenario == "missing_fields":
             return {
                 "request_transport": "PASS",
@@ -234,12 +290,23 @@ class IBKRTWSReadOnlyAdapter:
             )
         if scenario == "conid_check" and getattr(contract, "conId", 0) != 265598:
             raise IBKRRequestError("history did not use the resolved conId: %r" % getattr(contract, "conId", None))
-        return [
+        rows = [
             {"date": "20260806", "open": 224.5, "high": 227.0, "low": 223.9,
              "close": 226.0, "volume": 1000.5},
             {"date": "20260807", "open": 226.0, "high": 228.4, "low": 225.1,
              "close": 227.3, "volume": 1100.0},
         ]
+        if scenario == "history_zero_close":
+            rows[1]["close"] = 0.0
+        elif scenario == "history_crossed_ohlc":
+            rows[1]["high"] = 224.0
+        elif scenario == "history_duplicate_dates":
+            rows[1]["date"] = rows[0]["date"]
+        elif scenario == "history_future":
+            rows[1]["date"] = "20991231"
+        elif scenario == "history_negative_volume":
+            rows[1]["volume"] = -1.0
+        return rows
 '''
 
 
@@ -371,6 +438,19 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertEqual(payload["failure"]["type"], "IBKR_CONTRACT_AMBIGUOUS")
         self.assertEqual(payload["failure"]["details"]["con_ids"], [1, 2])
 
+    def test_contract_identity_constraints_are_enforced(self) -> None:
+        for scenario, reason in (
+            ("contract_wrong_currency", "CURRENCY_MISMATCH"),
+            ("contract_wrong_type", "SECURITY_TYPE_UNSUPPORTED"),
+            ("contract_zero_conid", "CONID_INVALID"),
+            ("contract_missing_exchange", "EXCHANGE_MISSING"),
+        ):
+            with self.subTest(scenario=scenario):
+                code, payload = self._run(self._write_config(), "contract", "AAPL", scenario=scenario)
+                self.assertEqual(code, 1)
+                self.assertEqual(payload["failure"]["type"], "IBKR_CONTRACT_IDENTITY_INVALID")
+                self.assertEqual(payload["failure"]["details"]["reason"], reason)
+
     def test_snapshot_live_pass_preserves_live_classification(self) -> None:
         code, payload = self._run(self._write_config(), "snapshot", "AAPL", scenario="live")
         self.assertEqual(code, 0, payload)
@@ -433,6 +513,41 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertNotIn("volume", payload["quote"])
         self.assertNotIn("last", payload.get("quote", {}))
 
+    def test_snapshot_value_validation_blocks_bad_values(self) -> None:
+        # The adapter reports transport/lifecycle; it does not reject crossed
+        # books, zero/negative/non-finite prices, or negative sizes. The wrapper
+        # must, exactly as the reference qualification did.
+        for scenario in ("crossed_book", "zero_price", "negative_price", "non_finite",
+                         "negative_size", "error_with_values"):
+            with self.subTest(scenario=scenario):
+                code, payload = self._run(self._write_config(), "snapshot", "AAPL", scenario=scenario)
+                self.assertEqual(code, 0, payload)
+                self.assertFalse(payload["classification"]["usable"])
+                self.assertEqual(payload["classification"]["status"], "ERROR")
+                self.assertEqual(payload["quote"], {})
+                self.assertEqual(len(payload["attempts"]), 1)
+
+    def test_snapshot_blocked_live_still_exposes_a_delayed_failure(self) -> None:
+        # A genuine delayed-attempt ERROR must not be hidden behind the live
+        # NOT_ENTITLED decision.
+        code, payload = self._run(
+            self._write_config(), "snapshot", "AAPL", scenario="live_blocked_delayed_error"
+        )
+        self.assertEqual(code, 0, payload)
+        self.assertFalse(payload["classification"]["usable"])
+        self.assertEqual(payload["classification"]["status"], "NOT_ENTITLED")
+        self.assertTrue(payload["classification"]["delayed_attempted"])
+        self.assertEqual(payload["classification"]["delayed_market_data_status"], "ERROR")
+        self.assertEqual(payload["classification"]["delayed_error_code"], 322)
+        self.assertEqual(payload["classification"]["live_market_data_status"], "NOT_ENTITLED")
+        self.assertEqual(len(payload["attempts"]), 2)
+
+    def test_disconnect_failure_after_a_successful_read_is_visible(self) -> None:
+        code, payload = self._run(self._write_config(), "snapshot", "AAPL", scenario="disconnect_fail")
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["failure"]["type"], "IBKR_DISCONNECT_FAILED")
+        self.assertEqual(payload["failure"]["stage"], "disconnect")
+
     def test_history_returns_bars_with_utc_timestamps(self) -> None:
         code, payload = self._run(self._write_config(), "history", "AAPL")
         self.assertEqual(code, 0, payload)
@@ -457,6 +572,17 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertFalse(payload["classification"]["usable"])
         self.assertEqual(payload["classification"]["status"], "NOT_ENTITLED")
         self.assertEqual(payload["classification"]["entitlement"], "BLOCKED")
+
+    def test_history_value_validation_blocks_bad_series(self) -> None:
+        for scenario in ("history_zero_close", "history_crossed_ohlc", "history_duplicate_dates",
+                         "history_future", "history_negative_volume"):
+            with self.subTest(scenario=scenario):
+                code, payload = self._run(self._write_config(), "history", "AAPL", scenario=scenario)
+                self.assertEqual(code, 0, payload)
+                self.assertFalse(payload["classification"]["usable"])
+                self.assertEqual(payload["classification"]["status"], "VALUES_INVALID")
+                self.assertEqual(payload["bars"], [])
+                self.assertTrue(payload["classification"]["validation_reason"])
 
     def test_pin_mismatch_fails_closed(self) -> None:
         config = self._write_config(trading_desk_commit="0" * 40)

@@ -1037,9 +1037,18 @@ void WatchlistScreen::on_ibkr_quote() {
         QMessageBox::information(
             this, tr("IBKR TWS"),
             tr("IBKR TWS is not configured. Create an ignored local %1 under the application state root with "
-               "trading_desk_root, trading_desk_commit, ibapi_path, host, port and client_id. No credentials are "
-               "needed or accepted; the login stays inside the user-owned TWS session.")
+               "trading_desk_root, trading_desk_commit, ibapi_path, host, port, client_id and the explicitly "
+               "routed symbols. No credentials are needed or accepted; the login stays inside the user-owned TWS "
+               "session.")
                 .arg(QStringLiteral("ibkr_tws.json")));
+        return;
+    }
+    if (!service.routes_symbol(ref.symbol)) {
+        QMessageBox::information(
+            this, tr("IBKR TWS"),
+            tr("%1 is not in the explicitly routed IBKR instrument list (ibkr_tws.json \"symbols\"). "
+               "Phase 5 qualified only the configured instruments.")
+                .arg(ref.symbol));
         return;
     }
 
@@ -1068,6 +1077,16 @@ void WatchlistScreen::on_ibkr_quote() {
                                  .arg(symbol, result.classification.status, result.classification.entitlement);
             if (!result.classification.error_message.isEmpty())
                 detail += QLatin1Char('\n') + result.classification.error_message;
+            // A deciding live entitlement block must not hide a genuine
+            // delayed-attempt failure.
+            if (result.classification.delayed_attempted) {
+                detail += QLatin1Char('\n')
+                          + tr("Delayed attempt: %1").arg(result.classification.delayed_status.isEmpty()
+                                                              ? tr("unknown")
+                                                              : result.classification.delayed_status);
+                if (!result.classification.delayed_error_message.isEmpty())
+                    detail += QStringLiteral(" - ") + result.classification.delayed_error_message;
+            }
             QMessageBox::warning(self, tr("IBKR TWS"), detail);
             return;
         }

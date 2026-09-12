@@ -8,10 +8,13 @@ This script is the only MarketLab-owned IBKR connection surface. It:
     clean working tree) before importing anything from it;
   * imports the unchanged ``scripts.ibkr_tws.IBKRTWSReadOnlyAdapter`` from that
     checkout;
-  * invokes only the adapter's documented read-only methods; and
+  * invokes only the adapter's documented read-only methods;
+  * re-applies the value and identity validation the reference qualification
+    used before it certified a feed (the production adapter reports transport
+    and lifecycle facts, not value sanity); and
   * emits one JSON envelope carrying source, retrieval time, contract identity,
-    market-data type/entitlement classification, and the adapter's already
-    normalized values.
+    market-data type/entitlement classification, validation outcome, and the
+    adapter's normalized values.
 
 Commands:
   probe     connect, wait for readiness, report runtime identity, disconnect
@@ -21,10 +24,17 @@ Commands:
   history   read bounded historical bars for a completed market window
 
 The adapter exposes no order/account/position surface and this wrapper adds
-none. Missing values stay missing; entitlement and market-data type are
-reported exactly as observed. If the repository pin, official dependency,
-local configuration, or output shape cannot be verified, the command fails
-closed with a typed failure instead of falling back to another provider.
+none. Missing values stay missing; invalid values block the read instead of
+being presented as data; entitlement and market-data type are reported exactly
+as observed. If the repository pin, official dependency, local configuration,
+or output shape cannot be verified, the command fails closed with a typed
+failure instead of falling back to another provider.
+
+The value/identity checks below are adapted from the already-qualified
+``qualify_ibkr_tws.py`` validators in the pinned checkout (contract identity,
+snapshot value sanity, recent-daily-bar sanity and freshness). They are
+re-implemented here rather than imported because that qualifier is control
+machinery MarketLab deliberately does not consume; the rules are the same.
 
 Configuration (default ``%FINCEPT_DATA_DIR%/ibkr_tws.json``, or ``--config``)::
 
@@ -35,7 +45,7 @@ Configuration (default ``%FINCEPT_DATA_DIR%/ibkr_tws.json``, or ``--config``)::
       "host": "127.0.0.1",
       "port": 7496,
       "client_id": 71,
-      "tws_version": "10.48.1c"
+      "tws_version": "10.50.1e"
     }
 
 Every failure is reported as a single JSON document. Dependency, pin, and
@@ -53,6 +63,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -60,7 +71,7 @@ import sys
 import threading
 import types
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -72,8 +83,21 @@ DEFAULT_CLIENT_ID = 71
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 SNAPSHOT_LIVE_TYPE = 1
 SNAPSHOT_DELAYED_TYPE = 3
+SNAPSHOT_FEED_STATUSES = frozenset({"LIVE", "FROZEN", "DELAYED", "DELAYED_FROZEN"})
+SNAPSHOT_TERMINAL_STATUSES = frozenset({"NOT_ENTITLED", "NO_VALUE", "ERROR"})
 SNAPSHOT_CONTINUE_STATUSES = frozenset({"NOT_ENTITLED", "NO_VALUE"})
 SNAPSHOT_ERROR_STATUS = "ERROR"
+SNAPSHOT_STATUS_MAP = {1: "LIVE", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED_FROZEN"}
+# Subscription/entitlement codes the reference qualifier treats as entitlement
+# facts rather than as generic API errors; 10090/10167 precede valid delayed
+# data and are never terminal.
+ENTITLEMENT_ERROR_CODES = frozenset({354, 2188, 10089, 10090, 10167})
+MARKET_DATA_CONTINUE_CODES = frozenset({10090, 10167})
+CONTRACT_SECURITY_TYPES = frozenset({"STK", "ETF", "FUND"})
+# IBKR's documented unset sentinels.
+IBKR_UNSET_DOUBLE = 1.7976931348623157e308
+IBKR_UNSET_INTEGER = 2147483647
+HISTORY_MAX_AGE_DAYS = 45
 ADAPTER_PACKAGE_RELATIVE = Path("scripts") / "ibkr_tws"
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENTITLEMENT_HINTS = (
@@ -95,6 +119,7 @@ ATTEMPT_SUMMARY_FIELDS = (
     "market_data_status",
     "market_data_entitlement",
     "usable_market_data",
+    "validation_reason",
     "ibkr_error_code",
     "ibkr_error_message",
     "ibkr_error_class",
@@ -137,6 +162,31 @@ def _now_iso() -> str:
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return digest.upper()
+
+
+def _finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _is_unset(value: Any) -> bool:
+    """Whether *value* is one of IBKR's documented missing-value sentinels."""
+
+    if value is None or isinstance(value, bool):
+        return True
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if not math.isfinite(number):
+        return False
+    if number in {-1.0, float(IBKR_UNSET_INTEGER), -float(IBKR_UNSET_INTEGER)}:
+        return True
+    return number == IBKR_UNSET_DOUBLE
 
 
 def _require_int(value: Any, name: str, minimum: int, maximum: int) -> int:
@@ -201,9 +251,7 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Co
         raise WrapperError("IBKR_CONFIG_INVALID", "config", "host must be a non-empty loopback address")
     host = host_raw.strip()
     if host not in LOOPBACK_HOSTS:
-        raise WrapperError(
-            "IBKR_CONFIG_INVALID", "config", f"host must be a loopback address; got {host!r}"
-        )
+        raise WrapperError("IBKR_CONFIG_INVALID", "config", f"host must be a loopback address; got {host!r}")
 
     port = _require_int(_pick(overrides, raw, "port", DEFAULT_PORT), "port", 1, 65535)
     client_id = _require_int(_pick(overrides, raw, "client_id", DEFAULT_CLIENT_ID), "client_id", 1, 2**31 - 1)
@@ -236,7 +284,9 @@ def _run_git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[st
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise WrapperError(
-            "IBKR_ADAPTER_IDENTITY_UNAVAILABLE", "pin", f"Unable to inspect the configured TRADING_DESK checkout: {exc}"
+            "IBKR_ADAPTER_IDENTITY_UNAVAILABLE",
+            "pin",
+            f"Unable to inspect the configured TRADING_DESK checkout: {exc}",
         ) from exc
 
 
@@ -434,6 +484,35 @@ def _disconnect(adapter: Any) -> bool:
         return False
 
 
+def _finish_command(adapter: Any, stage: str, build: Any) -> dict[str, Any]:
+    """Run one read and always disconnect; a dirty disconnect is a failure.
+
+    A read that already produced a classified outcome (for example an
+    entitlement block) is still a completed read, but it must not claim a clean
+    disconnect it did not perform. When the read itself failed, that failure is
+    preserved and the disconnect state is not allowed to hide it.
+    """
+
+    read_error: Exception | None = None
+    envelope: dict[str, Any] | None = None
+    try:
+        envelope = build()
+    except Exception as exc:
+        read_error = exc
+    clean_disconnect = _disconnect(adapter)
+    if read_error is not None:
+        if isinstance(read_error, WrapperError):
+            raise read_error
+        raise _classify_exception(read_error, stage) from read_error
+    if not clean_disconnect:
+        raise WrapperError(
+            "IBKR_DISCONNECT_FAILED", "disconnect", "TWS client did not confirm a clean disconnect after the read"
+        )
+    if envelope is not None:
+        envelope["clean_disconnect"] = True
+    return envelope if envelope is not None else {}
+
+
 def _identity(config: Config, pin: dict[str, Any], adapter: Any) -> dict[str, Any]:
     runtime: dict[str, Any] = {}
     try:
@@ -467,26 +546,252 @@ def _envelope(command: str, *, ok: bool, identity: dict[str, Any] | None = None)
     return envelope
 
 
-def _resolve_contract(adapter: Any, contract: _StockContract, symbol: str, timeout: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+# ── Contract identity (adapted from the reference qualifier) ────────────────
+
+
+def _contract_row_reason(
+    row: Any, expected_symbol: str, expected_currency: str, allowed_types: frozenset[str]
+) -> str | None:
+    """Return why *row* is not an acceptable identity, or None when it is.
+
+    Same constraints the reference qualification enforced: matching symbol, a
+    positive integer conId, the expected currency, a supported security type,
+    and a named exchange.
+    """
+
+    if not isinstance(row, dict):
+        return "CONTRACT_ROW_INVALID"
+    if str(row.get("symbol") or "").strip().upper() != expected_symbol:
+        return "SYMBOL_MISMATCH"
+    con_id = row.get("con_id")
+    if con_id is None or isinstance(con_id, bool):
+        return "CONID_MISSING"
     try:
-        rows = adapter.read_contract_details(contract, timeout=timeout)
+        if int(con_id) <= 0 or float(con_id) != int(con_id):
+            return "CONID_INVALID"
+    except (TypeError, ValueError, OverflowError):
+        return "CONID_INVALID"
+    if not str(row.get("currency") or "").strip():
+        return "CURRENCY_MISSING"
+    if str(row.get("currency")).strip().upper() != expected_currency.upper():
+        return "CURRENCY_MISMATCH"
+    security_type = str(row.get("security_type") or "").strip().upper()
+    if not security_type:
+        return "SECURITY_TYPE_MISSING"
+    if security_type not in allowed_types:
+        return "SECURITY_TYPE_UNSUPPORTED"
+    if not str(row.get("exchange") or "").strip():
+        return "EXCHANGE_MISSING"
+    return None
+
+
+def _resolve_contract(
+    adapter: Any,
+    contract: _StockContract,
+    symbol: str,
+    timeout: float,
+    currency: str,
+    security_type: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    try:
+        rows = [dict(row) for row in adapter.read_contract_details(contract, timeout=timeout)]
     except Exception as exc:
         raise _classify_exception(exc, "contract") from exc
-    candidates = [dict(row) for row in rows if str(row.get("symbol") or "").upper() == symbol.upper()]
-    con_ids = sorted({row.get("con_id") for row in candidates if row.get("con_id")})
-    if not candidates:
+
+    expected = symbol.strip().upper()
+    if not rows:
         raise WrapperError(
-            "IBKR_CONTRACT_NOT_RESOLVED", "contract", f"No contract details were returned for {symbol}"
+            "IBKR_CONTRACT_NOT_RESOLVED", "contract", f"No contract details were returned for {expected}"
         )
-    if len(con_ids) != 1:
+    requested_type = security_type.strip().upper()
+    allowed_types = CONTRACT_SECURITY_TYPES if requested_type == "STK" else frozenset({requested_type})
+
+    acceptable: list[dict[str, Any]] = []
+    first_failure: str | None = None
+    for row in rows:
+        reason = _contract_row_reason(row, expected, currency, allowed_types)
+        if reason is None:
+            acceptable.append(row)
+        elif first_failure is None:
+            first_failure = reason
+
+    if not acceptable:
+        if first_failure == "SYMBOL_MISMATCH":
+            raise WrapperError(
+                "IBKR_CONTRACT_NOT_RESOLVED",
+                "contract",
+                f"No contract details matched symbol {expected}",
+                details={"candidate_count": len(rows)},
+            )
+        raise WrapperError(
+            "IBKR_CONTRACT_IDENTITY_INVALID",
+            "contract",
+            f"Contract details for {expected} failed identity validation: {first_failure}",
+            details={"reason": first_failure, "candidate_count": len(rows)},
+        )
+
+    identities: dict[int, dict[str, Any]] = {}
+    for row in acceptable:
+        identities.setdefault(int(row["con_id"]), row)
+    if len(identities) != 1:
         raise WrapperError(
             "IBKR_CONTRACT_AMBIGUOUS",
             "contract",
-            f"Contract details for {symbol} resolved to {len(con_ids)} distinct instruments",
-            details={"con_ids": con_ids},
+            f"Contract details for {expected} resolved to {len(identities)} distinct instruments",
+            details={"con_ids": sorted(identities)},
         )
-    resolved = next(row for row in candidates if row.get("con_id") == con_ids[0])
-    return resolved, candidates
+    return next(iter(identities.values())), rows
+
+
+def _resolve_contract_row(
+    adapter: Any, contract: _StockContract, symbol: str, timeout: float, request: dict[str, Any]
+) -> dict[str, Any]:
+    resolved, _rows = _resolve_contract(
+        adapter, contract, symbol, timeout, request.get("currency", "USD"), request.get("security_type", "STK")
+    )
+    if isinstance(resolved.get("con_id"), int):
+        contract.conId = resolved["con_id"]
+    return resolved
+
+
+# ── Snapshot value validation (adapted from the reference qualifier) ────────
+
+
+def _snapshot_value_error(snapshot: dict[str, Any]) -> bool:
+    """Reject values the adapter cannot have meant: non-positive prices, a
+    crossed book, non-finite numbers, or negative sizes/volume."""
+
+    prices: list[float] = []
+    for name in ("bid", "ask", "last", "close"):
+        raw = snapshot.get(name)
+        if raw is None or _is_unset(raw):
+            continue
+        if not _finite_number(raw) or float(raw) <= 0:
+            return True
+        prices.append(float(raw))
+    if not prices:
+        return False
+    bid = snapshot.get("bid")
+    ask = snapshot.get("ask")
+    if (
+        bid is not None
+        and ask is not None
+        and not _is_unset(bid)
+        and not _is_unset(ask)
+        and _finite_number(bid)
+        and _finite_number(ask)
+        and float(bid) > float(ask)
+    ):
+        return True
+    for name in ("bid_size", "ask_size", "last_size", "volume"):
+        raw = snapshot.get(name)
+        if raw is None or _is_unset(raw):
+            continue
+        if not _finite_number(raw) or float(raw) < 0:
+            return True
+    return False
+
+
+def _adapter_error_status(snapshot: dict[str, Any]) -> str | None:
+    """The adapter's own normalized error fields, excluding continuation codes."""
+
+    error_class = str(snapshot.get("ibkr_error_class") or "").strip().upper()
+    if error_class not in {"ERROR", "ENTITLEMENT"}:
+        return None
+    raw = snapshot.get("ibkr_error_code")
+    code: int | None = None
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            code = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            code = None
+    if code in MARKET_DATA_CONTINUE_CODES:
+        return None
+    return "NOT_ENTITLED" if error_class == "ENTITLEMENT" else "ERROR"
+
+
+def _validated_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Validate one adapter snapshot result and return the effective outcome.
+
+    The adapter certifies transport, lifecycle, and tick presence; it does not
+    check value sanity. This function re-applies the reference qualifier's
+    gates so a completed request with crossed/zero/non-finite values is an
+    explicit failure rather than a usable quote.
+    """
+
+    result = dict(snapshot)
+    explicit = str(result.get("market_data_status") or result.get("status") or "").strip().upper()
+    timed_out = result.get("_timed_out") is True
+
+    if explicit in SNAPSHOT_TERMINAL_STATUSES:
+        status = explicit
+    elif (
+        explicit in {"BLOCKED_FOR_ENTITLEMENT", "ENTITLEMENT_BLOCKED"}
+        or result.get("market_data_entitlement") == "BLOCKED"
+    ):
+        status = "NOT_ENTITLED"
+    else:
+        adapter_error = _adapter_error_status(result)
+        if adapter_error is not None:
+            status = adapter_error
+        elif _snapshot_value_error(result):
+            status = "ERROR"
+            result["validation_reason"] = "SNAPSHOT_VALUES_INVALID"
+        else:
+            has_price = any(
+                result.get(name) is not None and not _is_unset(result.get(name))
+                for name in ("bid", "ask", "last", "close")
+            )
+            data_type = explicit if explicit in SNAPSHOT_FEED_STATUSES else None
+            if data_type is None:
+                data_type = SNAPSHOT_STATUS_MAP.get(result.get("market_data_type"))
+            if data_type is not None:
+                status = data_type if has_price else "NO_VALUE"
+            else:
+                status = "ERROR" if has_price else "NO_VALUE"
+
+    if status == "NOT_ENTITLED":
+        result.update(
+            market_data_status="NOT_ENTITLED",
+            usable_market_data="BLOCKED_FOR_ENTITLEMENT",
+            market_data_entitlement="BLOCKED",
+            value_present=False,
+        )
+    elif status == "ERROR":
+        result.update(
+            market_data_status="ERROR",
+            usable_market_data="FAIL",
+            market_data_entitlement="UNKNOWN",
+            validation_reason=result.get("validation_reason") or (
+                "SNAPSHOT_LIFECYCLE_INCOMPLETE" if timed_out else "SNAPSHOT_API_OR_ADAPTER_ERROR"
+            ),
+        )
+    elif status == "NO_VALUE":
+        result.update(
+            market_data_status="NO_VALUE",
+            usable_market_data="FAIL",
+            market_data_entitlement="UNKNOWN",
+            value_present=False,
+            validation_reason="SNAPSHOT_NO_USABLE_PRICE",
+        )
+    else:
+        entitlement = "DELAYED" if status in {"DELAYED", "DELAYED_FROZEN"} else "AVAILABLE"
+        if timed_out:
+            result.update(
+                market_data_status="ERROR",
+                usable_market_data="FAIL",
+                market_data_entitlement=entitlement,
+                validation_reason="SNAPSHOT_LIFECYCLE_INCOMPLETE",
+            )
+        else:
+            result.update(
+                market_data_status=status,
+                usable_market_data="PASS",
+                market_data_entitlement=entitlement,
+                value_present=True,
+                validation_reason="OK",
+            )
+    return result
 
 
 def _snapshot_attempt(adapter: Any, contract: _StockContract, market_data_type: int, timeout: float) -> dict[str, Any]:
@@ -498,7 +803,7 @@ def _snapshot_attempt(adapter: Any, contract: _StockContract, market_data_type: 
     result.pop("_errors", None)
     result.pop("_diagnostics", None)
     result["requested_market_data_type"] = market_data_type
-    return result
+    return _validated_snapshot(result)
 
 
 def _attempt_summary(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -512,6 +817,8 @@ def _attempt_summary(attempt: dict[str, Any]) -> dict[str, Any]:
 
 
 def _quote_values(attempt: dict[str, Any]) -> dict[str, Any]:
+    if attempt.get("usable_market_data") != "PASS":
+        return {}
     quote: dict[str, Any] = {}
     for field in QUOTE_FIELDS:
         value = attempt.get(field)
@@ -520,7 +827,13 @@ def _quote_values(attempt: dict[str, Any]) -> dict[str, Any]:
     return quote
 
 
-def _snapshot_classification(deciding: dict[str, Any], *, delayed_fallback: bool) -> dict[str, Any]:
+def _snapshot_classification(
+    deciding: dict[str, Any],
+    *,
+    delayed_fallback: bool,
+    live: dict[str, Any],
+    delayed: dict[str, Any] | None,
+) -> dict[str, Any]:
     usable = deciding.get("usable_market_data") == "PASS"
     status = deciding.get("market_data_status") or "NO_VALUE"
     return {
@@ -534,6 +847,17 @@ def _snapshot_classification(deciding: dict[str, Any], *, delayed_fallback: bool
         "error_code": deciding.get("ibkr_error_code"),
         "error_message": deciding.get("ibkr_error_message"),
         "error_class": deciding.get("ibkr_error_class"),
+        "validation_reason": deciding.get("validation_reason"),
+        # Both attempts stay visible: the deciding live block must not hide a
+        # genuine delayed-attempt failure.
+        "live_market_data_status": live.get("market_data_status"),
+        "live_usable_market_data": live.get("usable_market_data"),
+        "delayed_attempted": delayed is not None,
+        "delayed_market_data_status": delayed.get("market_data_status") if delayed else None,
+        "delayed_usable_market_data": delayed.get("usable_market_data") if delayed else None,
+        "delayed_validation_reason": delayed.get("validation_reason") if delayed else None,
+        "delayed_error_code": delayed.get("ibkr_error_code") if delayed else None,
+        "delayed_error_message": delayed.get("ibkr_error_message") if delayed else None,
     }
 
 
@@ -556,34 +880,36 @@ def command_contract(config: Config, symbol: str, timeout: float, request: dict[
     pin = verify_checkout_identity(config)
     module = load_adapter_module(config)
     adapter = _connect(config, module, timeout, "connect")
-    try:
-        envelope = _envelope("contract", ok=True, identity=_identity(config, pin, adapter))
+
+    def build() -> dict[str, Any]:
         contract = _StockContract(symbol, **request)
-        resolved, candidates = _resolve_contract(adapter, contract, symbol, timeout)
+        resolved, candidates = _resolve_contract(
+            adapter, contract, symbol, timeout, request.get("currency", "USD"),
+            request.get("security_type", "STK"),
+        )
+        envelope = _envelope("contract", ok=True, identity=_identity(config, pin, adapter))
         envelope["symbol"] = symbol
         envelope["resolution"] = "RESOLVED"
         envelope["resolved"] = resolved
         envelope["candidates"] = candidates
         return envelope
-    finally:
-        _disconnect(adapter)
+
+    return _finish_command(adapter, "contract", build)
 
 
 def command_snapshot(config: Config, symbol: str, timeout: float, request: dict[str, Any]) -> dict[str, Any]:
     pin = verify_checkout_identity(config)
     module = load_adapter_module(config)
     adapter = _connect(config, module, timeout, "connect")
-    try:
+
+    def build() -> dict[str, Any]:
         identity = _identity(config, pin, adapter)
         contract = _StockContract(symbol, **request)
-        resolved, _candidates = _resolve_contract(adapter, contract, symbol, timeout)
-        # Pin the request to the resolved instrument: conId is the identity the
-        # consumer reports, so the read and the reported identity are the same.
-        if isinstance(resolved.get("con_id"), int):
-            contract.conId = resolved["con_id"]
+        resolved = _resolve_contract_row(adapter, contract, symbol, timeout, request)
 
         live = _snapshot_attempt(adapter, contract, SNAPSHOT_LIVE_TYPE, timeout)
         attempts = [_attempt_summary(live)]
+        delayed: dict[str, Any] | None = None
         delayed_fallback = False
         deciding = live
         if live.get("usable_market_data") != "PASS" and live.get("market_data_status") != SNAPSHOT_ERROR_STATUS:
@@ -593,6 +919,9 @@ def command_snapshot(config: Config, symbol: str, timeout: float, request: dict[
                 deciding = delayed
                 delayed_fallback = True
             elif live.get("market_data_status") in SNAPSHOT_CONTINUE_STATUSES:
+                # The reference qualifier keeps the live entitlement answer as
+                # the deciding one and attaches the delayed facts; the delayed
+                # attempt is never silently discarded.
                 deciding = live
             else:
                 deciding = delayed
@@ -602,11 +931,16 @@ def command_snapshot(config: Config, symbol: str, timeout: float, request: dict[
         envelope["contract"] = resolved
         envelope["attempts"] = attempts
         envelope["delayed_fallback"] = delayed_fallback
-        envelope["classification"] = _snapshot_classification(deciding, delayed_fallback=delayed_fallback)
+        envelope["classification"] = _snapshot_classification(
+            deciding, delayed_fallback=delayed_fallback, live=live, delayed=delayed
+        )
         envelope["quote"] = _quote_values(deciding)
         return envelope
-    finally:
-        _disconnect(adapter)
+
+    return _finish_command(adapter, "snapshot", build)
+
+
+# ── Historical-bar validation (adapted from the reference qualifier) ────────
 
 
 def _bar_timestamp(value: Any) -> float | None:
@@ -620,6 +954,18 @@ def _bar_timestamp(value: Any) -> float | None:
     return None
 
 
+def _bar_date(value: Any) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y%m%d", "%Y%m", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[: len(datetime.now().strftime(fmt))], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _completed_market_end() -> str:
     """A completed US market session, two days back, in IBKR's timestamp format."""
 
@@ -629,8 +975,65 @@ def _completed_market_end() -> str:
     return reference.strftime("%Y%m%d 23:59:59 US/Eastern")
 
 
-def _history_classification(error: Exception | None, bar_count: int) -> dict[str, Any]:
-    if error is None and bar_count > 0:
+def _history_value_problem(rows: list[dict[str, Any]]) -> tuple[str | None, int | None]:
+    """Validate the returned series the way the reference qualification did.
+
+    Returns the first problem reason and row index, or (None, None) when the
+    series passes positive-price/finite/OHLC/finite-volume checks, is strictly
+    chronological without duplicates, is not in the future, and is fresh enough
+    for the bounded completed window.
+    """
+
+    parsed_dates: list[date] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return "BAR_ROW_INVALID", index
+        row_date = _bar_date(row.get("date"))
+        if row_date is None:
+            return "BAR_DATE_INVALID", index
+        parsed_dates.append(row_date)
+        values: dict[str, float] = {}
+        for name in ("open", "high", "low", "close"):
+            raw = row.get(name)
+            if raw is None or _is_unset(raw):
+                return f"BAR_{name.upper()}_MISSING_OR_UNSET", index
+            if not _finite_number(raw) or float(raw) <= 0:
+                return f"BAR_{name.upper()}_INVALID", index
+            values[name] = float(raw)
+        volume = row.get("volume")
+        if volume is None or _is_unset(volume):
+            return "BAR_VOLUME_MISSING_OR_UNSET", index
+        if not _finite_number(volume):
+            return "BAR_VOLUME_INVALID", index
+        if float(volume) < 0:
+            return "BAR_VOLUME_NEGATIVE", index
+        if not (
+            values["high"] >= values["open"]
+            and values["high"] >= values["close"]
+            and values["high"] >= values["low"]
+            and values["low"] <= values["open"]
+            and values["low"] <= values["close"]
+        ):
+            return "BAR_OHLC_RELATION_INVALID", index
+
+    if any(left >= right for left, right in zip(parsed_dates, parsed_dates[1:])):
+        reason = "BAR_DATES_DUPLICATED" if len(set(parsed_dates)) != len(parsed_dates) else "BAR_DATES_NOT_CHRONOLOGICAL"
+        return reason, None
+
+    reference_date = datetime.now(timezone.utc).date()
+    if parsed_dates[-1] > reference_date:
+        return "BAR_DATE_IN_FUTURE", None
+    if (reference_date - parsed_dates[-1]).days > HISTORY_MAX_AGE_DAYS:
+        return "HISTORY_STALE", None
+    return None, None
+
+
+def _history_classification(
+    error: Exception | None,
+    bar_count: int,
+    value_problem: tuple[str | None, int | None] = (None, None),
+) -> dict[str, Any]:
+    if error is None and value_problem[0] is None:
         return {
             "usable": True,
             "feed": "HISTORICAL",
@@ -642,6 +1045,23 @@ def _history_classification(error: Exception | None, bar_count: int) -> dict[str
             "error_code": None,
             "error_message": None,
             "error_class": None,
+            "validation_reason": "OK",
+        }
+    if value_problem[0] is not None:
+        reason, row_index = value_problem
+        return {
+            "usable": False,
+            "feed": None,
+            "status": "STALE" if reason == "HISTORY_STALE" else "VALUES_INVALID",
+            "entitlement": "UNKNOWN",
+            "value_present": bar_count > 0,
+            "delayed_fallback": False,
+            "timed_out": False,
+            "error_code": None,
+            "error_message": reason,
+            "error_class": None,
+            "row_index": row_index,
+            "validation_reason": reason,
         }
     message = str(error) if error is not None else "No historical bars were received"
     lowered = message.lower()
@@ -664,6 +1084,7 @@ def _history_classification(error: Exception | None, bar_count: int) -> dict[str
         "error_code": None,
         "error_message": message,
         "error_class": type(error).__name__ if error is not None else None,
+        "validation_reason": status,
     }
 
 
@@ -673,32 +1094,32 @@ def command_history(
     pin = verify_checkout_identity(config)
     module = load_adapter_module(config)
     adapter = _connect(config, module, timeout, "connect")
-    try:
+
+    def build() -> dict[str, Any]:
         identity = _identity(config, pin, adapter)
         contract = _StockContract(symbol, **request)
-        resolved, _candidates = _resolve_contract(adapter, contract, symbol, timeout)
-        if isinstance(resolved.get("con_id"), int):
-            contract.conId = resolved["con_id"]
+        resolved = _resolve_contract_row(adapter, contract, symbol, timeout, request)
 
         rows: list[dict[str, Any]] = []
         error: Exception | None = None
         try:
-            raw_rows = adapter.read_historical_bars(contract, timeout=timeout, **history)
-            rows = [dict(row) for row in raw_rows]
+            rows = [dict(row) for row in adapter.read_historical_bars(contract, timeout=timeout, **history)]
         except Exception as exc:
             error = exc
 
+        value_problem = _history_value_problem(rows) if error is None else (None, None)
         bars: list[dict[str, Any]] = []
-        for row in rows:
-            bar: dict[str, Any] = {"date": str(row.get("date") or "")}
-            timestamp = _bar_timestamp(row.get("date"))
-            if timestamp is not None:
-                bar["timestamp"] = timestamp
-            for field in ("open", "high", "low", "close", "volume", "wap"):
-                value = row.get(field)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    bar[field] = float(value)
-            bars.append(bar)
+        if error is None and value_problem[0] is None:
+            for row in rows:
+                bar: dict[str, Any] = {"date": str(row.get("date") or "")}
+                timestamp = _bar_timestamp(row.get("date"))
+                if timestamp is not None:
+                    bar["timestamp"] = timestamp
+                for field in ("open", "high", "low", "close", "volume", "wap"):
+                    value = row.get(field)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        bar[field] = float(value)
+                bars.append(bar)
 
         envelope = _envelope("history", ok=True, identity=identity)
         envelope["symbol"] = symbol
@@ -709,10 +1130,10 @@ def command_history(
             "date text is preserved verbatim in the bar's date field"
         )
         envelope["bars"] = bars
-        envelope["classification"] = _history_classification(error, len(bars))
+        envelope["classification"] = _history_classification(error, len(rows), value_problem)
         return envelope
-    finally:
-        _disconnect(adapter)
+
+    return _finish_command(adapter, "history", build)
 
 
 def _request_options(args: argparse.Namespace) -> dict[str, Any]:

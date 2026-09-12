@@ -62,11 +62,28 @@ IbkrTwsConfig IbkrTwsService::load_config() const {
     cfg.port = object.value(QLatin1String("port")).toInt(cfg.port);
     cfg.client_id = object.value(QLatin1String("client_id")).toInt(cfg.client_id);
     cfg.tws_version = object.value(QLatin1String("tws_version")).toString();
+    const QJsonArray symbols = object.value(QLatin1String("symbols")).toArray();
+    for (const QJsonValue& value : symbols) {
+        const QString symbol = value.toString().trimmed();
+        if (!symbol.isEmpty())
+            cfg.symbols.append(symbol);
+    }
     return cfg;
 }
 
 bool IbkrTwsService::configured() const {
     return load_config().is_configured();
+}
+
+bool IbkrTwsService::routes_symbol(const QString& symbol) const {
+    if (symbol.trimmed().isEmpty())
+        return false;
+    const IbkrTwsConfig cfg = load_config();
+    for (const QString& candidate : cfg.symbols) {
+        if (candidate.compare(symbol.trimmed(), Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
 }
 
 IbkrTwsConfig IbkrTwsService::config() const {

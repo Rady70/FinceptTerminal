@@ -5,6 +5,7 @@
 #include "network/http/GuardedNetworkAccessManager.h"
 #include "python/PythonRunner.h"
 #include "services/equity/EquityQuoteParse.h"
+#include "services/ibkr/IbkrTwsService.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/DataSourceRepository.h"
 #include "trading/AccountManager.h"
@@ -101,6 +102,41 @@ int candle_lookback_days(const QString& period) {
             return n;
     }
     return 730;
+}
+
+// Phase 5: the optional IBKR history route is qualified for a single bounded
+// request per period. Only these chart periods map to one IBKR duration; any
+// other period keeps the public-provider path (whose provenance names it).
+QString ibkr_duration_for_period(const QString& period) {
+    const QString p = period.trimmed().toLower();
+    if (p == QLatin1String("1mo"))
+        return QStringLiteral("1 M");
+    if (p == QLatin1String("3mo"))
+        return QStringLiteral("3 M");
+    if (p == QLatin1String("6mo"))
+        return QStringLiteral("6 M");
+    if (p == QLatin1String("1y"))
+        return QStringLiteral("1 Y");
+    return {};
+}
+
+// HistoryPoint[] (validated IBKR bars) → the yfinance-shaped JSON array the
+// chart and indicator engine consume. Absent O/H/L/volume stay null rather
+// than becoming zero readings.
+QString ibkr_bars_to_json(const QVector<fincept::services::HistoryPoint>& bars) {
+    QJsonArray arr;
+    for (const auto& bar : bars) {
+        QJsonObject o;
+        o[QStringLiteral("timestamp")] = static_cast<double>(bar.timestamp);
+        o[QStringLiteral("open")] = bar.has_open ? QJsonValue(bar.open) : QJsonValue(QJsonValue::Null);
+        o[QStringLiteral("high")] = bar.has_high ? QJsonValue(bar.high) : QJsonValue(QJsonValue::Null);
+        o[QStringLiteral("low")] = bar.has_low ? QJsonValue(bar.low) : QJsonValue(QJsonValue::Null);
+        o[QStringLiteral("close")] = bar.close;
+        o[QStringLiteral("volume")] = bar.has_volume ? QJsonValue(static_cast<double>(bar.volume))
+                                                     : QJsonValue(QJsonValue::Null);
+        arr.append(o);
+    }
+    return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
 
 // trading-layer BrokerCandle[] → the yfinance-shaped JSON array the indicator
@@ -319,6 +355,73 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
     if (symbol.isEmpty())
         return;
     const QString cache_key = "equity:candles:" + symbol + ":" + period;
+
+    // Phase 5: an explicitly routed IBKR symbol uses the optional read-only
+    // TWS provider for the retained candle route. Only periods that map to one
+    // bounded IBKR request are routed; other periods keep the public-provider
+    // path, and the provenance always names whichever provider answered. A
+    // routed symbol never falls back silently: an IBKR failure is reported.
+    const bool ibkr_routed = ibkr::IbkrTwsService::instance().configured() &&
+                             ibkr::IbkrTwsService::instance().routes_symbol(symbol);
+    const QString ibkr_duration = ibkr_duration_for_period(period);
+    if (ibkr_routed && !ibkr_duration.isEmpty()) {
+        const QVariant ibkr_cached = fincept::CacheManager::instance().get(cache_key);
+        if (!ibkr_cached.isNull()) {
+            const QString cached_text = ibkr_cached.toString().trimmed();
+            QString origin;
+            qint64 at = 0;
+            get_retrieval_meta(cache_key, origin, at);
+            if (!cached_text.isEmpty() && cached_text != QLatin1String("[]") && origin == QLatin1String("ibkr_tws")) {
+                auto arr = QJsonDocument::fromJson(cached_text.toUtf8()).array();
+                CandleParseStats stats;
+                const auto candles = parse_candles_json(arr, &stats);
+                RetrievalMeta meta =
+                    candles_meta(symbol, cache_source_label(origin), at, static_cast<int>(candles.size()), stats);
+                if (at > 0 && now_epoch_sec() - at > kHistoricalTtlSec)
+                    meta.status = RetrievalStatus::Stale;
+                emit historical_meta_loaded(symbol, meta);
+                emit historical_loaded(symbol, candles);
+                return;
+            }
+        }
+
+        QPointer<EquityResearchService> self = this;
+        ibkr::IbkrTwsService::instance().fetch_history(
+            symbol, ibkr_duration, QStringLiteral("1 day"),
+            [self, symbol, cache_key](const ibkr::IbkrTwsHistoryResult& result) {
+                if (!self)
+                    return;
+                if (!result.ok || !result.classification.usable || result.bars.isEmpty()) {
+                    const QString reason = !result.failure_message.isEmpty()
+                                               ? result.failure_message
+                                               : (!result.classification.status.isEmpty()
+                                                      ? result.classification.status
+                                                      : QStringLiteral("no usable bars"));
+                    LOG_WARN("EquityResearch", QString("IBKR history for %1 unavailable: %2").arg(symbol, reason));
+                    RetrievalMeta meta;
+                    meta.symbol = symbol;
+                    meta.source = QStringLiteral("ibkr_tws");
+                    meta.status = RetrievalStatus::Error;
+                    emit self->historical_meta_loaded(symbol, meta);
+                    emit self->error_occurred(
+                        "Historical", QStringLiteral("IBKR history unavailable for %1 (%2)").arg(symbol, reason));
+                    return;
+                }
+                const QString json = ibkr_bars_to_json(result.bars);
+                const qint64 at = now_epoch_sec();
+                fincept::CacheManager::instance().put(cache_key, QVariant(json), kHistoricalTtlSec, "equity");
+                put_retrieval_meta(cache_key, QStringLiteral("ibkr_tws"), at, kHistoricalTtlSec);
+                CandleParseStats stats;
+                const auto arr = QJsonDocument::fromJson(json.toUtf8()).array();
+                const auto candles = parse_candles_json(arr, &stats);
+                emit self->historical_meta_loaded(
+                    symbol,
+                    candles_meta(symbol, QStringLiteral("ibkr_tws"), at, static_cast<int>(candles.size()), stats));
+                emit self->historical_loaded(symbol, candles);
+            });
+        return;
+    }
+
     const QVariant hcv = fincept::CacheManager::instance().get(cache_key);
     if (!hcv.isNull()) {
         auto arr = QJsonDocument::fromJson(hcv.toString().toUtf8()).array();
@@ -347,9 +450,8 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                        return;
                    }
                    auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
-                   // Source branch 2 — yfinance. This loader has no broker leg;
-                   // only ensure_candles (the indicator path) routes through a
-                   // connected broker.
+                   // Source branch 3 — yfinance for a symbol not explicitly
+                   // routed to IBKR (whose branch is handled above).
                    const qint64 at = now_epoch_sec();
                    if (!arr.isEmpty()) {
                        fincept::CacheManager::instance().put(
