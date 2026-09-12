@@ -7,6 +7,7 @@
 #include "core/symbol/SymbolDragSource.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/backtesting/BacktestingService.h"
 #include "services/cloud/CloudSyncEngine.h"
 #include "ui/formatting/NumberFormat.h"
@@ -18,6 +19,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QHideEvent>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -31,6 +33,9 @@
 #include <QSplitter>
 #include <QTextStream>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <numeric>
 
 namespace fincept::screens {
 
@@ -415,7 +420,13 @@ QWidget* WatchlistScreen::build_main_panel() {
     table_->set_headers(
         {tr("SYMBOL"), tr("NAME"), tr("PRICE"), tr("CHANGE"), tr("CHG %"), tr("HIGH"), tr("LOW"), tr("VOLUME")});
     table_->set_column_widths({100, 160, 100, 90, 80, 90, 90, 110});
-    table_->setSortingEnabled(true); // opt-in: WatchlistScreen stamps numeric EditRole values
+    // The screen owns the row ordering (see populate_table): a missing reading
+    // stays after present ones in BOTH directions, which Qt's built-in item
+    // comparator cannot express because descending reverses its result.
+    table_->setSortingEnabled(false);
+    table_->horizontalHeader()->setSortIndicatorShown(true);
+    table_->horizontalHeader()->setSectionsClickable(true);
+    connect(table_->horizontalHeader(), &QHeaderView::sectionClicked, this, &WatchlistScreen::on_header_clicked);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
 
@@ -670,13 +681,14 @@ void WatchlistScreen::rebuild_from_cache() {
             quotes.append(row_cache_.value(s.symbol));
     }
     if (quotes.isEmpty()) {
-        // No data yet — show placeholder rows.
-        table_->setSortingEnabled(false);
+        // No data yet — placeholder rows still honour the active sort so the
+        // header indicator matches the visible order.
         table_->clear_data();
-        for (const auto& s : stocks_) {
+        const QVector<int> order = sorted_row_order({});
+        for (int idx : order) {
+            const auto& s = stocks_[idx];
             table_->add_row({s.symbol, s.name, "--", "--", "--", "--", "--", "--"});
         }
-        table_->setSortingEnabled(true);
         update_empty_state();
         return;
     }
@@ -743,10 +755,78 @@ void WatchlistScreen::hub_unsubscribe_all() {
     hub_active_ = false;
 }
 
+void WatchlistScreen::on_header_clicked(int column) {
+    if (sort_column_ == column)
+        sort_order_ = sort_order_ == Qt::AscendingOrder ? Qt::DescendingOrder : Qt::AscendingOrder;
+    else {
+        sort_column_ = column;
+        sort_order_ = Qt::DescendingOrder;
+    }
+    if (auto* header = table_->horizontalHeader())
+        header->setSortIndicator(sort_column_, sort_order_);
+    rebuild_from_cache();
+}
+
+QVector<int> WatchlistScreen::sorted_row_order(const QMap<QString, services::QuoteData>& quote_map) const {
+    QVector<int> order(stocks_.size());
+    std::iota(order.begin(), order.end(), 0);
+    if (sort_column_ < 0)
+        return order;
+
+    // One key per row, built from the *displayed* name and the presence-aware
+    // numeric reading for the active column. An empty quote map (no cached
+    // quotes) still yields keys, so the placeholder view honours SYMBOL/NAME
+    // sorting instead of silently falling back to natural order.
+    QVector<fincept::screens::QuoteSortKey> keys;
+    keys.reserve(stocks_.size());
+    for (const auto& s : stocks_) {
+        fincept::screens::QuoteSortKey key;
+        key.symbol = s.symbol;
+        const auto it = quote_map.constFind(s.symbol);
+        const services::QuoteData* q = it == quote_map.constEnd() ? nullptr : &it.value();
+        key.name = fincept::screens::quote_watchlist_row_name(q ? q->name : QString(), s.name);
+        if (q) {
+            switch (sort_column_) {
+                case 2:
+                    key.has_value = q->has_price;
+                    key.value = q->price;
+                    break;
+                case 3:
+                    key.has_value = q->has_change;
+                    key.value = q->change;
+                    break;
+                case 4:
+                    key.has_value = q->has_change_pct;
+                    key.value = q->change_pct;
+                    break;
+                case 5:
+                    key.has_value = q->has_high;
+                    key.value = q->high;
+                    break;
+                case 6:
+                    key.has_value = q->has_low;
+                    key.value = q->low;
+                    break;
+                case 7:
+                    key.has_value = q->has_volume && q->volume >= 0;
+                    key.value = q->volume;
+                    break;
+                default:
+                    break;
+            }
+        }
+        keys.append(key);
+    }
+
+    const int column = sort_column_;
+    const bool descending = sort_order_ == Qt::DescendingOrder;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return fincept::screens::quote_sort_before(column, descending, keys[a], keys[b]);
+    });
+    return order;
+}
+
 void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes) {
-    // Disable sorting during population to prevent per-row re-sorting
-    // (avoids both visual flickering and O(n log n) overhead per insert).
-    table_->setSortingEnabled(false);
     table_->clear_data();
 
     // Build a map for quick lookup
@@ -755,7 +835,12 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
         quote_map[q.symbol] = q;
     }
 
-    for (const auto& s : stocks_) {
+    // The screen owns the row order (see sorted_row_order): a missing reading
+    // stays after present ones in both ascending and descending order.
+    const QVector<int> order = sorted_row_order(quote_map);
+
+    for (int idx : order) {
+        const auto& s = stocks_[idx];
         auto it = quote_map.find(s.symbol);
         if (it != quote_map.end()) {
             const auto& q = it.value();
@@ -768,28 +853,32 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             table_->add_row(
                 {q.symbol, q.name.isEmpty() ? s.name : q.name,
                  q.has_price ? QString("$%1").arg(q.price, 0, 'f', 2) : kNA,
-                 q.has_change ? QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2) : kNA,
-                 q.has_change_pct ? QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
+                 q.has_change ? QString("%1%2").arg(q.change > 0 ? "+" : "").arg(q.change, 0, 'f', 2) : kNA,
+                 q.has_change_pct ? QString("%1%2%").arg(q.change_pct > 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)
                                   : kNA,
                  q.has_high ? QString("$%1").arg(q.high, 0, 'f', 2) : kNA,
                  q.has_low ? QString("$%1").arg(q.low, 0, 'f', 2) : kNA,
-                 q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)) : kNA});
+                 q.has_volume && q.volume >= 0
+                     ? (q.volume == 0 ? QStringLiteral("0") // a genuine zero reading
+                                      : fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)))
+                     : kNA});
 
             int row = table_->rowCount() - 1;
 
-            // Stamp numeric EditRole values so Qt sorts by magnitude,
-            // not by the display string ("$2.5M" vs "$999K" etc.).
-            table_->set_cell_numeric(row, 2, q.price);      // PRICE
-            table_->set_cell_numeric(row, 3, q.change);     // CHANGE
-            table_->set_cell_numeric(row, 4, q.change_pct); // CHG %
-            table_->set_cell_numeric(row, 5, q.high);       // HIGH
-            table_->set_cell_numeric(row, 6, q.low);        // LOW
-            table_->set_cell_numeric(row, 7, q.volume);     // VOLUME
-
-            // Green = good, Red = bad
-            QString chg_color = q.change_pct >= 0 ? colors::POSITIVE : colors::NEGATIVE;
-            table_->set_cell_color(row, 3, chg_color);
-            table_->set_cell_color(row, 4, chg_color);
+            // Green = up, Red = down, neutral/dim = zero or no reading. Each
+            // cell derives its colour from its own field, so a missing CHG%
+            // never borrows the absolute change's direction.
+            auto move_color = [](bool has, double value) -> QString {
+                if (!has)
+                    return colors::TEXT_DIM;
+                if (value > 0)
+                    return colors::POSITIVE;
+                if (value < 0)
+                    return colors::NEGATIVE;
+                return colors::TEXT_PRIMARY;
+            };
+            table_->set_cell_color(row, 3, move_color(q.has_change, q.change));
+            table_->set_cell_color(row, 4, move_color(q.has_change_pct, q.change_pct));
 
             // Provenance for this row — which provider produced these numbers,
             // when, and whether it is a live print or the last cached one.
@@ -812,9 +901,6 @@ void WatchlistScreen::populate_table(const QVector<services::QuoteData>& quotes)
             }
         }
     }
-
-    // Re-enable sorting — Qt will apply the current sort column/order once.
-    table_->setSortingEnabled(true);
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────
@@ -983,8 +1069,12 @@ void WatchlistScreen::on_export_csv() {
             << num(q.price, q.has_price) << ',' << num(q.change, q.has_change) << ','
             << num(q.change_pct, q.has_change_pct) << ',' << num(q.high, q.has_high) << ',' << num(q.low, q.has_low)
             << ','
-            << (q.has_volume ? fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume))
-                             : QString())
+            // A genuine zero volume exports as "0"; a malformed negative volume
+            // exports as an empty field, exactly like a missing one.
+            << (q.has_volume && q.volume >= 0
+                    ? (q.volume == 0 ? QStringLiteral("0")
+                                     : fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)))
+                    : QString())
             << '\n';
     }
 }

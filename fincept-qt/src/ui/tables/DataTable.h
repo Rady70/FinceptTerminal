@@ -22,8 +22,10 @@ class DataTable : public QTableWidget {
 
     /// Set a numeric sort key on a cell without changing its display text.
     /// Call after add_row() for columns that should sort numerically
-    /// (price, change, volume, etc.).
-    void set_cell_numeric(int row, int col, double value);
+    /// (price, change, volume, etc.). When `has` is false the cell is a
+    /// missing reading: it keeps its "--" text and sorts apart from a real
+    /// zero instead of posing as one.
+    void set_cell_numeric(int row, int col, double value, bool has = true);
 };
 
 } // namespace fincept::ui

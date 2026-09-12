@@ -8,6 +8,7 @@
 #include "mcp/McpProvider.h"
 #include "network/http/HostedPathGuard.h"
 #include "network/http/HttpClient.h"
+#include "screens/dashboard/canvas/WidgetRegistry.h"
 #include "services/workflow/NodeRegistry.h"
 #include "trading/BrokerRegistry.h"
 
@@ -69,6 +70,24 @@ int run_marketlab_boundary_selftest() {
     {
         const auto brokers = trading::BrokerRegistry::instance().list_brokers();
         CHECK(brokers.isEmpty(), "BrokerRegistry empty (no live order-capable adapters)");
+    }
+
+    // ── Dashboard widget registry (plan §5.4) ─────────────────────────────
+    // The dashboard widget picker must not offer order-capable widgets. The
+    // Holdings widget was registered in earlier fork builds even though it
+    // owns MARKET SELL / SQUARE OFF ALL actions via UnifiedTrading; Phase 4
+    // removed that registration. Pin the whole known execution set so it
+    // cannot silently return.
+    {
+        const QStringList forbidden_widgets = {
+            QStringLiteral("holdings"),       QStringLiteral("quick_trade"),   QStringLiteral("open_positions"),
+            QStringLiteral("working_orders"), QStringLiteral("margin_usage"),  QStringLiteral("today_pnl"),
+            QStringLiteral("trade_tape"),     QStringLiteral("crypto_ticker"), QStringLiteral("polymarket_prices"),
+        };
+        for (const QString& id : forbidden_widgets) {
+            CHECK(screens::WidgetRegistry::instance().find(id) == nullptr,
+                  ("dashboard execution widget not registered: " + id).toUtf8().constData());
+        }
     }
 
     // ── MCP registration set (plan §5.4) ──────────────────────────────────

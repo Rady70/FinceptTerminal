@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QJsonArray>
@@ -180,12 +181,24 @@ void WatchlistWidget::render_from_cache() {
         if (it == row_cache_.constEnd())
             continue;
         const auto& q = it.value();
-        table_->add_row({q.symbol, QString("$%1").arg(q.price, 0, 'f', 2),
-                         QString("%1%2").arg(q.change >= 0 ? "+" : "").arg(q.change, 0, 'f', 2),
-                         QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2)});
+        table_->add_row({q.symbol, fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")),
+                         fincept::screens::quote_signed_text(q.has_change, q.change, 2),
+                         fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))});
         int row = table_->rowCount() - 1;
-        table_->set_cell_color(row, 2, ui::change_color(q.change_pct));
-        table_->set_cell_color(row, 3, ui::change_color(q.change_pct));
+        // Each displayed field is coloured from its own flag and value; a
+        // missing CHG cell is never painted with the CHG% direction, and a
+        // genuine zero is neutral rather than a move.
+        auto move_color = [](bool has, double value) -> QString {
+            if (!has)
+                return ui::colors::TEXT_DIM;
+            if (value > 0)
+                return ui::colors::POSITIVE;
+            if (value < 0)
+                return ui::colors::NEGATIVE;
+            return ui::colors::TEXT_PRIMARY;
+        };
+        table_->set_cell_color(row, 2, move_color(q.has_change, q.change));
+        table_->set_cell_color(row, 3, move_color(q.has_change_pct, q.change_pct));
     }
 }
 

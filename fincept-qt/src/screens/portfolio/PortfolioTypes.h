@@ -73,6 +73,17 @@ struct HoldingWithQuote {
     double day_change = 0;
     double day_change_percent = 0;
     double weight = 0; // % of total portfolio
+
+    // Per-holding observation state. When has_live_price is false, current_price
+    // and market_value are the average-cost fallback, P&L is zero only because
+    // the price is unknown, and weight includes the fallback value — a consumer
+    // that shows these fields must say so (or show them as unavailable). A
+    // stale cached quote is not a live price. has_day_change_percent records
+    // whether the percentage was actually observed (day_change_percent stays
+    // 0.0 otherwise and must not be read as a real flat move).
+    bool has_live_price = false;
+    bool has_day_change = false;
+    bool has_day_change_percent = false;
 };
 
 struct PortfolioSummary {
@@ -88,6 +99,12 @@ struct PortfolioSummary {
     int total_positions = 0;
     int gainers = 0;
     int losers = 0;
+    // Observation coverage for the aggregates above: how many holdings had a
+    // live price and how many had a real day-change reading. When these are
+    // below total_positions the market-value / P&L / day totals are partial
+    // (unpriced holdings are shown at average cost) and must be labelled so.
+    int priced_positions = 0;
+    int day_change_positions = 0;
     QString last_updated;
 };
 

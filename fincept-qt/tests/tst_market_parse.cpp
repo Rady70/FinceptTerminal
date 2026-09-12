@@ -21,6 +21,7 @@
 // drags a candlestick chart's price axis to zero behind a plausible-looking
 // axis ladder.
 
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "screens/report_builder/ReportQuoteFormat.h"
 #include "services/markets/MarketQuoteParse.h"
 
@@ -75,6 +76,9 @@ class TstMarketParse : public QObject {
     void eps_reading_survives_across_both_payloads();
     void eps_reading_survives_the_opposite_arrival_order();
     void report_quote_keeps_missing_and_zero_apart();
+    void market_cell_format_keeps_missing_and_zero_apart();
+    void missing_readings_sort_last_in_both_directions();
+    void watchlist_sort_seam_uses_display_rules();
 };
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -383,6 +387,152 @@ void TstMarketParse::report_quote_keeps_missing_and_zero_apart() {
     QCOMPARE(zc.value(QStringLiteral("high")), QStringLiteral("0.00"));
     QCOMPARE(zc.value(QStringLiteral("volume")), QStringLiteral("0"));
     QCOMPARE(zc.value(QStringLiteral("status")), QString::fromLatin1(kQuoteStatusOk));
+}
+
+// ── Markets table cell formatting ────────────────────────────────────────────
+
+void TstMarketParse::market_cell_format_keeps_missing_and_zero_apart() {
+    // MarketPanel and ScreenerScreen read QuoteData directly; without the
+    // presence flags a missing field prints as "$0.00" / "+0.00%" / "0" — a
+    // reading, and an alarming one, for a value that never arrived. These are
+    // the helpers both screens now format through.
+    const QuoteData partial = parse_quote_object(obj_from(R"({
+        "symbol": "AAPL", "name": "Apple Inc.", "price": null, "change": null,
+        "change_percent": null, "high": null, "low": null, "volume": null
+    })"),
+                                                  QStringLiteral("cache (yfinance)"), 1757340000);
+
+    const QString na = QStringLiteral("--");
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_price, partial.price, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_arrow_text(partial.has_change, partial.change, 2), na);
+    QCOMPARE(fincept::screens::quote_arrow_text(partial.has_change_pct, partial.change_pct, 2, QStringLiteral("%")),
+             na);
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_high, partial.high, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_field_text(partial.has_low, partial.low, 2, QStringLiteral("$")), na);
+    QCOMPARE(fincept::screens::quote_volume_text(partial), na);
+
+    // A genuine zero is a reading and renders as one — but with no "+" sign
+    // and no up/down arrow, because zero is neither positive nor negative.
+    const QuoteData zeroed = parse_quote_object(obj_from(R"({
+        "symbol": "HALT", "price": 0, "change": 0, "change_percent": 0,
+        "high": 0, "low": 0, "volume": 0
+    })"),
+                                                 QStringLiteral("yfinance"), 1757340000);
+    QCOMPARE(fincept::screens::quote_field_text(zeroed.has_price, zeroed.price, 2, QStringLiteral("$")),
+             QStringLiteral("$0.00"));
+    QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change, zeroed.change, 2), QStringLiteral("0.00"));
+    QCOMPARE(fincept::screens::quote_signed_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
+             QStringLiteral("0.00%"));
+    QCOMPARE(fincept::screens::quote_arrow_text(zeroed.has_change, zeroed.change, 2),
+             QString::fromUtf8("\xe2\x80\xa2 0.00"));
+    QCOMPARE(fincept::screens::quote_arrow_text(zeroed.has_change_pct, zeroed.change_pct, 2, QStringLiteral("%")),
+             QString::fromUtf8("\xe2\x80\xa2 0.00%"));
+    // A genuine zero volume is a reading; only a missing volume is "--".
+    QCOMPARE(fincept::screens::quote_volume_text(zeroed), QStringLiteral("0"));
+    QCOMPARE(fincept::screens::quote_volume_text(partial), na);
+
+    // The sign is added only for a strictly signed value.
+    QCOMPARE(fincept::screens::quote_signed_text(true, 1.5, 2, QStringLiteral("%")), QStringLiteral("+1.50%"));
+    QCOMPARE(fincept::screens::quote_signed_text(true, -1.5, 2, QStringLiteral("%")), QStringLiteral("-1.50%"));
+    QCOMPARE(fincept::screens::quote_arrow_text(true, 1.5, 2), QString::fromUtf8("\xe2\x96\xb2 1.50"));
+    QCOMPARE(fincept::screens::quote_arrow_text(true, -1.5, 2), QString::fromUtf8("\xe2\x96\xbc 1.50"));
+
+    // A negative volume is malformed: unavailable, never clamped to a real 0.
+    const QuoteData negative_volume = parse_quote_object(obj_from(R"({
+        "symbol": "BADV", "price": 10, "change": 0, "change_percent": 0,
+        "high": 0, "low": 0, "volume": -5
+    })"),
+                                                         QStringLiteral("yfinance"), 1757340000);
+    QVERIFY2(!negative_volume.has_volume, "a negative volume is unavailable, not a reading");
+    QCOMPARE(fincept::screens::quote_volume_text(negative_volume), na);
+
+    // Provenance is appended to a cell's existing tooltip, never replaces it.
+    QCOMPARE(fincept::screens::merge_quote_provenance(QStringLiteral("Apple Inc.  (AAPL)"),
+                                                      QStringLiteral("Source: yfinance")),
+             QStringLiteral("Apple Inc.  (AAPL)\nSource: yfinance"));
+    QCOMPARE(fincept::screens::merge_quote_provenance(QString(), QStringLiteral("Source: yfinance")),
+             QStringLiteral("Source: yfinance"));
+
+    // Provenance and status travel with the row; a stale row says so.
+    const QString partial_prov = fincept::screens::quote_provenance_text(partial);
+    QVERIFY(partial_prov.contains(QStringLiteral("cache (yfinance)")));
+    QVERIFY(partial_prov.contains(QStringLiteral("Status: PARTIAL")));
+    QVERIFY(partial_prov.contains(QStringLiteral("Retrieved: ")));
+    QVERIFY(!partial_prov.contains(QStringLiteral("Retrieved: unknown")));
+
+    QuoteData stale = zeroed;
+    stale.status = QString::fromLatin1(kQuoteStatusStale);
+    const QString stale_prov = fincept::screens::quote_provenance_text(stale);
+    QVERIFY(stale_prov.contains(QStringLiteral("Status: STALE")));
+    QVERIFY(stale_prov.contains(QStringLiteral("refresh failed")));
+}
+
+// ── Watchlist ordering ───────────────────────────────────────────────────────
+
+void TstMarketParse::missing_readings_sort_last_in_both_directions() {
+    // Ascending: present values first, missing last.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, false, 0.0, false));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, true, 5.0, false));
+    // Descending: the same rule — a missing reading never rises above a real
+    // observation just because the user reversed the sort.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, false, 0.0, true));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, true, 5.0, true));
+
+    // A genuine zero is a present reading: it outranks missing, and it orders
+    // by value against other present readings.
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 0.0, false, 0.0, false));
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 0.0, true, 5.0, false));
+    QVERIFY(fincept::screens::quote_missing_last_before(true, 5.0, true, 0.0, true));
+
+    // Two missing readings are equivalent in both directions.
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, false));
+    QVERIFY(!fincept::screens::quote_missing_last_before(false, 0.0, false, 0.0, true));
+}
+
+void TstMarketParse::watchlist_sort_seam_uses_display_rules() {
+    using fincept::screens::QuoteSortKey;
+    using fincept::screens::quote_sort_before;
+    using fincept::screens::quote_watchlist_row_name;
+
+    // The displayed name is the provider name when present; sorting must use
+    // that same string rather than the hidden stored name.
+    QCOMPARE(quote_watchlist_row_name(QStringLiteral("Apple Inc."), QStringLiteral("AAPL stored")),
+             QStringLiteral("Apple Inc."));
+    QCOMPARE(quote_watchlist_row_name(QString(), QStringLiteral("AAPL stored")), QStringLiteral("AAPL stored"));
+
+    auto row = [](const QString& symbol, const QString& name, bool has, double value) {
+        QuoteSortKey k;
+        k.symbol = symbol;
+        k.name = name;
+        k.has_value = has;
+        k.value = value;
+        return k;
+    };
+
+    // NAME sorting follows the provided display name.
+    const QuoteSortKey zebra = row(QStringLiteral("ZZZ"), QStringLiteral("Zebra Corp"), false, 0.0);
+    const QuoteSortKey apple = row(QStringLiteral("AAA"), QStringLiteral("Apple Inc."), false, 0.0);
+    QVERIFY(quote_sort_before(1, false, apple, zebra));
+    QVERIFY(!quote_sort_before(1, false, zebra, apple));
+    QVERIFY(quote_sort_before(0, false, apple, zebra));
+
+    // Numeric primary column: missing stays last in both directions, and a
+    // real zero outranks missing (it is an observation).
+    const QuoteSortKey present5 = row(QStringLiteral("P5"), QString(), true, 5.0);
+    const QuoteSortKey present0 = row(QStringLiteral("P0"), QString(), true, 0.0);
+    const QuoteSortKey missing = row(QStringLiteral("M"), QString(), false, 0.0);
+    QVERIFY(quote_sort_before(2, false, present5, missing));
+    QVERIFY(quote_sort_before(2, true, present5, missing));
+    QVERIFY(!quote_sort_before(2, false, missing, present5));
+    QVERIFY(!quote_sort_before(2, true, missing, present5));
+    QVERIFY(quote_sort_before(2, true, present5, present0));
+    QVERIFY(quote_sort_before(2, false, present0, present5));
+    QVERIFY(quote_sort_before(2, true, present0, missing));
+
+    // Two missing readings are equivalent; stable sort keeps the stored order.
+    const QuoteSortKey missing2 = row(QStringLiteral("M2"), QString(), false, 0.0);
+    QVERIFY(!quote_sort_before(2, false, missing, missing2));
+    QVERIFY(!quote_sort_before(2, true, missing, missing2));
 }
 
 QTEST_GUILESS_MAIN(TstMarketParse)

@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QList>
 #include <QListWidget>
+#include <QMap>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QSplitter>
@@ -54,6 +55,9 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     void on_export_csv();
     void on_import_csv();
     void refresh_theme();
+    /// Presence-aware user sorting: toggles/selects the sort column and
+    /// repopulates in the computed order (see populate_table).
+    void on_header_clicked(int column);
 
   private:
     void build_ui();
@@ -67,6 +71,10 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     void load_stocks();
     void fetch_quotes();
     void populate_table(const QVector<services::QuoteData>& quotes);
+    /// Row indices for the current sort state, using the displayed name and
+    /// presence-aware numeric keys. Shared by the populated and placeholder
+    /// paths so the header indicator always matches the visible order.
+    QVector<int> sorted_row_order(const QMap<QString, services::QuoteData>& quote_map) const;
 
     void hub_resubscribe_stocks();
     void hub_unsubscribe_all();
@@ -105,6 +113,12 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     ui::DataTable* table_ = nullptr;
     QLabel* empty_label_ = nullptr; // guidance shown in place of a blank grid
     QSplitter* splitter_ = nullptr;
+
+    // User sort state. The screen owns the row ordering so a missing reading
+    // stays last in BOTH directions; Qt's built-in item comparator would
+    // reverse that rule when the user selects descending.
+    int sort_column_ = -1;
+    Qt::SortOrder sort_order_ = Qt::DescendingOrder;
 
     /// Show/hide the empty-state guidance based on the current selection.
     void update_empty_state();

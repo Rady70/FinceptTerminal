@@ -4032,6 +4032,30 @@ if(Python3_Interpreter_FOUND)
     endif()
 endif()
 
+# ── MarketLab: CFTC COT fixture tests (Phase 4) ───────────────────────────────
+# Offline fixture tests for scripts/cftc_data.py: contract-code selection,
+# default window, numeric coercion, missing-vs-zero, and the family-specific
+# derived views (FINCEPT_FORK_PLAN.md §11.1/§11.3). Pure stdlib unittest; the
+# test stubs requests/pandas only when they are not installed, so it runs on a
+# plain Python 3 as well as inside the app's venv.
+#
+# enable_testing() is called here, at the top level and before any add_test():
+# the audits/fixtures above and below must not depend on the optional tests/
+# tree existing. Without it, a missing tests/CMakeLists.txt produced a `ctest`
+# run that silently found no tests at all — a green run proving nothing.
+if(FINCEPT_BUILD_TESTS)
+    enable_testing()
+endif()
+if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests/test_cftc_data.py")
+    add_test(NAME marketlab_cftc_fixtures
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
+                -p "test_*.py")
+    set_tests_properties(marketlab_cftc_fixtures PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 # ── Test suite (opt-in; see fincept-qt/tests/CMakeLists.txt) ─────────────────
 # The EXISTS guard is load-bearing: the tests/ tree is not in the repo yet, and
 # a bare add_subdirectory(tests) makes -DFINCEPT_BUILD_TESTS=ON fail at CONFIGURE
@@ -4040,13 +4064,8 @@ endif()
 # clear message instead, so turning the option on is diagnostic rather than fatal.
 if(FINCEPT_BUILD_TESTS)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
-        # enable_testing() MUST be called from the top-level directory. Calling
-        # it only inside tests/ writes a CTestTestfile.cmake under build/tests/
-        # but none at the build root, so `ctest --test-dir build` fails with
-        # "Cannot find file: .../CTestTestfile.cmake" even though the test
-        # targets built fine. Scoped inside the option so a normal build still
-        # generates no CTest machinery at all.
-        enable_testing()
+        # enable_testing() was already called above; add_subdirectory only
+        # registers the C++ test targets here.
         add_subdirectory(tests)
     else()
         message(WARNING

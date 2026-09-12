@@ -1,5 +1,6 @@
 #include "ui/tables/DataTable.h"
 
+#include "ui/tables/NumericTableWidgetItem.h"
 #include "ui/theme/Theme.h"
 
 #include <QHeaderView>
@@ -30,9 +31,10 @@ DataTable::DataTable(QWidget* parent) : QTableWidget(parent) {
     horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     // NOTE: sorting is intentionally NOT enabled here.
     // Callers that need sorting (e.g. WatchlistScreen) opt in with
-    // setSortingEnabled(true) after attaching numeric EditRole values.
-    // Enabling it globally causes lexicographic sort on tables that only
-    // use setText() — e.g. "$10" sorts before "$2", "100K" before "2M".
+    // setSortingEnabled(true) after attaching presence-aware numeric sort
+    // keys via set_cell_numeric(). Enabling it globally causes lexicographic
+    // sort on tables that only use setText() — e.g. "$10" sorts before "$2",
+    // "100K" before "2M".
     setStyleSheet(QString("QTableWidget { background: %1; alternate-background-color: %2; "
                           "gridline-color: %3; border: none; }"
                           "QTableWidget::item { padding: 4px 8px; height: 26px; }"
@@ -104,10 +106,29 @@ void DataTable::set_cell_color(int row, int col, const QString& color) {
         it->setForeground(QColor(color));
 }
 
-void DataTable::set_cell_numeric(int row, int col, double value) {
+void DataTable::set_cell_numeric(int row, int col, double value, bool has) {
     auto* it = item(row, col);
-    if (it)
-        it->setData(Qt::EditRole, value);
+    if (!it)
+        return;
+    // A plain QTableWidgetItem that receives EditRole data has its DisplayRole
+    // replaced by the raw double (QTableWidgetItem::setData maps the two), so
+    // the formatted text — including the "--" placeholder — would disappear and
+    // a missing reading would become a numeric 0. Swap in the numeric item,
+    // which keeps the display text and stores the key beside it. Qt's model
+    // takes ownership of the replacement and deletes the old item.
+    if (auto* numeric = dynamic_cast<NumericTableWidgetItem*>(it)) {
+        numeric->set_numeric_value(value, has);
+        return;
+    }
+    auto* numeric = new NumericTableWidgetItem(it->text(), value, has);
+    numeric->setToolTip(it->toolTip());
+    numeric->setForeground(it->foreground());
+    // Copy the alignment through the stored role rather than the deprecated
+    // setTextAlignment(int) overload (Qt 6.4+ exposes a Qt::Alignment
+    // overload; the role copy works for either representation).
+    numeric->setData(Qt::TextAlignmentRole, it->data(Qt::TextAlignmentRole));
+    numeric->setFont(it->font());
+    setItem(row, col, numeric);
 }
 
 } // namespace fincept::ui

@@ -46,10 +46,14 @@ static QColor series_color(int index) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 static QString pct_str(double v, int dp = 2) {
-    return QString("%1%2%").arg(v >= 0 ? "+" : "").arg(QString::number(v * 100.0, 'f', dp));
+    // Zero is neutral: only a strictly signed value gets a "+".
+    return QString("%1%2%").arg(v > 0 ? "+" : "").arg(QString::number(v * 100.0, 'f', dp));
 }
 static QString fmt(double v, int dp = 2) {
     return QString::number(v, 'f', dp);
+}
+static const char* sign_color(double v) {
+    return v > 0 ? ui::colors::POSITIVE : v < 0 ? ui::colors::NEGATIVE : ui::colors::TEXT_PRIMARY;
 }
 
 static QTableWidgetItem* make_item(const QString& text, Qt::Alignment align, const QColor& color) {
@@ -498,7 +502,16 @@ void PortfolioFFNView::update_overview() {
     }
 
     double pnl_pct = summary_.total_unrealized_pnl_percent;
-    double win_rate = summary_.total_positions > 0 ? summary_.gainers * 100.0 / summary_.total_positions : 0.0;
+    // Gainers/losers classify priced holdings only, so the win rate's
+    // denominator is the priced count — not every position. With no priced
+    // holding there is no observation set: the rate is unavailable, not 0%.
+    const bool have_priced = summary_.priced_positions > 0;
+    double win_rate = have_priced ? summary_.gainers * 100.0 / summary_.priced_positions : 0.0;
+    const QString win_rate_text = have_priced ? fmt(win_rate) + QStringLiteral("%") : QStringLiteral("--");
+    // Unpriced holdings are valued at average cost; mark the total-value row
+    // partial so it is not read as a fully observed market value.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
 
     // Benchmark (SPY) column — "--" until set_benchmark() has delivered closes.
     const BenchStats bench = compute_bench_stats(benchmark_closes_);
@@ -515,11 +528,9 @@ void PortfolioFFNView::update_overview() {
 
     if (has_ffn) {
         rows = {
-            {tr("Annualized Return"), pct_str(total_ann_ret), bench_pct(bench.cagr),
-             total_ann_ret >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
+            {tr("Annualized Return"), pct_str(total_ann_ret), bench_pct(bench.cagr), sign_color(total_ann_ret)},
             {tr("Annualized Volatility"), pct_str(total_ann_vol), bench_pct(bench.volatility), ui::colors::CYAN},
-            {tr("Sharpe Ratio"), fmt(total_sharpe), bench_num(bench.sharpe),
-             total_sharpe >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
+            {tr("Sharpe Ratio"), fmt(total_sharpe), bench_num(bench.sharpe), sign_color(total_sharpe)},
             {tr("Max Drawdown"), pct_str(total_max_dd), bench_pct(bench.max_drawdown), ui::colors::NEGATIVE},
             {tr("Best Day (any)"), pct_str(total_best_day), "--", ui::colors::POSITIVE},
             {tr("Worst Day (any)"), pct_str(total_worst_day), "--", ui::colors::NEGATIVE},
@@ -529,39 +540,47 @@ void PortfolioFFNView::update_overview() {
              ui::colors::POSITIVE},
             {tr("Worst Holding"), worst_sym.isEmpty() ? "--" : worst_sym + " (" + pct_str(worst_ret) + ")", "--",
              ui::colors::NEGATIVE},
-            {tr("Total Return (cost)"), pct_str(pnl_pct / 100.0), "--",
-             pnl_pct >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
-            {tr("Win Rate"), fmt(win_rate) + "%", "--", ui::colors::CYAN},
+            {tr("Total Return (cost)"), pct_str(pnl_pct / 100.0) + partial_note, "--", sign_color(pnl_pct)},
+            {tr("Win Rate (priced)"), win_rate_text, "--", ui::colors::CYAN},
             {tr("Positions"), QString::number(summary_.total_positions), "--", ui::colors::CYAN},
-            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value), "--", ui::colors::WARNING},
+            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value) + partial_note, "--",
+             ui::colors::WARNING},
             {tr("Cost Basis"), currency_ + " " + fmt(summary_.total_cost_basis), "--", ui::colors::TEXT_SECONDARY},
         };
     } else {
-        // Pre-run: show live data and prompt user
+        // Pre-run: show live data and prompt user. A day-change percentage is
+        // used only when it was actually observed (has_day_change_percent), so
+        // an empty observation set renders the estimates unavailable instead of
+        // deriving a real-looking 0 volatility / 0 Sharpe from missing data.
         double vol = 0;
         int vn = 0;
         for (const auto& h : summary_.holdings)
-            if (std::abs(h.day_change_percent) > 0.001) {
+            if (h.has_day_change_percent) {
                 vol += std::abs(h.day_change_percent);
                 ++vn;
             }
-        double daily_vol = vn > 0 ? vol / vn : 0.0;
-        double ann_vol = daily_vol * std::sqrt(252.0);
+        const bool have_day_observations = vn > 0;
+        double daily_vol = have_day_observations ? vol / vn : 0.0;
+        double ann_vol = have_day_observations ? daily_vol * std::sqrt(252.0) : 0.0;
         // Rough Sharpe estimate in percent units; mirrors PortfolioService's
         // kDefaultRiskFreeRate (0.04 → 4%) — keep in sync if that default changes.
         constexpr double kRoughRfRatePct = 4.0;
-        double sharpe = ann_vol > 0.01 ? (pnl_pct - kRoughRfRatePct) / ann_vol : 0.0;
+        // A Sharpe with a zero (or near-zero) volatility denominator is
+        // undefined, not zero: an all-flat observation set still has no ratio.
+        const bool sharpe_available = have_day_observations && ann_vol > 0.01;
+        double sharpe = sharpe_available ? (pnl_pct - kRoughRfRatePct) / ann_vol : 0.0;
 
         rows = {
-            {tr("Total Return (unrealized)"), pct_str(pnl_pct / 100.0), "--",
-             pnl_pct >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
-            {tr("Annualized Volatility (est.)"), pct_str(ann_vol / 100.0), bench_pct(bench.volatility),
+            {tr("Total Return (unrealized)"), pct_str(pnl_pct / 100.0) + partial_note, "--", sign_color(pnl_pct)},
+            {tr("Annualized Volatility (est.)"),
+             have_day_observations ? pct_str(ann_vol / 100.0) : QStringLiteral("--"), bench_pct(bench.volatility),
              ui::colors::CYAN},
-            {tr("Sharpe Ratio (est.)"), fmt(sharpe), bench_num(bench.sharpe),
-             sharpe >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE},
-            {tr("Win Rate"), fmt(win_rate) + "%", "--", ui::colors::CYAN},
+            {tr("Sharpe Ratio (est.)"), sharpe_available ? fmt(sharpe) : QStringLiteral("--"), bench_num(bench.sharpe),
+             sharpe_available ? sign_color(sharpe) : ui::colors::TEXT_TERTIARY},
+            {tr("Win Rate (priced)"), win_rate_text, "--", ui::colors::CYAN},
             {tr("Positions"), QString::number(summary_.total_positions), "--", ui::colors::CYAN},
-            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value), "--", ui::colors::WARNING},
+            {tr("Total Value"), currency_ + " " + fmt(summary_.total_market_value) + partial_note, "--",
+             ui::colors::WARNING},
             {tr("Cost Basis"), currency_ + " " + fmt(summary_.total_cost_basis), "--", ui::colors::TEXT_SECONDARY},
             {tr("FFN Deep Metrics"), tr("Click RUN FFN ANALYSIS for full stats"), "--", ui::colors::AMBER},
         };

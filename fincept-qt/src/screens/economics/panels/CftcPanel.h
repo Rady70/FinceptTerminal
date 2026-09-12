@@ -24,13 +24,18 @@ class CftcPanel : public EconPanelBase {
     void changeEvent(QEvent* event) override;
 
   private:
-    void show_sentiment(const QJsonObject& sentiment);
+    void show_sentiment(const QJsonObject& sentiment, const QString& family, const QString& market_label);
+    void apply_sentiment_terminology();
     void build_sentiment_widget();
     void retranslateUi() override;
 
     QComboBox* market_combo_ = nullptr;
     QComboBox* report_type_combo_ = nullptr;
     QComboBox* view_combo_ = nullptr;
+
+    // Report family of the currently displayed sentiment payload, so the card
+    // terminology stays truthful across a language change.
+    QString sentiment_family_ = QStringLiteral("legacy");
 
     // Sentiment view widgets
     QWidget* sentiment_widget_ = nullptr;

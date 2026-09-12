@@ -344,11 +344,21 @@ void QuantStatsView::update_metrics() {
         rows.push_back({"", tr("Worst Day"), pct_str(worst_day), "--", worst_day >= 0});
         rows.push_back({"", tr("Avg Daily Return"), pct_str(avg_daily, 4), "--", avg_daily >= 0});
     } else {
-        // Pre-run: show live summary values
+        // Pre-run: show live summary values. The same partial-coverage rule as
+        // the other aggregate surfaces applies: unpriced holdings are valued at
+        // average cost, and a day total with no change reading is unavailable,
+        // not a genuine 0.00%.
+        const bool price_partial = summary_.priced_positions < summary_.total_positions;
+        const bool day_observed = summary_.day_change_positions > 0;
+        const bool day_partial = day_observed && summary_.day_change_positions < summary_.total_positions;
+        const QString pnl_partial_note = price_partial ? tr(" (partial)") : QString();
         double pnl_pct = summary_.total_unrealized_pnl_percent;
         double day_pct = summary_.total_day_change_percent;
-        rows.push_back({"", tr("Unrealized P&L %"), pct_str(pnl_pct), "--", pnl_pct >= 0});
-        rows.push_back({"", tr("Day Change %"), pct_str(day_pct), "--", day_pct >= 0});
+        rows.push_back({"", tr("Unrealized P&L %"), pct_str(pnl_pct) + pnl_partial_note, "--", pnl_pct >= 0});
+        rows.push_back(
+            {"", tr("Day Change %"),
+             day_observed ? pct_str(day_pct) + (day_partial ? tr(" (partial)") : QString()) : QStringLiteral("--"),
+             "--", day_observed && day_pct >= 0});
         rows.push_back({"", tr("Total Positions"), QString::number(summary_.total_positions), "--", true});
         rows.push_back({"", tr("Gainers"), QString::number(summary_.gainers), "--", true});
         rows.push_back({"", tr("Losers"), QString::number(summary_.losers), "--", summary_.losers == 0});

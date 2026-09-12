@@ -23,7 +23,9 @@
 # signal about the unit, not about this file: extract the pure logic into a small
 # header (or a leaf .cpp) and test that. Do not grow the link line.
 #
-# Current cost of the whole suite: 3 executables, 5 translation units.
+# The suite grows target-by-target; each registration below names the leaf it
+# pins, so read this list (and the STATUS line at the bottom) for the current
+# size instead of a hardcoded count.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Qt Test ships with every Qt installation, so this adds no new dependency.
@@ -156,6 +158,26 @@ fincept_add_test(tst_equity_parse
 fincept_add_test(tst_market_parse
     tst_market_parse.cpp)
 
+# MarketLab: economics response-envelope classification — the CFTC-shaped
+# {"error": {...}} contract, string/array errors, success:false, and the
+# error_code prefix. EconomicsService applies the same classifier to fresh and
+# cached payloads so a provider error can never be cached or replayed as a
+# success result. Header-only over Qt Core; no app sources.
+fincept_add_test(tst_economics_envelope
+    tst_economics_envelope.cpp)
+
+# MarketLab: the CFTC net-position sign rule — a positive net gets "+", an
+# exact zero is neutral and must not render as "+0". Header-only over Qt Core;
+# no app sources.
+fincept_add_test(tst_cftc_net_format
+    tst_cftc_net_format.cpp)
+
+# MarketLab: portfolio presentation rules — trend direction, contribution
+# availability and presence-aware ordering keep missing, zero and directional
+# states distinct. Header-only over plain types; no app sources.
+fincept_add_test(tst_portfolio_rules
+    tst_portfolio_rules.cpp)
+
 # MarketLab: redirect containment in GuardedNetworkAccessManager.
 #
 # THE ONE EXCEPTION to "a unit test that needs Network is testing the wrong
@@ -184,4 +206,4 @@ fincept_add_test(tst_redirect_guard
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_redirect_guard")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_redirect_guard")

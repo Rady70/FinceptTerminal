@@ -130,12 +130,22 @@ void PortfolioStatusBar::set_summary(const portfolio::PortfolioSummary& s) {
     set_portfolio_name(s.portfolio.name);
     positions_label_->setText(tr("%1 positions").arg(s.total_positions));
 
-    nav_label_->setText(tr("NAV %1 %2").arg(s.portfolio.currency, fmt(s.total_market_value)));
+    // Holdings without a live price are valued at average cost by the service;
+    // when any are, the headline NAV and P&L say the aggregate is partial
+    // instead of presenting it as fully observed.
+    const bool price_partial = s.priced_positions < s.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
+    nav_label_->setText(tr("NAV %1 %2%3").arg(s.portfolio.currency, fmt(s.total_market_value), partial_note));
+    nav_label_->setToolTip(price_partial ? tr("Holdings without a current quote are valued at average cost and are "
+                                              "included in this NAV.")
+                                         : QString());
 
     double pnl = s.total_unrealized_pnl;
-    pnl_label_->setText(tr("P&L %1%2").arg(pnl >= 0 ? "+" : "").arg(fmt(pnl)));
+    pnl_label_->setText(tr("P&L %1%2%3").arg(pnl > 0 ? "+" : "").arg(fmt(pnl)).arg(partial_note));
     pnl_label_->setStyleSheet(QString("color:%1; font-size:10px; font-weight:600;")
-                                  .arg(pnl >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
+                                  .arg(pnl > 0   ? ui::colors::POSITIVE()
+                                       : pnl < 0 ? ui::colors::NEGATIVE()
+                                                 : ui::colors::TEXT_PRIMARY()));
 }
 
 void PortfolioStatusBar::changeEvent(QEvent* event) {

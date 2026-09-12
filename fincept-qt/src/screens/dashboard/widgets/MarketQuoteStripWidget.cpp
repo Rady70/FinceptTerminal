@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/theme/Theme.h"
 
@@ -144,10 +145,15 @@ void MarketQuoteStripWidget::on_quote(const fincept::services::QuoteData& q) {
     if (it == rows_.end())
         return;
     Row& r = it.value();
-    r.price->setText(QString::number(q.price, 'f', 2));
-    const QString sign = q.change_pct >= 0 ? "+" : "";
-    r.change->setText(QString("%1%2%").arg(sign).arg(q.change_pct, 0, 'f', 2));
-    const QColor col = q.change_pct >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
+    r.price->setText(fincept::screens::quote_field_text(q.has_price, q.price, 2));
+    r.change->setText(fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%")));
+    // This cell displays the percent change only, so its colour follows that
+    // field's own presence and value: missing stays dim, a genuine zero is
+    // neutral, and a missing percent is never coloured by the absolute change.
+    const QColor col = !q.has_change_pct  ? QColor(ui::colors::TEXT_DIM())
+                       : q.change_pct > 0 ? QColor(ui::colors::POSITIVE())
+                       : q.change_pct < 0 ? QColor(ui::colors::NEGATIVE())
+                                          : QColor(ui::colors::TEXT_PRIMARY());
     r.change->setStyleSheet(QString("color:%1;font-size:11px;font-weight:600;background:transparent;").arg(col.name()));
     received_.insert(q.symbol);
     set_loading_progress(received_.size(), symbols_.size());

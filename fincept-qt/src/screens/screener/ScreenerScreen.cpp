@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QComboBox>
@@ -24,22 +25,12 @@ namespace fincept::screens {
 namespace {
 // Broad large-cap basket across sectors — mirrors the dashboard ScreenerWidget
 // basket, extended for a full-screen view.
-const QStringList kBasket = {
-    "AAPL", "MSFT", "GOOGL", "AMZN",  "NVDA", "META", "TSLA", "NFLX", "AMD",  "INTC", "AVGO", "ORCL", "CRM",
-    "ADBE", "CSCO", "QCOM",  "TXN",   "JPM",  "GS",   "BAC",  "WFC",  "MS",   "C",    "BRK-B", "V",    "MA",
-    "AXP",  "PYPL", "WMT",   "COST",  "TGT",  "HD",   "LOW",  "NKE",  "MCD",  "SBUX", "AMGN", "PFE",  "JNJ",
-    "MRK",  "ABBV", "LLY",   "UNH",   "XOM",  "CVX",  "SLB",  "COP",  "NEE",  "DUK",  "SO",   "CAT",  "GE",
-    "HON",  "RTX",  "BA",    "DE",    "PLTR", "COIN", "SOFI", "SNAP", "UBER", "ABNB", "SHOP", "SQ"};
-
-QString fmt_volume(double v) {
-    if (v >= 1e9)
-        return QString("%1B").arg(v / 1e9, 0, 'f', 1);
-    if (v >= 1e6)
-        return QString("%1M").arg(v / 1e6, 0, 'f', 1);
-    if (v >= 1e3)
-        return QString("%1K").arg(v / 1e3, 0, 'f', 0);
-    return QString::number(static_cast<long long>(v));
-}
+const QStringList kBasket = {"AAPL", "MSFT",  "GOOGL", "AMZN", "NVDA", "META", "TSLA", "NFLX", "AMD", "INTC", "AVGO",
+                             "ORCL", "CRM",   "ADBE",  "CSCO", "QCOM", "TXN",  "JPM",  "GS",   "BAC", "WFC",  "MS",
+                             "C",    "BRK-B", "V",     "MA",   "AXP",  "PYPL", "WMT",  "COST", "TGT", "HD",   "LOW",
+                             "NKE",  "MCD",   "SBUX",  "AMGN", "PFE",  "JNJ",  "MRK",  "ABBV", "LLY", "UNH",  "XOM",
+                             "CVX",  "SLB",   "COP",   "NEE",  "DUK",  "SO",   "CAT",  "GE",   "HON", "RTX",  "BA",
+                             "DE",   "PLTR",  "COIN",  "SOFI", "SNAP", "UBER", "ABNB", "SHOP", "SQ"};
 } // namespace
 
 ScreenerScreen::ScreenerScreen(QWidget* parent) : QWidget(parent) {
@@ -272,22 +263,37 @@ void ScreenerScreen::apply_filter() {
         rows = filtered;
     }
 
+    // Missing readings sort last in every ordering, so a field the provider did
+    // not return can never pose as a 0.00% "neutral" or a $0 price.
+    auto sort_rows = [&rows](auto has, auto value, bool descending) {
+        std::stable_sort(rows.begin(), rows.end(), [&](const services::QuoteData& a, const services::QuoteData& b) {
+            const bool a_has = has(a);
+            const bool b_has = has(b);
+            if (a_has != b_has)
+                return a_has;
+            if (!a_has)
+                return false;
+            return descending ? value(a) > value(b) : value(a) < value(b);
+        });
+    };
+
     const int idx = sort_combo_ ? sort_combo_->currentIndex() : 0;
     switch (idx) {
         case 0: // % change desc (top gainers first)
-            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.change_pct > b.change_pct; });
+            sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; }, true);
             break;
         case 1: // % change asc (top losers first)
-            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.change_pct < b.change_pct; });
+            sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; },
+                      false);
             break;
         case 2: // volume desc
-            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.volume > b.volume; });
+            sort_rows([](const auto& q) { return q.has_volume; }, [](const auto& q) { return q.volume; }, true);
             break;
         case 3: // price desc
-            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.price > b.price; });
+            sort_rows([](const auto& q) { return q.has_price; }, [](const auto& q) { return q.price; }, true);
             break;
         case 4: // price asc
-            std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.price < b.price; });
+            sort_rows([](const auto& q) { return q.has_price; }, [](const auto& q) { return q.price; }, false);
             break;
         default:
             break;
@@ -313,7 +319,8 @@ void ScreenerScreen::render_rows(const QVector<services::QuoteData>& rows) {
         const auto& q = rows[r];
 
         auto* sym = new QTableWidgetItem(q.symbol);
-        sym->setForeground(QColor(ui::colors::INFO()));
+        sym->setForeground(
+            QColor(q.status == QLatin1String(services::kQuoteStatusStale) ? ui::colors::AMBER() : ui::colors::INFO()));
         QFont bold = sym->font();
         bold.setBold(true);
         sym->setFont(bold);
@@ -321,22 +328,32 @@ void ScreenerScreen::render_rows(const QVector<services::QuoteData>& rows) {
 
         table_->setItem(r, 1, new QTableWidgetItem(q.name));
 
-        auto* price = new QTableWidgetItem(QString("$%1").arg(q.price, 0, 'f', 2));
+        // A field the provider did not return renders as "--"; a genuine zero
+        // still renders as 0.00. The presence flags decide, never the value.
+        auto* price = new QTableWidgetItem(fincept::screens::quote_field_text(q.has_price, q.price, 2, "$"));
         price->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         table_->setItem(r, 2, price);
 
-        auto* chg = new QTableWidgetItem(
-            QString("%1%2%").arg(q.change_pct >= 0 ? "+" : "").arg(q.change_pct, 0, 'f', 2));
+        auto* chg = new QTableWidgetItem(fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, "%"));
         chg->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        chg->setForeground(QColor(q.change_pct > 0   ? ui::colors::POSITIVE()
+        chg->setForeground(QColor(!q.has_change_pct  ? ui::colors::TEXT_DIM()
+                                  : q.change_pct > 0 ? ui::colors::POSITIVE()
                                   : q.change_pct < 0 ? ui::colors::NEGATIVE()
                                                      : ui::colors::TEXT_PRIMARY()));
         table_->setItem(r, 3, chg);
 
-        auto* vol = new QTableWidgetItem(fmt_volume(q.volume));
+        auto* vol = new QTableWidgetItem(fincept::screens::quote_volume_text(q));
         vol->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         vol->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
         table_->setItem(r, 4, vol);
+
+        // Provider / retrieval time / status on every cell, so a cached row is
+        // never presented as a current one.
+        const QString provenance = fincept::screens::quote_provenance_text(q);
+        for (int c = 0; c < table_->columnCount(); ++c) {
+            if (auto* cell = table_->item(r, c))
+                cell->setToolTip(fincept::screens::merge_quote_provenance(cell->toolTip(), provenance));
+        }
     }
 
     if (!selected_symbol.isEmpty()) {

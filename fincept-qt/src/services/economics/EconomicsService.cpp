@@ -5,6 +5,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "python/PythonRunner.h"
+#include "services/economics/EconomicsEnvelopeParse.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -44,9 +45,19 @@ void EconomicsService::execute(const QString& source_id, const QString& script, 
         if (!cached.isNull()) {
             LOG_DEBUG("EconomicsService", "Cache hit: " + key);
             EconomicsResult res;
-            res.success = true;
-            res.data = QJsonDocument::fromJson(cached.toString().toUtf8()).object();
             res.source_id = source_id;
+            const QJsonObject cached_obj = QJsonDocument::fromJson(cached.toString().toUtf8()).object();
+            // A cached error envelope must stay an error: the cache is an
+            // optimization, not a success converter.
+            const auto decision = economics_detail::classify(cached_obj);
+            if (!decision.ok) {
+                res.success = false;
+                res.error = decision.error;
+                emit result_ready(request_id, res);
+                return;
+            }
+            res.success = true;
+            res.data = cached_obj;
             emit result_ready(request_id, res);
             if (hub_registered_)
                 fincept::datahub::DataHub::instance().publish(topic, QVariant::fromValue(res));
@@ -101,15 +112,13 @@ void EconomicsService::execute(const QString& source_id, const QString& script, 
             else
                 res.data = doc.object();
 
-            // Treat script-level error field as failure
-            if (res.data.contains("error") && !res.data["error"].isNull() && !res.data["error"].toString().isEmpty() &&
-                !res.data.contains("data")) {
+            // Treat script-level error envelopes as failures in every shape
+            // (string, object or array) and never cache them: a failure is not
+            // a result, and a cache hit must not convert it into success.
+            const auto decision = economics_detail::classify(res.data);
+            if (!decision.ok) {
                 res.success = false;
-                const QString error_code = res.data.value("error_code").toString();
-                const QString message = res.data["error"].toString();
-                // Prefix with [CODE] so panels can branch on it without a schema change.
-                res.error = error_code.isEmpty() ? message
-                                                 : (QStringLiteral("[") + error_code + QStringLiteral("] ") + message);
+                res.error = decision.error;
                 emit self->result_ready(request_id, res);
                 return;
             }

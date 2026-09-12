@@ -192,6 +192,12 @@ bool PortfolioService::try_broker_quotes(const QString& portfolio_id, const QVec
                         q.high = bq.high;
                         q.low = bq.low;
                         q.volume = bq.volume;
+                        // BrokerQuote carries no field-presence information, so
+                        // the quote cannot honestly certify any of these fields
+                        // as present. The empty presence flags make
+                        // finalize_summary treat the row as unpriced and the
+                        // aggregate partial; the broker adapter itself is out
+                        // of scope for this corrective pass.
                         quote_map.insert(yf_key, q);
                     }
                     LOG_INFO("PortfolioSvc", QString("Broker quotes: %1 of %2 for portfolio %3")
@@ -240,6 +246,8 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
     double total_cost = 0;
     double total_day = 0;
     double total_prev = 0; // previous-close value of PRICED holdings only (day% base)
+    int priced_positions = 0;     // holdings with a live current price
+    int day_change_positions = 0; // holdings with a real day-change observation
 
     for (const auto& asset : assets) {
         portfolio::HoldingWithQuote h;
@@ -252,14 +260,30 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         h.sector = asset.sector.isEmpty() ? SectorResolver::instance().sector_for(asset.symbol) : asset.sector;
 
         auto it = quote_map.find(asset.symbol);
-        if (it != quote_map.end()) {
+        // A STALE row is a cached value served after a failed refresh: it is
+        // explicitly not a current observation, so it can neither price the
+        // portfolio nor qualify a valuation snapshot. It is treated like any
+        // other missing quote (average-cost fallback, partial aggregate).
+        const bool current_quote =
+            it != quote_map.end() && it->has_price && it->status != QLatin1String(kQuoteStatusStale);
+        h.has_live_price = current_quote;
+        if (current_quote) {
+            ++priced_positions;
             h.current_price = it->price;
-            h.day_change = it->change;
-            h.day_change_percent = it->change_pct;
-            total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
+            // Only a quote that actually carries a change adds to the day
+            // totals; a missing change must not contribute a fabricated 0.
+            if (it->has_change) {
+                ++day_change_positions;
+                h.has_day_change = true;
+                h.day_change = it->change;
+                total_day += h.day_change * h.quantity;
+                total_prev += (h.current_price - h.day_change) * h.quantity; // priced holdings only
+            }
+            h.has_day_change_percent = it->has_change_pct;
+            h.day_change_percent = it->has_change_pct ? it->change_pct : 0.0;
         } else {
-            // Fallback to avg buy price if no quote (broker missed the symbol,
-            // or yfinance returned nothing).
+            // Fallback to avg buy price if no current quote (broker missed the
+            // symbol, yfinance returned nothing, or the cached row is stale).
             h.current_price = asset.avg_buy_price;
         }
 
@@ -269,12 +293,16 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
 
         total_mv += h.market_value;
         total_cost += h.cost_basis;
-        total_day += h.day_change * h.quantity;
 
-        if (h.unrealized_pnl >= 0)
-            summary.gainers++;
-        else
-            summary.losers++;
+        // Classification requires a current price; an unpriced (or stale)
+        // holding is neither a gainer nor a loser. An exact zero P&L is
+        // neutral and is counted as neither.
+        if (current_quote) {
+            if (h.unrealized_pnl > 0)
+                summary.gainers++;
+            else if (h.unrealized_pnl < 0)
+                summary.losers++;
+        }
 
         summary.holdings.append(h);
     }
@@ -294,6 +322,10 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
     // denominator, diluting the day % whenever any symbol failed to quote.
     summary.total_day_change_percent = (total_prev > 0) ? (total_day / total_prev) * 100.0 : 0;
     summary.total_positions = assets.size();
+    // Coverage travels with the totals so a consumer can label a partial
+    // aggregate instead of presenting it as complete.
+    summary.priced_positions = priced_positions;
+    summary.day_change_positions = day_change_positions;
     summary.last_updated = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
     // Cache the result (P11)
@@ -302,11 +334,22 @@ void PortfolioService::finalize_summary(const QString& portfolio_id, const QVect
         summary_cache_[portfolio_id] = {summary, QDateTime::currentSecsSinceEpoch()};
     }
 
-    // Save snapshot for performance history
-    QString today = QDate::currentDate().toString(Qt::ISODate);
-    PortfolioRepository::instance().save_snapshot(portfolio_id, summary.total_market_value, summary.total_cost_basis,
-                                                  summary.total_unrealized_pnl, summary.total_unrealized_pnl_percent,
-                                                  today);
+    // Save snapshot for performance history — only when every holding has a
+    // live price. A snapshot has no coverage metadata, so persisting a partial
+    // valuation (unpriced holdings at average cost) would turn a transient
+    // missing quote into a durable historical datapoint that later reads as
+    // complete. The partial case is skipped, not written as a normal point.
+    if (priced_positions == assets.size()) {
+        QString today = QDate::currentDate().toString(Qt::ISODate);
+        PortfolioRepository::instance().save_snapshot(portfolio_id, summary.total_market_value,
+                                                      summary.total_cost_basis, summary.total_unrealized_pnl,
+                                                      summary.total_unrealized_pnl_percent, today);
+    } else {
+        LOG_INFO("PortfolioSvc", QString("Skipping valuation snapshot for %1: %2 of %3 holdings priced")
+                                     .arg(portfolio_id)
+                                     .arg(priced_positions)
+                                     .arg(assets.size()));
+    }
 
     emit summary_loaded(summary);
 }

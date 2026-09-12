@@ -40,6 +40,20 @@ inline bool take_num(const QJsonObject& o, const char* key, double& out, bool& h
     return has;
 }
 
+/// Volume with its validation rule folded in: a volume is a count, so zero is
+/// a genuine reading but a negative value is malformed. A malformed volume is
+/// recorded as absent rather than kept as a negative number (which consumers
+/// would clamp to "0", silently turning invalid into a real zero reading).
+inline bool take_volume(const QJsonObject& o, double& out, bool& has) {
+    if (!take_num(o, "volume", out, has))
+        return false;
+    if (out < 0) {
+        has = false;
+        out = 0;
+    }
+    return has;
+}
+
 /// A cache hit's source label: "cache (yfinance)" when the envelope still names
 /// who produced the bytes, plain "cache" when it does not (an entry written
 /// before the envelope carried a source).
@@ -132,7 +146,7 @@ inline QuoteData parse_quote_object(const QJsonObject& q, const QString& source,
     missing += take_num(q, "change_percent", out.change_pct, out.has_change_pct) ? 0 : 1;
     missing += take_num(q, "high", out.high, out.has_high) ? 0 : 1;
     missing += take_num(q, "low", out.low, out.has_low) ? 0 : 1;
-    missing += take_num(q, "volume", out.volume, out.has_volume) ? 0 : 1;
+    missing += take_volume(q, out.volume, out.has_volume) ? 0 : 1;
     // Provenance, stamped at the branch that actually produced the row rather
     // than assumed later from a log line.
     out.source = source;
@@ -183,7 +197,7 @@ inline QuoteData quote_from_cache(const QJsonObject& o, bool stale) {
     missing += take_num(o, "change_pct", q.change_pct, q.has_change_pct) ? 0 : 1;
     missing += take_num(o, "high", q.high, q.has_high) ? 0 : 1;
     missing += take_num(o, "low", q.low, q.has_low) ? 0 : 1;
-    missing += take_num(o, "volume", q.volume, q.has_volume) ? 0 : 1;
+    missing += take_volume(o, q.volume, q.has_volume) ? 0 : 1;
 
     q.source = cache_source_label(o["source"].toString());
     q.retrieved_at = static_cast<qint64>(o["retrieved_at"].toDouble());
@@ -214,7 +228,7 @@ inline bool parse_history_point(const QJsonObject& o, HistoryPoint& pt) {
     take_num(o, "high", pt.high, pt.has_high);
     take_num(o, "low", pt.low, pt.has_low);
     double volume = 0;
-    if (take_num(o, "volume", volume, pt.has_volume))
+    if (take_volume(o, volume, pt.has_volume))
         pt.volume = static_cast<qint64>(volume);
     return true;
 }

@@ -3,6 +3,7 @@
 #include "core/events/EventBus.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/backtesting/BacktestingService.h"
 #include "ui/formatting/NumberFormat.h"
 #include "ui/theme/Theme.h"
@@ -485,9 +486,18 @@ void MarketPanel::populate(const QVector<services::QuoteData>& quotes) {
 
     for (int row = 0; row < count; ++row) {
         const auto& q = quotes[row];
-        bool pos = q.change >= 0;
-        const QString cc = pos ? ui::colors::POSITIVE() : ui::colors::NEGATIVE();
-        const QString arr = pos ? QString::fromUtf8("\xe2\x96\xb2") : QString::fromUtf8("\xe2\x96\xbc");
+        // Each change column derives its colour from its own reading: a
+        // missing field is dim (never coloured by the other field), a genuine
+        // zero is neutral, and only a strictly signed value is green/red.
+        auto move_color = [](bool has, double value) -> QString {
+            if (!has)
+                return ui::colors::TEXT_DIM();
+            if (value > 0)
+                return ui::colors::POSITIVE();
+            if (value < 0)
+                return ui::colors::NEGATIVE();
+            return ui::colors::TEXT_PRIMARY();
+        };
         int prec = q.price > 1.0 ? 2 : 4;
 
         auto mk = [](const QString& s, const QString& c,
@@ -526,25 +536,40 @@ void MarketPanel::populate(const QVector<services::QuoteData>& quotes) {
             else if (col == "TICKER")
                 table_->setItem(row, ci, mk(q.symbol, ui::colors::TEXT_DIM(), Qt::AlignLeft | Qt::AlignVCenter));
             else if (col == "LAST")
-                table_->setItem(row, ci, mk(cur + QString::number(q.price, 'f', prec), ui::colors::AMBER()));
+                table_->setItem(row, ci, mk(quote_field_text(q.has_price, q.price, prec, cur), ui::colors::AMBER()));
             else if (col == "CHG")
-                table_->setItem(row, ci, mk(QString("%1 %2").arg(arr).arg(std::abs(q.change), 0, 'f', 2), cc));
-            else if (col == "CHG%")
-                table_->setItem(row, ci, mk(QString("%1%2%").arg(arr).arg(std::abs(q.change_pct), 0, 'f', 2), cc));
-            else if (col == "HIGH")
-                table_->setItem(row, ci, mk(cur + QString::number(q.high, 'f', 2), ui::colors::TEXT_SECONDARY()));
-            else if (col == "LOW")
-                table_->setItem(row, ci, mk(cur + QString::number(q.low, 'f', 2), ui::colors::TEXT_SECONDARY()));
-            else if (col == "VOL")
                 table_->setItem(row, ci,
-                                mk(fincept::ui::formatting::format_compact_volume(static_cast<qint64>(q.volume)),
-                                   ui::colors::TEXT_DIM()));
+                                mk(quote_arrow_text(q.has_change, q.change, 2), move_color(q.has_change, q.change)));
+            else if (col == "CHG%")
+                table_->setItem(row, ci,
+                                mk(quote_arrow_text(q.has_change_pct, q.change_pct, 2, "%"),
+                                   move_color(q.has_change_pct, q.change_pct)));
+            else if (col == "HIGH")
+                table_->setItem(row, ci,
+                                mk(quote_field_text(q.has_high, q.high, 2, cur), ui::colors::TEXT_SECONDARY()));
+            else if (col == "LOW")
+                table_->setItem(row, ci, mk(quote_field_text(q.has_low, q.low, 2, cur), ui::colors::TEXT_SECONDARY()));
+            else if (col == "VOL")
+                table_->setItem(row, ci, mk(quote_volume_text(q), ui::colors::TEXT_DIM()));
             else if (col == "BID" || col == "ASK" || col == "OPEN")
                 // No data source in the markets QuoteData snapshot (only OHLC
                 // high/low + last/change/volume are populated). Dropped from the
                 // column picker; this fallback keeps legacy saved configs from
                 // showing an empty cell / hitting the unknown-column path.
                 table_->setItem(row, ci, mk("--", ui::colors::TEXT_DIM()));
+        }
+
+        // Provenance (provider / retrieval time / status) on every cell, and a
+        // visible stale marker — a cached row served after a failed refresh is
+        // not a current one.
+        const QString provenance = quote_provenance_text(q);
+        for (int col_index = 0; col_index < cols.size(); ++col_index) {
+            if (auto* cell = table_->item(row, col_index))
+                cell->setToolTip(merge_quote_provenance(cell->toolTip(), provenance));
+        }
+        if (q.status == QLatin1String(services::kQuoteStatusStale)) {
+            if (auto* sym_cell = table_->item(row, 0))
+                sym_cell->setForeground(QColor(ui::colors::AMBER()));
         }
     }
 }

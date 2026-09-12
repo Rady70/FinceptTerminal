@@ -6,13 +6,17 @@
 // sentiment response: { "success": true, "data": { "commercial_positions": {...},
 //                       "non_commercial_positions": {...}, "overall_sentiment": {...} } }
 // trend response: { "success": true, "data": [{ "date", "open_interest",
-//                   "commercial_net", "non_commercial_net", ... }] }
+//                   "<family participant>_long/short/net", ... }] }
+//                   legacy: commercial_* / non_commercial_*;
+//                   disaggregated: prod_merc_* / m_money_*
 #include "screens/economics/panels/CftcPanel.h"
 
 #include "core/logging/Logger.h"
+#include "screens/economics/panels/CftcNetFormat.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/theme/Theme.h"
 
+#include <QCoreApplication>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -89,10 +93,66 @@ static const QList<QPair<QString, QString>> kViews = {
     {"Historical Trend", "trend"},
 };
 
+// The market key is encoded in the request id at dispatch time
+// (cftc_cot_<market> / cftc_sent_<market> / cftc_trend_<market>). Resolving the
+// label from the response's own request keeps an older async response bound to
+// the market that produced it even if the combo selection has changed since.
+static QString market_key_from_request_id(const QString& request_id) {
+    static const QStringList kPrefixes = {QStringLiteral("cftc_cot_"), QStringLiteral("cftc_sent_"),
+                                          QStringLiteral("cftc_trend_")};
+    for (const QString& prefix : kPrefixes) {
+        if (request_id.startsWith(prefix))
+            return request_id.mid(prefix.size());
+    }
+    return {};
+}
+
+static QString market_label_for_key(const QString& key) {
+    for (const auto& market : kMarkets) {
+        if (market.second == key)
+            return market.first;
+    }
+    return key;
+}
+
+static QString report_label_for_code(const QString& code) {
+    if (code == QLatin1String("disaggregated"))
+        return QCoreApplication::translate("CftcPanel", "Disaggregated");
+    if (code == QLatin1String("financial") || code == QLatin1String("tff"))
+        return QCoreApplication::translate("CftcPanel", "Financial (TFF)");
+    return QCoreApplication::translate("CftcPanel", "Legacy");
+}
+
+// Text + colour class for a categorical state. Positive/negative/neutral and
+// unavailable are deliberately distinct: green, red, primary, and "—".
+static void apply_sentiment_state(QLabel* label, const QString& state) {
+    const QString value = state.toLower();
+    const char* object_name = "econStatVal"; // neutral or unavailable
+    if (value == QLatin1String("bullish") || value == QLatin1String("increasing"))
+        object_name = "econStatPos";
+    else if (value == QLatin1String("bearish") || value == QLatin1String("decreasing"))
+        object_name = "econStatNeg";
+    label->setObjectName(object_name);
+    label->style()->unpolish(label);
+    label->style()->polish(label);
+}
+
+static QString sentiment_state_text(const QString& state) {
+    if (state.isEmpty())
+        return QStringLiteral("—");
+    if (state.compare(QLatin1String("unavailable"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("—");
+    return state.toUpper();
+}
+
 // ── Constructor ───────────────────────────────────────────────────────────────
 
 CftcPanel::CftcPanel(QWidget* parent) : EconPanelBase(kCftcSourceId, kCftcColor, parent) {
     build_base_ui(this);
+    // The shared generic stat row is never meaningful for CFTC views (see
+    // on_result); hide it from construction so it is not visible before the
+    // first response or after an error either.
+    set_stats_visible(false);
     build_sentiment_widget();
     // Localize fixed combo item text (report types / views) to the active language.
     retranslateUi();
@@ -295,10 +355,30 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         return;
     }
 
-    // Table/trend views are time series — restore the aggregate stat row that
-    // the sentiment view hides.
-    if (!request_id.startsWith("cftc_sent_"))
-        set_stats_visible(true);
+    // CFTC scripts can still surface an error object if a payload slips past
+    // the service classifier; treat it as a failure rather than an empty-data
+    // state. EconomicsService itself already classifies the object-shaped
+    // {"error": {...}} envelope as a failed, uncacheable result.
+    if (result.data.contains("error")) {
+        const QJsonValue err = result.data["error"];
+        const QString message = err.isString() ? err.toString() : err.toObject()["error"].toString();
+        show_error(message.isEmpty() ? tr("CFTC request failed") : message);
+        return;
+    }
+
+    // Bind this response to the request that produced it. The market and
+    // report labels come from the request id / payload parameters, not from
+    // the live combo selection (which the user may have changed while the
+    // async fetch was in flight).
+    const QString request_market = market_key_from_request_id(request_id);
+    const QString market_label = market_label_for_key(request_market);
+    const QJsonObject params = result.data.value("parameters").toObject();
+
+    // The shared generic stat row (LATEST/CHANGE/MIN/MAX/AVG) picks a value
+    // field per row heuristically. CFTC COT, sentiment and trend rows are
+    // multi-field reports, so that row would present an arbitrary participant
+    // or net column as the report's "LATEST"/"AVG"; hide it for every view.
+    set_stats_visible(false);
 
     // Sentiment view: data is an object, not an array
     if (request_id.startsWith("cftc_sent_")) {
@@ -307,46 +387,82 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
             show_error(tr("No sentiment data returned"));
             return;
         }
-        show_sentiment(sentiment);
+        QString family = params.value("report_family").toString();
+        if (family.isEmpty())
+            family = report_type_combo_->currentData().toString();
+        show_sentiment(sentiment, family, market_label);
         return;
     }
 
     // COT table or historical trend — data is an array
-    // cot_data rows: flat dict with date, open_interest_all, comm_long_all, etc.
-    // trend rows: { "date", "open_interest", "commercial_net", "non_commercial_net", ... }
+    // cot_data rows: flat dict with report_date/market/open_interest_all and the
+    // report family's participant fields (see the mapping below).
+    // trend rows use the report family's own participant keys (legacy:
+    // commercial_*, disaggregated: prod_merc_* / m_money_*).
     QJsonArray rows = result.data["data"].toArray();
 
     if (rows.isEmpty()) {
-        const QString err_str =
-            result.data.contains("error") ? result.data["error"].toObject()["error"].toString() : "";
-        show_empty(err_str.isEmpty() ? tr("No data returned — try a different market or report type") : err_str);
+        show_empty(tr("No data returned — try a different market or report type"));
         return;
     }
 
-    // For COT table, keep only the most useful columns for display
-    // (the raw records have 40+ fields — we pick the key ones)
+    // For COT table, keep only the most useful columns for display. Which
+    // participant columns exist depends on the report family: legacy carries
+    // commercial/non-commercial, disaggregated carries producer-merchant /
+    // managed-money, and the financial (TFF) family carries dealer /
+    // asset-manager / leveraged-money. Missing cells stay null and render as
+    // "—" (never as a fabricated 0).
     if (request_id.startsWith("cftc_cot_")) {
+        // Read the family from the result payload (authoritative for the row
+        // set that actually arrived) and fall back to the combo only for a
+        // cached result written before parameters.report_family existed.
+        QString family = params.value("report_family").toString();
+        if (family.isEmpty())
+            family = report_type_combo_->currentData().toString();
+        const QString report_label = report_label_for_code(params.value("report_type").toString());
         QJsonArray clean;
         for (const auto& v : rows) {
             const auto obj = v.toObject();
+            auto pick = [&obj](const QStringList& keys) -> QJsonValue {
+                for (const QString& key : keys) {
+                    const QJsonValue value = obj.value(key);
+                    if (!value.isUndefined() && !value.isNull())
+                        return value;
+                }
+                return {};
+            };
+
             QJsonObject row;
-            row["date"] = obj["report_date_as_yyyy_mm_dd"];
-            row["market"] = obj["market_and_exchange_names"];
-            row["open_interest"] = obj["open_interest_all"];
-            row["comm_long"] =
-                obj["comm_long_all"].isUndefined() ? obj["comm_positions_long_all"] : obj["comm_long_all"];
-            row["comm_short"] =
-                obj["comm_short_all"].isUndefined() ? obj["comm_positions_short_all"] : obj["comm_short_all"];
-            row["noncomm_long"] =
-                obj["noncomm_long_all"].isUndefined() ? obj["noncomm_positions_long_all"] : obj["noncomm_long_all"];
-            row["noncomm_short"] =
-                obj["noncomm_short_all"].isUndefined() ? obj["noncomm_positions_short_all"] : obj["noncomm_short_all"];
+            row["date"] = pick({"report_date_as_yyyy_mm_dd"});
+            row["market"] = pick({"market_and_exchange_names"});
+            row["open_interest"] = pick({"open_interest_all"});
+
+            if (family == "disaggregated") {
+                row["prod_merc_long"] = pick({"prod_merc_positions_long", "prod_merc_positions_long_all"});
+                row["prod_merc_short"] = pick({"prod_merc_positions_short", "prod_merc_positions_short_all"});
+                row["m_money_long"] = pick({"m_money_positions_long_all", "m_money_positions_long"});
+                row["m_money_short"] = pick({"m_money_positions_short_all", "m_money_positions_short"});
+            } else if (family == "tff" || family == "financial") {
+                row["dealer_long"] = pick({"dealer_positions_long_all", "dealer_positions_long"});
+                row["dealer_short"] = pick({"dealer_positions_short_all", "dealer_positions_short"});
+                row["asset_mgr_long"] = pick({"asset_mgr_positions_long", "asset_mgr_positions_long_all"});
+                row["asset_mgr_short"] = pick({"asset_mgr_positions_short", "asset_mgr_positions_short_all"});
+                row["lev_money_long"] = pick({"lev_money_positions_long", "lev_money_positions_long_all"});
+                row["lev_money_short"] = pick({"lev_money_positions_short", "lev_money_positions_short_all"});
+                row["other_rept_long"] = pick({"other_rept_positions_long", "other_rept_positions_long_all"});
+                row["other_rept_short"] = pick({"other_rept_positions_short", "other_rept_positions_short_all"});
+            } else {
+                row["comm_long"] = pick({"comm_positions_long_all", "comm_long_all"});
+                row["comm_short"] = pick({"comm_positions_short_all", "comm_short_all"});
+                row["noncomm_long"] = pick({"noncomm_positions_long_all", "noncomm_long_all"});
+                row["noncomm_short"] = pick({"noncomm_positions_short_all", "noncomm_short_all"});
+            }
             clean.append(row);
         }
-        display(clean, "CFTC COT: " + market_combo_->currentText() + " (" + report_type_combo_->currentText() + ")");
+        display(clean, "CFTC COT: " + market_label + " (" + report_label + ")");
     } else {
         // Historical trend — rows already have clean keys
-        display(rows, "CFTC Historical Trend: " + market_combo_->currentText());
+        display(rows, "CFTC Historical Trend: " + market_label);
     }
 
     LOG_INFO("CftcPanel", QString("Displayed %1 rows for %2").arg(rows.size()).arg(request_id));
@@ -354,69 +470,85 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
 
 // ── Sentiment display ─────────────────────────────────────────────────────────
 
-void CftcPanel::show_sentiment(const QJsonObject& s) {
+void CftcPanel::show_sentiment(const QJsonObject& s, const QString& family, const QString& market_label) {
     if (!sentiment_widget_)
         return;
 
+    sentiment_family_ = family.isEmpty() ? QStringLiteral("legacy") : family;
+    apply_sentiment_terminology();
+
     // Populate labels
-    sent_market_lbl_->setText(s["market_name"].toString(market_combo_->currentText()));
+    sent_market_lbl_->setText(s["market_name"].toString(market_label));
     sent_date_lbl_->setText(tr("Report: %1").arg(s["latest_report"].toString("—")));
 
-    const double oi = s["open_interest"].toDouble();
-    sent_oi_lbl_->setText(oi > 0 ? QString::number(static_cast<qint64>(oi)) : "—");
+    const QJsonObject overall = s["overall_sentiment"].toObject();
 
-    const QString oi_trend = s["overall_sentiment"].toObject()["oi_trend"].toString();
-    sent_oi_trend_->setText(oi_trend.isEmpty() ? "—" : oi_trend.toUpper());
-    sent_oi_trend_->setObjectName(oi_trend == "increasing" ? "econStatPos" : "econStatNeg");
-    sent_oi_trend_->style()->unpolish(sent_oi_trend_);
-    sent_oi_trend_->style()->polish(sent_oi_trend_);
+    const QJsonValue oi_value = s.value("open_interest");
+    sent_oi_lbl_->setText(oi_value.isDouble() ? QString::number(static_cast<qint64>(oi_value.toDouble())) : "—");
 
-    const QString comm_bias = s["overall_sentiment"].toObject()["commercial_bias"].toString();
-    sent_comm_bias_->setText(comm_bias.isEmpty() ? "—" : comm_bias.toUpper());
-    sent_comm_bias_->setObjectName(comm_bias == "bullish" ? "econStatPos" : "econStatNeg");
-    sent_comm_bias_->style()->unpolish(sent_comm_bias_);
-    sent_comm_bias_->style()->polish(sent_comm_bias_);
+    const QString oi_trend = overall["oi_trend"].toString();
+    sent_oi_trend_->setText(sentiment_state_text(oi_trend));
+    apply_sentiment_state(sent_oi_trend_, oi_trend);
 
-    const QString noncomm_bias = s["overall_sentiment"].toObject()["non_commercial_bias"].toString();
-    sent_noncomm_bias_->setText(noncomm_bias.isEmpty() ? "—" : noncomm_bias.toUpper());
-    sent_noncomm_bias_->setObjectName(noncomm_bias == "bullish" ? "econStatPos" : "econStatNeg");
-    sent_noncomm_bias_->style()->unpolish(sent_noncomm_bias_);
-    sent_noncomm_bias_->style()->polish(sent_noncomm_bias_);
+    const QString comm_bias = overall["commercial_bias"].toString();
+    sent_comm_bias_->setText(sentiment_state_text(comm_bias));
+    apply_sentiment_state(sent_comm_bias_, comm_bias);
+
+    const QString noncomm_bias = overall["non_commercial_bias"].toString();
+    sent_noncomm_bias_->setText(sentiment_state_text(noncomm_bias));
+    apply_sentiment_state(sent_noncomm_bias_, noncomm_bias);
 
     // NB: QString::arg(qlonglong, int fieldWidth) — the previous `.arg(v, 'd')`
     // passed the *char literal* 'd' (=100) as the field width, padding every
     // net-position number with 100 leading spaces. Format the number first.
+    // A net that the provider did not return stays "—", never a fabricated 0;
+    // see cftc_signed_net() for the strictly-positive-only "+" rule.
     const QJsonObject comm = s["commercial_positions"].toObject();
-    const double comm_net = comm["net"].toDouble();
-    sent_comm_net_->setText(tr("Net: %1%2")
-                                .arg(comm_net >= 0 ? QStringLiteral("+") : QString())
-                                .arg(QString::number(static_cast<qint64>(comm_net))));
+    const QJsonValue comm_net_value = comm.value("net");
+    const double comm_net = comm_net_value.isDouble() ? comm_net_value.toDouble() : 0.0;
+    sent_comm_net_->setText(comm_net_value.isDouble() ? tr("Net: %1").arg(cftc_signed_net(comm_net)) : tr("Net: —"));
 
     const QJsonObject noncomm = s["non_commercial_positions"].toObject();
-    const double noncomm_net = noncomm["net"].toDouble();
-    sent_noncomm_net_->setText(tr("Net: %1%2")
-                                   .arg(noncomm_net >= 0 ? QStringLiteral("+") : QString())
-                                   .arg(QString::number(static_cast<qint64>(noncomm_net))));
+    const QJsonValue noncomm_net_value = noncomm.value("net");
+    const double noncomm_net = noncomm_net_value.isDouble() ? noncomm_net_value.toDouble() : 0.0;
+    sent_noncomm_net_->setText(noncomm_net_value.isDouble() ? tr("Net: %1").arg(cftc_signed_net(noncomm_net))
+                                                            : tr("Net: —"));
 
     // Populate the shared table too (one summary row) so CSV export still has
     // something to write, then switch the stack to the sentiment card view.
     QJsonArray rows;
     QJsonObject row;
-    row["market"] = s["market_name"].toString(market_combo_->currentText());
+    row["market"] = s["market_name"].toString(market_label);
     row["report_date"] = s["latest_report"];
-    row["open_interest"] = oi;
-    row["comm_net"] = comm_net;
-    row["noncomm_net"] = noncomm_net;
+    row["open_interest"] = oi_value;
+    row["comm_net"] = comm_net_value;
+    row["noncomm_net"] = noncomm_net_value;
     row["comm_bias"] = comm_bias;
     row["noncomm_bias"] = noncomm_bias;
     row["oi_trend"] = oi_trend;
     rows.append(row);
-    // A one-row snapshot has no meaningful LATEST/CHANGE/MIN/MAX/AVG.
-    set_stats_visible(false);
-    display(rows, "CFTC Sentiment: " + market_combo_->currentText());
+    display(rows, "CFTC Sentiment: " + market_label);
     show_content_page(sentiment_page_);
 
-    LOG_INFO("CftcPanel", "Displayed sentiment for " + market_combo_->currentText());
+    LOG_INFO("CftcPanel", "Displayed sentiment for " + market_label);
+}
+
+void CftcPanel::apply_sentiment_terminology() {
+    // The derived sentiment maps the report family's own participant classes;
+    // label them by that family. Legacy: commercial / non-commercial.
+    // Disaggregated: producer-merchant / managed money.
+    const bool disaggregated = sentiment_family_ == QLatin1String("disaggregated");
+    if (sent_comm_card_lbl_)
+        sent_comm_card_lbl_->setText(disaggregated ? tr("PRODUCER/MERCHANT (HEDGERS)") : tr("COMMERCIAL TRADERS"));
+    if (sent_comm_card_desc_)
+        sent_comm_card_desc_->setText(disaggregated ? tr("Producer & merchant hedging positions")
+                                                    : tr("Hedgers & producers — usually contrarian signal"));
+    if (sent_noncomm_card_lbl_)
+        sent_noncomm_card_lbl_->setText(disaggregated ? tr("MANAGED MONEY (SPECULATORS)")
+                                                      : tr("NON-COMMERCIAL (SPECULATORS)"));
+    if (sent_noncomm_card_desc_)
+        sent_noncomm_card_desc_->setText(disaggregated ? tr("Managed-money funds — speculative positions")
+                                                       : tr("Managed money & funds — trend-following signal"));
 }
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
@@ -451,14 +583,7 @@ void CftcPanel::retranslateUi() {
     // Sentiment widget static labels
     if (sent_title_lbl_)
         sent_title_lbl_->setText(tr("COT MARKET SENTIMENT"));
-    if (sent_comm_card_lbl_)
-        sent_comm_card_lbl_->setText(tr("COMMERCIAL TRADERS"));
-    if (sent_comm_card_desc_)
-        sent_comm_card_desc_->setText(tr("Hedgers & producers — usually contrarian signal"));
-    if (sent_noncomm_card_lbl_)
-        sent_noncomm_card_lbl_->setText(tr("NON-COMMERCIAL (SPECULATORS)"));
-    if (sent_noncomm_card_desc_)
-        sent_noncomm_card_desc_->setText(tr("Managed money & funds — trend-following signal"));
+    apply_sentiment_terminology();
     if (sent_oi_caption_)
         sent_oi_caption_->setText(tr("OPEN INTEREST"));
     if (sent_oi_trend_caption_)

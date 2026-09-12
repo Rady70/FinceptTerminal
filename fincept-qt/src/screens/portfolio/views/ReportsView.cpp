@@ -1,6 +1,7 @@
 // src/screens/portfolio/views/ReportsView.cpp
 #include "screens/portfolio/views/ReportsView.h"
 
+#include "screens/portfolio/PortfolioDisplayRules.h"
 #include "storage/repositories/PortfolioRepository.h"
 #include "ui/theme/Theme.h"
 
@@ -222,35 +223,53 @@ void ReportsView::update_summary() {
 
     auto fmt = [](double v, int dp = 2) { return QString::number(v, 'f', dp); };
 
+    // Unpriced holdings are valued at average cost; mark the totals partial so
+    // a report card is not read as fully observed market value / P&L.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
+
     add_card(0, 0, tr("PORTFOLIO"), summary_.portfolio.name.toUpper(), ui::colors::AMBER);
-    add_card(0, 1, tr("TOTAL VALUE"), QString("%1 %2").arg(currency_, fmt(summary_.total_market_value)),
+    add_card(0, 1, tr("TOTAL VALUE"), QString("%1 %2%3").arg(currency_, fmt(summary_.total_market_value), partial_note),
              ui::colors::WARNING);
     add_card(0, 2, tr("COST BASIS"), QString("%1 %2").arg(currency_, fmt(summary_.total_cost_basis)), ui::colors::CYAN);
     add_card(0, 3, tr("UNREALIZED P&L"),
-             QString("%1%2").arg(summary_.total_unrealized_pnl >= 0 ? "+" : "").arg(fmt(summary_.total_unrealized_pnl)),
-             summary_.total_unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE);
+             QString("%1%2%3")
+                 .arg(summary_.total_unrealized_pnl > 0 ? "+" : "")
+                 .arg(fmt(summary_.total_unrealized_pnl))
+                 .arg(partial_note),
+             summary_.total_unrealized_pnl > 0   ? ui::colors::POSITIVE
+             : summary_.total_unrealized_pnl < 0 ? ui::colors::NEGATIVE
+                                                 : ui::colors::TEXT_PRIMARY);
 
     add_card(1, 0, tr("POSITIONS"), QString::number(summary_.total_positions), ui::colors::TEXT_PRIMARY);
-    add_card(1, 1, tr("GAINERS"), QString::number(summary_.gainers), ui::colors::POSITIVE);
-    add_card(1, 2, tr("LOSERS"), QString::number(summary_.losers), ui::colors::NEGATIVE);
+    // Gainers/losers classify priced holdings only; name that in the card so
+    // the counts are not read against the full position count.
+    add_card(1, 1, tr("GAINERS (PRICED)"), QString::number(summary_.gainers), ui::colors::POSITIVE);
+    add_card(1, 2, tr("LOSERS (PRICED)"), QString::number(summary_.losers), ui::colors::NEGATIVE);
     add_card(1, 3, tr("RETURN"),
-             QString("%1%2%")
-                 .arg(summary_.total_unrealized_pnl_percent >= 0 ? "+" : "")
-                 .arg(fmt(summary_.total_unrealized_pnl_percent)),
-             summary_.total_unrealized_pnl_percent >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE);
+             QString("%1%2%3")
+                 .arg(summary_.total_unrealized_pnl_percent > 0 ? "+" : "")
+                 .arg(fmt(summary_.total_unrealized_pnl_percent))
+                 .arg(partial_note),
+             summary_.total_unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
+             : summary_.total_unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
+                                                         : ui::colors::TEXT_PRIMARY);
 
     layout->addLayout(grid);
 
-    // Holdings breakdown
-    auto* breakdown_title = new QLabel(tr("HOLDINGS BREAKDOWN"));
+    // Holdings breakdown. Priced-row weights are computed against a total that
+    // includes average-cost fallback values, so the section and its WEIGHT
+    // column carry the partial qualifier when coverage is incomplete.
+    const QString coverage_note = price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString();
+    auto* breakdown_title = new QLabel(tr("HOLDINGS BREAKDOWN") + coverage_note);
     breakdown_title->setStyleSheet(
         QString("color:%1; font-size:10px; font-weight:700; letter-spacing:1px;").arg(ui::colors::TEXT_SECONDARY()));
     layout->addWidget(breakdown_title);
 
     auto* breakdown = new QTableWidget;
     breakdown->setColumnCount(6);
-    breakdown->setHorizontalHeaderLabels(
-        {tr("SYMBOL"), tr("QTY"), tr("AVG COST"), tr("CURRENT"), tr("P&L"), tr("WEIGHT")});
+    breakdown->setHorizontalHeaderLabels({tr("SYMBOL"), tr("QTY"), tr("AVG COST"), tr("CURRENT"), tr("P&L"),
+                                          price_partial ? tr("WEIGHT (partial)") : tr("WEIGHT")});
     breakdown->setSelectionMode(QAbstractItemView::NoSelection);
     breakdown->setEditTriggers(QAbstractItemView::NoEditTriggers);
     breakdown->setShowGrid(false);
@@ -265,7 +284,13 @@ void ReportsView::update_summary() {
                                       ui::colors::BG_SURFACE(), ui::colors::TEXT_SECONDARY(), ui::colors::AMBER()));
 
     auto sorted = summary_.holdings;
-    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.weight > b.weight; });
+    // Present (priced) holdings first, then by weight; two unavailable rows
+    // are comparator-equivalent (stable order), so no row is ever ranked by
+    // its hidden fallback weight.
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        return fincept::screens::portfolio_sort_before(a.has_live_price, a.weight, b.has_live_price, b.weight,
+                                                       /*ascending=*/false);
+    });
 
     breakdown->setRowCount(sorted.size());
     for (int r = 0; r < sorted.size(); ++r) {
@@ -283,16 +308,29 @@ void ReportsView::update_summary() {
         set(0, h.symbol, ui::colors::CYAN);
         set(1, fmt(h.quantity, h.quantity == std::floor(h.quantity) ? 0 : 2));
         set(2, fmt(h.avg_buy_price));
-        set(3, fmt(h.current_price));
-        const char* pc = h.unrealized_pnl >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        set(4,
-            QString("%1%2 (%3%4%)")
-                .arg(h.unrealized_pnl >= 0 ? "+" : "")
-                .arg(fmt(h.unrealized_pnl))
-                .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
-                .arg(fmt(h.unrealized_pnl_percent)),
-            pc);
-        set(5, QString("%1%").arg(fmt(h.weight, 1)));
+        if (!h.has_live_price) {
+            // The service substitutes average cost for a missing quote; showing
+            // it under CURRENT (with zero P&L and a normal weight) would present
+            // the fallback as an observed market value.
+            set(3, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(4, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(5, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+        } else {
+            set(3, fmt(h.current_price));
+            // Zero is neutral: it is not a gain, so it gets no "+" and the
+            // primary colour rather than the positive one.
+            const char* pc = h.unrealized_pnl > 0   ? ui::colors::POSITIVE
+                             : h.unrealized_pnl < 0 ? ui::colors::NEGATIVE
+                                                    : ui::colors::TEXT_PRIMARY;
+            set(4,
+                QString("%1%2 (%3%4%)")
+                    .arg(h.unrealized_pnl > 0 ? "+" : "")
+                    .arg(fmt(h.unrealized_pnl))
+                    .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
+                    .arg(fmt(h.unrealized_pnl_percent)),
+                pc);
+            set(5, QString("%1%").arg(fmt(h.weight, 1)));
+        }
     }
     layout->addWidget(breakdown, 1);
 }
@@ -333,7 +371,22 @@ void ReportsView::update_transactions() {
 
 void ReportsView::update_attribution() {
     auto sorted = summary_.holdings;
-    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.weight > b.weight; });
+    // Present (priced) holdings first, then by weight; two unavailable rows
+    // are comparator-equivalent (stable order), so no row is ever ranked by
+    // its hidden fallback weight.
+    std::stable_sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        return fincept::screens::portfolio_sort_before(a.has_live_price, a.weight, b.has_live_price, b.weight,
+                                                       /*ascending=*/false);
+    });
+
+    // Attribution weights and contributions are derived from the same partially
+    // valued holdings as the totals above; qualify the section when coverage is
+    // incomplete. Rows without a current price render every market-derived cell
+    // unavailable below instead of showing fallback artifacts as observations.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    if (attr_title_)
+        attr_title_->setText(tr("PERFORMANCE ATTRIBUTION") +
+                             (price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString()));
 
     attr_table_->setRowCount(sorted.size());
 
@@ -351,10 +404,30 @@ void ReportsView::update_attribution() {
             attr_table_->setItem(r, col, item);
         };
 
-        double contribution = (total_pnl != 0) ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0;
+        if (!h.has_live_price) {
+            // The service substituted average cost: weight, return,
+            // contribution and P&L would all be fallback artifacts, and the
+            // "NEUTRAL" banding would be an artifact of the substituted price.
+            set(0, h.symbol, ui::colors::CYAN);
+            set(1, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(2, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(3, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(4, QStringLiteral("--"), ui::colors::TEXT_TERTIARY);
+            set(5, tr("NO CURRENT PRICE"), ui::colors::TEXT_TERTIARY);
+            continue;
+        }
 
-        const char* ret_color = h.unrealized_pnl_percent >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
-        const char* contrib_color = contribution >= 0 ? ui::colors::POSITIVE : ui::colors::NEGATIVE;
+        // A zero total P&L makes each holding's share undefined (gains and
+        // losses cancel out); that is unavailable, not a fabricated 0%.
+        const bool contribution_available = fincept::screens::portfolio_contribution_available(total_pnl);
+        double contribution = contribution_available ? (h.unrealized_pnl / std::abs(total_pnl)) * 100.0 : 0.0;
+
+        const char* ret_color = h.unrealized_pnl_percent > 0   ? ui::colors::POSITIVE
+                                : h.unrealized_pnl_percent < 0 ? ui::colors::NEGATIVE
+                                                               : ui::colors::TEXT_PRIMARY;
+        const char* contrib_color = contribution > 0   ? ui::colors::POSITIVE
+                                    : contribution < 0 ? ui::colors::NEGATIVE
+                                                       : ui::colors::TEXT_PRIMARY;
         QString status = h.unrealized_pnl_percent > 5    ? tr("OUTPERFORM")
                          : h.unrealized_pnl_percent < -5 ? tr("UNDERPERFORM")
                                                          : tr("NEUTRAL");
@@ -366,11 +439,14 @@ void ReportsView::update_attribution() {
         set(1, QString("%1%").arg(QString::number(h.weight, 'f', 1)));
         set(2,
             QString("%1%2%")
-                .arg(h.unrealized_pnl_percent >= 0 ? "+" : "")
+                .arg(h.unrealized_pnl_percent > 0 ? "+" : "")
                 .arg(QString::number(h.unrealized_pnl_percent, 'f', 2)),
             ret_color);
-        set(3, QString("%1%2%").arg(contribution >= 0 ? "+" : "").arg(QString::number(contribution, 'f', 1)),
-            contrib_color);
+        set(3,
+            contribution_available
+                ? QString("%1%2%").arg(contribution > 0 ? "+" : "").arg(QString::number(contribution, 'f', 1))
+                : QStringLiteral("--"),
+            contribution_available ? contrib_color : ui::colors::TEXT_TERTIARY);
         set(4, QString("%1 %2").arg(currency_, QString::number(h.unrealized_pnl, 'f', 2)), ret_color);
         set(5, status, status_color);
     }

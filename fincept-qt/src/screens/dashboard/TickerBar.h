@@ -21,17 +21,23 @@ class TickerBar : public QWidget {
   public:
     explicit TickerBar(QWidget* parent = nullptr);
 
-    /// Callers fill only symbol/price/change; everything below is derived once
-    /// in set_data(). paintEvent runs 20×/s over every entry × every pass, so
-    /// it must not format strings or measure text — see rebuild_entry_cache().
+    /// Callers fill only symbol/price/change/change_pct and their presence
+    /// flags; everything below is derived once in set_data(). paintEvent runs
+    /// 20×/s over every entry × every pass, so it must not format strings or
+    /// measure text — see rebuild_entry_cache().
     struct Entry {
         QString symbol{};
         double price = 0;
         double change = 0;
+        double change_pct = 0;
+        // Presence at the handoff: a missing field must not render as 0.00.
+        bool has_price = false;
+        bool has_change = false;
+        bool has_change_pct = false;
 
         // ── Derived (do not set from outside) ──
-        // The `{}` are load-bearing: callers brace-init only the first three
-        // fields, and -Wmissing-field-initializers (fatal on Linux/macOS under
+        // The `{}` are load-bearing: callers brace-init a prefix of the fields,
+        // and -Wmissing-field-initializers (fatal on Linux/macOS under
         // -Wextra -Werror) flags every omitted member that lacks an NSDMI.
         QString price_text{};
         QString change_text{};

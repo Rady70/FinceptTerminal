@@ -453,6 +453,15 @@ QVector<AnalyticsSectorsView::SectorInfo> AnalyticsSectorsView::compute_sectors(
 
 void AnalyticsSectorsView::update_overview() {
     auto sectors = compute_sectors();
+    // Sector values, weights and P&L are computed from the same holdings the
+    // service values at average cost when a quote is missing, so the derived
+    // sections carry the partial qualifier alongside the KPI strip.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial — unpriced holdings at avg cost)") : QString();
+    if (donut_title_)
+        donut_title_->setText(tr("SECTOR ALLOCATION") + partial_note);
+    if (table_title_)
+        table_title_->setText(tr("SECTOR BREAKDOWN") + partial_note);
     update_kpi_strip(sectors);
     update_donut(sectors);
     update_sector_table(sectors);
@@ -463,16 +472,24 @@ void AnalyticsSectorsView::update_overview() {
 void AnalyticsSectorsView::update_kpi_strip(const QVector<SectorInfo>& sectors) {
     kpi_sectors_->setText(QString::number(sectors.size()));
     kpi_positions_->setText(QString::number(summary_.total_positions));
-    kpi_market_value_->setText(format_money(summary_.total_market_value));
-    const QString sign = summary_.total_unrealized_pnl >= 0 ? "+" : "";
-    kpi_pnl_->setText(QString("%1%2  (%3)")
+    // Unpriced holdings are valued at average cost by the service; mark the
+    // market-value KPI partial so it is not read as fully observed.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    kpi_market_value_->setText(format_money(summary_.total_market_value) +
+                               (price_partial ? tr(" (partial)") : QString()));
+    const QString sign = summary_.total_unrealized_pnl > 0 ? "+" : "";
+    // The P&L KPI is built on the same priced coverage as the market value, so
+    // it carries the same partial qualifier when holdings are unpriced.
+    kpi_pnl_->setText(QString("%1%2  (%3)%4")
                           .arg(sign)
                           .arg(QLocale::system().toString(summary_.total_unrealized_pnl, 'f', 2))
-                          .arg(format_pct(summary_.total_unrealized_pnl_percent, true)));
-    kpi_pnl_->setStyleSheet(
-        QString("color:%1; font-size:%2px; font-weight:700;")
-            .arg(summary_.total_unrealized_pnl >= 0 ? ui::colors::POSITIVE() : ui::colors::NEGATIVE())
-            .arg(ui::fonts::font_px(2)));
+                          .arg(format_pct(summary_.total_unrealized_pnl_percent, true))
+                          .arg(price_partial ? tr(" (partial)") : QString()));
+    kpi_pnl_->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700;")
+                                .arg(summary_.total_unrealized_pnl > 0   ? ui::colors::POSITIVE()
+                                     : summary_.total_unrealized_pnl < 0 ? ui::colors::NEGATIVE()
+                                                                         : ui::colors::TEXT_PRIMARY())
+                                .arg(ui::fonts::font_px(2)));
 }
 
 void AnalyticsSectorsView::update_donut(const QVector<SectorInfo>& sectors) {
@@ -587,9 +604,12 @@ void AnalyticsSectorsView::update_sector_table(const QVector<SectorInfo>& sector
         set_text(3, format_money(s.market_value), QColor(ui::colors::TEXT_PRIMARY()), Qt::AlignRight);
         set_text(4, format_pct(s.weight), QColor(ui::colors::AMBER()), Qt::AlignRight);
 
-        const QColor pnl_color = s.pnl >= 0 ? QColor(ui::colors::POSITIVE()) : QColor(ui::colors::NEGATIVE());
+        // Zero is neutral: no "+", primary instead of positive colour.
+        const QColor pnl_color = s.pnl > 0   ? QColor(ui::colors::POSITIVE())
+                                 : s.pnl < 0 ? QColor(ui::colors::NEGATIVE())
+                                             : QColor(ui::colors::TEXT_PRIMARY());
         const QString pnl_text =
-            (s.pnl >= 0 ? QStringLiteral("+") : QString()) + QLocale::system().toString(s.pnl, 'f', 2);
+            (s.pnl > 0 ? QStringLiteral("+") : QString()) + QLocale::system().toString(s.pnl, 'f', 2);
         set_text(5, pnl_text, pnl_color, Qt::AlignRight);
         set_text(6, format_pct(s.pnl_percent, true), pnl_color, Qt::AlignRight);
 
@@ -619,17 +639,25 @@ void AnalyticsSectorsView::update_performers(const QVector<SectorInfo>& sectors)
         lay->setSpacing(12);
     }
 
-    // Identify interesting sectors
+    // Identify interesting sectors. `worst` is seeded from the same first
+    // sector as `best` (nothing has been compared yet); a value copy keeps the
+    // two independent, and avoids repeating the identical expression.
     SectorInfo largest = sectors.first(); // already weight-sorted desc
     SectorInfo smallest = sectors.last();
     SectorInfo best = sectors.first();
-    SectorInfo worst = sectors.first();
+    SectorInfo worst = best;
     for (const auto& s : sectors) {
         if (s.pnl_percent > best.pnl_percent)
             best = s;
         if (s.pnl_percent < worst.pnl_percent)
             worst = s;
     }
+
+    // These cards read the same synthetic sector values as the table above:
+    // when some holdings are valued at average cost, their weights and P&L are
+    // partial and say so.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
 
     struct Card {
         QString label;
@@ -638,10 +666,10 @@ void AnalyticsSectorsView::update_performers(const QVector<SectorInfo>& sectors)
         QString metric_text;
     };
     const QVector<Card> cards = {
-        {tr("LARGEST"), &largest, QColor(ui::colors::AMBER()), format_pct(largest.weight)},
-        {tr("SMALLEST"), &smallest, QColor(ui::colors::TEXT_SECONDARY()), format_pct(smallest.weight)},
-        {tr("BEST"), &best, QColor(ui::colors::POSITIVE()), format_pct(best.pnl_percent, true)},
-        {tr("WORST"), &worst, QColor(ui::colors::NEGATIVE()), format_pct(worst.pnl_percent, true)},
+        {tr("LARGEST"), &largest, QColor(ui::colors::AMBER()), format_pct(largest.weight) + partial_note},
+        {tr("SMALLEST"), &smallest, QColor(ui::colors::TEXT_SECONDARY()), format_pct(smallest.weight) + partial_note},
+        {tr("BEST"), &best, QColor(ui::colors::POSITIVE()), format_pct(best.pnl_percent, true) + partial_note},
+        {tr("WORST"), &worst, QColor(ui::colors::NEGATIVE()), format_pct(worst.pnl_percent, true) + partial_note},
     };
 
     for (const auto& c : cards) {
@@ -724,10 +752,15 @@ void AnalyticsSectorsView::update_concentration(const QVector<SectorInfo>& secto
         QString verdict;
         QString sub;
     };
+    // HHI and TOP-3 are computed from the same sector weights that include the
+    // average-cost fallback for unpriced holdings, so their values and verdicts
+    // carry the partial qualifier when coverage is incomplete.
+    const bool price_partial = summary_.priced_positions < summary_.total_positions;
+    const QString partial_note = price_partial ? tr(" (partial)") : QString();
     const QVector<Box> boxes = {
-        {tr("HHI CONCENTRATION"), QString::number(hhi, 'f', 0), verdict_for_hhi(hhi),
+        {tr("HHI CONCENTRATION"), QString::number(hhi, 'f', 0) + partial_note, verdict_for_hhi(hhi),
          tr("Herfindahl index across sectors (lower = more diversified)")},
-        {tr("TOP-3 CONCENTRATION"), format_pct(top3), verdict_for_top3(top3),
+        {tr("TOP-3 CONCENTRATION"), format_pct(top3) + partial_note, verdict_for_top3(top3),
          tr("Weight of the three largest sectors (%1)").arg([&]() {
              QStringList parts;
              for (int i = 0; i < std::min(qsizetype{3}, sectors.size()); ++i)
@@ -770,6 +803,8 @@ void AnalyticsSectorsView::update_concentration(const QVector<SectorInfo>& secto
             verdict_display = tr("Balanced");
         else if (b.verdict == QStringLiteral("Concentrated"))
             verdict_display = tr("Concentrated");
+        if (price_partial)
+            verdict_display += tr(" (partial)");
         auto* verdict = new QLabel(verdict_display, card);
         const QColor vc = verdict_color(b.verdict);
         verdict->setStyleSheet(QString("color:%1; font-size:%2px; font-weight:700;"

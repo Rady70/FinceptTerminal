@@ -1,6 +1,5 @@
 ﻿#include "screens/dashboard/canvas/WidgetRegistry.h"
 
-#include "screens/dashboard/widgets/BrokerHoldingsWidget.h"
 #include "screens/dashboard/widgets/CommoditiesWidget.h"
 #include "screens/dashboard/widgets/CryptoTickerWidget.h"
 #include "screens/dashboard/widgets/CryptoWidget.h"
@@ -53,10 +52,11 @@ WidgetRegistry::WidgetRegistry() {
     // Existing widgets ignore it until they opt into configurable behaviour.
 
     // ── Markets ───────────────────────────────────────────────────────────────
-    register_widget({"indices", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Indices"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Major global indices — SPY, QQQ, DIA, IWM"),
-                     4, 5, 3, 4, [](const QJsonObject&) { return widgets::create_indices_widget(); }});
+    register_widget(
+        {"indices", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Indices"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Major global indices — S&P 500, Dow, Nasdaq, Russell"),
+         4, 5, 3, 4, [](const QJsonObject&) { return widgets::create_indices_widget(); }});
 
     register_widget({"forex", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Forex Pairs"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
@@ -75,18 +75,21 @@ WidgetRegistry::WidgetRegistry() {
 
     register_widget({"sector_heatmap", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Sector Heatmap"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "S&P 500 sector performance heatmap"), 6, 5,
-                     3, 4, [](const QJsonObject&) { return new widgets::SectorHeatmapWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Daily moves of a fixed sector-ETF basket (11 SPDR sectors + SOXX)"),
+                     6, 5, 3, 4, [](const QJsonObject&) { return new widgets::SectorHeatmapWidget; }});
 
-    register_widget({"top_movers", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top Movers"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Biggest gainers and losers today"), 6, 5, 3,
-                     4, [](const QJsonObject&) { return new widgets::TopMoversWidget; }});
+    register_widget(
+        {"top_movers", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top Movers"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Top daily gainers/losers in a fixed 12-symbol basket"),
+         6, 5, 3, 4, [](const QJsonObject&) { return new widgets::TopMoversWidget; }});
 
     register_widget({"sentiment", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Sentiment"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Fear & greed, bull/bear indicators"), 4, 4,
-                     2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Bull/bear score over a fixed 25-symbol basket; not an external index"),
+                     4, 4, 2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
 
     // ── Research ──────────────────────────────────────────────────────────────
     register_widget({"news", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "News Feed"),
@@ -97,8 +100,8 @@ WidgetRegistry::WidgetRegistry() {
     register_widget(
         {"stock_quote", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Quote"),
          QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Single stock detail — price, volume, chart"), 4, 5, 2,
-         3, [](const QJsonObject& cfg) {
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Single stock detail — price, daily range, volume"), 4,
+         5, 2, 3, [](const QJsonObject& cfg) {
              const QString sym = cfg.value("symbol").toString("AAPL");
              return new widgets::StockQuoteWidget(sym);
          }});
@@ -109,11 +112,11 @@ WidgetRegistry::WidgetRegistry() {
                                        "Candlestick chart for a single ticker — set symbol via gear icon"),
                      5, 5, 3, 4, [](const QJsonObject& cfg) { return new widgets::DashboardCandleWidget(cfg); }});
 
-    register_widget(
-        {"screener", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Screener"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Filter stocks by fundamentals and technicals"), 6, 5, 3,
-         4, [](const QJsonObject&) { return new widgets::ScreenerWidget; }});
+    register_widget({"screener", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stock Screener"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Sort a fixed large-cap basket by % change, volume, or price"),
+                     6, 5, 3, 4, [](const QJsonObject&) { return new widgets::ScreenerWidget; }});
 
     // MarketLab: the hosted Economic Calendar widget is removed
     // (FINCEPT_FORK_PLAN.md §5.3, §6).
@@ -132,32 +135,33 @@ WidgetRegistry::WidgetRegistry() {
 
     register_widget({"performance", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Performance"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio P&L — today, week, month, YTD"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Benchmark daily moves and spreads — S&P, Nasdaq, Dow, Russell, VIX, Gold"),
                      4, 5, 3, 4, [](const QJsonObject&) { return new widgets::PerformanceWidget; }});
 
-    register_widget(
-        {"portfolio_summary", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio Summary"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings overview with allocation breakdown"), 6, 4, 2,
-         3, [](const QJsonObject&) { return new widgets::PortfolioSummaryWidget; }});
-
-    register_widget({"risk_metrics", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Risk Metrics"),
+    register_widget({"portfolio_summary", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio Summary"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Volatility, beta, drawdown, Sharpe ratio"),
-                     4, 5, 3, 4, [](const QJsonObject&) { return new widgets::RiskMetricsWidget; }});
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings value and P&L"), 6, 4, 2, 3,
+                     [](const QJsonObject&) { return new widgets::PortfolioSummaryWidget; }});
+
+    register_widget(
+        {"risk_metrics", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Risk Metrics"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "VIX regime, high-beta daily moves, and change spreads"),
+         4, 5, 3, 4, [](const QJsonObject&) { return new widgets::RiskMetricsWidget; }});
 
     // ── Trading ───────────────────────────────────────────────────────────────
     // MarketLab: broker/execution widgets are NOT registered — no order entry,
     // order-cancel, broker-account, or margin surface is exposed on the
-    // dashboard (FINCEPT_FORK_PLAN.md §5.4, §6). Retained broker-adjacent
-    // widgets (holdings) are read-only and show an explicit empty state with
-    // no brokers configured.
-
-    register_widget(
-        {"holdings", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
-         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Long-term broker holdings — avg cost, LTP, P&L %"), 6,
-         5, 3, 3, [](const QJsonObject& cfg) { return new widgets::BrokerHoldingsWidget(cfg); }});
+    // dashboard (FINCEPT_FORK_PLAN.md §5.4, §6). This includes the former
+    // `holdings` widget: BrokerHoldingsWidget owns per-row MARKET SELL and
+    // SQUARE OFF ALL order actions via UnifiedTrading::place_order, so it is an
+    // execution surface, not a read-only view. Panel comments claimed it was
+    // read-only; Phase 4 containment removed the registration instead.
+    // FINCEPT_FORK_PLAN.md §6 already drops account/broker surfaces, and no
+    // retained phase integrates a broker account. Saved dashboard tiles that
+    // reference an unregistered widget are preserved unrendered by
+    // DashboardCanvas::load_layout and survive serialization.
 
     // ── Tools ────────────────────────────────────────────────────────────────
     register_widget(
@@ -225,7 +229,9 @@ QString WidgetRegistry::category_tr(const QString& category) {
 }
 
 void WidgetRegistry::register_widget(WidgetMeta meta) {
-    registry_.insert(meta.type_id, std::move(meta));
+    // QMap::insert takes const refs (no rvalue overload), so moving would not
+    // avoid a copy and trips performance-move-const-arg.
+    registry_.insert(meta.type_id, meta);
 }
 
 const WidgetMeta* WidgetRegistry::find(const QString& type_id) const {

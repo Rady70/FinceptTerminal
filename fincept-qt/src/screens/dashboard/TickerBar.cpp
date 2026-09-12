@@ -166,9 +166,36 @@ void TickerBar::rebuild_entry_cache() {
 
     total_width_ = 0;
     for (auto& e : entries_) {
-        e.price_text = QString::number(e.price, 'f', 2);
-        e.change_text = QString("%1%2%").arg(e.change >= 0 ? "+" : "").arg(e.change, 0, 'f', 2);
-        e.change_col = QColor(ui::change_color(e.change));
+        e.price_text = e.has_price ? QString::number(e.price, 'f', 2) : QStringLiteral("--");
+        // The percent reading is preferred when it arrived; otherwise the
+        // absolute change is shown *without* a "%" so the unit matches the
+        // number. Zero is neutral (no "+", no colour), missing is dim.
+        if (e.has_change_pct) {
+            if (e.change_pct > 0) {
+                e.change_text = QStringLiteral("+%1%").arg(e.change_pct, 0, 'f', 2);
+                e.change_col = QColor(ui::colors::POSITIVE());
+            } else if (e.change_pct < 0) {
+                e.change_text = QStringLiteral("%1%").arg(e.change_pct, 0, 'f', 2);
+                e.change_col = QColor(ui::colors::NEGATIVE());
+            } else {
+                e.change_text = QStringLiteral("0.00%");
+                e.change_col = QColor(ui::colors::TEXT_PRIMARY());
+            }
+        } else if (e.has_change) {
+            if (e.change > 0) {
+                e.change_text = QStringLiteral("+%1").arg(e.change, 0, 'f', 2);
+                e.change_col = QColor(ui::colors::POSITIVE());
+            } else if (e.change < 0) {
+                e.change_text = QStringLiteral("%1").arg(e.change, 0, 'f', 2);
+                e.change_col = QColor(ui::colors::NEGATIVE());
+            } else {
+                e.change_text = QStringLiteral("0.00");
+                e.change_col = QColor(ui::colors::TEXT_PRIMARY());
+            }
+        } else {
+            e.change_text = QStringLiteral("--");
+            e.change_col = QColor(ui::colors::TEXT_DIM());
+        }
 
         e.symbol_width = ticker_fm_.horizontalAdvance(e.symbol);
         e.price_width = ticker_fm_.horizontalAdvance(e.price_text);

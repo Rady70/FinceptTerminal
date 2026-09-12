@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
 #include <QFrame>
@@ -128,53 +129,59 @@ void PerformanceWidget::populate(const QVector<services::QuoteData>& quotes) {
     for (const auto& q : quotes)
         map[q.symbol] = &q;
 
-    auto fmt_pct = [](double v) -> QString { return QString("%1%2%").arg(v >= 0 ? "+" : "").arg(v, 0, 'f', 2); };
-    auto set_row = [&](int idx, double val) {
+    auto set_row = [&](int idx, bool available, double val) {
         if (idx >= rows_.size())
             return;
-        rows_[idx].value->setText(fmt_pct(val));
-        QString color = val > 0   ? ui::colors::POSITIVE()
-                        : val < 0 ? ui::colors::NEGATIVE()
-                                  : ui::colors::TEXT_PRIMARY();
+        if (!available) {
+            // Missing reading is unavailable, not a fabricated +0.00%.
+            rows_[idx].value->setText(QStringLiteral("--"));
+            rows_[idx].value->setStyleSheet(
+                QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;")
+                    .arg(ui::colors::TEXT_DIM()));
+            return;
+        }
+        rows_[idx].value->setText(fincept::screens::quote_signed_text(true, val, 2, QStringLiteral("%")));
+        const QString color = val > 0   ? ui::colors::POSITIVE()
+                              : val < 0 ? ui::colors::NEGATIVE()
+                                        : ui::colors::TEXT_PRIMARY();
         rows_[idx].value->setStyleSheet(
             QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
     };
+    auto has_pct = [&](const QString& sym) { return map.contains(sym) && map[sym]->has_change_pct; };
+    auto pct = [&](const QString& sym) { return map[sym]->change_pct; };
 
     // S&P 500 daily
-    if (map.contains("^GSPC"))
-        set_row(0, map["^GSPC"]->change_pct);
+    set_row(0, has_pct("^GSPC"), has_pct("^GSPC") ? pct("^GSPC") : 0.0);
     // NASDAQ daily
-    if (map.contains("^IXIC"))
-        set_row(1, map["^IXIC"]->change_pct);
+    set_row(1, has_pct("^IXIC"), has_pct("^IXIC") ? pct("^IXIC") : 0.0);
     // DOW daily
-    if (map.contains("^DJI"))
-        set_row(2, map["^DJI"]->change_pct);
+    set_row(2, has_pct("^DJI"), has_pct("^DJI") ? pct("^DJI") : 0.0);
     // Russell daily
-    if (map.contains("^RUT"))
-        set_row(3, map["^RUT"]->change_pct);
+    set_row(3, has_pct("^RUT"), has_pct("^RUT") ? pct("^RUT") : 0.0);
 
-    // Spreads
-    if (map.contains("^GSPC") && map.contains("^DJI"))
-        set_row(4, map["^GSPC"]->change_pct - map["^DJI"]->change_pct);
-    if (map.contains("^IXIC") && map.contains("^GSPC"))
-        set_row(5, map["^IXIC"]->change_pct - map["^GSPC"]->change_pct);
+    // Spreads — only meaningful when both operands carry a change reading.
+    const bool sp_dow = has_pct("^GSPC") && has_pct("^DJI");
+    set_row(4, sp_dow, sp_dow ? pct("^GSPC") - pct("^DJI") : 0.0);
+    const bool nq_sp = has_pct("^IXIC") && has_pct("^GSPC");
+    set_row(5, nq_sp, nq_sp ? pct("^IXIC") - pct("^GSPC") : 0.0);
 
     // VIX — show absolute value, not change
-    if (map.contains("^VIX")) {
-        double vix = map["^VIX"]->price;
-        if (6 < rows_.size()) {
-            rows_[6].value->setText(QString::number(vix, 'f', 2));
-            QString color = vix > 25   ? ui::colors::NEGATIVE()
-                            : vix > 18 ? ui::colors::WARNING()
-                                       : ui::colors::POSITIVE();
-            rows_[6].value->setStyleSheet(
-                QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
-        }
+    if (map.contains("^VIX") && map["^VIX"]->has_price && rows_.size() > 6) {
+        const double vix = map["^VIX"]->price;
+        rows_[6].value->setText(QString::number(vix, 'f', 2));
+        const QString color = vix > 25   ? ui::colors::NEGATIVE()
+                              : vix > 18 ? ui::colors::WARNING()
+                                         : ui::colors::POSITIVE();
+        rows_[6].value->setStyleSheet(
+            QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
+    } else if (rows_.size() > 6) {
+        rows_[6].value->setText(QStringLiteral("--"));
+        rows_[6].value->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;")
+                                          .arg(ui::colors::TEXT_DIM()));
     }
 
     // Gold daily
-    if (map.contains("GC=F"))
-        set_row(7, map["GC=F"]->change_pct);
+    set_row(7, has_pct("GC=F"), has_pct("GC=F") ? pct("GC=F") : 0.0);
 }
 
 void PerformanceWidget::retranslateUi() {
