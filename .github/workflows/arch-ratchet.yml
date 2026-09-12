@@ -1,8 +1,9 @@
 name: Architecture Ratchets
 
 # Runs after changes land on main (push), plus manual dispatch.
-# MarketLab CI cost policy: no automatic hosted CI on pull requests; this
-# post-merge check preserves the same ratchet behaviour unchanged.
+# MarketLab CI policy: Windows-only hosted CI. No automatic hosted CI on pull
+# requests; this post-merge check preserves the same ratchet behaviour
+# unchanged on a Windows runner.
 on:
   push:
     branches: [main]
@@ -19,7 +20,7 @@ permissions:
 jobs:
   ratchets:
     name: Architecture ratchets
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 

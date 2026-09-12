@@ -5,9 +5,8 @@ name: PR Build (compile + self-test gate)
 #   MarketLab CI cost policy: hosted GitHub CI runs only after a change is
 #   merged/pushed to main; pre-merge validation is local/review-branch only.
 #   This workflow is therefore main-only (plus optional manual dispatch), and
-#   Windows is the only hosted application-build platform. Post-merge static
-#   analysis and version metadata checks still run on Ubuntu runners; those are
-#   cheap non-build jobs, not a Linux application build.
+#   Windows is the only hosted CI platform: the version-metadata check and the
+#   build/self-test job both run on Windows runners.
 #
 #   It builds the same release-style Windows configuration release.yml builds
 #   and runs the headless self-tests, so a tag push stays boring. /WX and
@@ -50,20 +49,24 @@ jobs:
   # ── Cheap gates first — these finish in seconds and fail fast ──────────────
   version-consistency:
     name: Version consistency
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           # The version gate resolves the Flatpak manifest's pinned source
           # commit and reads that commit's CMake project version.
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Install PyYAML for packaging validation
-        run: sudo apt-get update -qq && sudo apt-get install -y python3-yaml
+        run: python -m pip install --disable-pip-version-check pyyaml
       # CMakeLists.txt project(... VERSION x.y.z) is the source of truth; the
       # flatpak / AppImage / appdata manifests each carry a hand-written copy.
       # A stale copy ships a bundle whose CFBundleVersion / appdata version
       # disagrees with the binary and breaks the updater's version compare.
       - name: Check packaging metadata matches CMakeLists.txt
+        shell: bash
         run: bash .github/scripts/check_version_drift.sh .
 
   build:

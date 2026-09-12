@@ -2,13 +2,13 @@ name: Release — Build All Installers
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Triggered on:
-#   • git tag push  (v*)  → builds installers, creates GH Release, updates README
 #   • workflow_dispatch   → manual run (skips release + README update)
+#
+# MarketLab CI policy: tag-triggered release publication is disabled until
+# deliberately adapted (Phase 6). Release packaging is a manual action and is
+# not automatic hosted CI.
 # ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 env:

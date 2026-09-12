@@ -1,12 +1,8 @@
 name: Sync repository topics
 
+# MarketLab CI policy: upstream topic synchronization is disabled. This
+# workflow is manual-only and is not part of automatic hosted CI.
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/sync-repo-topics.yml'
-  schedule:
-    - cron: '0 5 * * 1'   # weekly — idempotent safety net
   workflow_dispatch: {}
 
 permissions:

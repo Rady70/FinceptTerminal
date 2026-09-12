@@ -1,11 +1,8 @@
 name: Sync repository labels
 
+# MarketLab CI policy: upstream label synchronization is disabled. This
+# workflow is manual-only and is not part of automatic hosted CI.
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/labels.json'
-      - '.github/workflows/sync-labels.yml'
   workflow_dispatch: {}
 
 permissions:
