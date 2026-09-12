@@ -30,7 +30,7 @@ struct QuoteData {
     // this struct has to change to keep compiling.
     QString source;          ///< "yfinance", or "cache (yfinance)" on a cache hit
     qint64 retrieved_at = 0; ///< epoch seconds at which the provider answered
-    QString status;          ///< "OK" | "PARTIAL" | "STALE" — see kQuoteStatus* below
+    QString status;          ///< see the status-token note below
 
     // ── Presence ─────────────────────────────────────────────────────────────
     // yfinance_data.py emits JSON null for a cell the provider did not return,
@@ -58,6 +58,14 @@ struct QuoteData {
 /// renders as its widget's missing-value placeholder rather than as a number.
 /// "STALE" outranks it — a row served after a failed refresh is first of all
 /// not current.
+///
+/// A provider with its own observed-state vocabulary may carry that token here
+/// instead of forcing it into the three public-provider states: the optional
+/// IBKR TWS consumer records IBKR's own market-data type (LIVE / FROZEN /
+/// DELAYED / DELAYED_FROZEN) or its explicit failure token (NOT_ENTITLED /
+/// NO_VALUE / ERROR / TIMEOUT / NO_DATA). Consumers that only know the three
+/// tokens must treat an unknown token as "not a current public-provider OK",
+/// never as fresh.
 inline constexpr const char* kQuoteStatusOk = "OK";
 inline constexpr const char* kQuoteStatusPartial = "PARTIAL";
 inline constexpr const char* kQuoteStatusStale = "STALE";

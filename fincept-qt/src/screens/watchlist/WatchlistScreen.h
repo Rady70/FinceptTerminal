@@ -52,6 +52,7 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     void on_add_stock();
     void on_remove_stock();
     void on_refresh();
+    void on_ibkr_quote();
     void on_export_csv();
     void on_import_csv();
     void refresh_theme();
@@ -105,6 +106,7 @@ class WatchlistScreen : public QWidget, public IStatefulScreen, public IGroupLin
     QLabel* add_label_ = nullptr;
     QLineEdit* add_input_ = nullptr;
     QPushButton* refresh_btn_ = nullptr;
+    QPushButton* ibkr_btn_ = nullptr;
     QPushButton* del_wl_btn_ = nullptr;
     QPushButton* export_csv_btn_ = nullptr;
     QPushButton* import_csv_btn_ = nullptr;

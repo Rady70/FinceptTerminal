@@ -149,6 +149,14 @@ fincept_add_test(tst_direct_clients
 fincept_add_test(tst_equity_parse
     tst_equity_parse.cpp)
 
+# MarketLab: the optional read-only IBKR TWS consumer's JSON → model boundary —
+# IBKR market-data type classification stays distinct, missing snapshot fields
+# never become readings, malformed bars are dropped rather than plotted, and
+# wrapper failures stay typed. Header-only over Qt Core plus the header-only
+# markets parser; no app sources.
+fincept_add_test(tst_ibkr_parse
+    tst_ibkr_parse.cpp)
+
 # MarketLab: the same missing-vs-zero decision in the *markets* domain — the
 # history/quote/sparkline boundary every live chart widget and the MCP markets
 # tools read through. MarketDataService.cpp itself pulls PythonRunner,
@@ -206,4 +214,4 @@ fincept_add_test(tst_redirect_guard
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_redirect_guard")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_redirect_guard")
