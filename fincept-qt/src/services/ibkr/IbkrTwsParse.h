@@ -21,6 +21,7 @@
 
 #include <QDateTime>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
@@ -379,6 +380,75 @@ inline bool ibkr_wrapper_payload_valid(const QJsonObject& payload, const QString
         return true;
     }
     return fail(QStringLiteral("envelope command is not a supported read"));
+}
+
+/// The outcome of one finished wrapper process.
+struct IbkrWrapperProcessResult {
+    /// Non-empty when a validated envelope should be passed through (a
+    /// success-shaped result from a successful process, or a complete typed
+    /// `ok:false` failure the wrapper deliberately emitted with a non-zero
+    /// exit). Empty when no envelope may be trusted.
+    QJsonObject payload;
+    QString failure_type;
+    QString failure_stage;
+    QString failure_message;
+};
+
+/// Decide what a finished wrapper process means, using the already-extracted
+/// JSON text. Fails closed on a reported process failure: a success-shaped
+/// payload from a non-zero/killed process is refused as `IBKR_PROCESS_FAILED`
+/// and cannot override the process outcome. A complete typed `ok:false`
+/// envelope is preserved even on a non-zero exit, because that is the wrapper
+/// reporting a real typed failure (it exits 1 for those).
+inline IbkrWrapperProcessResult ibkr_resolve_wrapper_process(const QString& json_output, bool process_success,
+                                                             int exit_code, const QString& process_error,
+                                                             const QString& command) {
+    IbkrWrapperProcessResult result;
+    QJsonObject payload;
+    bool is_payload = false;
+    if (!json_output.trimmed().isEmpty()) {
+        const QJsonDocument document = QJsonDocument::fromJson(json_output.toUtf8());
+        if (document.isObject()) {
+            payload = document.object();
+            is_payload = payload.value(QLatin1String("source")).toString() == QLatin1String(kIbkrSource);
+        }
+    }
+
+    if (is_payload && payload.value(QLatin1String("ok")).isBool() && !payload.value(QLatin1String("ok")).toBool()) {
+        QString reason;
+        if (ibkr_wrapper_payload_valid(payload, command, &reason)) {
+            result.payload = payload;
+            return result;
+        }
+    }
+
+    if (!process_success) {
+        result.failure_type = QStringLiteral("IBKR_PROCESS_FAILED");
+        result.failure_stage = QStringLiteral("process");
+        result.failure_message = process_error.trimmed().isEmpty()
+                                     ? QStringLiteral("IBKR wrapper process failed (exit %1)").arg(exit_code)
+                                     : process_error.trimmed();
+        return result;
+    }
+
+    if (is_payload) {
+        QString reason;
+        if (ibkr_wrapper_payload_valid(payload, command, &reason)) {
+            result.payload = payload;
+            return result;
+        }
+        result.failure_type = QStringLiteral("IBKR_OUTPUT_INVALID");
+        result.failure_stage = QStringLiteral("output");
+        result.failure_message = QStringLiteral("IBKR wrapper output failed validation: %1").arg(reason);
+        return result;
+    }
+
+    result.failure_type = QStringLiteral("IBKR_LAUNCH_FAILED");
+    result.failure_stage = QStringLiteral("wrapper");
+    result.failure_message = process_error.trimmed().isEmpty()
+                                 ? QStringLiteral("IBKR wrapper produced no result")
+                                 : process_error.trimmed();
+    return result;
 }
 
 inline IbkrTwsProbeResult ibkr_probe_result_from_payload(const QJsonObject& payload, bool command_ok,

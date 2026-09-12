@@ -78,6 +78,7 @@ class TstIbkrParse : public QObject {
     void probe_payload_maps_connection_readiness_and_pin();
     void wrapper_shape_validator_accepts_valid_envelopes();
     void wrapper_shape_validator_rejects_malformed_envelopes();
+    void wrapper_process_result_fails_closed();
 };
 
 void TstIbkrParse::identity_reads_observed_runtime_facts() {
@@ -497,6 +498,49 @@ void TstIbkrParse::wrapper_shape_validator_rejects_malformed_envelopes() {
         false, QString());
     QVERIFY(!invalid.ok);
     QCOMPARE(invalid.failure_type, QStringLiteral("IBKR_OUTPUT_INVALID"));
+}
+
+void TstIbkrParse::wrapper_process_result_fails_closed() {
+    const QString success_envelope = QString::fromUtf8(kValidSnapshotEnvelope);
+    const QString command = QStringLiteral("snapshot");
+
+    // Exit 0 plus a valid success envelope is passed through.
+    const IbkrWrapperProcessResult accepted =
+        ibkr_resolve_wrapper_process(success_envelope, true, 0, QString(), command);
+    QVERIFY(!accepted.payload.isEmpty());
+
+    // Non-zero exit plus a success-shaped payload is refused: the process
+    // outcome outranks the payload.
+    const IbkrWrapperProcessResult overridden =
+        ibkr_resolve_wrapper_process(success_envelope, false, 137, QString(), command);
+    QVERIFY(overridden.payload.isEmpty());
+    QCOMPARE(overridden.failure_type, QStringLiteral("IBKR_PROCESS_FAILED"));
+    QCOMPARE(overridden.failure_stage, QStringLiteral("process"));
+
+    // Non-zero exit plus a complete typed ok:false envelope keeps the typed
+    // failure the wrapper deliberately reported.
+    const QString typed_failure = QStringLiteral(
+        R"({"source":"ibkr_tws","command":"snapshot","ok":false,"retrieved_at":"2026-09-12T12:12:43Z",)"
+        R"("failure":{"type":"IBKR_CONNECTION_FAILED","stage":"connect","message":"refused"}})");
+    const IbkrWrapperProcessResult preserved =
+        ibkr_resolve_wrapper_process(typed_failure, false, 1, QString(), command);
+    QVERIFY(!preserved.payload.isEmpty());
+    QCOMPARE(preserved.payload.value(QLatin1String("failure")).toObject().value(QLatin1String("type")).toString(),
+             QStringLiteral("IBKR_CONNECTION_FAILED"));
+
+    // Exit 0 plus a malformed success-shaped payload is a typed output failure.
+    const IbkrWrapperProcessResult malformed = ibkr_resolve_wrapper_process(
+        QStringLiteral(R"({"source":"ibkr_tws","command":"snapshot","ok":true,"retrieved_at":"x"})"), true, 0,
+        QString(), command);
+    QVERIFY(malformed.payload.isEmpty());
+    QCOMPARE(malformed.failure_type, QStringLiteral("IBKR_OUTPUT_INVALID"));
+
+    // Non-zero exit plus garbage keeps the process failure with its exit code.
+    const IbkrWrapperProcessResult garbage =
+        ibkr_resolve_wrapper_process(QStringLiteral("not json"), false, 137, QString(), command);
+    QVERIFY(garbage.payload.isEmpty());
+    QCOMPARE(garbage.failure_type, QStringLiteral("IBKR_PROCESS_FAILED"));
+    QVERIFY(garbage.failure_message.contains(QLatin1String("137")));
 }
 
 QTEST_GUILESS_MAIN(TstIbkrParse)

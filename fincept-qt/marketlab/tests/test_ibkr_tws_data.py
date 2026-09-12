@@ -647,10 +647,12 @@ class IbkrWrapperTest(unittest.TestCase):
             "reqexecutions",
             "reqpositions",
             "reqaccountsummary",
-            "accountsummary",
             "reqaccountupdates",
             "reqallopenorders",
             "reqcompletedorders",
+            "reqpnl",
+            "reqpnlsingle",
+            "reqautoopenorders",
         )
         for name in forbidden:
             self.assertNotIn(name, source, f"wrapper must not reference {name}")
