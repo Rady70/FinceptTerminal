@@ -647,6 +647,7 @@ class IbkrWrapperTest(unittest.TestCase):
             "reqexecutions",
             "reqpositions",
             "reqaccountsummary",
+            "accountsummary",
             "reqaccountupdates",
             "reqallopenorders",
             "reqcompletedorders",
