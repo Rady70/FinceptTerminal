@@ -151,7 +151,10 @@ class IBKRTWSReadOnlyAdapter:
         self._connected = False
 
     def get_runtime_metadata(self) -> dict:
-        return {
+        scenario = _scenario()
+        if scenario == "runtime_metadata_raise":
+            raise RuntimeError("runtime metadata unavailable")
+        metadata = {
             "ibkr_tws_api_source": "official Interactive Brokers TWS API distribution",
             "ibkr_tws_api_version": "10.45.01",
             "ibkr_tws_api_version_source": "OBSERVED_RUNTIME_FACT",
@@ -163,6 +166,10 @@ class IBKRTWSReadOnlyAdapter:
             "tws_version": self.tws_version or "NOT_PROVEN",
             "tws_version_source": "WORKSTATION_INVENTORY" if self.tws_version else "NOT_PROVEN",
         }
+        if scenario == "runtime_not_official":
+            metadata["uses_official_runtime"] = "false"
+            metadata["ibapi_runtime_path_verified"] = "false"
+        return metadata
 
     def read_contract_details(self, contract, timeout: float = 20.0) -> list:
         scenario = _scenario()
@@ -381,6 +388,14 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertEqual(payload["adapter"]["ibapi_version"], "10.45.01")
         self.assertEqual(payload["adapter"]["tws_version"], "10.48.1c")
         self.assertTrue(payload["clean_disconnect"])
+
+    def test_runtime_identity_is_required_before_a_read(self) -> None:
+        for scenario in ("runtime_not_official", "runtime_metadata_raise"):
+            with self.subTest(scenario=scenario):
+                code, payload = self._run(self._write_config(), "probe", scenario=scenario)
+                self.assertEqual(code, 1)
+                self.assertEqual(payload["failure"]["type"], "IBKR_OFFICIAL_RUNTIME_UNVERIFIED")
+                self.assertEqual(payload["failure"]["stage"], "dependency")
 
     def test_endpoint_overrides_are_typed_and_effective(self) -> None:
         # The C++ consumer always passes --host/--port/--client-id after the

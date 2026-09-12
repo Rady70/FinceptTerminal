@@ -17,19 +17,17 @@ constexpr int kProbeWatchdogMs = 60 * 1000;
 constexpr int kQuoteWatchdogMs = 120 * 1000;
 constexpr int kHistoryWatchdogMs = 120 * 1000;
 
-/// Parse the wrapper's single JSON document out of the bounded process output.
-/// Returns an empty object for anything that is not a MarketLab IBKR payload,
-/// so the caller falls back to the raw process error.
-QJsonObject wrapper_payload(const QString& output) {
-    const QString json = python::extract_json(output);
-    if (json.trimmed().isEmpty())
-        return {};
-    const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8());
-    if (!document.isObject())
-        return {};
-    const QJsonObject payload = document.object();
-    if (payload.value(QLatin1String("source")).toString() != QLatin1String(kIbkrSource))
-        return {};
+/// A typed failure envelope for output that is present but not trustworthy.
+QJsonObject output_invalid_payload(const QString& command, const QString& reason) {
+    QJsonObject failure;
+    failure[QStringLiteral("type")] = QStringLiteral("IBKR_OUTPUT_INVALID");
+    failure[QStringLiteral("stage")] = QStringLiteral("output");
+    failure[QStringLiteral("message")] = QStringLiteral("IBKR wrapper output failed validation: %1").arg(reason);
+    QJsonObject payload;
+    payload[QStringLiteral("source")] = QLatin1String(kIbkrSource);
+    payload[QStringLiteral("command")] = command;
+    payload[QStringLiteral("ok")] = false;
+    payload[QStringLiteral("failure")] = failure;
     return payload;
 }
 
@@ -104,6 +102,7 @@ void IbkrTwsService::run(const IbkrTwsConfig& cfg, const QStringList& arguments,
     }
     QStringList argv{QStringLiteral("--config"), cfg.config_path};
     argv.append(arguments);
+    const QString command = arguments.value(0);
 
     python::PythonRunner::RunOptions options;
     options.expect_json = true;
@@ -111,11 +110,25 @@ void IbkrTwsService::run(const IbkrTwsConfig& cfg, const QStringList& arguments,
 
     python::PythonRunner::instance().run_with_options(
         QStringLiteral("ibkr_tws_data.py"), argv, options,
-        [cb = std::move(cb)](const python::PythonResult& result) {
-            const QJsonObject payload = wrapper_payload(result.output);
-            if (!payload.isEmpty()) {
-                cb(payload.value(QLatin1String("ok")).toBool(false), payload, QString());
-                return;
+        [cb = std::move(cb), command](const python::PythonResult& result) {
+            const QString json = python::extract_json(result.output);
+            if (!json.trimmed().isEmpty()) {
+                const QJsonDocument document = QJsonDocument::fromJson(json.toUtf8());
+                if (document.isObject()) {
+                    const QJsonObject payload = document.object();
+                    if (payload.value(QLatin1String("source")).toString() == QLatin1String(kIbkrSource)) {
+                        // Shape is validated before any field is trusted: a
+                        // malformed envelope becomes a typed IBKR_OUTPUT_INVALID
+                        // failure instead of a success parsed from defaults.
+                        QString reason;
+                        if (!ibkr_wrapper_payload_valid(payload, command, &reason)) {
+                            cb(false, output_invalid_payload(command, reason), QString());
+                            return;
+                        }
+                        cb(payload.value(QLatin1String("ok")).toBool(false), payload, QString());
+                        return;
+                    }
+                }
             }
             QString error = result.error.trimmed();
             if (error.isEmpty())

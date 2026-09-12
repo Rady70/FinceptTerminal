@@ -514,21 +514,44 @@ def _finish_command(adapter: Any, stage: str, build: Any) -> dict[str, Any]:
 
 
 def _identity(config: Config, pin: dict[str, Any], adapter: Any) -> dict[str, Any]:
-    runtime: dict[str, Any] = {}
+    """Require the observed official runtime identity before any read.
+
+    The acceptance contract fails closed when the official dependency identity
+    is missing or unexpected, so runtime metadata is a precondition, not
+    optional provenance: a missing or non-official identity refuses the command.
+    """
+
     try:
         raw = adapter.get_runtime_metadata()
-        if isinstance(raw, dict):
-            runtime = {
-                "ibapi_version": raw.get("ibkr_tws_api_version", ""),
-                "ibapi_version_source": raw.get("ibkr_tws_api_version_source", ""),
-                "ibapi_location": raw.get("ibapi_location", ""),
-                "ibapi_runtime_path_verified": raw.get("ibapi_runtime_path_verified", "false"),
-                "uses_official_runtime": raw.get("uses_official_runtime", "false"),
-                "tws_version": raw.get("tws_version", ""),
-                "tws_version_source": raw.get("tws_version_source", ""),
-            }
-    except Exception:
-        runtime = {}
+    except Exception as exc:
+        raise WrapperError(
+            "IBKR_OFFICIAL_RUNTIME_UNVERIFIED", "dependency", f"Adapter runtime metadata is unavailable: {exc}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise WrapperError(
+            "IBKR_OFFICIAL_RUNTIME_UNVERIFIED", "dependency", "Adapter runtime metadata is missing"
+        )
+    runtime = {
+        "ibapi_version": raw.get("ibkr_tws_api_version", ""),
+        "ibapi_version_source": raw.get("ibkr_tws_api_version_source", ""),
+        "ibapi_location": raw.get("ibapi_location", ""),
+        "ibapi_runtime_path_verified": raw.get("ibapi_runtime_path_verified", "false"),
+        "uses_official_runtime": raw.get("uses_official_runtime", "false"),
+        "tws_version": raw.get("tws_version", ""),
+        "tws_version_source": raw.get("tws_version_source", ""),
+    }
+    if str(runtime["uses_official_runtime"]).lower() != "true":
+        raise WrapperError(
+            "IBKR_OFFICIAL_RUNTIME_UNVERIFIED", "dependency", "Adapter did not report the official ibapi runtime"
+        )
+    if str(runtime["ibapi_runtime_path_verified"]).lower() != "true":
+        raise WrapperError(
+            "IBKR_OFFICIAL_RUNTIME_UNVERIFIED", "dependency", "Adapter did not verify the approved ibapi path"
+        )
+    if not str(runtime["ibapi_version"]).strip():
+        raise WrapperError(
+            "IBKR_OFFICIAL_RUNTIME_UNVERIFIED", "dependency", "Adapter reported no observed ibapi version"
+        )
     return {
         "commit": pin["commit"],
         "adapter_sha256": pin["adapter_sha256"],
@@ -865,15 +888,15 @@ def command_probe(config: Config, timeout: float) -> dict[str, Any]:
     pin = verify_checkout_identity(config)
     module = load_adapter_module(config)
     adapter = _connect(config, module, timeout, "connect")
-    identity = _identity(config, pin, adapter)
-    clean_disconnect = _disconnect(adapter)
-    if not clean_disconnect:
-        raise WrapperError("IBKR_DISCONNECT_FAILED", "disconnect", "TWS client did not confirm a clean disconnect")
-    envelope = _envelope("probe", ok=True, identity=identity)
-    envelope["connected"] = True
-    envelope["ready"] = True
-    envelope["clean_disconnect"] = True
-    return envelope
+
+    def build() -> dict[str, Any]:
+        identity = _identity(config, pin, adapter)
+        envelope = _envelope("probe", ok=True, identity=identity)
+        envelope["connected"] = True
+        envelope["ready"] = True
+        return envelope
+
+    return _finish_command(adapter, "probe", build)
 
 
 def command_contract(config: Config, symbol: str, timeout: float, request: dict[str, Any]) -> dict[str, Any]:

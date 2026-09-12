@@ -281,6 +281,106 @@ inline void ibkr_read_failure(const QJsonObject& payload, QString& type, QString
         message = fallback;
 }
 
+/// Validate a wrapper envelope before any of its fields are trusted.
+///
+/// The Phase 5 acceptance contract requires a failure when the output shape is
+/// missing or unexpected. A malformed "success" envelope must not reach the
+/// model parsers, where absent fields would default to empty/false values and
+/// be indistinguishable from a real result. Returns true only when the
+/// envelope carries the command-specific required shape.
+inline bool ibkr_wrapper_payload_valid(const QJsonObject& payload, const QString& expected_command, QString* reason) {
+    auto fail = [reason](const QString& text) {
+        if (reason)
+            *reason = text;
+        return false;
+    };
+
+    const QJsonValue source = payload.value(QLatin1String("source"));
+    const QJsonValue command = payload.value(QLatin1String("command"));
+    const QJsonValue ok_value = payload.value(QLatin1String("ok"));
+    if (!source.isString() || source.toString() != QLatin1String(kIbkrSource))
+        return fail(QStringLiteral("envelope source is not ibkr_tws"));
+    if (!command.isString() || command.toString() != expected_command)
+        return fail(QStringLiteral("envelope command does not match the request"));
+    if (!ok_value.isBool())
+        return fail(QStringLiteral("envelope ok flag is missing or not a boolean"));
+    const QJsonValue retrieved = payload.value(QLatin1String("retrieved_at"));
+    if (!retrieved.isString() || retrieved.toString().isEmpty())
+        return fail(QStringLiteral("envelope has no retrieval timestamp"));
+
+    if (!ok_value.toBool()) {
+        const QJsonObject failure = payload.value(QLatin1String("failure")).toObject();
+        if (failure.value(QLatin1String("type")).toString().isEmpty() ||
+            failure.value(QLatin1String("stage")).toString().isEmpty() ||
+            failure.value(QLatin1String("message")).toString().isEmpty())
+            return fail(QStringLiteral("failure envelope is missing type, stage, or message"));
+        return true;
+    }
+
+    const QJsonObject adapter = payload.value(QLatin1String("adapter")).toObject();
+    if (adapter.value(QLatin1String("commit")).toString().isEmpty())
+        return fail(QStringLiteral("envelope has no adapter commit"));
+    if (adapter.value(QLatin1String("ibapi_version")).toString().isEmpty())
+        return fail(QStringLiteral("envelope has no observed ibapi version"));
+    if (adapter.value(QLatin1String("uses_official_runtime")).toString() != QLatin1String("true"))
+        return fail(QStringLiteral("envelope does not report the official runtime"));
+    if (adapter.value(QLatin1String("ibapi_runtime_path_verified")).toString() != QLatin1String("true"))
+        return fail(QStringLiteral("envelope does not report a verified ibapi path"));
+
+    if (expected_command == QLatin1String("probe")) {
+        if (!payload.value(QLatin1String("connected")).isBool() || !payload.value(QLatin1String("ready")).isBool() ||
+            !payload.value(QLatin1String("clean_disconnect")).isBool())
+            return fail(QStringLiteral("probe envelope is missing connection booleans"));
+        return true;
+    }
+
+    if (payload.value(QLatin1String("symbol")).toString().isEmpty())
+        return fail(QStringLiteral("envelope has no symbol"));
+
+    if (expected_command == QLatin1String("contract")) {
+        if (payload.value(QLatin1String("resolution")).toString() != QLatin1String("RESOLVED"))
+            return fail(QStringLiteral("contract envelope is not a resolved result"));
+        const QJsonObject resolved = payload.value(QLatin1String("resolved")).toObject();
+        if (!(resolved.value(QLatin1String("con_id")).toInt(0) > 0))
+            return fail(QStringLiteral("contract envelope has no positive conId"));
+        if (resolved.value(QLatin1String("currency")).toString().isEmpty() ||
+            resolved.value(QLatin1String("security_type")).toString().isEmpty() ||
+            resolved.value(QLatin1String("exchange")).toString().isEmpty())
+            return fail(QStringLiteral("contract envelope is missing identity fields"));
+        return true;
+    }
+
+    const QJsonObject contract = payload.value(QLatin1String("contract")).toObject();
+    if (!(contract.value(QLatin1String("con_id")).toInt(0) > 0))
+        return fail(QStringLiteral("envelope has no resolved contract identity"));
+    const QJsonObject classification = payload.value(QLatin1String("classification")).toObject();
+    if (!classification.value(QLatin1String("usable")).isBool())
+        return fail(QStringLiteral("classification has no usable flag"));
+    if (classification.value(QLatin1String("status")).toString().isEmpty())
+        return fail(QStringLiteral("classification has no status"));
+    if (classification.value(QLatin1String("entitlement")).toString().isEmpty())
+        return fail(QStringLiteral("classification has no entitlement"));
+    const bool usable = classification.value(QLatin1String("usable")).toBool();
+
+    if (expected_command == QLatin1String("snapshot")) {
+        if (!payload.value(QLatin1String("quote")).isObject())
+            return fail(QStringLiteral("snapshot envelope has no quote object"));
+        if (usable && payload.value(QLatin1String("quote")).toObject().isEmpty())
+            return fail(QStringLiteral("usable snapshot envelope has an empty quote"));
+        return true;
+    }
+    if (expected_command == QLatin1String("history")) {
+        if (!payload.value(QLatin1String("bars")).isArray())
+            return fail(QStringLiteral("history envelope has no bars array"));
+        if (usable && payload.value(QLatin1String("bars")).toArray().isEmpty())
+            return fail(QStringLiteral("usable history envelope has no bars"));
+        if (!usable && !payload.value(QLatin1String("bars")).toArray().isEmpty())
+            return fail(QStringLiteral("unusable history envelope carries bars"));
+        return true;
+    }
+    return fail(QStringLiteral("envelope command is not a supported read"));
+}
+
 inline IbkrTwsProbeResult ibkr_probe_result_from_payload(const QJsonObject& payload, bool command_ok,
                                                          const QString& error) {
     IbkrTwsProbeResult result;

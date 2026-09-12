@@ -5,6 +5,7 @@
 #include "network/http/GuardedNetworkAccessManager.h"
 #include "python/PythonRunner.h"
 #include "services/equity/EquityQuoteParse.h"
+#include "services/ibkr/IbkrHistoryRouting.h"
 #include "services/ibkr/IbkrTwsService.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/DataSourceRepository.h"
@@ -102,22 +103,6 @@ int candle_lookback_days(const QString& period) {
             return n;
     }
     return 730;
-}
-
-// Phase 5: the optional IBKR history route is qualified for a single bounded
-// request per period. Only these chart periods map to one IBKR duration; any
-// other period keeps the public-provider path (whose provenance names it).
-QString ibkr_duration_for_period(const QString& period) {
-    const QString p = period.trimmed().toLower();
-    if (p == QLatin1String("1mo"))
-        return QStringLiteral("1 M");
-    if (p == QLatin1String("3mo"))
-        return QStringLiteral("3 M");
-    if (p == QLatin1String("6mo"))
-        return QStringLiteral("6 M");
-    if (p == QLatin1String("1y"))
-        return QStringLiteral("1 Y");
-    return {};
 }
 
 // HistoryPoint[] (validated IBKR bars) → the yfinance-shaped JSON array the
@@ -357,21 +342,26 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
     const QString cache_key = "equity:candles:" + symbol + ":" + period;
 
     // Phase 5: an explicitly routed IBKR symbol uses the optional read-only
-    // TWS provider for the retained candle route. Only periods that map to one
-    // bounded IBKR request are routed; other periods keep the public-provider
-    // path, and the provenance always names whichever provider answered. A
-    // routed symbol never falls back silently: an IBKR failure is reported.
-    const bool ibkr_routed = ibkr::IbkrTwsService::instance().configured() &&
-                             ibkr::IbkrTwsService::instance().routes_symbol(symbol);
-    const QString ibkr_duration = ibkr_duration_for_period(period);
-    if (ibkr_routed && !ibkr_duration.isEmpty()) {
+    // TWS provider for the retained candle route. The routing policy (routed
+    // symbol, bounded period, IBKR-only cache provenance) lives in
+    // services/ibkr/IbkrHistoryRouting.h and is unit-tested there. Other
+    // periods keep the public-provider path, and the provenance always names
+    // whichever provider answered. A routed symbol never falls back silently:
+    // an IBKR failure is reported and the displayed series is cleared.
+    const bool ibkr_configured = ibkr::IbkrTwsService::instance().configured();
+    const bool ibkr_symbol_routed = ibkr_configured && ibkr::IbkrTwsService::instance().routes_symbol(symbol);
+    const bool route_to_ibkr =
+        ibkr::ibkr_history_route(ibkr_configured, ibkr_symbol_routed, period) == ibkr::IbkrHistoryRoute::Ibkr;
+    const QString ibkr_duration = ibkr::ibkr_duration_for_period(period);
+    if (route_to_ibkr) {
         const QVariant ibkr_cached = fincept::CacheManager::instance().get(cache_key);
         if (!ibkr_cached.isNull()) {
             const QString cached_text = ibkr_cached.toString().trimmed();
             QString origin;
             qint64 at = 0;
             get_retrieval_meta(cache_key, origin, at);
-            if (!cached_text.isEmpty() && cached_text != QLatin1String("[]") && origin == QLatin1String("ibkr_tws")) {
+            if (!cached_text.isEmpty() && cached_text != QLatin1String("[]") &&
+                ibkr::ibkr_cache_origin_is_ibkr(origin)) {
                 auto arr = QJsonDocument::fromJson(cached_text.toUtf8()).array();
                 CandleParseStats stats;
                 const auto candles = parse_candles_json(arr, &stats);
@@ -402,6 +392,12 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                     meta.symbol = symbol;
                     meta.source = QStringLiteral("ibkr_tws");
                     meta.status = RetrievalStatus::Error;
+                    if (ibkr::ibkr_history_failure_disposition() ==
+                        ibkr::IbkrHistoryFailureDisposition::ClearSeriesAndReport) {
+                        // The previously displayed series must not stay plotted
+                        // while the provenance strip says IBKR/error.
+                        emit self->historical_loaded(symbol, {});
+                    }
                     emit self->historical_meta_loaded(symbol, meta);
                     emit self->error_occurred(
                         "Historical", QStringLiteral("IBKR history unavailable for %1 (%2)").arg(symbol, reason));

@@ -76,6 +76,8 @@ class TstIbkrParse : public QObject {
     void history_rejects_zero_prices_and_nonpositive_ohlc();
     void failure_envelope_becomes_a_typed_failure();
     void probe_payload_maps_connection_readiness_and_pin();
+    void wrapper_shape_validator_accepts_valid_envelopes();
+    void wrapper_shape_validator_rejects_malformed_envelopes();
 };
 
 void TstIbkrParse::identity_reads_observed_runtime_facts() {
@@ -353,6 +355,148 @@ void TstIbkrParse::probe_payload_maps_connection_readiness_and_pin() {
     QVERIFY(probe.connected && probe.ready && probe.clean_disconnect);
     QCOMPARE(probe.identity.commit, QStringLiteral("abc"));
     QCOMPARE(probe.identity.port, 7496);
+}
+
+namespace {
+const char* kValidSnapshotEnvelope = R"({
+    "source": "ibkr_tws",
+    "command": "snapshot",
+    "ok": true,
+    "retrieved_at": "2026-09-12T12:13:05Z",
+    "adapter": {"commit": "abc", "ibapi_version": "10.45.01",
+                "uses_official_runtime": "true", "ibapi_runtime_path_verified": "true"},
+    "symbol": "AAPL",
+    "contract": {"con_id": 265598, "currency": "USD", "security_type": "STK", "exchange": "SMART"},
+    "classification": {"usable": true, "status": "DELAYED", "entitlement": "DELAYED"},
+    "quote": {"last": 226.12, "close": 225.0}
+})";
+} // namespace
+
+void TstIbkrParse::wrapper_shape_validator_accepts_valid_envelopes() {
+    QString reason;
+    QVERIFY(ibkr_wrapper_payload_valid(obj_from(kValidSnapshotEnvelope), QStringLiteral("snapshot"), &reason));
+
+    const QJsonObject history = obj_from(R"({
+        "source": "ibkr_tws",
+        "command": "history",
+        "ok": true,
+        "retrieved_at": "2026-09-12T12:13:11Z",
+        "adapter": {"commit": "abc", "ibapi_version": "10.45.01",
+                    "uses_official_runtime": "true", "ibapi_runtime_path_verified": "true"},
+        "symbol": "AAPL",
+        "contract": {"con_id": 265598},
+        "classification": {"usable": true, "status": "OK", "entitlement": "AVAILABLE"},
+        "bars": [{"timestamp": 1785974400, "close": 226.0}]
+    })");
+    QVERIFY(ibkr_wrapper_payload_valid(history, QStringLiteral("history"), &reason));
+
+    const QJsonObject probe = obj_from(R"({
+        "source": "ibkr_tws",
+        "command": "probe",
+        "ok": true,
+        "retrieved_at": "2026-09-12T12:12:43Z",
+        "adapter": {"commit": "abc", "ibapi_version": "10.45.01",
+                    "uses_official_runtime": "true", "ibapi_runtime_path_verified": "true"},
+        "connected": true, "ready": true, "clean_disconnect": true
+    })");
+    QVERIFY(ibkr_wrapper_payload_valid(probe, QStringLiteral("probe"), &reason));
+
+    const QJsonObject failure = obj_from(R"({
+        "source": "ibkr_tws",
+        "command": "snapshot",
+        "ok": false,
+        "retrieved_at": "2026-09-12T12:12:43Z",
+        "failure": {"type": "IBKR_ADAPTER_PIN_MISMATCH", "stage": "pin", "message": "not pinned"}
+    })");
+    QVERIFY(ibkr_wrapper_payload_valid(failure, QStringLiteral("snapshot"), &reason));
+}
+
+void TstIbkrParse::wrapper_shape_validator_rejects_malformed_envelopes() {
+    QString reason;
+    const QJsonObject valid = obj_from(kValidSnapshotEnvelope);
+
+    // Wrong request command.
+    QVERIFY(!ibkr_wrapper_payload_valid(valid, QStringLiteral("history"), &reason));
+    // Missing/incorrect ok type.
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("ok")] = QStringLiteral("true");
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // Missing retrieval timestamp.
+    {
+        QJsonObject o = valid;
+        o.remove(QStringLiteral("retrieved_at"));
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // Missing adapter identity / runtime flags.
+    for (const char* key : {"adapter"}) {
+        QJsonObject o = valid;
+        o.remove(QLatin1String(key));
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    for (const char* key : {"commit", "ibapi_version", "uses_official_runtime", "ibapi_runtime_path_verified"}) {
+        QJsonObject adapter = valid.value(QLatin1String("adapter")).toObject();
+        adapter.remove(QLatin1String(key));
+        QJsonObject o = valid;
+        o[QStringLiteral("adapter")] = adapter;
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // Missing symbol, contract identity, classification.
+    for (const char* key : {"symbol", "contract", "classification"}) {
+        QJsonObject o = valid;
+        o.remove(QLatin1String(key));
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // Usable snapshot with no values.
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("quote")] = QJsonObject{};
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // Non-positive conId.
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("contract")] = QJsonObject{{QStringLiteral("con_id"), 0}};
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("snapshot"), &reason));
+    }
+    // History: usable without bars, unusable with bars.
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("command")] = QStringLiteral("history");
+        o[QStringLiteral("bars")] = QJsonArray{};
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("history"), &reason));
+    }
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("command")] = QStringLiteral("history");
+        o[QStringLiteral("classification")] =
+            QJsonObject{{QStringLiteral("usable"), false}, {QStringLiteral("status"), QStringLiteral("ERROR")},
+                        {QStringLiteral("entitlement"), QStringLiteral("UNKNOWN")}};
+        o[QStringLiteral("bars")] = QJsonArray{QJsonObject{{QStringLiteral("timestamp"), 1.0}}};
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("history"), &reason));
+    }
+    // Failure envelope without a usable message.
+    {
+        QJsonObject o = obj_from(R"({"source": "ibkr_tws", "command": "probe", "ok": false,
+            "retrieved_at": "2026-09-12T12:12:43Z", "failure": {"type": "X", "stage": "y", "message": ""}})");
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("probe"), &reason));
+    }
+    // Probe without the connection booleans.
+    {
+        QJsonObject o = valid;
+        o[QStringLiteral("command")] = QStringLiteral("probe");
+        o.remove(QStringLiteral("clean_disconnect"));
+        QVERIFY(!ibkr_wrapper_payload_valid(o, QStringLiteral("probe"), &reason));
+    }
+
+    // A typed output-invalid failure maps through the result parsers.
+    const IbkrTwsQuoteResult invalid = ibkr_quote_result_from_payload(
+        obj_from(R"({"source": "ibkr_tws", "command": "snapshot", "ok": false,
+            "failure": {"type": "IBKR_OUTPUT_INVALID", "stage": "output", "message": "missing fields"}})"),
+        false, QString());
+    QVERIFY(!invalid.ok);
+    QCOMPARE(invalid.failure_type, QStringLiteral("IBKR_OUTPUT_INVALID"));
 }
 
 QTEST_GUILESS_MAIN(TstIbkrParse)
