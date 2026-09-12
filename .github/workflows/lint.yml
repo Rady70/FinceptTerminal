@@ -1,18 +1,19 @@
 name: Lint
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Runs on pull requests (incremental, gating) and on demand (full tree).
+# Runs after changes land on main (push), plus on demand (full tree).
 #
-# It used to be workflow_dispatch-only, and even when run by hand the
-# clang-tidy job could not fail: .clang-tidy sets `WarningsAsErrors: ''` and
-# the invocation passed no --warnings-as-errors, so it exited 0 no matter what
-# it printed — while xargs-ing 1,032 files through a single-threaded process
-# (hours). The PR path below is therefore INCREMENTAL: only the .cpp files the
-# PR actually changed, in parallel, with a narrow high-signal check set that is
-# adoptable today. The full-tree sweep stays available via "Run workflow".
+# MarketLab CI cost policy: no automatic hosted CI on pull requests, and
+# pre-merge validation is local/review-branch only. The meaningful checks move
+# to the post-merge path unchanged: clang-format (diff-scoped to the pushed
+# change), clang-tidy (changed files, gating, exact check set and
+# warnings-as-errors), cppcheck (whole tree, --error-exitcode=1),
+# datahub-discipline and the scope-decision contract. The full-tree sweeps stay
+# available via "Run workflow".
 # ─────────────────────────────────────────────────────────────────────────────
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - 'fincept-qt/src/**'
       - 'fincept-qt/CMakeLists.txt'
@@ -26,7 +27,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: lint-${{ github.event.pull_request.number || github.ref }}
+  group: lint-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -39,9 +40,9 @@ env:
 
 jobs:
   # ── scope-decision-contract ─────────────────────────────────────────────────
-  # This ordinary pull_request job tests the changed contract from the PR
-  # checkout. The pull_request_target scope gate intentionally tests its base
-  # definition only; it must not execute untrusted PR code.
+  # Post-merge contract test: the scope-enforcement scripts stay covered even
+  # though the automatic PR scope gate (pr-gate.yml) is disabled for this
+  # fork. It runs the fail-closed contract that PR-gate logic depends on.
   scope-decision-contract:
     name: scope-decision-contract
     runs-on: ubuntu-24.04
@@ -67,11 +68,11 @@ jobs:
           sudo apt-get install -y clang-format-18
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
 
-      # PR path: only the lines this PR touched. A whole-file --dry-run would
-      # flag pre-existing formatting in untouched lines and fail PRs for code
-      # their author never wrote — the fastest way to get a check deleted.
+      # Main-push path: only the lines the pushed change touched. A whole-file
+      # --dry-run would flag pre-existing formatting in untouched lines and
+      # fail a merge for code its author never wrote.
       - name: Check formatting of changed lines
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'push'
         working-directory: fincept-qt
         run: |
           set -euo pipefail
@@ -80,13 +81,20 @@ jobs:
             echo "::warning::git-clang-format not available — skipping the diff-scoped format check"
             exit 0
           fi
-          BASE="${{ github.event.pull_request.base.sha }}"
+          BASE="${{ github.event.before }}"
+          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
+            BASE="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [ -z "${BASE}" ]; then
+            echo "::warning::no base commit for this push — skipping the diff-scoped format check"
+            exit 0
+          fi
           DIFF=$("${GCF}" --binary clang-format --diff --commit "${BASE}" -- 'src/*.cpp' 'src/*.h' || true)
           case "${DIFF}" in
             *"no modified files"*|*"did not modify"*|"") echo "Changed lines are correctly formatted."; exit 0 ;;
           esac
           echo "${DIFF}"
-          echo "::error::Formatting differs from .clang-format on lines this PR touched. Run: git-clang-format --commit ${BASE}"
+          echo "::error::Formatting differs from .clang-format on lines this change touched. Run: git-clang-format --commit ${BASE}"
           exit 1
 
       # Full-tree sweep — manual runs only.
@@ -178,16 +186,24 @@ jobs:
         working-directory: fincept-qt
         run: cmake --build build --target FinceptTerminal_autogen -j "$(nproc)" || echo "::warning::autogen target unavailable — clang-tidy may report missing generated headers"
 
-      # ── PR path: incremental + GATING ───────────────────────────────────────
+      # ── Main-push path: incremental + GATING ────────────────────────────────
       # Narrow, high-signal checks only. bugprone-easily-swappable-parameters,
       # -narrowing-conversions and -branch-clone are excluded: thousands of
-      # pre-existing hits, near-zero defect yield.
+      # pre-existing hits, near-zero defect yield. The check set and
+      # warnings-as-errors behaviour are unchanged from the pre-merge gate.
       - name: clang-tidy (changed files, gating)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'push'
         working-directory: fincept-qt
         run: |
           set -euo pipefail
-          BASE="${{ github.event.pull_request.base.sha }}"
+          BASE="${{ github.event.before }}"
+          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
+            BASE="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          fi
+          if [ -z "${BASE}" ]; then
+            echo "::warning::no base commit for this push — skipping the changed-file clang-tidy gate"
+            exit 0
+          fi
           CHECKS='-*,bugprone-*,concurrency-*,performance-move-const-arg,-bugprone-easily-swappable-parameters,-bugprone-narrowing-conversions,-bugprone-branch-clone'
           if ! git -C .. diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- 'fincept-qt/src/**/*.cpp' \
             | sed 's|^fincept-qt/||' > /tmp/changed.txt; then
@@ -196,7 +212,7 @@ jobs:
           fi
           CHANGED_COUNT=$(wc -l < /tmp/changed.txt | tr -d ' ')
           if [ "${CHANGED_COUNT}" = "0" ]; then
-            echo "No changed existing .cpp files; clang-tidy is not applicable to this pull request."
+            echo "No changed existing .cpp files; clang-tidy is not applicable to this main push."
             exit 0
           fi
           # Keep only files the compile database actually knows about (a brand

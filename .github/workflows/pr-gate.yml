@@ -1,8 +1,13 @@
 name: PR Scope Gate
 
+# MarketLab (personal fork): the automatic PR Scope Gate is disabled — hosted
+# Actions must not be spent on PR policy/label enforcement. The scope
+# evaluation and fail-closed contract below are preserved for history and
+# reference; the job is inert on manual dispatch because the pull_request
+# payload it reads is absent. Re-add the pull_request_target trigger to restore
+# automatic enforcement.
 on:
-  pull_request_target:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   pull-requests: write

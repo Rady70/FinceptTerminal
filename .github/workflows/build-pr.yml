@@ -2,27 +2,19 @@ name: PR Build (compile + self-test gate)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHY THIS WORKFLOW EXISTS
-#   Until this file was added, NOTHING compiled the C++ on a pull request or on
-#   a push to main: build-cpp.yml and lint.yml are workflow_dispatch-only, and
-#   the only pull_request workflows were arch-ratchet.yml (a Python string
-#   counter) and pr-gate.yml (label policy). That meant /WX and -Werror — which
-#   CMakeLists.txt enables whenever $CI is set — were first enforced on the
-#   `v*` tag push, on three platforms at once, in release.yml. Every release
-#   was a blind roll.
+#   MarketLab CI cost policy: hosted GitHub CI runs only after a change is
+#   merged/pushed to main; pre-merge validation is local/review-branch only.
+#   This workflow is therefore main-only (plus optional manual dispatch), and
+#   Windows is the only hosted build platform.
 #
-#   This job builds the same configuration release.yml builds on Windows + Linux
-#   and runs the headless self-tests. It is the gate that
-#   makes a tag push boring. macOS PR CI is deferred; this workflow does not
-#   validate macOS.
+#   It builds the same release-style Windows configuration release.yml builds
+#   and runs the headless self-tests, so a tag push stays boring. /WX and
+#   -Werror are enabled whenever $CI is set, which GitHub Actions always does,
+#   and the unity-build assertion below keeps this gate on the release-style
+#   configuration (FINCEPT_DEV_BUILD=OFF).
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
-  pull_request:
-    paths:
-      - 'fincept-qt/**'
-      - '.github/workflows/build-pr.yml'
-      - '.github/scripts/ci_app_checks.sh'
-      - '.github/scripts/check_version_drift.sh'
   push:
     branches: [main]
     paths:
@@ -32,10 +24,10 @@ on:
       - '.github/scripts/check_version_drift.sh'
   workflow_dispatch:
 
-# One build per PR (or per main push). A new push cancels the in-flight run —
-# these are 30–60 minute jobs and superseded runs are wasted runner time.
+# One build per main push. A new push cancels the in-flight run — these are
+# 30–60 minute jobs and superseded runs are wasted runner time.
 concurrency:
-  group: build-pr-${{ github.event.pull_request.number || github.ref }}
+  group: build-main-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -82,9 +74,6 @@ jobs:
           - os: windows-2022
             platform: Windows
             qt_arch: win64_msvc2022_64
-          - os: ubuntu-22.04
-            platform: Linux
-            qt_arch: linux_gcc_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
 
@@ -94,19 +83,6 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-
-      # ccache for the two platforms release.yml caches. Same action, same key
-      # shape, so a cache warmed by a main-branch run is restored by PR runs.
-      # Windows has no compiler cache here for the same reason release.yml has
-      # none: that job uses the Visual Studio generator, and CMake's
-      # CMAKE_<LANG>_COMPILER_LAUNCHER (how ccache/sccache is injected) is
-      # honoured only by the Makefile and Ninja generators.
-      - name: Set up ccache
-        if: runner.os != 'Windows'
-        uses: hendrikmuhs/ccache-action@v1
-        with:
-          key: ${{ runner.os == 'Linux' && 'linux-x64-release' || 'macos-arm64-release' }}-${{ env.QT_VERSION }}
-          max-size: 500M
 
       # ── Windows: OpenSSL (dynamic) + zlib (STATIC) via vcpkg ──────────────
       # Copied from release.yml. The forward-slash normalisation and the
@@ -130,33 +106,6 @@ jobs:
             [ -n "$ALT" ] && cp "$ALT" "$ZLIB_DIR/lib/zlib.lib"
           fi
           [ -f "$ZLIB_DIR/lib/zlib.lib" ] || { echo "::error::static zlib archive not found"; exit 1; }
-
-      # ── Linux: toolchain + XCB/GL system libs ─────────────────────────────
-      # ubuntu-22.04 ships g++ 11.4; CMakeLists.txt requires GCC 12.3+.
-      # Deliberately NO apt Qt packages — ubuntu-22.04 has Qt 6.2 and
-      # CMakeLists pins Qt 6.8 (FINCEPT_QT_PIN_MODE defaults to MINOR).
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo add-apt-repository universe -y
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            cmake ninja-build gcc-12 g++-12 \
-            libssl-dev \
-            libgl1-mesa-dev libglu1-mesa-dev \
-            libxkbcommon-dev libxkbcommon-x11-0 libxkbcommon-x11-dev \
-            libxcb-cursor0 libxcb-cursor-dev \
-            libxcb-icccm4 libxcb-icccm4-dev \
-            libxcb-image0 libxcb-image0-dev \
-            libxcb-keysyms1 libxcb-keysyms1-dev \
-            libxcb-randr0 \
-            libxcb-render-util0 libxcb-render-util0-dev \
-            libxcb-shape0-dev libxcb-sync-dev libxcb-xfixes0-dev \
-            libxcb-xinerama0 libxcb-xinerama0-dev libxcb-xkb1 \
-            libdbus-1-dev libfontconfig1-dev libfreetype6-dev \
-            pkg-config python3-yaml
-          echo "CC=gcc-12"  >> "$GITHUB_ENV"
-          echo "CXX=g++-12" >> "$GITHUB_ENV"
 
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
@@ -210,21 +159,7 @@ jobs:
             -DFINCEPT_DEV_BUILD=OFF \
             -DFINCEPT_BUILD_INSTALLER=OFF
 
-      - name: Configure (Linux)
-        if: runner.os == 'Linux'
-        working-directory: fincept-qt
-        run: |
-          set -euo pipefail
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
-            -DOPENSSL_ROOT_DIR=/usr \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DFINCEPT_DEV_BUILD=OFF \
-            -DFINCEPT_BUILD_INSTALLER=OFF
-
-      # Guard against someone "fixing" a slow PR build by flipping the preset
+      # Guard against someone "fixing" a slow build by flipping the preset
       # to the dev configuration — that would quietly delete the unity-batch
       # coverage this workflow exists to provide. The build dir is always
       # fresh on a runner, so the generated unity sources are proof.
@@ -246,22 +181,6 @@ jobs:
         run: |
           cmake --build build --config ${{ env.BUILD_TYPE }} \
             --parallel $(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-
-      - name: Verify staged Linux install
-        if: runner.os == 'Linux'
-        shell: bash
-        working-directory: fincept-qt
-        run: |
-          set -euo pipefail
-          # Validate the install tree produced by CMake, not just source text.
-          STAGE="$(mktemp -d)"
-          trap 'rm -rf "$STAGE"' EXIT
-          cmake --install build \
-            --config "${{ env.BUILD_TYPE }}" \
-            --prefix "$STAGE"
-          /usr/bin/python3 packaging/flatpak/preflight.py \
-            --repo-root .. \
-            --verify-installed "$STAGE"
 
       # ── Headless self-tests ───────────────────────────────────────────────
       # The flag list is discovered from the binary (--selftest-list) with a
