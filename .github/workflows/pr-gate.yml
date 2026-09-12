@@ -16,7 +16,12 @@ permissions:
 
 jobs:
   scope-check:
-    if: github.event.pull_request.draft == false
+    # Manual dispatch only keeps this file valid/preserved while the automatic
+    # gate is disabled. The job must not start without a pull_request_target
+    # payload: `github.event.pull_request.draft` is absent on dispatch and
+    # loose GitHub expression equality would otherwise let it run and then
+    # fail on the missing payload.
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       # pull_request_target must execute only the base repository's contract;

@@ -5,7 +5,9 @@ name: PR Build (compile + self-test gate)
 #   MarketLab CI cost policy: hosted GitHub CI runs only after a change is
 #   merged/pushed to main; pre-merge validation is local/review-branch only.
 #   This workflow is therefore main-only (plus optional manual dispatch), and
-#   Windows is the only hosted build platform.
+#   Windows is the only hosted application-build platform. Post-merge static
+#   analysis and version metadata checks still run on Ubuntu runners; those are
+#   cheap non-build jobs, not a Linux application build.
 #
 #   It builds the same release-style Windows configuration release.yml builds
 #   and runs the headless self-tests, so a tag push stays boring. /WX and
