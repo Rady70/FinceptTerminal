@@ -1,8 +1,9 @@
 name: Close stale gated PRs
 
+# MarketLab (personal fork): automatic PR scope/label enforcement is disabled,
+# so this stale-label housekeeping is manual-only. It must not run on a
+# schedule — hosted Actions are not spent on PR policy enforcement.
 on:
-  schedule:
-    - cron: '30 4 * * *'   # daily at 04:30 UTC
   workflow_dispatch: {}
 
 permissions:

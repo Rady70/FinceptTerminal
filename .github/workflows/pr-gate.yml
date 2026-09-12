@@ -1,8 +1,13 @@
 name: PR Scope Gate
 
+# MarketLab (personal fork): the automatic PR Scope Gate is disabled — hosted
+# Actions must not be spent on PR policy/label enforcement. The scope
+# evaluation and fail-closed contract below are preserved for history and
+# reference; the job is inert on manual dispatch because the pull_request
+# payload it reads is absent. Re-add the pull_request_target trigger to restore
+# automatic enforcement.
 on:
-  pull_request_target:
-    types: [opened, edited, reopened, synchronize, labeled, unlabeled, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
@@ -11,7 +16,12 @@ permissions:
 
 jobs:
   scope-check:
-    if: github.event.pull_request.draft == false
+    # Manual dispatch only keeps this file valid/preserved while the automatic
+    # gate is disabled. The job must not start without a pull_request_target
+    # payload: `github.event.pull_request.draft` is absent on dispatch and
+    # loose GitHub expression equality would otherwise let it run and then
+    # fail on the missing payload.
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       # pull_request_target must execute only the base repository's contract;

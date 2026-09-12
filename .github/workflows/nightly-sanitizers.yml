@@ -1,8 +1,13 @@
-name: Nightly Sanitizers (ASan + UBSan)
+name: Sanitizers (manual only)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Nightly AddressSanitizer + UndefinedBehaviorSanitizer build of the Linux
-# target, exercised by the headless self-tests and the all-screens smoke walk.
+# MarketLab CI cost policy: there are no automatic sanitizer runs and Linux is
+# not part of normal supported hosted CI. The nightly schedule was removed; this
+# workflow is kept only as a manual, off-by-default tool for an operator who
+# explicitly wants an instrumented Linux build. It must never be scheduled.
+#
+# AddressSanitizer + UndefinedBehaviorSanitizer build of the Linux target,
+# exercised by the headless self-tests and the all-screens smoke walk.
 #
 # WHY THOSE TWO AS THE PAYLOAD
 #   They are deterministic, headless, need no display / GPU / network / API
@@ -12,15 +17,8 @@ name: Nightly Sanitizers (ASan + UBSan)
 #   slice of real execution CI can reach without a human — exactly what a
 #   sanitizer wants. A use-after-free or a signed-overflow that only bites a
 #   user at runtime shows up here with a full stack trace.
-#
-# WHY NIGHTLY AND NOT PER-PR
-#   The instrumented build is ~2x slower to compile and the tests run 2-5x
-#   slower; putting it on every PR would make the gate unaffordable and it
-#   would get disabled. Nightly catches regressions within a day.
 # ─────────────────────────────────────────────────────────────────────────────
 on:
-  schedule:
-    - cron: '17 3 * * *'   # 03:17 UTC daily
   workflow_dispatch:
 
 permissions:

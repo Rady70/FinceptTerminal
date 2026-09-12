@@ -1,11 +1,11 @@
 name: Architecture Ratchets
 
-# Runs on `pull_request` (NOT pull_request_target): this checks out PR code, so
-# it must run with the fork's read-only token and no secrets. pr-gate.yml uses
-# pull_request_target because it needs write access to label/comment; that
-# trigger must never be used to execute or scan untrusted contributor code.
+# Runs after changes land on main (push), plus manual dispatch.
+# MarketLab CI cost policy: no automatic hosted CI on pull requests; this
+# post-merge check preserves the same ratchet behaviour unchanged.
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - 'fincept-qt/src/**'
       - '.github/scripts/arch_ratchet.py'
