@@ -92,7 +92,11 @@ class SessionManager : public QObject {
     QByteArray build_snapshot_payload_() const;
 
     QElapsedTimer elapsed_;
-    mutable QSettings settings_{"Fincept", "FinceptTerminal"};
+    // MarketLab: session layout state belongs to the fork's own QSettings
+    // identity. The upstream ("Fincept", "FinceptTerminal") key is never
+    // written (or read) by this fork, so a side-by-side official Fincept
+    // installation keeps its own window/dock state untouched.
+    mutable QSettings settings_{"MarketLab", "MarketLabTerminal"};
 };
 
 } // namespace fincept
