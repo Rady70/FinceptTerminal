@@ -169,10 +169,9 @@ static void wire_app_lifecycle(QApplication& app, fincept::InstanceLock& lock) {
     });
 }
 
-// Narrow suppression of a pre-existing whole-function finding: main()
-// deliberately lets startup failures terminate the process (the crash handler
-// is installed above), and Phase 5 only added the IBKR self-test dispatch to
-// this file. Do not turn this into a startup exception-handling redesign.
+// Narrow suppression of a pre-existing whole-function finding: this diagnostic
+// predates Phase 5, which only added the IBKR self-test dispatch to this file.
+// Do not turn this into a startup exception-handling redesign.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char* argv[]) {
     // ── TLS backend selection (must happen before any Qt plugin loading) ────
