@@ -252,12 +252,14 @@ jobs:
             exit 1
           fi
           echo "Analysing ${COUNT} changed file(s) with: ${CHECKS}"
+          # The MSVC compile database already carries /std:c++20; a Unix-style
+          # -std=c++20 extra arg is rejected in clang-cl mode as
+          # clang-diagnostic-unknown-argument and fails every analysed file.
           xargs -a /tmp/tidy_files.txt -P "${NUMBER_OF_PROCESSORS:-4}" -n 1 \
             clang-tidy -p build \
               --checks="${CHECKS}" \
               --warnings-as-errors="${CHECKS}" \
               --quiet \
-              --extra-arg=-std=c++20 \
               --extra-arg=--driver-mode=cl
           echo "clang-tidy clean on changed files."
 
@@ -272,7 +274,6 @@ jobs:
               --config-file=.clang-tidy \
               -p build \
               --quiet \
-              --extra-arg=-std=c++20 \
               --extra-arg=--driver-mode=cl \
               2>&1 || true
           echo "clang-tidy sweep complete (advisory — .clang-tidy sets WarningsAsErrors: '')."
