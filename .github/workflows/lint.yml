@@ -3,13 +3,13 @@ name: Lint
 # ─────────────────────────────────────────────────────────────────────────────
 # Runs after changes land on main (push), plus on demand (full tree).
 #
-# MarketLab CI cost policy: no automatic hosted CI on pull requests, and
-# pre-merge validation is local/review-branch only. The meaningful checks move
-# to the post-merge path unchanged: clang-format (diff-scoped to the pushed
-# change), clang-tidy (changed files, gating, exact check set and
-# warnings-as-errors), cppcheck (whole tree, --error-exitcode=1),
-# datahub-discipline and the scope-decision contract. The full-tree sweeps stay
-# available via "Run workflow".
+# MarketLab CI policy: hosted CI is Windows-only. There is no automatic hosted
+# CI on pull requests and pre-merge validation is local/review-branch only. The
+# meaningful checks run unchanged on a Windows runner after merge: clang-format
+# (diff-scoped to the pushed change), clang-tidy (changed files, gating, exact
+# check set and warnings-as-errors), cppcheck (whole tree,
+# --error-exitcode=1), datahub-discipline and the scope-decision contract. The
+# full-tree sweeps stay available via "Run workflow".
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   push:
@@ -37,6 +37,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   QT_VERSION: "6.8.3"
   QT_MODULES: "qtcharts qtwebsockets qtmultimedia qtwebengine qtwebchannel qtpositioning qtserialport"
+  # The Windows runner image's LLVM is used for clang-format/clang-tidy. The
+  # previous Linux gate pinned clang 18, but that version cannot parse the
+  # current MSVC STL (STL1000: expected Clang 19.0.0 or newer) in an MSVC
+  # compile database, so the Windows port must use the modern toolchain.
+  # Closest available Windows cppcheck build. 2.13.0 (the previous Ubuntu
+  # package) is not published for Windows; 2.16.0 was validated locally on the
+  # whole tree with zero warning/performance/portability diagnostics.
+  CPPCHECK_VERSION: "2.16.0"
 
 jobs:
   # ── scope-decision-contract ─────────────────────────────────────────────────
@@ -45,7 +53,7 @@ jobs:
   # fork. It runs the fail-closed contract that PR-gate logic depends on.
   scope-decision-contract:
     name: scope-decision-contract
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -56,30 +64,36 @@ jobs:
   # ── clang-format ─────────────────────────────────────────────────────────────
   clang-format:
     name: clang-format
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install clang-format
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y clang-format-18
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Show clang-format version
+        shell: bash
+        run: clang-format --version
 
       # Main-push path: only the lines the pushed change touched. A whole-file
       # --dry-run would flag pre-existing formatting in untouched lines and
-      # fail a merge for code its author never wrote.
+      # fail a merge for code its author never wrote. The LLVM-shipped
+      # git-clang-format Python script is invoked with the setup-python
+      # interpreter instead of relying on its shebang / the Windows Store alias.
       - name: Check formatting of changed lines
         if: github.event_name == 'push'
+        shell: bash
         working-directory: fincept-qt
         run: |
           set -euo pipefail
-          GCF="$(command -v git-clang-format-18 || command -v git-clang-format || true)"
-          if [ -z "${GCF}" ]; then
-            echo "::warning::git-clang-format not available — skipping the diff-scoped format check"
-            exit 0
+          LLVM_BIN="$(dirname "$(command -v clang-format)")"
+          GCF="${LLVM_BIN}/git-clang-format"
+          if [ ! -f "${GCF}" ]; then
+            echo "::error::git-clang-format was not found in the installed LLVM; refusing to skip the diff-scoped format gate."
+            exit 1
           fi
           BASE="${{ github.event.before }}"
           if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
@@ -89,7 +103,7 @@ jobs:
             echo "::warning::no base commit for this push — skipping the diff-scoped format check"
             exit 0
           fi
-          DIFF=$("${GCF}" --binary clang-format --diff --commit "${BASE}" -- 'src/*.cpp' 'src/*.h' || true)
+          DIFF="$(python "$(cygpath -w "${GCF}")" --binary clang-format --diff --commit "${BASE}" -- 'src/*.cpp' 'src/*.h' 2>&1 || true)"
           case "${DIFF}" in
             *"no modified files"*|*"did not modify"*|"") echo "Changed lines are correctly formatted."; exit 0 ;;
           esac
@@ -100,6 +114,7 @@ jobs:
       # Full-tree sweep — manual runs only.
       - name: Check formatting (full tree)
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         working-directory: fincept-qt
         run: |
           # Parentheses required: without them -o has lower precedence than the
@@ -111,41 +126,36 @@ jobs:
   # ── clang-tidy ───────────────────────────────────────────────────────────────
   clang-tidy:
     name: clang-tidy
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            clang-18 clang-tidy-18 \
-            cmake ninja-build \
-            libgl1-mesa-dev libglu1-mesa-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev \
-            libxcb-cursor-dev libxcb-icccm4-dev libxcb-image0-dev \
-            libxcb-keysyms1-dev libxcb-render-util0-dev libxcb-shape0-dev \
-            libxcb-sync-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
-            libdbus-1-dev libfontconfig1-dev libfreetype6-dev libssl-dev
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      # Qt 6.8.3 from aqt, NOT apt: ubuntu-24.04 ships Qt 6.4 and CMakeLists.txt
-      # pins Qt 6.8 (FINCEPT_QT_PIN_MODE=MINOR), so the previous apt-based
-      # configure could never produce a compile database.
+      - name: Show clang-tidy version
+        shell: bash
+        run: clang-tidy --version
+
+      # Qt 6.8.3 from aqt, matching the Windows build configuration. The
+      # bundled OpenSSL tool supplies the headers/libs FindOpenSSL needs on
+      # Windows (the Linux job got libssl-dev from apt).
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
-          arch: linux_gcc_64
+          arch: win64_msvc2022_64
           modules: ${{ env.QT_MODULES }}
+          tools: 'tools_opensslv3_x64'
           cache: true
-          cache-key-prefix: qt-linux-x64-lint
+          cache-key-prefix: qt-windows-x64-lint
 
       - name: Remove dangling Qt SQL driver plugin CMake configs
+        shell: bash
         run: |
           set -euo pipefail
           SQL_CMAKE="${QT_ROOT_DIR}/lib/cmake/Qt6Sql"
@@ -167,13 +177,15 @@ jobs:
       # Disabling PCH for this lint-only build removes the flag entirely; it
       # does not affect any release/CI build artifact.
       - name: Configure (generate compile_commands.json)
+        shell: bash
         working-directory: fincept-qt
         run: |
+          set -euo pipefail
           cmake -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
+            -DOPENSSL_ROOT_DIR="${QT_ROOT_DIR}/../../Tools/OpenSSLv3/Win_x64" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             -DFINCEPT_DEV_BUILD=ON \
@@ -183,8 +195,10 @@ jobs:
       # moc/uic output must exist before clang-tidy parses anything that
       # includes it, otherwise every hit is a bogus "file not found".
       - name: Generate moc/uic sources
+        shell: bash
         working-directory: fincept-qt
-        run: cmake --build build --target FinceptTerminal_autogen -j "$(nproc)" || echo "::warning::autogen target unavailable — clang-tidy may report missing generated headers"
+        run: |
+          cmake --build build --target FinceptTerminal_autogen --parallel || echo "::warning::autogen target unavailable — clang-tidy may report missing generated headers"
 
       # ── Main-push path: incremental + GATING ────────────────────────────────
       # Narrow, high-signal checks only. bugprone-easily-swappable-parameters,
@@ -193,6 +207,7 @@ jobs:
       # warnings-as-errors behaviour are unchanged from the pre-merge gate.
       - name: clang-tidy (changed files, gating)
         if: github.event_name == 'push'
+        shell: bash
         working-directory: fincept-qt
         run: |
           set -euo pipefail
@@ -217,12 +232,19 @@ jobs:
           fi
           # Keep only files the compile database actually knows about (a brand
           # new .cpp not yet added to CMakeLists.txt has no compile command).
+          # The Windows compile database records backslash paths, so the POSIX
+          # forward-slash form alone would silently skip every file.
           : > /tmp/tidy_files.txt
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             [ -f "$f" ] || continue
-            grep -q "\"$(basename "$f")\"\|/$f\"" build/compile_commands.json 2>/dev/null && echo "$f" >> /tmp/tidy_files.txt || \
+            f_win="$(printf '%s' "$f" | sed 's|/|\\\\|g')"
+            if grep -qF "${f}\"" build/compile_commands.json 2>/dev/null || \
+               grep -qF "${f_win}\"" build/compile_commands.json 2>/dev/null; then
+              echo "$f" >> /tmp/tidy_files.txt
+            else
               echo "::warning::$f not in compile_commands.json — skipped by clang-tidy"
+            fi
           done < /tmp/changed.txt
           COUNT=$(wc -l < /tmp/tidy_files.txt | tr -d ' ')
           if [ "${COUNT}" = "0" ]; then
@@ -230,25 +252,28 @@ jobs:
             exit 1
           fi
           echo "Analysing ${COUNT} changed file(s) with: ${CHECKS}"
-          xargs -a /tmp/tidy_files.txt -P "$(nproc)" -n 1 \
+          xargs -a /tmp/tidy_files.txt -P "${NUMBER_OF_PROCESSORS:-4}" -n 1 \
             clang-tidy -p build \
               --checks="${CHECKS}" \
               --warnings-as-errors="${CHECKS}" \
               --quiet \
-              --extra-arg=-std=c++20
+              --extra-arg=-std=c++20 \
+              --extra-arg=--driver-mode=cl
           echo "clang-tidy clean on changed files."
 
       # ── Manual path: full tree, advisory ────────────────────────────────────
       - name: clang-tidy (full tree, advisory)
         if: github.event_name == 'workflow_dispatch'
+        shell: bash
         working-directory: fincept-qt
         run: |
           find src -name "*.cpp" | grep -v "/moc_" | grep -v "/qrc_" | sort | \
-            xargs -P "$(nproc)" -n 1 clang-tidy \
+            xargs -P "${NUMBER_OF_PROCESSORS:-4}" -n 1 clang-tidy \
               --config-file=.clang-tidy \
               -p build \
               --quiet \
               --extra-arg=-std=c++20 \
+              --extra-arg=--driver-mode=cl \
               2>&1 || true
           echo "clang-tidy sweep complete (advisory — .clang-tidy sets WarningsAsErrors: '')."
 
@@ -261,11 +286,12 @@ jobs:
   # producer + topic you should be using instead.
   datahub-discipline:
     name: datahub-discipline
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Check screens/ does not call PythonRunner directly
+        shell: bash
         working-directory: fincept-qt
         run: |
           # GRANDFATHER LIST — two pre-existing D1 violations, present when this
@@ -286,6 +312,7 @@ jobs:
           echo "D1 — screens are clean (excluding the 2 grandfathered files)."
 
       - name: Check screens/ does not call deprecated service fetch_* APIs
+        shell: bash
         working-directory: fincept-qt
         run: |
           # D4 exempts one-shot catalog/info APIs that have no hub topic:
@@ -310,29 +337,38 @@ jobs:
           echo "D4 — screens are clean."
 
   # ── cppcheck ─────────────────────────────────────────────────────────────────
-  # Unchanged from its manual-only form — it already gates via
-  # --error-exitcode=1 and runs the whole tree in a couple of minutes.
+  # Gates via --error-exitcode=1 and runs the whole tree. The only added
+  # suppression is the informational-only `normalCheckLevelMaxBranches` notice
+  # that cppcheck >= 2.14 emits on this tree and that --error-exitcode counts;
+  # it is not a warning/performance/portability diagnostic, and no tracked
+  # suppression entry is added. The Windows build is pinned to the closest
+  # available version and was validated locally against the whole tree.
   cppcheck:
     name: cppcheck
-    runs-on: ubuntu-24.04
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install cppcheck
+      - name: Install cppcheck ${{ env.CPPCHECK_VERSION }}
+        shell: pwsh
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y cppcheck
+          choco install cppcheck --version=${{ env.CPPCHECK_VERSION }} -y --no-progress
+          echo "C:\Program Files\Cppcheck" >> $env:GITHUB_PATH
 
       - name: Run cppcheck
+        shell: bash
         working-directory: fincept-qt
         run: |
+          command -v cppcheck
+          cppcheck --version
           cppcheck \
             --enable=warning,performance,portability \
             --suppressions-list=.cppcheck-suppressions \
             --inline-suppr \
             --std=c++20 \
             --error-exitcode=1 \
+            --suppress=normalCheckLevelMaxBranches \
             -I src \
-            -j "$(nproc)" \
+            -j "${NUMBER_OF_PROCESSORS:-4}" \
             src 2>&1
           echo "cppcheck complete."
