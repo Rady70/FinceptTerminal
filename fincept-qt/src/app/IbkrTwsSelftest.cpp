@@ -17,14 +17,18 @@
 
 namespace fincept::marketlab {
 
-namespace {
+// File-local helpers live in a uniquely named namespace: the release-style
+// unity build concatenates this file with MarketLabBoundarySelftest.cpp into
+// one TU, and an anonymous namespace would merge with that file's anonymous
+// namespace and collide on its `failures`/`CHECK` definitions.
+namespace ibkr_selftest_detail {
 
-int failures = 0;
+int ibkr_selftest_failures = 0;
 
-#define CHECK(cond, what)                                                                                              \
+#define IBKR_TWS_SELFTEST_CHECK(cond, what)                                                                            \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
-            ++failures;                                                                                                \
+            ++ibkr_selftest_failures;                                                                                  \
             std::fprintf(stderr, "[ibkr-selftest] FAIL: %s\n", what);                                                  \
             LOG_ERROR("IbkrSelftest", QStringLiteral("FAIL: %1").arg(QString::fromUtf8(what)));                        \
         } else {                                                                                                       \
@@ -122,9 +126,10 @@ QJsonObject failure_json(const QString& type, const QString& stage, const QStrin
     return object;
 }
 
-} // namespace
+} // namespace ibkr_selftest_detail
 
 int run_ibkr_tws_selftest() {
+    using namespace ibkr_selftest_detail;
     using services::ibkr::IbkrTwsHistoryResult;
     using services::ibkr::IbkrTwsProbeResult;
     using services::ibkr::IbkrTwsQuoteResult;
@@ -158,13 +163,13 @@ int run_ibkr_tws_selftest() {
             service.probe([deliver = std::move(deliver)](const IbkrTwsProbeResult& result) { deliver(result); });
         },
         60 * 1000);
-    CHECK(probe_done, "probe completed within its bounded watchdog");
-    CHECK(probe.ok, "probe reported ok");
-    CHECK(probe.connected && probe.ready, "TWS socket and readiness signal observed");
-    CHECK(probe.clean_disconnect, "clean disconnect observed between commands");
-    CHECK(probe.identity.uses_official_runtime == QLatin1String("true"),
+    IBKR_TWS_SELFTEST_CHECK(probe_done, "probe completed within its bounded watchdog");
+    IBKR_TWS_SELFTEST_CHECK(probe.ok, "probe reported ok");
+    IBKR_TWS_SELFTEST_CHECK(probe.connected && probe.ready, "TWS socket and readiness signal observed");
+    IBKR_TWS_SELFTEST_CHECK(probe.clean_disconnect, "clean disconnect observed between commands");
+    IBKR_TWS_SELFTEST_CHECK(probe.identity.uses_official_runtime == QLatin1String("true"),
           "adapter reported the official ibapi runtime");
-    CHECK(!probe.identity.commit.isEmpty(), "adapter pin commit reported");
+    IBKR_TWS_SELFTEST_CHECK(!probe.identity.commit.isEmpty(), "adapter pin commit reported");
     summary["probe"] = QJsonObject{{"ok", probe.ok},
                                    {"connected", probe.connected},
                                    {"ready", probe.ready},
@@ -180,10 +185,10 @@ int run_ibkr_tws_selftest() {
                                 [deliver = std::move(deliver)](const IbkrTwsQuoteResult& result) { deliver(result); });
         },
         120 * 1000);
-    CHECK(quote_done, "quote request completed within its bounded watchdog");
-    CHECK(quote.ok, "quote request reported a classified outcome");
-    CHECK(quote.con_id > 0, "AAPL contract resolved to a conId");
-    CHECK(!quote.contract.isEmpty(), "resolved contract identity carried to the consumer");
+    IBKR_TWS_SELFTEST_CHECK(quote_done, "quote request completed within its bounded watchdog");
+    IBKR_TWS_SELFTEST_CHECK(quote.ok, "quote request reported a classified outcome");
+    IBKR_TWS_SELFTEST_CHECK(quote.con_id > 0, "AAPL contract resolved to a conId");
+    IBKR_TWS_SELFTEST_CHECK(!quote.contract.isEmpty(), "resolved contract identity carried to the consumer");
     QJsonObject quote_json = classification_json(quote.classification);
     quote_json["ok"] = quote.ok;
     quote_json["con_id"] = quote.con_id;
@@ -203,37 +208,37 @@ int run_ibkr_tws_selftest() {
 
     if (quote.ok) {
         // Contract identity is part of the result, not an assumption.
-        CHECK(quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("STK") ||
+        IBKR_TWS_SELFTEST_CHECK(quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("STK") ||
                   quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("ETF") ||
                   quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("FUND"),
               "resolved contract carries a supported security type");
-        CHECK(!quote.contract.value(QLatin1String("exchange")).toString().isEmpty(),
+        IBKR_TWS_SELFTEST_CHECK(!quote.contract.value(QLatin1String("exchange")).toString().isEmpty(),
               "resolved contract names an exchange");
         if (quote.classification.usable) {
             // A usable quote must name the feed it actually came from, carry
             // provenance, and must not call delayed data live.
-            CHECK(quote.classification.feed == QLatin1String("LIVE") ||
+            IBKR_TWS_SELFTEST_CHECK(quote.classification.feed == QLatin1String("LIVE") ||
                       quote.classification.feed == QLatin1String("FROZEN") ||
                       quote.classification.feed == QLatin1String("DELAYED") ||
                       quote.classification.feed == QLatin1String("DELAYED_FROZEN"),
                   "usable quote names its observed IBKR feed");
-            CHECK(quote.quote.source == QLatin1String("ibkr_tws"), "quote provenance names ibkr_tws");
-            CHECK(quote.quote.retrieved_at > 0, "quote carries a retrieval timestamp");
-            CHECK(quote.classification.feed != QLatin1String("LIVE") || quote.quote.status == QLatin1String("LIVE"),
+            IBKR_TWS_SELFTEST_CHECK(quote.quote.source == QLatin1String("ibkr_tws"), "quote provenance names ibkr_tws");
+            IBKR_TWS_SELFTEST_CHECK(quote.quote.retrieved_at > 0, "quote carries a retrieval timestamp");
+            IBKR_TWS_SELFTEST_CHECK(quote.classification.feed != QLatin1String("LIVE") || quote.quote.status == QLatin1String("LIVE"),
                   "no feed is reported as live unless IBKR said live");
         } else {
             // The stopping rule accepts an entitlement limitation, not a
             // generic provider/API failure, as qualification evidence.
-            CHECK(quote.classification.status == QLatin1String("NOT_ENTITLED"),
+            IBKR_TWS_SELFTEST_CHECK(quote.classification.status == QLatin1String("NOT_ENTITLED"),
                   "an unusable quote is an explicit entitlement limitation, not a generic failure");
-            CHECK(!quote.classification.entitlement.isEmpty(), "unusable quote exposes an entitlement state");
-            CHECK(!quote.quote.has_price && !quote.quote.has_change && !quote.quote.has_volume,
+            IBKR_TWS_SELFTEST_CHECK(!quote.classification.entitlement.isEmpty(), "unusable quote exposes an entitlement state");
+            IBKR_TWS_SELFTEST_CHECK(!quote.quote.has_price && !quote.quote.has_change && !quote.quote.has_volume,
                   "unusable quote carries no fabricated readings");
         }
         if (quote.classification.delayed_attempted) {
             // A live block must not hide the delayed attempt that followed it.
-            CHECK(!quote.classification.delayed_status.isEmpty(), "delayed attempt status is exposed");
-            CHECK(quote.classification.delayed_usable != QLatin1String("PASS") ||
+            IBKR_TWS_SELFTEST_CHECK(!quote.classification.delayed_status.isEmpty(), "delayed attempt status is exposed");
+            IBKR_TWS_SELFTEST_CHECK(quote.classification.delayed_usable != QLatin1String("PASS") ||
                       quote.quote.source == QLatin1String("ibkr_tws"),
                   "delayed attempt outcome is visible to the consumer");
         }
@@ -247,9 +252,9 @@ int run_ibkr_tws_selftest() {
                 [deliver = std::move(deliver)](const IbkrTwsHistoryResult& result) { deliver(result); });
         },
         120 * 1000);
-    CHECK(history_done, "history request completed within its bounded watchdog");
-    CHECK(history.ok, "history request reported a classified outcome");
-    CHECK(history.con_id > 0, "AAPL contract resolved for the history request");
+    IBKR_TWS_SELFTEST_CHECK(history_done, "history request completed within its bounded watchdog");
+    IBKR_TWS_SELFTEST_CHECK(history.ok, "history request reported a classified outcome");
+    IBKR_TWS_SELFTEST_CHECK(history.con_id > 0, "AAPL contract resolved for the history request");
     QJsonObject history_json = classification_json(history.classification);
     history_json["ok"] = history.ok;
     history_json["con_id"] = history.con_id;
@@ -274,16 +279,16 @@ int run_ibkr_tws_selftest() {
                 !(history.bars[i].low > 0.0))
                 positive_prices = false;
         }
-        CHECK(ordered, "history bars are strictly ordered by timestamp");
-        CHECK(complete_ohlc, "history bars carry open/high/low presence");
-        CHECK(positive_prices, "history bars carry positive price readings");
-        CHECK(history.dropped_bars == 0, "no history bar was dropped by the model boundary");
+        IBKR_TWS_SELFTEST_CHECK(ordered, "history bars are strictly ordered by timestamp");
+        IBKR_TWS_SELFTEST_CHECK(complete_ohlc, "history bars carry open/high/low presence");
+        IBKR_TWS_SELFTEST_CHECK(positive_prices, "history bars carry positive price readings");
+        IBKR_TWS_SELFTEST_CHECK(history.dropped_bars == 0, "no history bar was dropped by the model boundary");
     } else if (history.ok) {
         // The stopping rule accepts an entitlement limitation, not a generic
         // provider/API failure or an unvalidated series, as qualification.
-        CHECK(history.classification.status == QLatin1String("NOT_ENTITLED"),
+        IBKR_TWS_SELFTEST_CHECK(history.classification.status == QLatin1String("NOT_ENTITLED"),
               "an unusable history result is an explicit entitlement limitation, not a generic failure");
-        CHECK(history.bars.isEmpty(), "unusable history carries no bars");
+        IBKR_TWS_SELFTEST_CHECK(history.bars.isEmpty(), "unusable history carries no bars");
     }
 
     // ── 4. Failure paths through the same service boundary ───────────────────
@@ -306,22 +311,22 @@ int run_ibkr_tws_selftest() {
                                    [deliver = std::move(deliver)](const IbkrTwsProbeResult& result) { deliver(result); });
             },
             60 * 1000);
-        CHECK(refused_done, "refused-connection probe completed within its bounded watchdog");
-        CHECK(!refused_result.ok, "refused connection is a failure, not a success");
-        CHECK(refused_result.failure_type == QLatin1String("IBKR_CONNECTION_FAILED") ||
+        IBKR_TWS_SELFTEST_CHECK(refused_done, "refused-connection probe completed within its bounded watchdog");
+        IBKR_TWS_SELFTEST_CHECK(!refused_result.ok, "refused connection is a failure, not a success");
+        IBKR_TWS_SELFTEST_CHECK(refused_result.failure_type == QLatin1String("IBKR_CONNECTION_FAILED") ||
                   refused_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
               "refused connection carries a bounded transport failure type");
         failure_paths["refused_connection"] =
             failure_json(refused_result.failure_type, refused_result.failure_stage, refused_result.failure_message);
     } else {
-        CHECK(false, "could not allocate a loopback port for the refused-connection check");
+        IBKR_TWS_SELFTEST_CHECK(false, "could not allocate a loopback port for the refused-connection check");
     }
 
     // 4b. Readiness timeout: a socket that accepts but never sends nextValidId.
     {
         QTcpServer silent_server;
         const bool listening = silent_server.listen(QHostAddress::LocalHost, 0);
-        CHECK(listening, "silent loopback listener started for the readiness-timeout check");
+        IBKR_TWS_SELFTEST_CHECK(listening, "silent loopback listener started for the readiness-timeout check");
         if (listening) {
             services::ibkr::IbkrTwsConfig silent = cfg;
             silent.port = silent_server.serverPort();
@@ -333,9 +338,9 @@ int run_ibkr_tws_selftest() {
                                        });
                 },
                 60 * 1000);
-            CHECK(timeout_done, "readiness-timeout probe completed within its bounded watchdog");
-            CHECK(!timeout_result.ok, "readiness timeout is a failure, not a success");
-            CHECK(timeout_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
+            IBKR_TWS_SELFTEST_CHECK(timeout_done, "readiness-timeout probe completed within its bounded watchdog");
+            IBKR_TWS_SELFTEST_CHECK(!timeout_result.ok, "readiness timeout is a failure, not a success");
+            IBKR_TWS_SELFTEST_CHECK(timeout_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
                   "readiness timeout carries the typed timeout failure");
             failure_paths["readiness_timeout"] = failure_json(timeout_result.failure_type,
                                                               timeout_result.failure_stage,
@@ -354,9 +359,9 @@ int run_ibkr_tws_selftest() {
                                          });
             },
             120 * 1000);
-        CHECK(missing_done, "unresolved-contract request completed within its bounded watchdog");
-        CHECK(!missing.ok, "unresolved contract is an explicit failure");
-        CHECK(missing.failure_type == QLatin1String("IBKR_CONTRACT_NOT_RESOLVED") ||
+        IBKR_TWS_SELFTEST_CHECK(missing_done, "unresolved-contract request completed within its bounded watchdog");
+        IBKR_TWS_SELFTEST_CHECK(!missing.ok, "unresolved contract is an explicit failure");
+        IBKR_TWS_SELFTEST_CHECK(missing.failure_type == QLatin1String("IBKR_CONTRACT_NOT_RESOLVED") ||
                   missing.failure_type == QLatin1String("IBKR_REQUEST_REJECTED"),
               "unresolved contract carries a typed contract failure");
         failure_paths["unresolved_contract"] =
@@ -364,12 +369,12 @@ int run_ibkr_tws_selftest() {
     }
 
     summary["failure_paths"] = failure_paths;
-    summary["failed_checks"] = failures;
-    summary["result"] = failures == 0 ? QStringLiteral("PASS") : QStringLiteral("FAIL");
+    summary["failed_checks"] = ibkr_selftest_failures;
+    summary["result"] = ibkr_selftest_failures == 0 ? QStringLiteral("PASS") : QStringLiteral("FAIL");
     std::printf("IBKR_SELFTEST_JSON: %s\n", QJsonDocument(summary).toJson(QJsonDocument::Compact).constData());
-    if (failures > 0)
-        std::fprintf(stderr, "[ibkr-selftest] %d check(s) failed\n", failures);
-    return failures == 0 ? 0 : 1;
+    if (ibkr_selftest_failures > 0)
+        std::fprintf(stderr, "[ibkr-selftest] %d check(s) failed\n", ibkr_selftest_failures);
+    return ibkr_selftest_failures == 0 ? 0 : 1;
 }
 
 } // namespace fincept::marketlab
