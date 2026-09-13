@@ -37,10 +37,10 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   QT_VERSION: "6.8.3"
   QT_MODULES: "qtcharts qtwebsockets qtmultimedia qtwebengine qtwebchannel qtpositioning qtserialport"
-  # Pinned to the LLVM version the previous hosted lint gate used, now on a
-  # Windows runner. The runner image itself installs LLVM through Chocolatey,
-  # so the same package supplies clang-format, git-clang-format and clang-tidy.
-  LLVM_VERSION: "18.1.8"
+  # The Windows runner image's LLVM is used for clang-format/clang-tidy. The
+  # previous Linux gate pinned clang 18, but that version cannot parse the
+  # current MSVC STL (STL1000: expected Clang 19.0.0 or newer) in an MSVC
+  # compile database, so the Windows port must use the modern toolchain.
   # Closest available Windows cppcheck build. 2.13.0 (the previous Ubuntu
   # package) is not published for Windows; 2.16.0 was validated locally on the
   # whole tree with zero warning/performance/portability diagnostics.
@@ -70,12 +70,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        shell: pwsh
-        run: |
-          choco install llvm --version=${{ env.LLVM_VERSION }} --allow-downgrade -y --no-progress
-          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -87,8 +81,8 @@ jobs:
       # Main-push path: only the lines the pushed change touched. A whole-file
       # --dry-run would flag pre-existing formatting in untouched lines and
       # fail a merge for code its author never wrote. The LLVM-shipped
-      # git-clang-format Python script is invoked with the pinned interpreter
-      # instead of relying on its shebang / the Windows Store alias.
+      # git-clang-format Python script is invoked with the setup-python
+      # interpreter instead of relying on its shebang / the Windows Store alias.
       - name: Check formatting of changed lines
         if: github.event_name == 'push'
         shell: bash
@@ -138,12 +132,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        shell: pwsh
-        run: |
-          choco install llvm --version=${{ env.LLVM_VERSION }} --allow-downgrade -y --no-progress
-          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
-
       - name: Set up MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -153,13 +141,16 @@ jobs:
         shell: bash
         run: clang-tidy --version
 
-      # Qt 6.8.3 from aqt, matching the Windows build configuration.
+      # Qt 6.8.3 from aqt, matching the Windows build configuration. The
+      # bundled OpenSSL tool supplies the headers/libs FindOpenSSL needs on
+      # Windows (the Linux job got libssl-dev from apt).
       - name: Install Qt ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
           modules: ${{ env.QT_MODULES }}
+          tools: 'tools_opensslv3_x64'
           cache: true
           cache-key-prefix: qt-windows-x64-lint
 
@@ -194,6 +185,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_PREFIX_PATH="${QT_ROOT_DIR}" \
+            -DOPENSSL_ROOT_DIR="${QT_ROOT_DIR}/../../Tools/OpenSSLv3/Win_x64" \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
             -DFINCEPT_DEV_BUILD=ON \
@@ -240,12 +232,19 @@ jobs:
           fi
           # Keep only files the compile database actually knows about (a brand
           # new .cpp not yet added to CMakeLists.txt has no compile command).
+          # The Windows compile database records backslash paths, so the POSIX
+          # forward-slash form alone would silently skip every file.
           : > /tmp/tidy_files.txt
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             [ -f "$f" ] || continue
-            grep -q "\"$(basename "$f")\"\|/$f\"" build/compile_commands.json 2>/dev/null && echo "$f" >> /tmp/tidy_files.txt || \
+            f_win="$(printf '%s' "$f" | sed 's|/|\\\\|g')"
+            if grep -qF "${f}\"" build/compile_commands.json 2>/dev/null || \
+               grep -qF "${f_win}\"" build/compile_commands.json 2>/dev/null; then
+              echo "$f" >> /tmp/tidy_files.txt
+            else
               echo "::warning::$f not in compile_commands.json — skipped by clang-tidy"
+            fi
           done < /tmp/changed.txt
           COUNT=$(wc -l < /tmp/tidy_files.txt | tr -d ' ')
           if [ "${COUNT}" = "0" ]; then
@@ -352,12 +351,15 @@ jobs:
 
       - name: Install cppcheck ${{ env.CPPCHECK_VERSION }}
         shell: pwsh
-        run: choco install cppcheck --version=${{ env.CPPCHECK_VERSION }} -y --no-progress
+        run: |
+          choco install cppcheck --version=${{ env.CPPCHECK_VERSION }} -y --no-progress
+          echo "C:\Program Files\Cppcheck" >> $env:GITHUB_PATH
 
       - name: Run cppcheck
         shell: bash
         working-directory: fincept-qt
         run: |
+          command -v cppcheck
           cppcheck --version
           cppcheck \
             --enable=warning,performance,portability \
