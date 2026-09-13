@@ -3525,7 +3525,7 @@ endif()
 #   cd build && cpack -G IFW -C Release
 #
 # Requires: Qt Installer Framework (binarycreator on PATH or in Qt install)
-# Output:   FinceptTerminal-<ver>-<platform>-setup.exe/.run/.app
+# Output:   MarketLabTerminal-<ver>-<platform>-setup.exe/.run/.app
 
 option(FINCEPT_BUILD_INSTALLER "Generate QtIFW installer via CPack" OFF)
 
@@ -3604,15 +3604,17 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
 
     # ── CPack general metadata ───────────────────────────────────────────────
-    set(CPACK_PACKAGE_NAME "FinceptTerminal")
-    set(CPACK_PACKAGE_VENDOR "Fincept Corporation")
+    # MarketLab: installed-product identity is the fork identity, not upstream
+    # Fincept. Only the license text keeps upstream attribution.
+    set(CPACK_PACKAGE_NAME "MarketLabTerminal")
+    set(CPACK_PACKAGE_VENDOR "MarketLab")
     set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "Local-first financial research workspace with market data and analytics")
     set(CPACK_PACKAGE_HOMEPAGE_URL
-        "https://github.com/Fincept-Corporation/FinceptTerminal")
+        "https://github.com/Rady70/FinceptTerminal")
     set(CPACK_RESOURCE_FILE_LICENSE
-        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/license.txt")
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/license.txt")
     set(CPACK_PACKAGE_ICON
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.ico")
 
@@ -3683,13 +3685,16 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
 
     # ── CPackIFW installer configuration ─────────────────────────────────────
-    set(CPACK_IFW_PACKAGE_TITLE "Fincept Terminal")
-    set(CPACK_IFW_PACKAGE_NAME "com.fincept.terminal")
-    set(CPACK_IFW_PACKAGE_PUBLISHER "Fincept Corporation")
-    set(CPACK_IFW_PACKAGE_START_MENU_DIRECTORY "Fincept")
+    # MarketLab: the IFW package id is the fork's own product id so the
+    # maintenance tool, install detection, and Start Menu never collide with a
+    # real upstream Fincept Terminal installation on the same machine.
+    set(CPACK_IFW_PACKAGE_TITLE "MarketLab Terminal")
+    set(CPACK_IFW_PACKAGE_NAME "com.marketlab.terminal")
+    set(CPACK_IFW_PACKAGE_PUBLISHER "MarketLab")
+    set(CPACK_IFW_PACKAGE_START_MENU_DIRECTORY "MarketLab")
     set(CPACK_IFW_PACKAGE_ICON
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.ico")
-    set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "FinceptMaintenanceTool")
+    set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "MarketLabMaintenanceTool")
     set(CPACK_IFW_PACKAGE_WIZARD_STYLE "Modern")
     set(CPACK_IFW_PACKAGE_ALLOW_SPACE_IN_PATH ON)
     set(CPACK_IFW_PACKAGE_ALLOW_NON_ASCII_CHARACTERS ON)
@@ -3711,15 +3716,15 @@ if(FINCEPT_BUILD_INSTALLER)
     # shown interactively now that controlscript.qs guards its auto-advance
     # with isCommandLineInstance()).
     if(WIN32)
-        set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDirX64@/FinceptTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDirX64@/MarketLabTerminal")
     elseif(APPLE)
-        set(CPACK_IFW_TARGET_DIRECTORY "/Applications/FinceptTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "/Applications/MarketLabTerminal")
     else()
         # Default to the user's home so no root is required; the installer only
         # escalates (and uses AdminTargetDir) if the chosen path isn't writable.
         # The app is relocatable, so any custom path works either way.
-        set(CPACK_IFW_TARGET_DIRECTORY "@HomeDir@/FinceptTerminal")
-        set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/FinceptTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "@HomeDir@/MarketLabTerminal")
+        set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/MarketLabTerminal")
     endif()
 
     # Output file naming — arch-aware so the auto-updater manifest can point
@@ -3736,7 +3741,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-windows-${_FINCEPT_PKG_ARCH}-setup")
+            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-windows-${_FINCEPT_PKG_ARCH}-setup")
     elseif(APPLE)
         # On macOS CMAKE_OSX_ARCHITECTURES is the authoritative source
         # (it drives the actual binary slice). Fall back to host processor.
@@ -3755,7 +3760,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-macos-${_FINCEPT_PKG_ARCH}-setup")
+            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-macos-${_FINCEPT_PKG_ARCH}-setup")
     else()
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
             set(_FINCEPT_PKG_ARCH "arm64")
@@ -3763,7 +3768,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-linux-${_FINCEPT_PKG_ARCH}-setup")
+            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-linux-${_FINCEPT_PKG_ARCH}-setup")
     endif()
     message(STATUS "  Installer filename: ${CPACK_PACKAGE_FILE_NAME}")
 
@@ -3773,7 +3778,7 @@ if(FINCEPT_BUILD_INSTALLER)
 
     # ── Define install components ────────────────────────────────────────────
     cpack_add_component(core
-        DISPLAY_NAME "Fincept Terminal"
+        DISPLAY_NAME "MarketLab Terminal"
         DESCRIPTION  "Core application executable and Qt runtime libraries"
         REQUIRED)
 
@@ -3789,21 +3794,21 @@ if(FINCEPT_BUILD_INSTALLER)
 
     # ── CPackIFW component configuration ─────────────────────────────────────
     cpack_ifw_configure_component(core
-        NAME "com.fincept.terminal.core"
+        NAME "com.marketlab.terminal.core"
         VERSION "${CMAKE_PROJECT_VERSION}"
-        SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/installscript.qs"
-        LICENSES "AGPL-3.0" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/license.txt"
+        SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/installscript.qs"
+        LICENSES "AGPL-3.0" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/license.txt"
         SORTING_PRIORITY 100
         DEFAULT TRUE
         FORCED_INSTALLATION)
 
     if(WIN32)
         cpack_ifw_configure_component(scripts
-            NAME "com.fincept.terminal.scripts"
+            NAME "com.marketlab.terminal.scripts"
             VERSION "${CMAKE_PROJECT_VERSION}"
             SORTING_PRIORITY 50
             DEFAULT TRUE
-            DEPENDS "com.fincept.terminal.core")
+            DEPENDS "com.marketlab.terminal.core")
     endif()
 
     # ── Linux: AppImage helper target ────────────────────────────────────────

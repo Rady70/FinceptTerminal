@@ -1,4 +1,4 @@
-// installscript.qs -- Fincept Terminal QtIFW component script
+// installscript.qs -- MarketLab Terminal QtIFW component script
 //
 // Handles:
 //   - Platform shortcuts on install (Start Menu, Desktop, .desktop entry)
@@ -31,7 +31,7 @@
 function Component()
 {
     try {
-        console.log("[Fincept] Component() constructor — isInstaller=" +
+        console.log("[MarketLab] Component() constructor — isInstaller=" +
                     installer.isInstaller() +
                     " isUninstaller=" + installer.isUninstaller() +
                     " isUpdater=" + installer.isUpdater() +
@@ -46,7 +46,7 @@ function Component()
         // ID must match the first arg of QMessageBox.question() below.
         if (typeof QMessageBox !== "undefined" && installer.setMessageBoxAutomaticAnswer) {
             installer.setMessageBoxAutomaticAnswer(
-                "fincept.uninstall.data", QMessageBox.No);
+                "marketlab.uninstall.data", QMessageBox.No);
         }
 
         // Connect signals using the 1-arg form. The 2-arg form (thisObj, fn) is
@@ -64,7 +64,7 @@ function Component()
         // Never throw out of Component() — IFW treats that as a fatal load
         // error and aborts before any UI shows (the "GUI flashes and closes"
         // symptom in #240). Log and continue with defaults.
-        console.log("[Fincept] Component() constructor error: " + e);
+        console.log("[MarketLab] Component() constructor error: " + e);
     }
 }
 
@@ -80,37 +80,38 @@ Component.prototype.createOperations = function()
     var targetDir = installer.value("TargetDir");
 
     if (systemInfo.kernelType === "winnt") {
-        // Start Menu shortcut
+        // Start Menu shortcut. The installed binary is MarketLabTerminal.exe
+        // (CMake OUTPUT_NAME), not the internal FinceptTerminal target name.
         component.addOperation("CreateShortcut",
-            targetDir + "/FinceptTerminal.exe",
-            "@StartMenuDir@/Fincept Terminal.lnk",
+            targetDir + "/MarketLabTerminal.exe",
+            "@StartMenuDir@/MarketLab Terminal.lnk",
             "workingDirectory=" + targetDir,
-            "iconPath=" + targetDir + "/FinceptTerminal.exe",
+            "iconPath=" + targetDir + "/MarketLabTerminal.exe",
             "iconId=0",
-            "description=Professional Financial Intelligence Terminal");
+            "description=MarketLab Terminal — local-first research workspace");
 
         // Desktop shortcut
         component.addOperation("CreateShortcut",
-            targetDir + "/FinceptTerminal.exe",
-            "@DesktopDir@/Fincept Terminal.lnk",
+            targetDir + "/MarketLabTerminal.exe",
+            "@DesktopDir@/MarketLab Terminal.lnk",
             "workingDirectory=" + targetDir,
-            "iconPath=" + targetDir + "/FinceptTerminal.exe",
+            "iconPath=" + targetDir + "/MarketLabTerminal.exe",
             "iconId=0",
-            "description=Professional Financial Intelligence Terminal");
+            "description=MarketLab Terminal — local-first research workspace");
     }
 
     if (systemInfo.kernelType === "linux") {
         component.addOperation("CreateDesktopEntry",
-            "@HomeDir@/.local/share/applications/fincept-terminal.desktop",
+            "@HomeDir@/.local/share/applications/marketlab-terminal.desktop",
             "Version=1.0\n" +
             "Type=Application\n" +
-            "Name=Fincept Terminal\n" +
+            "Name=MarketLab Terminal\n" +
             "GenericName=Financial Intelligence Terminal\n" +
             "Comment=Local-first financial research workspace with market data and analytics\n" +
-            "Exec=" + targetDir + "/bin/FinceptTerminal %U\n" +
+            "Exec=" + targetDir + "/bin/MarketLabTerminal %U\n" +
             "Icon=" + targetDir + "/share/icons/hicolor/256x256/apps/fincept-terminal.png\n" +
             "Terminal=false\n" +
-            "StartupWMClass=FinceptTerminal\n" +
+            "StartupWMClass=MarketLabTerminal\n" +
             "StartupNotify=true\n" +
             "Categories=Finance;Office;Science;\n" +
             "Keywords=finance;research;stocks;crypto;portfolio;analytics;markets;\n"
@@ -121,7 +122,7 @@ Component.prototype.createOperations = function()
 
 function onInstallationFinished()
 {
-    console.log("[Fincept] Installation finished.");
+    console.log("[MarketLab] Installation finished.");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +132,7 @@ function onInstallationFinished()
 function onUninstallationStarted()
 {
     try {
-        console.log("[Fincept] uninstallationStarted.");
+        console.log("[MarketLab] uninstallationStarted.");
 
         // Per-machine install at C:\Program Files\... requires elevation to
         // delete files. Without this, the cmd.exe / reg.exe calls below
@@ -144,7 +145,7 @@ function onUninstallationStarted()
             try {
                 installer.gainAdminRights();
             } catch (e) {
-                console.log("[Fincept] gainAdminRights failed (continuing): " + e);
+                console.log("[MarketLab] gainAdminRights failed (continuing): " + e);
             }
         }
 
@@ -159,12 +160,12 @@ function onUninstallationStarted()
 
         var clean = false;
         if (headless) {
-            console.log("[Fincept] Headless uninstall — skipping data-cleanup prompt.");
+            console.log("[MarketLab] Headless uninstall — skipping data-cleanup prompt.");
         } else {
             var answer = QMessageBox.question(
-                "fincept.uninstall.data",
-                "Remove Fincept Terminal User Data?",
-                "Do you want to remove all Fincept Terminal user data?\n\n" +
+                "marketlab.uninstall.data",
+                "Remove MarketLab Terminal User Data?",
+                "Do you want to remove all MarketLab Terminal user data?\n\n" +
                 "This includes:\n" +
                 "  - Databases (portfolio, watchlists)\n" +
                 "  - Log files\n" +
@@ -182,26 +183,26 @@ function onUninstallationStarted()
         }
 
         if (clean) {
-            console.log("[Fincept] Cleaning user data.");
+            console.log("[MarketLab] Cleaning user data.");
             try {
                 cleanUserData();
             } catch (e) {
-                console.log("[Fincept] cleanUserData threw: " + e);
+                console.log("[MarketLab] cleanUserData threw: " + e);
             }
         } else {
-            console.log("[Fincept] Keeping user data.");
+            console.log("[MarketLab] Keeping user data.");
         }
     } catch (e) {
         // Never propagate — IFW treats a thrown signal handler as a fatal
         // uninstall error and exits 1 with no cleanup, which is exactly the
         // symptom from #240.
-        console.log("[Fincept] onUninstallationStarted error: " + e);
+        console.log("[MarketLab] onUninstallationStarted error: " + e);
     }
 }
 
 function onUninstallationFinished()
 {
-    console.log("[Fincept] Uninstallation finished.");
+    console.log("[MarketLab] Uninstallation finished.");
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +287,7 @@ function removeDirWindows(pathFwd)
 {
     if (!pathFwd) return;
     if (!installer.fileExists(pathFwd)) {
-        console.log("[Fincept] skip (not present): " + pathFwd);
+        console.log("[MarketLab] skip (not present): " + pathFwd);
         return;
     }
     var win = toWin(pathFwd);
@@ -405,7 +406,7 @@ function removeDirPosix(path)
 {
     if (!path) return;
     if (!installer.fileExists(path)) {
-        console.log("[Fincept] skip (not present): " + path);
+        console.log("[MarketLab] skip (not present): " + path);
         return;
     }
     // Use /bin/rm with -rf so missing paths never error. Shell-wrap so the
@@ -417,7 +418,7 @@ function removeFilePosix(path)
 {
     if (!path) return;
     if (!installer.fileExists(path)) {
-        console.log("[Fincept] skip (not present): " + path);
+        console.log("[MarketLab] skip (not present): " + path);
         return;
     }
     runAndLog("/bin/bash", ["-c", "rm -f \"" + shellEscape(path) + "\"; exit 0"]);
@@ -444,9 +445,9 @@ function runAndLog(program, args)
     // installer.execute returns [stdout, exitCode] on success,
     // or [] (empty) if the program failed to launch.
     if (!result || result.length === 0) {
-        console.log("[Fincept] FAILED to launch: " + program + " " + args.join(" "));
+        console.log("[MarketLab] FAILED to launch: " + program + " " + args.join(" "));
         return;
     }
     var exitCode = result.length >= 2 ? result[1] : "?";
-    console.log("[Fincept] ran " + program + " (exit=" + exitCode + ")");
+    console.log("[MarketLab] ran " + program + " (exit=" + exitCode + ")");
 }

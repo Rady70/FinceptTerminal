@@ -1,8 +1,8 @@
-// controlscript.qs — Fincept Terminal QtIFW Controller script.
+// controlscript.qs — MarketLab Terminal QtIFW Controller script.
 //
 // Wizard-page automation for HEADLESS / COMMAND-LINE invocations only, e.g.
-//   FinceptMaintenanceTool.exe purge --confirm-command --default-answer
-//   FinceptTerminal-<v>-setup.exe install --confirm-command --default-answer
+//   MarketLabMaintenanceTool.exe purge --confirm-command --default-answer
+//   MarketLabTerminal-<v>-setup.exe install --confirm-command --default-answer
 // Without this, IFW would block on each wizard page even when --confirm-command
 // is set, because some pages (Introduction, ReadyForInstallation, Finished)
 // only auto-advance for the *installer* path, not the uninstaller path.
