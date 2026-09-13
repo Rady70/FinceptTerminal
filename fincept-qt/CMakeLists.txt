@@ -3543,11 +3543,20 @@ if(FINCEPT_BUILD_INSTALLER)
 
     # ── Windows: capture windeployqt output for the installer ────────────────
     if(WIN32 AND DEPLOY_QT)
+        # MarketLab: exclusions are required for single-config generators
+        # (Ninja). There the target directory IS the build directory, so the
+        # recursive *.dll capture would also match (a) CPack's own staging tree
+        # -- which lives inside the build directory and made cpack recurse
+        # without bound -- and (b) dependency build trees under _deps/, whose
+        # private DLLs must not ship. With the Visual Studio generator the
+        # target directory is build/Release and neither directory is inside it.
         install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/"
                 DESTINATION "."
                 COMPONENT core
                 FILES_MATCHING
-                PATTERN "*.dll")
+                PATTERN "*.dll"
+                PATTERN "_CPack_Packages" EXCLUDE
+                PATTERN "_deps" EXCLUDE)
         # Qt WebEngine runtime helper + data files. windeployqt / the CI stage
         # step place these next to the exe in the build dir, but the *.dll
         # pattern above silently drops them: QtWebEngineProcess.exe is an .exe,
