@@ -3525,7 +3525,9 @@ endif()
 #   cd build && cpack -G IFW -C Release
 #
 # Requires: Qt Installer Framework (binarycreator on PATH or in Qt install)
-# Output:   MarketLabTerminal-<ver>-<platform>-setup.exe/.run/.app
+# Output:   MarketLabTerminal-<ver>-windows-x64-setup.exe on Windows; the
+#           macOS/Linux installer names stay as they are on main and remain
+#           unqualified until a non-Windows phase changes them.
 
 option(FINCEPT_BUILD_INSTALLER "Generate QtIFW installer via CPack" OFF)
 
@@ -3600,6 +3602,20 @@ if(FINCEPT_BUILD_INSTALLER)
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources_200p.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_devtools_resources.pak"
                 DESTINATION "resources" COMPONENT core OPTIONAL)
+        # MarketLab: when the WebEngine runtime ships, the V8 startup snapshot
+        # is crash-critical — without it the installed renderer logs
+        # "FATAL:v8_initializer.cc Error loading V8 startup snapshot file".
+        # The install() rules above are OPTIONAL so WebEngine-free builds still
+        # package, but the snapshot must not be silently optional for a build
+        # that ships WebEngine. Fail the package install step if it is absent.
+        if(HAS_WEBENGINE)
+            install(CODE "
+                if(NOT EXISTS \"$<TARGET_FILE_DIR:FinceptTerminal>/resources/v8_context_snapshot.bin\")
+                    message(FATAL_ERROR
+                        \"WebEngine is enabled but resources/v8_context_snapshot.bin was not staged next to the executable; the installed renderer would fail to start.\")
+                endif()
+            " COMPONENT core)
+        endif()
         # WebEngine locale paks (not covered by windeployqt --no-translations).
         install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/translations/qtwebengine_locales"
                 DESTINATION "translations" COMPONENT core OPTIONAL)
@@ -3747,16 +3763,19 @@ if(FINCEPT_BUILD_INSTALLER)
     # wizard's Target Directory page lets the user pick any path (the page is
     # shown interactively now that controlscript.qs guards its auto-advance
     # with isCommandLineInstance()).
+    # MarketLab: only the Windows target path is rebranded in Phase 6. The
+    # macOS/Linux installer paths stay as they are on main and remain
+    # unqualified; a non-Windows packaging phase would change them.
     if(WIN32)
         set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDirX64@/MarketLabTerminal")
     elseif(APPLE)
-        set(CPACK_IFW_TARGET_DIRECTORY "/Applications/MarketLabTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "/Applications/FinceptTerminal")
     else()
         # Default to the user's home so no root is required; the installer only
         # escalates (and uses AdminTargetDir) if the chosen path isn't writable.
         # The app is relocatable, so any custom path works either way.
-        set(CPACK_IFW_TARGET_DIRECTORY "@HomeDir@/MarketLabTerminal")
-        set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/MarketLabTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "@HomeDir@/FinceptTerminal")
+        set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/FinceptTerminal")
     endif()
 
     # Output file naming — arch-aware so a future update manifest could point
@@ -3792,7 +3811,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-macos-${_FINCEPT_PKG_ARCH}-setup")
+            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-macos-${_FINCEPT_PKG_ARCH}-setup")
     else()
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
             set(_FINCEPT_PKG_ARCH "arm64")
@@ -3800,7 +3819,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-linux-${_FINCEPT_PKG_ARCH}-setup")
+            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-linux-${_FINCEPT_PKG_ARCH}-setup")
     endif()
     message(STATUS "  Installer filename: ${CPACK_PACKAGE_FILE_NAME}")
 

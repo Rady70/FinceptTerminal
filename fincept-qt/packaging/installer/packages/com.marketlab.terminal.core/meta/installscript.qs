@@ -8,17 +8,13 @@
 //   Windows : %LOCALAPPDATA%\com.marketlab.terminal\
 //             %APPDATA%\MarketLab\MarketLabTerminal\     (QSettings roaming)
 //             HKCU\Software\MarketLab\MarketLabTerminal  (registry)
-//   macOS   : ~/Library/Application Support/com.marketlab.terminal/
-//             ~/Library/Preferences/*.MarketLabTerminal.plist
-//             ~/Library/Caches/com.marketlab.terminal/
-//   Linux   : ~/.local/share/com.marketlab.terminal/
-//             ~/.config/MarketLab/MarketLabTerminal.conf
-//             ~/.cache/com.marketlab.terminal/
-//             ~/.local/share/applications/marketlab-terminal.desktop
+//   macOS/Linux: unchanged from main. Phase 6 is Windows-only; the non-Windows
+//             installer behavior (including its cleanup paths) is not modified
+//             here and remains unqualified until its own phase.
 //
-// MarketLab never deletes upstream Fincept Terminal data. This installer is a
-// personal fork and must not touch another product's profile, registry keys,
-// credentials, or temporary files on a shared machine.
+// On Windows, MarketLab never deletes upstream Fincept Terminal data: the fork
+// must not touch another product's profile, registry keys, credentials, or
+// temporary files on a shared machine.
 //
 // Debug: run the maintenance tool with `-v` (or `--verbose`) to see console.log output.
 
@@ -98,18 +94,20 @@ Component.prototype.createOperations = function()
             "description=MarketLab Terminal — local-first research workspace");
     }
 
+    // Non-Windows shortcut behavior is unchanged from main: Phase 6 qualifies
+    // Windows only, so no Linux/macOS installer behavior is modified here.
     if (systemInfo.kernelType === "linux") {
         component.addOperation("CreateDesktopEntry",
-            "@HomeDir@/.local/share/applications/marketlab-terminal.desktop",
+            "@HomeDir@/.local/share/applications/fincept-terminal.desktop",
             "Version=1.0\n" +
             "Type=Application\n" +
-            "Name=MarketLab Terminal\n" +
+            "Name=Fincept Terminal\n" +
             "GenericName=Financial Intelligence Terminal\n" +
             "Comment=Local-first financial research workspace with market data and analytics\n" +
-            "Exec=" + targetDir + "/bin/MarketLabTerminal %U\n" +
+            "Exec=" + targetDir + "/bin/FinceptTerminal %U\n" +
             "Icon=" + targetDir + "/share/icons/hicolor/256x256/apps/fincept-terminal.png\n" +
             "Terminal=false\n" +
-            "StartupWMClass=MarketLabTerminal\n" +
+            "StartupWMClass=FinceptTerminal\n" +
             "StartupNotify=true\n" +
             "Categories=Finance;Office;Science;\n" +
             "Keywords=finance;research;stocks;crypto;portfolio;analytics;markets;\n"
@@ -279,23 +277,44 @@ function toWin(pathFwd)
 
 function cleanUserDataMac()
 {
+    // Unchanged from main: Phase 6 is Windows-only.
     var home = installer.environmentVariable("HOME");
 
     // 1. Main data root
-    removeDirPosix(home + "/Library/Application Support/com.marketlab.terminal");
+    removeDirPosix(home + "/Library/Application Support/com.fincept.terminal");
 
-    // 2. Preferences / plist (QSettings org "MarketLab", app "MarketLabTerminal")
-    removeFilePosix(home + "/Library/Preferences/MarketLab.MarketLabTerminal.plist");
-    removeFilePosix(home + "/Library/Preferences/com.marketlab.MarketLabTerminal.plist");
+    // 2. Preferences / plist
+    removeFilePosix(home + "/Library/Preferences/com.fincept.FinceptTerminal.plist");
+    removeFilePosix(home + "/Library/Preferences/Fincept.FinceptTerminal.plist");
+    removeFilePosix(home + "/Library/Preferences/Fincept.FinceptTerminal-Secure.plist");
 
     // 3. Caches (Qt/QSettings/logs occasionally land here)
-    removeDirPosix(home + "/Library/Caches/com.marketlab.terminal");
+    removeDirPosix(home + "/Library/Caches/com.fincept.terminal");
+    removeDirPosix(home + "/Library/Caches/Fincept");
 
     // 4. Saved application state
-    removeDirPosix(home + "/Library/Saved Application State/com.marketlab.terminal.savedState");
+    removeDirPosix(home + "/Library/Saved Application State/com.fincept.terminal.savedState");
 
-    // No keychain loop: the fork stores credentials in its own local database
-    // under the data root, not in the system keychain.
+    // 5. Keychain: delete all entries under service "com.fincept.terminal".
+    //    security(1) removes one entry per call — loop until it fails (no more).
+    runAndLog("/bin/bash", ["-c",
+        "while /usr/bin/security delete-generic-password -s 'com.fincept.terminal' >/dev/null 2>&1; do :; done; exit 0"
+    ]);
+
+    // 6. Temp files
+    runAndLog("/bin/bash", ["-c",
+        "rm -f /tmp/fincept_* /tmp/fincept-boot.log 2>/dev/null; " +
+        "rm -f \"${TMPDIR:-/tmp}\"/fincept_* \"${TMPDIR:-/tmp}\"/fincept-boot.log 2>/dev/null; " +
+        "exit 0"
+    ]);
+
+    // 7. Timestamped screenshots saved to $HOME by MainWindow save-screenshot
+    //    Pattern: fincept_YYYYMMDD_HHMMSS.png — strict match to avoid collateral.
+    runAndLog("/bin/bash", ["-c",
+        "find \"" + shellEscape(home) + "\" -maxdepth 1 -type f " +
+        "-regex '.*/fincept_[0-9]\\{8\\}_[0-9]\\{6\\}\\.png$' " +
+        "-delete 2>/dev/null; exit 0"
+    ]);
 }
 
 // ---------- Linux ----------
@@ -311,20 +330,39 @@ function cleanUserDataLinux()
     if (!xdgDat) xdgDat = home + "/.local/share";
     if (!xdgCch) xdgCch = home + "/.cache";
 
+    // Unchanged from main: Phase 6 is Windows-only.
+
     // 1. Main data root (respect XDG)
-    removeDirPosix(xdgDat + "/com.marketlab.terminal");
-    removeDirPosix(home   + "/.local/share/com.marketlab.terminal");
+    removeDirPosix(xdgDat + "/com.fincept.terminal");
+    removeDirPosix(home   + "/.local/share/com.fincept.terminal");
 
-    // 2. QSettings .conf files (org "MarketLab", app "MarketLabTerminal")
-    removeFilePosix(xdgCfg + "/MarketLab/MarketLabTerminal.conf");
-    removeDirIfEmptyPosix(xdgCfg + "/MarketLab");
+    // 2. QSettings .conf files
+    removeFilePosix(xdgCfg + "/Fincept/FinceptTerminal.conf");
+    removeFilePosix(xdgCfg + "/Fincept/FinceptTerminal-Secure.conf");
+    removeDirIfEmptyPosix(xdgCfg + "/Fincept");
 
-    // 3. Cache dir
-    removeDirPosix(xdgCch + "/com.marketlab.terminal");
+    // 3. Cache dir (if the app used one)
+    removeDirPosix(xdgCch + "/com.fincept.terminal");
+    removeDirPosix(xdgCch + "/Fincept");
 
     // 4. Desktop entry (installed via CreateDesktopEntry at install time — IFW's
     //    own UNDO step removes it, but clean up any stale copies just in case).
-    removeFilePosix(home + "/.local/share/applications/marketlab-terminal.desktop");
+    removeFilePosix(home + "/.local/share/applications/fincept-terminal.desktop");
+
+    // 5. Temp files
+    runAndLog("/bin/bash", ["-c",
+        "rm -f /tmp/fincept_* /tmp/fincept-boot.log 2>/dev/null; " +
+        "rm -f \"${TMPDIR:-/tmp}\"/fincept_* \"${TMPDIR:-/tmp}\"/fincept-boot.log 2>/dev/null; " +
+        "exit 0"
+    ]);
+
+    // 6. Timestamped screenshots saved to $HOME by MainWindow save-screenshot
+    runAndLog("/bin/bash", ["-c",
+        "find \"" + shellEscape(home) + "\" -maxdepth 1 -type f " +
+        "-regextype posix-extended " +
+        "-regex '.*/fincept_[0-9]{8}_[0-9]{6}\\.png' " +
+        "-delete 2>/dev/null; exit 0"
+    ]);
 }
 
 // ---------- Unix helpers (mac + linux) ----------
