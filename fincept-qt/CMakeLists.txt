@@ -3791,6 +3791,17 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
     message(STATUS "  Installer filename: ${CPACK_PACKAGE_FILE_NAME}")
 
+    # MarketLab: only the application's own components belong in a user-facing
+    # package. Bundled third-party dependencies (QXlsx, md4c, QGeoView,
+    # QtAdvancedDocking) register install rules under component names such as
+    # devel/headers/license, and CMAKE_SKIP_INSTALL_RULES cannot suppress them:
+    # it is a single global generate-time switch, so the final FALSE value
+    # re-enables every rule. Without this allowlist the Windows installer
+    # shipped ~67 MB of headers, static libraries, and the md2html build tool.
+    if(WIN32)
+        set(CPACK_COMPONENTS_ALL core scripts)
+    endif()
+
     # ── Include CPack + IFW module ───────────────────────────────────────────
     include(CPack)
     include(CPackIFW)
