@@ -43,7 +43,8 @@ int ibkr_selftest_failures = 0;
 /// shared_ptr, and once the wait has returned without completion the state is
 /// marked abandoned and a late callback becomes a no-op instead of touching a
 /// dead frame.
-template <typename Result> struct AsyncWait {
+template <typename Result>
+struct AsyncWait {
     QEventLoop loop;
     Result result{};
     bool completed = false;
@@ -150,8 +151,7 @@ int run_ibkr_tws_selftest() {
         summary["configured"] = false;
         summary["skipped"] = true;
         summary["reason"] = QStringLiteral("no local ibkr_tws.json configuration");
-        std::printf("IBKR_SELFTEST_JSON: %s\n",
-                    QJsonDocument(summary).toJson(QJsonDocument::Compact).constData());
+        std::printf("IBKR_SELFTEST_JSON: %s\n", QJsonDocument(summary).toJson(QJsonDocument::Compact).constData());
         LOG_INFO("IbkrSelftest", "No local IBKR configuration; suite reports skipped (exit 0)");
         return 0;
     }
@@ -168,15 +168,15 @@ int run_ibkr_tws_selftest() {
     IBKR_TWS_SELFTEST_CHECK(probe.connected && probe.ready, "TWS socket and readiness signal observed");
     IBKR_TWS_SELFTEST_CHECK(probe.clean_disconnect, "clean disconnect observed between commands");
     IBKR_TWS_SELFTEST_CHECK(probe.identity.uses_official_runtime == QLatin1String("true"),
-          "adapter reported the official ibapi runtime");
+                            "adapter reported the official ibapi runtime");
     IBKR_TWS_SELFTEST_CHECK(!probe.identity.commit.isEmpty(), "adapter pin commit reported");
-    summary["probe"] = QJsonObject{{"ok", probe.ok},
-                                   {"connected", probe.connected},
-                                   {"ready", probe.ready},
-                                   {"clean_disconnect", probe.clean_disconnect},
-                                   {"identity", identity_json(probe.identity)},
-                                   {"failure", failure_json(probe.failure_type, probe.failure_stage,
-                                                            probe.failure_message)}};
+    summary["probe"] =
+        QJsonObject{{"ok", probe.ok},
+                    {"connected", probe.connected},
+                    {"ready", probe.ready},
+                    {"clean_disconnect", probe.clean_disconnect},
+                    {"identity", identity_json(probe.identity)},
+                    {"failure", failure_json(probe.failure_type, probe.failure_stage, probe.failure_message)}};
 
     // ── 2. Contract resolution and quote snapshot for one representative equity
     const auto [quote_done, quote] = wait_result<IbkrTwsQuoteResult>(
@@ -208,39 +208,43 @@ int run_ibkr_tws_selftest() {
 
     if (quote.ok) {
         // Contract identity is part of the result, not an assumption.
-        IBKR_TWS_SELFTEST_CHECK(quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("STK") ||
-                  quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("ETF") ||
-                  quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("FUND"),
-              "resolved contract carries a supported security type");
+        IBKR_TWS_SELFTEST_CHECK(
+            quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("STK") ||
+                quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("ETF") ||
+                quote.contract.value(QLatin1String("security_type")).toString() == QLatin1String("FUND"),
+            "resolved contract carries a supported security type");
         IBKR_TWS_SELFTEST_CHECK(!quote.contract.value(QLatin1String("exchange")).toString().isEmpty(),
-              "resolved contract names an exchange");
+                                "resolved contract names an exchange");
         if (quote.classification.usable) {
             // A usable quote must name the feed it actually came from, carry
             // provenance, and must not call delayed data live.
             IBKR_TWS_SELFTEST_CHECK(quote.classification.feed == QLatin1String("LIVE") ||
-                      quote.classification.feed == QLatin1String("FROZEN") ||
-                      quote.classification.feed == QLatin1String("DELAYED") ||
-                      quote.classification.feed == QLatin1String("DELAYED_FROZEN"),
-                  "usable quote names its observed IBKR feed");
+                                        quote.classification.feed == QLatin1String("FROZEN") ||
+                                        quote.classification.feed == QLatin1String("DELAYED") ||
+                                        quote.classification.feed == QLatin1String("DELAYED_FROZEN"),
+                                    "usable quote names its observed IBKR feed");
             IBKR_TWS_SELFTEST_CHECK(quote.quote.source == QLatin1String("ibkr_tws"), "quote provenance names ibkr_tws");
             IBKR_TWS_SELFTEST_CHECK(quote.quote.retrieved_at > 0, "quote carries a retrieval timestamp");
-            IBKR_TWS_SELFTEST_CHECK(quote.classification.feed != QLatin1String("LIVE") || quote.quote.status == QLatin1String("LIVE"),
-                  "no feed is reported as live unless IBKR said live");
+            IBKR_TWS_SELFTEST_CHECK(quote.classification.feed != QLatin1String("LIVE") ||
+                                        quote.quote.status == QLatin1String("LIVE"),
+                                    "no feed is reported as live unless IBKR said live");
         } else {
             // The stopping rule accepts an entitlement limitation, not a
             // generic provider/API failure, as qualification evidence.
             IBKR_TWS_SELFTEST_CHECK(quote.classification.status == QLatin1String("NOT_ENTITLED"),
-                  "an unusable quote is an explicit entitlement limitation, not a generic failure");
-            IBKR_TWS_SELFTEST_CHECK(!quote.classification.entitlement.isEmpty(), "unusable quote exposes an entitlement state");
+                                    "an unusable quote is an explicit entitlement limitation, not a generic failure");
+            IBKR_TWS_SELFTEST_CHECK(!quote.classification.entitlement.isEmpty(),
+                                    "unusable quote exposes an entitlement state");
             IBKR_TWS_SELFTEST_CHECK(!quote.quote.has_price && !quote.quote.has_change && !quote.quote.has_volume,
-                  "unusable quote carries no fabricated readings");
+                                    "unusable quote carries no fabricated readings");
         }
         if (quote.classification.delayed_attempted) {
             // A live block must not hide the delayed attempt that followed it.
-            IBKR_TWS_SELFTEST_CHECK(!quote.classification.delayed_status.isEmpty(), "delayed attempt status is exposed");
+            IBKR_TWS_SELFTEST_CHECK(!quote.classification.delayed_status.isEmpty(),
+                                    "delayed attempt status is exposed");
             IBKR_TWS_SELFTEST_CHECK(quote.classification.delayed_usable != QLatin1String("PASS") ||
-                      quote.quote.source == QLatin1String("ibkr_tws"),
-                  "delayed attempt outcome is visible to the consumer");
+                                        quote.quote.source == QLatin1String("ibkr_tws"),
+                                    "delayed attempt outcome is visible to the consumer");
         }
     }
 
@@ -286,8 +290,9 @@ int run_ibkr_tws_selftest() {
     } else if (history.ok) {
         // The stopping rule accepts an entitlement limitation, not a generic
         // provider/API failure or an unvalidated series, as qualification.
-        IBKR_TWS_SELFTEST_CHECK(history.classification.status == QLatin1String("NOT_ENTITLED"),
-              "an unusable history result is an explicit entitlement limitation, not a generic failure");
+        IBKR_TWS_SELFTEST_CHECK(
+            history.classification.status == QLatin1String("NOT_ENTITLED"),
+            "an unusable history result is an explicit entitlement limitation, not a generic failure");
         IBKR_TWS_SELFTEST_CHECK(history.bars.isEmpty(), "unusable history carries no bars");
     }
 
@@ -307,15 +312,15 @@ int run_ibkr_tws_selftest() {
         refused.port = closed_port;
         const auto [refused_done, refused_result] = wait_result<IbkrTwsProbeResult>(
             [&](std::function<void(const IbkrTwsProbeResult&)> deliver) {
-                service.probe_with(refused, 3,
-                                   [deliver = std::move(deliver)](const IbkrTwsProbeResult& result) { deliver(result); });
+                service.probe_with(
+                    refused, 3, [deliver = std::move(deliver)](const IbkrTwsProbeResult& result) { deliver(result); });
             },
             60 * 1000);
         IBKR_TWS_SELFTEST_CHECK(refused_done, "refused-connection probe completed within its bounded watchdog");
         IBKR_TWS_SELFTEST_CHECK(!refused_result.ok, "refused connection is a failure, not a success");
         IBKR_TWS_SELFTEST_CHECK(refused_result.failure_type == QLatin1String("IBKR_CONNECTION_FAILED") ||
-                  refused_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
-              "refused connection carries a bounded transport failure type");
+                                    refused_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
+                                "refused connection carries a bounded transport failure type");
         failure_paths["refused_connection"] =
             failure_json(refused_result.failure_type, refused_result.failure_stage, refused_result.failure_message);
     } else {
@@ -332,19 +337,17 @@ int run_ibkr_tws_selftest() {
             silent.port = silent_server.serverPort();
             const auto [timeout_done, timeout_result] = wait_result<IbkrTwsProbeResult>(
                 [&](std::function<void(const IbkrTwsProbeResult&)> deliver) {
-                    service.probe_with(silent, 2,
-                                       [deliver = std::move(deliver)](const IbkrTwsProbeResult& result) {
-                                           deliver(result);
-                                       });
+                    service.probe_with(silent, 2, [deliver = std::move(deliver)](const IbkrTwsProbeResult& result) {
+                        deliver(result);
+                    });
                 },
                 60 * 1000);
             IBKR_TWS_SELFTEST_CHECK(timeout_done, "readiness-timeout probe completed within its bounded watchdog");
             IBKR_TWS_SELFTEST_CHECK(!timeout_result.ok, "readiness timeout is a failure, not a success");
             IBKR_TWS_SELFTEST_CHECK(timeout_result.failure_type == QLatin1String("IBKR_TIMEOUT"),
-                  "readiness timeout carries the typed timeout failure");
-            failure_paths["readiness_timeout"] = failure_json(timeout_result.failure_type,
-                                                              timeout_result.failure_stage,
-                                                              timeout_result.failure_message);
+                                    "readiness timeout carries the typed timeout failure");
+            failure_paths["readiness_timeout"] =
+                failure_json(timeout_result.failure_type, timeout_result.failure_stage, timeout_result.failure_message);
         }
     }
 
@@ -353,17 +356,16 @@ int run_ibkr_tws_selftest() {
     {
         const auto [missing_done, missing] = wait_result<IbkrTwsQuoteResult>(
             [&](std::function<void(const IbkrTwsQuoteResult&)> deliver) {
-                service.fetch_quote_with(cfg, QStringLiteral("ZZZZ_MARKETLAB_NO_SUCH_SYMBOL"),
-                                         [deliver = std::move(deliver)](const IbkrTwsQuoteResult& result) {
-                                             deliver(result);
-                                         });
+                service.fetch_quote_with(
+                    cfg, QStringLiteral("ZZZZ_MARKETLAB_NO_SUCH_SYMBOL"),
+                    [deliver = std::move(deliver)](const IbkrTwsQuoteResult& result) { deliver(result); });
             },
             120 * 1000);
         IBKR_TWS_SELFTEST_CHECK(missing_done, "unresolved-contract request completed within its bounded watchdog");
         IBKR_TWS_SELFTEST_CHECK(!missing.ok, "unresolved contract is an explicit failure");
         IBKR_TWS_SELFTEST_CHECK(missing.failure_type == QLatin1String("IBKR_CONTRACT_NOT_RESOLVED") ||
-                  missing.failure_type == QLatin1String("IBKR_REQUEST_REJECTED"),
-              "unresolved contract carries a typed contract failure");
+                                    missing.failure_type == QLatin1String("IBKR_REQUEST_REJECTED"),
+                                "unresolved contract carries a typed contract failure");
         failure_paths["unresolved_contract"] =
             failure_json(missing.failure_type, missing.failure_stage, missing.failure_message);
     }

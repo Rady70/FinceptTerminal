@@ -117,8 +117,8 @@ QString ibkr_bars_to_json(const QVector<fincept::services::HistoryPoint>& bars) 
         o[QStringLiteral("high")] = bar.has_high ? QJsonValue(bar.high) : QJsonValue(QJsonValue::Null);
         o[QStringLiteral("low")] = bar.has_low ? QJsonValue(bar.low) : QJsonValue(QJsonValue::Null);
         o[QStringLiteral("close")] = bar.close;
-        o[QStringLiteral("volume")] = bar.has_volume ? QJsonValue(static_cast<double>(bar.volume))
-                                                     : QJsonValue(QJsonValue::Null);
+        o[QStringLiteral("volume")] =
+            bar.has_volume ? QJsonValue(static_cast<double>(bar.volume)) : QJsonValue(QJsonValue::Null);
         arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
@@ -382,11 +382,10 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                 if (!self)
                     return;
                 if (!result.ok || !result.classification.usable || result.bars.isEmpty()) {
-                    const QString reason = !result.failure_message.isEmpty()
-                                               ? result.failure_message
-                                               : (!result.classification.status.isEmpty()
-                                                      ? result.classification.status
-                                                      : QStringLiteral("no usable bars"));
+                    const QString reason = !result.failure_message.isEmpty() ? result.failure_message
+                                                                             : (!result.classification.status.isEmpty()
+                                                                                    ? result.classification.status
+                                                                                    : QStringLiteral("no usable bars"));
                     LOG_WARN("EquityResearch", QString("IBKR history for %1 unavailable: %2").arg(symbol, reason));
                     RetrievalMeta meta;
                     meta.symbol = symbol;
@@ -410,9 +409,8 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                 CandleParseStats stats;
                 const auto arr = QJsonDocument::fromJson(json.toUtf8()).array();
                 const auto candles = parse_candles_json(arr, &stats);
-                emit self->historical_meta_loaded(
-                    symbol,
-                    candles_meta(symbol, QStringLiteral("ibkr_tws"), at, static_cast<int>(candles.size()), stats));
+                emit self->historical_meta_loaded(symbol, candles_meta(symbol, QStringLiteral("ibkr_tws"), at,
+                                                                       static_cast<int>(candles.size()), stats));
                 emit self->historical_loaded(symbol, candles);
             });
         return;
