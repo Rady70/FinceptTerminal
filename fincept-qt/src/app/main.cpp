@@ -4,6 +4,7 @@
 #include "algo_engine/fno/FnoAlgoSelftest.h"
 #include "app/InstanceLock.h"
 #include "app/MarketLabBoundarySelftest.h"
+#include "app/IbkrTwsSelftest.h"
 #include "app/MonitorPickerDialog.h"
 #include "app/ScreenSmokeTest.h"
 #include "app/TerminalShell.h"
@@ -72,6 +73,7 @@
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -822,6 +824,7 @@ int main(int argc, char* argv[]) {
         {"--selftest-portfolio-monitor", &fincept::trading::run_portfolio_monitor_selftest},
         {"--selftest-portfolio-replication", &fincept::trading::replication::run_portfolio_replication_selftest},
         {"--selftest-marketlab-boundary", &fincept::marketlab::run_marketlab_boundary_selftest},
+        {"--selftest-ibkr", &fincept::marketlab::run_ibkr_tws_selftest},
     };
 
     for (int i = 1; i < argc; ++i) {

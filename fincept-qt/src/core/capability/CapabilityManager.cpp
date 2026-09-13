@@ -124,7 +124,8 @@ ComponentAvailability CapabilityManager::availability(Capability cap) const {
                     QStringLiteral("local state plus an ordinary user-managed backup")};
         case Capability::BrokerReadOnly:
             return {S::Conditional,
-                    QStringLiteral("read-only IBKR consumer is deferred to a later phase and not yet integrated"),
+                    QStringLiteral("optional read-only IBKR TWS market-data consumer (bounded snapshots and historical "
+                                   "bars); no account, order, position, or execution surface"),
                     {}};
         case Capability::BrokerExecution:
             return {S::Unavailable,

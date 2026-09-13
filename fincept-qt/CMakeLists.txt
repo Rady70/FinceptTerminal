@@ -1237,6 +1237,7 @@ set(SERVICE_SOURCES
     src/services/python_cli/PythonCliService.cpp
     src/services/markets/MarketDataService.cpp
     src/services/markets/MarketSearchService.cpp
+    src/services/ibkr/IbkrTwsService.cpp
     src/services/options/OptionChainService.cpp
     src/services/options/OISnapshotter.cpp
     src/services/options/StrategyTemplates.cpp
@@ -1926,6 +1927,7 @@ set(APP_SOURCES
     src/app/main.cpp
     src/app/InstanceLock.cpp
     src/app/MarketLabBoundarySelftest.cpp
+    src/app/IbkrTwsSelftest.cpp
     src/app/ScreenSmokeTest.cpp
     # WindowFrame is split across multiple files; see WindowFrame.cpp header
     # comment for the layout. All variants stay outside unity build (see
@@ -4053,6 +4055,18 @@ if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
                 -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
                 -p "test_*.py")
     set_tests_properties(marketlab_cftc_fixtures PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+# Phase 5: the IBKR wrapper tests are also registered by name so that removing
+# or renaming another fixture file cannot silently disable them. The full
+# discovery target above runs them too.
+if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests/test_ibkr_tws_data.py")
+    add_test(NAME marketlab_ibkr_fixtures
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
+                -p "test_ibkr_tws_data.py")
+    set_tests_properties(marketlab_ibkr_fixtures PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 

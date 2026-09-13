@@ -10,6 +10,7 @@
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "services/backtesting/BacktestingService.h"
 #include "services/cloud/CloudSyncEngine.h"
+#include "services/ibkr/IbkrTwsService.h"
 #include "ui/formatting/NumberFormat.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
@@ -208,6 +209,10 @@ void WatchlistScreen::retranslateUi() {
         stock_count_->setText(tr("%1 symbols").arg(stocks_.size()));
     if (refresh_btn_)
         refresh_btn_->setText(tr("REFRESH"));
+    if (ibkr_btn_) {
+        ibkr_btn_->setText(tr("IBKR"));
+        ibkr_btn_->setToolTip(tr("Fetch the selected symbol's quote from the local read-only IBKR TWS connection."));
+    }
     if (del_wl_btn_)
         del_wl_btn_->setText(tr("DELETE LIST"));
     if (import_csv_btn_)
@@ -357,6 +362,15 @@ QWidget* WatchlistScreen::build_main_panel() {
     refresh_btn_ = new QPushButton(tr("REFRESH"));
     connect(refresh_btn_, &QPushButton::clicked, this, &WatchlistScreen::on_refresh);
     tl->addWidget(refresh_btn_);
+
+    // Optional read-only IBKR TWS provider (FINCEPT_FORK_PLAN.md §8, Phase 5).
+    // This is a per-symbol, user-triggered fetch; the default hub quotes keep
+    // coming from the public provider, and provenance on each row names which
+    // provider actually answered.
+    ibkr_btn_ = new QPushButton(tr("IBKR"));
+    ibkr_btn_->setToolTip(tr("Fetch the selected symbol's quote from the local read-only IBKR TWS connection."));
+    connect(ibkr_btn_, &QPushButton::clicked, this, &WatchlistScreen::on_ibkr_quote);
+    tl->addWidget(ibkr_btn_);
 
     del_wl_btn_ = new QPushButton(tr("DELETE LIST"));
     connect(del_wl_btn_, &QPushButton::clicked, this, &WatchlistScreen::on_delete_watchlist);
@@ -1010,6 +1024,79 @@ void WatchlistScreen::on_refresh() {
     if (!current_wl_id_.isEmpty()) {
         fetch_quotes();
     }
+}
+
+void WatchlistScreen::on_ibkr_quote() {
+    auto& service = services::ibkr::IbkrTwsService::instance();
+    const SymbolRef ref = current_symbol();
+    if (!ref.is_valid()) {
+        QMessageBox::information(this, tr("IBKR TWS"), tr("Select a watchlist row first."));
+        return;
+    }
+    if (!service.configured()) {
+        QMessageBox::information(
+            this, tr("IBKR TWS"),
+            tr("IBKR TWS is not configured. Create an ignored local %1 under the application state root with "
+               "trading_desk_root, trading_desk_commit, ibapi_path, host, port, client_id and the explicitly "
+               "routed symbols. No credentials are needed or accepted; the login stays inside the user-owned TWS "
+               "session.")
+                .arg(QStringLiteral("ibkr_tws.json")));
+        return;
+    }
+    if (!service.routes_symbol(ref.symbol)) {
+        QMessageBox::information(
+            this, tr("IBKR TWS"),
+            tr("%1 is not in the explicitly routed IBKR instrument list (ibkr_tws.json \"symbols\"). "
+               "Phase 5 qualified only the configured instruments.")
+                .arg(ref.symbol));
+        return;
+    }
+
+    const QString symbol = ref.symbol;
+    ibkr_btn_->setEnabled(false);
+    ibkr_btn_->setText(tr("IBKR..."));
+    // The screen can be destroyed while the bounded fetch is in flight (the
+    // dock re-materializes panels), so the callback holds a QPointer and never
+    // dereferences a dead screen.
+    QPointer<WatchlistScreen> self = this;
+    service.fetch_quote(symbol, [self, symbol](const services::ibkr::IbkrTwsQuoteResult& result) {
+        if (!self)
+            return;
+        if (self->ibkr_btn_) {
+            self->ibkr_btn_->setEnabled(true);
+            self->ibkr_btn_->setText(tr("IBKR"));
+        }
+        if (!result.ok) {
+            const QString message =
+                result.failure_message.isEmpty() ? tr("The IBKR TWS request failed.") : result.failure_message;
+            QMessageBox::warning(self, tr("IBKR TWS"), tr("%1\n\n%2").arg(result.failure_type, message));
+            return;
+        }
+        if (!result.classification.usable) {
+            QString detail = tr("No usable IBKR quote for %1.\nStatus: %2\nEntitlement: %3")
+                                 .arg(symbol, result.classification.status, result.classification.entitlement);
+            if (!result.classification.error_message.isEmpty())
+                detail += QLatin1Char('\n') + result.classification.error_message;
+            // A deciding live entitlement block must not hide a genuine
+            // delayed-attempt failure.
+            if (result.classification.delayed_attempted) {
+                detail += QLatin1Char('\n')
+                          + tr("Delayed attempt: %1").arg(result.classification.delayed_status.isEmpty()
+                                                              ? tr("unknown")
+                                                              : result.classification.delayed_status);
+                if (!result.classification.delayed_error_message.isEmpty())
+                    detail += QStringLiteral(" - ") + result.classification.delayed_error_message;
+            }
+            QMessageBox::warning(self, tr("IBKR TWS"), detail);
+            return;
+        }
+        // The row's provenance (source ibkr_tws, observed feed and retrieval
+        // time) is carried in the QuoteData itself and rendered by the same
+        // tooltip as every other provider. The next hub refresh replaces this
+        // row with whatever provider answers then — nothing is relabelled.
+        self->row_cache_.insert(symbol, result.quote);
+        self->rebuild_from_cache();
+    });
 }
 
 void WatchlistScreen::on_export_csv() {
