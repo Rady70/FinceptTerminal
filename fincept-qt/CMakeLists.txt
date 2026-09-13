@@ -3594,6 +3594,7 @@ if(FINCEPT_BUILD_INSTALLER)
         # capture them by name from the staged dir rather than re-globbing.
         install(FILES
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/icudtl.dat"
+                "$<TARGET_FILE_DIR:FinceptTerminal>/resources/v8_context_snapshot.bin"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources_100p.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources_200p.pak"
