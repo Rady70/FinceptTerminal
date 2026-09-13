@@ -37,8 +37,8 @@ inline constexpr const char* kIbkrSource = "ibkr_tws";
 /// Non-secret local configuration. Credentials and account identifiers are
 /// never part of this structure (FINCEPT_FORK_PLAN.md §8).
 struct IbkrTwsConfig {
-    QString config_path;        ///< ignored local JSON file actually read
-    QString trading_desk_root;  ///< configured TRADING_DESK checkout
+    QString config_path;       ///< ignored local JSON file actually read
+    QString trading_desk_root; ///< configured TRADING_DESK checkout
     QString trading_desk_commit;
     QString ibapi_path;
     QString host = QStringLiteral("127.0.0.1");
@@ -77,7 +77,8 @@ struct IbkrTwsIdentity {
 struct IbkrTwsClassification {
     bool usable = false;
     QString feed;        ///< LIVE | FROZEN | DELAYED | DELAYED_FROZEN | HISTORICAL
-    QString status;      ///< feed name when usable, else NOT_ENTITLED / NO_VALUE / ERROR / TIMEOUT / NO_DATA / VALUES_INVALID / STALE
+    QString status;      ///< feed name when usable, else NOT_ENTITLED / NO_VALUE / ERROR / TIMEOUT / NO_DATA /
+                         ///< VALUES_INVALID / STALE
     QString entitlement; ///< AVAILABLE | DELAYED | BLOCKED | UNKNOWN
     bool value_present = false;
     bool delayed_fallback = false;
@@ -445,9 +446,8 @@ inline IbkrWrapperProcessResult ibkr_resolve_wrapper_process(const QString& json
 
     result.failure_type = QStringLiteral("IBKR_LAUNCH_FAILED");
     result.failure_stage = QStringLiteral("wrapper");
-    result.failure_message = process_error.trimmed().isEmpty()
-                                 ? QStringLiteral("IBKR wrapper produced no result")
-                                 : process_error.trimmed();
+    result.failure_message =
+        process_error.trimmed().isEmpty() ? QStringLiteral("IBKR wrapper produced no result") : process_error.trimmed();
     return result;
 }
 
@@ -480,8 +480,8 @@ inline IbkrTwsQuoteResult ibkr_quote_result_from_payload(const QJsonObject& payl
     result.contract = payload.value(QLatin1String("contract")).toObject();
     result.con_id = result.contract.value(QLatin1String("con_id")).toInt();
     result.classification = ibkr_classification_from_json(payload.value(QLatin1String("classification")).toObject());
-    result.quote = ibkr_quote_from_snapshot(payload.value(QLatin1String("quote")).toObject(), result.classification,
-                                            retrieved_at);
+    result.quote =
+        ibkr_quote_from_snapshot(payload.value(QLatin1String("quote")).toObject(), result.classification, retrieved_at);
     // The row must carry the symbol it answers for: the watchlist keys its
     // quote map by QuoteData::symbol, and a symbol-less row would render as a
     // placeholder while claiming the fetch succeeded.
@@ -490,7 +490,7 @@ inline IbkrTwsQuoteResult ibkr_quote_result_from_payload(const QJsonObject& payl
 }
 
 inline IbkrTwsHistoryResult ibkr_history_result_from_payload(const QJsonObject& payload, bool command_ok,
-                                                            const QString& error) {
+                                                             const QString& error) {
     IbkrTwsHistoryResult result;
     result.ok = command_ok && payload.value(QLatin1String("ok")).toBool(false);
     result.identity = ibkr_identity_from_json(payload.value(QLatin1String("adapter")).toObject());

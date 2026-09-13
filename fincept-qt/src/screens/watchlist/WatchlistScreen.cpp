@@ -1080,10 +1080,10 @@ void WatchlistScreen::on_ibkr_quote() {
             // A deciding live entitlement block must not hide a genuine
             // delayed-attempt failure.
             if (result.classification.delayed_attempted) {
-                detail += QLatin1Char('\n')
-                          + tr("Delayed attempt: %1").arg(result.classification.delayed_status.isEmpty()
-                                                              ? tr("unknown")
-                                                              : result.classification.delayed_status);
+                detail += QLatin1Char('\n') + tr("Delayed attempt: %1")
+                                                  .arg(result.classification.delayed_status.isEmpty()
+                                                           ? tr("unknown")
+                                                           : result.classification.delayed_status);
                 if (!result.classification.delayed_error_message.isEmpty())
                     detail += QStringLiteral(" - ") + result.classification.delayed_error_message;
             }

@@ -2,9 +2,9 @@
 #include "algo_engine/ScanMonitor.h"
 #include "algo_engine/UniverseScanSelftest.h"
 #include "algo_engine/fno/FnoAlgoSelftest.h"
+#include "app/IbkrTwsSelftest.h"
 #include "app/InstanceLock.h"
 #include "app/MarketLabBoundarySelftest.h"
-#include "app/IbkrTwsSelftest.h"
 #include "app/MonitorPickerDialog.h"
 #include "app/ScreenSmokeTest.h"
 #include "app/TerminalShell.h"
@@ -169,6 +169,10 @@ static void wire_app_lifecycle(QApplication& app, fincept::InstanceLock& lock) {
     });
 }
 
+// Narrow suppression of a pre-existing whole-function finding: this diagnostic
+// predates Phase 5, which only added the IBKR self-test dispatch to this file.
+// Do not turn this into a startup exception-handling redesign.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char* argv[]) {
     // ── TLS backend selection (must happen before any Qt plugin loading) ────
     // Force QtNetwork to use the OpenSSL TLS backend across platforms.

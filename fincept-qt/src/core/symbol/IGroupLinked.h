@@ -2,7 +2,11 @@
 #include "core/symbol/SymbolGroup.h"
 #include "core/symbol/SymbolRef.h"
 
-#include <QtPlugin>
+// Q_DECLARE_INTERFACE comes from <QObject>. <QtPlugin> is not needed here:
+// qplugin.h's constexpr offsetof members are a hard error under clang 20 with
+// Qt 6.8 headers, which breaks the Windows clang-tidy gate for every TU that
+// reaches this header (e.g. WatchlistScreen.cpp).
+#include <QObject>
 
 namespace fincept {
 

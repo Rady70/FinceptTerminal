@@ -44,9 +44,8 @@ IbkrTwsService& IbkrTwsService::instance() {
 IbkrTwsConfig IbkrTwsService::load_config() const {
     IbkrTwsConfig cfg;
     const QString override_path = qEnvironmentVariable("MARKETLAB_IBKR_CONFIG").trimmed();
-    cfg.config_path = override_path.isEmpty()
-                          ? QDir(AppPaths::root()).filePath(QStringLiteral("ibkr_tws.json"))
-                          : override_path;
+    cfg.config_path =
+        override_path.isEmpty() ? QDir(AppPaths::root()).filePath(QStringLiteral("ibkr_tws.json")) : override_path;
     QFile file(cfg.config_path);
     if (!file.open(QIODevice::ReadOnly))
         return cfg;
@@ -90,15 +89,15 @@ IbkrTwsConfig IbkrTwsService::config() const {
 }
 
 QStringList IbkrTwsService::endpoint_arguments(const IbkrTwsConfig& cfg) {
-    return {QStringLiteral("--host"), cfg.host, QStringLiteral("--port"), QString::number(cfg.port),
+    return {QStringLiteral("--host"),      cfg.host,
+            QStringLiteral("--port"),      QString::number(cfg.port),
             QStringLiteral("--client-id"), QString::number(cfg.client_id)};
 }
 
 void IbkrTwsService::run(const IbkrTwsConfig& cfg, const QStringList& arguments, int timeout_ms,
                          std::function<void(bool, const QJsonObject&, const QString&)> cb) {
     if (cfg.config_path.trimmed().isEmpty()) {
-        cb(false, QJsonObject{},
-           QStringLiteral("IBKR TWS is not configured; no local ibkr_tws.json was found"));
+        cb(false, QJsonObject{}, QStringLiteral("IBKR TWS is not configured; no local ibkr_tws.json was found"));
         return;
     }
     QStringList argv{QStringLiteral("--config"), cfg.config_path};
@@ -122,8 +121,8 @@ void IbkrTwsService::run(const IbkrTwsConfig& cfg, const QStringList& arguments,
                 cb(resolved.payload.value(QLatin1String("ok")).toBool(false), resolved.payload, QString());
                 return;
             }
-            cb(false, typed_failure_payload(command, resolved.failure_type, resolved.failure_stage,
-                                            resolved.failure_message),
+            cb(false,
+               typed_failure_payload(command, resolved.failure_type, resolved.failure_stage, resolved.failure_message),
                QString());
         });
 }
@@ -174,7 +173,7 @@ void IbkrTwsService::fetch_quote_with(const IbkrTwsConfig& cfg, const QString& s
 void IbkrTwsService::fetch_history(const QString& symbol, const QString& duration, const QString& bar_size,
                                    HistoryCallback cb) {
     const IbkrTwsConfig cfg = config();
-    QStringList arguments{QStringLiteral("history"), symbol, QStringLiteral("--duration"), duration,
+    QStringList arguments{QStringLiteral("history"),    symbol,  QStringLiteral("--duration"), duration,
                           QStringLiteral("--bar-size"), bar_size};
     arguments.append({QStringLiteral("--timeout"), QStringLiteral("30")});
     run(cfg, arguments, kHistoryWatchdogMs,
