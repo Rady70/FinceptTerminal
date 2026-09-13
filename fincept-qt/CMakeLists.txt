@@ -3555,8 +3555,20 @@ if(FINCEPT_BUILD_INSTALLER)
                 COMPONENT core
                 FILES_MATCHING
                 PATTERN "*.dll"
+                # install(DIRECTORY) recreates every directory it walks, even
+                # when FILES_MATCHING installs no file from it. Exclude the
+                # build-only trees so the installed product does not carry
+                # CMake's working directories.
                 PATTERN "_CPack_Packages" EXCLUDE
-                PATTERN "_deps" EXCLUDE)
+                PATTERN "_deps" EXCLUDE
+                PATTERN "CMakeFiles" EXCLUDE
+                PATTERN "*_autogen" EXCLUDE
+                PATTERN ".qt" EXCLUDE
+                PATTERN ".lupdate" EXCLUDE
+                PATTERN "Testing" EXCLUDE
+                PATTERN "tests" EXCLUDE
+                PATTERN "x64" EXCLUDE
+                PATTERN "src" EXCLUDE)
         # Qt WebEngine runtime helper + data files. windeployqt / the CI stage
         # step place these next to the exe in the build dir, but the *.dll
         # pattern above silently drops them: QtWebEngineProcess.exe is an .exe,
