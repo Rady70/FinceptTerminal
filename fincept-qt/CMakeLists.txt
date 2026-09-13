@@ -3560,6 +3560,13 @@ if(FINCEPT_BUILD_INSTALLER)
         # Qt-Charts fallback in that case.
         install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/QtWebEngineProcess.exe"
                 DESTINATION "." COMPONENT core OPTIONAL)
+        # yt-dlp helper for the dashboard video widget. It is provisioned into
+        # the build output at configure/build time (FINCEPT_YTDLP_*), but the
+        # *.dll capture below silently drops .exe files, so it was missing from
+        # the shipped tree. Install it explicitly; OPTIONAL keeps builds
+        # without it packaging cleanly.
+        install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/yt-dlp.exe"
+                DESTINATION "." COMPONENT core OPTIONAL)
         # Chromium resource paks + ICU data. The source resources/ tree is
         # installed separately below (app assets); these are *additional* files
         # the CI stage step dropped into the build dir's resources/ folder, so
@@ -3576,9 +3583,12 @@ if(FINCEPT_BUILD_INSTALLER)
                 DESTINATION "translations" COMPONENT core OPTIONAL)
         # Python analytics scripts (4000+ files) — required at runtime by
         # PythonRunner / ExchangeService. Without this the Crypto tab and all
-        # Python-backed screens crash on an installed build.
+        # Python-backed screens crash on an installed build. Same junk
+        # exclusions as the generic Windows rule above: the installer must not
+        # carry local caches, bytecode, databases, or test leftovers.
         install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/"
-                DESTINATION "scripts" COMPONENT scripts)
+                DESTINATION "scripts" COMPONENT scripts
+                REGEX "(\\.deleted\\.|\\.pytest_cache|\\.benchmarks|__pycache__|\\.pyc$|\\.db$|\\.sqlite$|\\.sqlite3$|\\.bak$|\\.orig$)" EXCLUDE)
         # Full resources/ tree — icons, images, stylesheets, data files, etc.
         # Also catches requirements-*.txt. Without this, asset paths resolved
         # via AppPaths::resources_dir() return an empty dir and screens that
@@ -3727,9 +3737,9 @@ if(FINCEPT_BUILD_INSTALLER)
         set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/MarketLabTerminal")
     endif()
 
-    # Output file naming — arch-aware so the auto-updater manifest can point
+    # Output file naming — arch-aware so a future update manifest could point
     # at predictable, stable URLs. Scheme:
-    #   FinceptTerminal-<version>-<platform>-<arch>-setup
+    #   MarketLabTerminal-<version>-<platform>-<arch>-setup
     # Platform: windows | linux | macos
     # Arch:     x64 | arm64
     # The CPack IFW generator appends .exe on Windows, .app on macOS, .run on Linux.

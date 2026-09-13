@@ -4,23 +4,21 @@
 //   - Platform shortcuts on install (Start Menu, Desktop, .desktop entry)
 //   - Full user-data cleanup on uninstall (with user confirmation)
 //
-// Data locations cleaned on uninstall:
-//   Windows : %LOCALAPPDATA%\com.fincept.terminal\
-//             %LOCALAPPDATA%\Fincept\*                  (legacy)
-//             %LOCALAPPDATA%\FinceptTerminal\*          (legacy)
-//             %APPDATA%\Fincept\*                       (QSettings roaming)
-//             HKCU\Software\Fincept                     (registry)
-//             Windows Credential Manager: FinceptTerminal/*
-//             %TEMP%\fincept_*
-//   macOS   : ~/Library/Application Support/com.fincept.terminal/
-//             ~/Library/Preferences/com.fincept.FinceptTerminal.plist
-//             ~/Library/Preferences/Fincept.plist (if present)
-//             Keychain: com.fincept.terminal service entries
-//             $TMPDIR/fincept_*, /tmp/fincept_*
-//   Linux   : ~/.local/share/com.fincept.terminal/
-//             ~/.config/Fincept/
-//             /tmp/fincept_*
-//             ~/.local/share/applications/fincept-terminal.desktop
+// Data locations cleaned on uninstall (only after explicit user confirmation):
+//   Windows : %LOCALAPPDATA%\com.marketlab.terminal\
+//             %APPDATA%\MarketLab\MarketLabTerminal\     (QSettings roaming)
+//             HKCU\Software\MarketLab\MarketLabTerminal  (registry)
+//   macOS   : ~/Library/Application Support/com.marketlab.terminal/
+//             ~/Library/Preferences/*.MarketLabTerminal.plist
+//             ~/Library/Caches/com.marketlab.terminal/
+//   Linux   : ~/.local/share/com.marketlab.terminal/
+//             ~/.config/MarketLab/MarketLabTerminal.conf
+//             ~/.cache/com.marketlab.terminal/
+//             ~/.local/share/applications/marketlab-terminal.desktop
+//
+// MarketLab never deletes upstream Fincept Terminal data. This installer is a
+// personal fork and must not touch another product's profile, registry keys,
+// credentials, or temporary files on a shared machine.
 //
 // Debug: run the maintenance tool with `-v` (or `--verbose`) to see console.log output.
 
@@ -226,61 +224,27 @@ function cleanUserDataWindows()
 {
     var localAppData = installer.environmentVariable("LOCALAPPDATA");
     var appData      = installer.environmentVariable("APPDATA");
-    var tempDir      = installer.environmentVariable("TEMP");
 
-    // 1. Main data root
-    removeDirWindows(localAppData + "/com.fincept.terminal");
+    // 1. Main data root. Profiles, databases (portfolio, watchlists, cache),
+    //    logs, exported files, workspaces, and the app-managed Python runtimes
+    //    all live under AppPaths::root() = %LOCALAPPDATA%\com.marketlab.terminal,
+    //    separate from the installed binaries.
+    removeDirWindows(localAppData + "/com.marketlab.terminal");
 
-    // 2. Legacy data roots
-    removeDirWindows(localAppData + "/Fincept/FinceptTerminal");
-    removeDirWindows(localAppData + "/FinceptTerminal");
-    // Remove the Fincept/ parent if it's now empty
-    removeDirIfEmptyWindows(localAppData + "/Fincept");
+    // 2. Roaming QSettings (the Windows native format is the registry below;
+    //    an INI-formatted configuration would land in %APPDATA% instead).
+    removeDirWindows(appData + "/MarketLab/MarketLabTerminal");
+    removeDirIfEmptyWindows(appData + "/MarketLab");
 
-    // 3. Roaming QSettings (INI fallback, rare but possible)
-    removeDirWindows(appData + "/Fincept/FinceptTerminal");
-    removeDirIfEmptyWindows(appData + "/Fincept");
+    // 3. Registry — QSettings default (native) format on Windows. Only the
+    //    fork's own key is deleted. The parent HKCU\Software\MarketLab key is
+    //    left in place so no other MarketLab state is removed.
+    runAndLog("reg.exe", ["delete", "HKCU\\Software\\MarketLab\\MarketLabTerminal", "/f"]);
 
-    // 4. Registry — QSettings default format on Windows
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept\\FinceptTerminal", "/f"]);
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept\\FinceptTerminal-Secure", "/f"]);
-    // Remove parent key last — only succeeds if no other Fincept apps remain.
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept", "/f"]);
-
-    // 5. Windows Credential Manager entries: FinceptTerminal/*
-    //    cmdkey has no wildcard delete. Enumerate via a cmd.exe FOR loop —
-    //    we used PowerShell originally but #240 confirmed the maintenance
-    //    tool fails on locked-down Win11 boxes where AppLocker/Defender
-    //    blocks installer-spawned powershell.exe. cmd.exe has no such
-    //    restrictions. The FOR /F parses `cmdkey /list` lines that match
-    //    "Target: FinceptTerminal/..." and deletes each.
-    runAndLog("cmd.exe", ["/c",
-        "for /f \"tokens=1,* delims=:\" %a in ('cmdkey /list 2^>nul ^| findstr /i \"FinceptTerminal/\"') do " +
-        "(for /f \"tokens=*\" %c in (\"%b\") do cmdkey /delete:\"%c\" >nul 2>&1) & exit /b 0"
-    ]);
-
-    // 6. Temp files — single shell string so wildcards expand inside cmd.
-    //    Covers: fincept_cell_*, fincept_arg_*, fincept_report_autosave.*,
-    //            fincept_paste_*, fincept_chart_*, fincept_spark_*, UpdateService temp.
-    runAndLog("cmd.exe", ["/c",
-        "del /q /f \"" + toWin(tempDir) + "\\fincept_*\" 2>nul & " +
-        "del /q /f \"" + toWin(tempDir) + "\\fincept-boot.log\" 2>nul & " +
-        "exit /b 0"]);
-
-    // 7. Screenshots saved under %USERPROFILE% by MainWindow "save screenshot"
-    //    with the strict pattern fincept_YYYYMMDD_HHMMSS.png. cmd.exe's `del`
-    //    wildcards aren't strict enough on their own ("fincept_*.png" would
-    //    nuke any user file matching), so we narrow with a FOR loop that
-    //    checks the digit-shape via findstr.
-    var userProfile = installer.environmentVariable("USERPROFILE");
-    if (userProfile) {
-        var up = toWin(userProfile);
-        runAndLog("cmd.exe", ["/c",
-            "for /f \"delims=\" %f in ('dir /b /a-d \"" + up + "\\fincept_*.png\" 2^>nul ^| " +
-            "findstr /r \"^fincept_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]\\.png$\"') do " +
-            "del /q /f \"" + up + "\\%f\" 2>nul & exit /b 0"
-        ]);
-    }
+    // Deliberately NOT cleaned: %TEMP%\fincept_* / fincept-boot.log and
+    // %USERPROFILE%\fincept_*.png. Those prefixes are inherited from upstream
+    // and are also used by an official Fincept Terminal installation; deleting
+    // them here could destroy another product's data on a shared machine.
 }
 
 function removeDirWindows(pathFwd)
@@ -318,40 +282,20 @@ function cleanUserDataMac()
     var home = installer.environmentVariable("HOME");
 
     // 1. Main data root
-    removeDirPosix(home + "/Library/Application Support/com.fincept.terminal");
+    removeDirPosix(home + "/Library/Application Support/com.marketlab.terminal");
 
-    // 2. Preferences / plist
-    removeFilePosix(home + "/Library/Preferences/com.fincept.FinceptTerminal.plist");
-    removeFilePosix(home + "/Library/Preferences/Fincept.FinceptTerminal.plist");
-    removeFilePosix(home + "/Library/Preferences/Fincept.FinceptTerminal-Secure.plist");
+    // 2. Preferences / plist (QSettings org "MarketLab", app "MarketLabTerminal")
+    removeFilePosix(home + "/Library/Preferences/MarketLab.MarketLabTerminal.plist");
+    removeFilePosix(home + "/Library/Preferences/com.marketlab.MarketLabTerminal.plist");
 
     // 3. Caches (Qt/QSettings/logs occasionally land here)
-    removeDirPosix(home + "/Library/Caches/com.fincept.terminal");
-    removeDirPosix(home + "/Library/Caches/Fincept");
+    removeDirPosix(home + "/Library/Caches/com.marketlab.terminal");
 
     // 4. Saved application state
-    removeDirPosix(home + "/Library/Saved Application State/com.fincept.terminal.savedState");
+    removeDirPosix(home + "/Library/Saved Application State/com.marketlab.terminal.savedState");
 
-    // 5. Keychain: delete all entries under service "com.fincept.terminal".
-    //    security(1) removes one entry per call — loop until it fails (no more).
-    runAndLog("/bin/bash", ["-c",
-        "while /usr/bin/security delete-generic-password -s 'com.fincept.terminal' >/dev/null 2>&1; do :; done; exit 0"
-    ]);
-
-    // 6. Temp files
-    runAndLog("/bin/bash", ["-c",
-        "rm -f /tmp/fincept_* /tmp/fincept-boot.log 2>/dev/null; " +
-        "rm -f \"${TMPDIR:-/tmp}\"/fincept_* \"${TMPDIR:-/tmp}\"/fincept-boot.log 2>/dev/null; " +
-        "exit 0"
-    ]);
-
-    // 7. Timestamped screenshots saved to $HOME by MainWindow save-screenshot
-    //    Pattern: fincept_YYYYMMDD_HHMMSS.png — strict match to avoid collateral.
-    runAndLog("/bin/bash", ["-c",
-        "find \"" + shellEscape(home) + "\" -maxdepth 1 -type f " +
-        "-regex '.*/fincept_[0-9]\\{8\\}_[0-9]\\{6\\}\\.png$' " +
-        "-delete 2>/dev/null; exit 0"
-    ]);
+    // No keychain loop: the fork stores credentials in its own local database
+    // under the data root, not in the system keychain.
 }
 
 // ---------- Linux ----------
@@ -368,36 +312,19 @@ function cleanUserDataLinux()
     if (!xdgCch) xdgCch = home + "/.cache";
 
     // 1. Main data root (respect XDG)
-    removeDirPosix(xdgDat + "/com.fincept.terminal");
-    removeDirPosix(home   + "/.local/share/com.fincept.terminal");
+    removeDirPosix(xdgDat + "/com.marketlab.terminal");
+    removeDirPosix(home   + "/.local/share/com.marketlab.terminal");
 
-    // 2. QSettings .conf files
-    removeFilePosix(xdgCfg + "/Fincept/FinceptTerminal.conf");
-    removeFilePosix(xdgCfg + "/Fincept/FinceptTerminal-Secure.conf");
-    removeDirIfEmptyPosix(xdgCfg + "/Fincept");
+    // 2. QSettings .conf files (org "MarketLab", app "MarketLabTerminal")
+    removeFilePosix(xdgCfg + "/MarketLab/MarketLabTerminal.conf");
+    removeDirIfEmptyPosix(xdgCfg + "/MarketLab");
 
-    // 3. Cache dir (if the app used one)
-    removeDirPosix(xdgCch + "/com.fincept.terminal");
-    removeDirPosix(xdgCch + "/Fincept");
+    // 3. Cache dir
+    removeDirPosix(xdgCch + "/com.marketlab.terminal");
 
     // 4. Desktop entry (installed via CreateDesktopEntry at install time — IFW's
     //    own UNDO step removes it, but clean up any stale copies just in case).
-    removeFilePosix(home + "/.local/share/applications/fincept-terminal.desktop");
-
-    // 5. Temp files
-    runAndLog("/bin/bash", ["-c",
-        "rm -f /tmp/fincept_* /tmp/fincept-boot.log 2>/dev/null; " +
-        "rm -f \"${TMPDIR:-/tmp}\"/fincept_* \"${TMPDIR:-/tmp}\"/fincept-boot.log 2>/dev/null; " +
-        "exit 0"
-    ]);
-
-    // 6. Timestamped screenshots saved to $HOME by MainWindow save-screenshot
-    runAndLog("/bin/bash", ["-c",
-        "find \"" + shellEscape(home) + "\" -maxdepth 1 -type f " +
-        "-regextype posix-extended " +
-        "-regex '.*/fincept_[0-9]{8}_[0-9]{6}\\.png' " +
-        "-delete 2>/dev/null; exit 0"
-    ]);
+    removeFilePosix(home + "/.local/share/applications/marketlab-terminal.desktop");
 }
 
 // ---------- Unix helpers (mac + linux) ----------
