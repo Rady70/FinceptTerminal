@@ -53,6 +53,7 @@ QString DockScreenRouter::title_for_id(const QString& id) {
     static const QHash<QString, const char*> titles = {
         {"dashboard", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Dashboard")},
         {"markets", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Markets")},
+        {"screener", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Screener")},
         {"crypto_trading", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Crypto Trading")},
         {"equity_trading", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Equity Trading")},
         {"algo_trading", QT_TRANSLATE_NOOP("fincept::DockScreenRouter", "Algo Trading")},

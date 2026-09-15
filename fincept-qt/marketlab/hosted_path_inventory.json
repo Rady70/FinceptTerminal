@@ -682,9 +682,6 @@
     "scripts/bnm_data.py": {
       "py_http_client": 2
     },
-    "scripts/bnr_data.py": {
-      "py_http_client": 2
-    },
     "scripts/boc_data.py": {
       "py_http_client": 2
     },

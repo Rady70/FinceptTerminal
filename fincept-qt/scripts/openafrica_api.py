@@ -751,7 +751,13 @@ def main():
     command = sys.argv[1]
 
     try:
-        if command == "organizations":
+        if command == "publishers":
+            # The Gov Data screen addresses CKAN portals with the
+            # "publishers" verb; openAFRICA names the same objects
+            # organizations.
+            result = get_organizations()
+
+        elif command == "organizations":
             result = get_organizations()
 
         elif command == "org-details":

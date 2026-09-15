@@ -41,9 +41,8 @@ OnsPanel::OnsPanel(QWidget* parent) : EconPanelBase(kOnsSourceId, kOnsColor, par
 }
 
 void OnsPanel::activate() {
-    show_empty(tr("Select a series and click FETCH\n"
-                  "Source: UK Office for National Statistics (no API key required)\n"
-                  "Data via api.beta.ons.gov.uk — GDP, CPI, labour market, housing"));
+    mark_source_unavailable(tr("ONS retired the v1 API this connector used (HTTP 404). "
+                               "Migration to the ONS beta API is pending, so this source is unavailable."));
 }
 
 void OnsPanel::build_controls(QHBoxLayout* thl) {

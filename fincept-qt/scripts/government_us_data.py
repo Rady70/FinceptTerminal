@@ -305,10 +305,10 @@ class GovernmentUSWrapper:
             # Map security type
             mapped_security_type = security_mapping.get(security_type.lower(), security_type) if security_type else None
 
-            # Build query parameters
+            # TA_WS rejects queries that combine a date filter with the
+            # pagesize/pagenum parameters (it returns an empty list), so request
+            # all matching rows and page them locally.
             params = {
-                "pagesize": min(page_size, 100),  # Max 100 per page
-                "pagenum": page_num,
                 "format": "json"
             }
 
@@ -335,6 +335,10 @@ class GovernmentUSWrapper:
 
                 if not isinstance(json_data, list):
                     return GovernmentUSError('treasury_auctions', 'Invalid JSON response format').to_dict()
+
+                total_records = len(json_data)
+                page_slice = max(0, (page_num - 1) * page_size)
+                json_data = json_data[page_slice:page_slice + min(page_size, 100)]
 
                 # Convert to DataFrame and process exactly like OpenBB
                 data = pd.DataFrame(json_data)
@@ -381,7 +385,7 @@ class GovernmentUSWrapper:
                     "endpoint": "treasury_auctions",
                     "page_num": page_num,
                     "page_size": min(page_size, 100),
-                    "total_records": len(processed_data),
+                    "total_records": total_records,
                     "filters": {
                         "start_date": start_date,
                         "end_date": end_date,

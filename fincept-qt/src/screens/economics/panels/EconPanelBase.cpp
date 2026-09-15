@@ -347,6 +347,15 @@ void EconPanelBase::show_error(const QString& msg) {
         fetch_btn_->setEnabled(true);
 }
 
+void EconPanelBase::mark_source_unavailable(const QString& reason) {
+    // show_error() re-enables FETCH, so the disable has to come after it.
+    show_error(reason);
+    if (fetch_btn_) {
+        fetch_btn_->setEnabled(false);
+        fetch_btn_->setToolTip(reason);
+    }
+}
+
 void EconPanelBase::show_empty(const QString& msg) {
     if (!empty_lbl_)
         return;

@@ -27,9 +27,11 @@ struct OwIdSeries {
 };
 
 static const QList<OwIdSeries> kOwIdSeries = {
-    {"CO2 Emissions", "co2", "United States"}, {"CO2 Per Capita", "co2_per_capita", "United States"},
-    {"Energy Consumption", "energy", "China"}, {"Life Expectancy", "life_expectancy", "Japan"},
-    {"Poverty Headcount", "poverty", "World"}, {"GDP Per Capita", "gdp_per_capita", "Germany"},
+    // Only the CSV-backed CO2 and energy datasets are wired end to end in this
+    // build; the OWID indicator API used by the former health/poverty entries
+    // no longer returns data, and co2_per_capita/gdp_per_capita were never
+    // implemented by the script.
+    {"CO2 Emissions", "co2", "United States"}, {"Energy Consumption", "energy", "China"},
 };
 
 } // namespace

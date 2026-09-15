@@ -63,6 +63,10 @@ class BEAWrapper:
 
     def _make_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Centralized request handler with comprehensive error handling"""
+        if not self.api_key:
+            # The BEA API returns a success-shaped empty dataset for an empty
+            # UserID; fail explicitly instead of presenting "no data" as success.
+            return BEAError(method, "BEA API key not configured. Set BEA_API_KEY environment variable.").to_dict()
         try:
             # Add API key to all requests
             params['UserID'] = self.api_key
