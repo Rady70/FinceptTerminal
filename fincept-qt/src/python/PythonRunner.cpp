@@ -156,7 +156,7 @@ static const QStringList kManagedCredentialKeys = {
     // Retained economics/gov panels whose scripts read these names. Without
     // the entries the Settings credential cards could never reach them and
     // the panels stayed permanently key-less.
-    "BLS_API_KEY",           "BEA_API_KEY",        "CONGRESS_GOV_API_KEY", "TRADING_ECONOMICS_API_KEY",
+    "BLS_API_KEY",           "BEA_API_KEY",        "CONGRESS_GOV_API_KEY", "TRADING_ECONOMICS_API_KEY", "WTO_API_KEY",
 // Keyed data-connector provider keys (auto-generated; see MCP data_* tools /
 // Settings › Credentials). Kept in sync with CredentialsSection.cpp CRED_KEYS
 // via the same shared X-macro include.

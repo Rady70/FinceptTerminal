@@ -24,6 +24,7 @@ Usage:
 
 import sys
 import json
+import os
 import asyncio
 import aiohttp
 from datetime import datetime
@@ -679,9 +680,10 @@ class WTODataWrapper:
 
 def main():
     """Main function for CLI interface"""
-    # Check if API key is provided as last argument
-    api_key = None
-    if len(sys.argv) > 2 and not sys.argv[-1].startswith('--'):
+    # The host injects WTO_API_KEY from SecureStorage; a positional 32-char
+    # key is still accepted for direct CLI use.
+    api_key = os.environ.get("WTO_API_KEY") or None
+    if api_key is None and len(sys.argv) > 2 and not sys.argv[-1].startswith('--'):
         # Last argument is likely the API key if it's not a flag
         potential_key = sys.argv[-1]
         if len(potential_key) == 32 and not potential_key.startswith('--'):  # API key format check

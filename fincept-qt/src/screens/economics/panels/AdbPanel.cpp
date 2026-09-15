@@ -64,10 +64,9 @@ AdbPanel::AdbPanel(QWidget* parent) : EconPanelBase(kAdbSourceId, kAdbColor, par
 }
 
 void AdbPanel::activate() {
-    show_empty(tr("Select an economy and data category, then click FETCH\n"
-                  "Source: Asian Development Bank — Key Indicators Database (KIDB), SDMX\n"
-                  "Free, no API key required. Values are in the economy's own currency unless\n"
-                  "the indicator code says otherwise (…_XDC = domestic currency, …_PT = percent)"));
+    mark_source_unavailable(tr("The ADB Key Indicators SDMX endpoint used by this connector returns "
+                               "HTTP 404 (the endpoint or dataflow identifier changed). A corrected "
+                               "mapping is pending, so this source is unavailable."));
 }
 
 // ── Controls ──────────────────────────────────────────────────────────────────

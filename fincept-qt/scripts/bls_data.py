@@ -14,6 +14,7 @@ import aiohttp
 
 # BLS API Configuration
 BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+BLS_API_URL_V1 = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 BLS_FTP_BASE = "https://download.bls.gov/pub/time.series/"
 
 # Survey Categories (from OpenBB constants)
@@ -123,23 +124,25 @@ class BLSDataAPI:
     async def _make_async_request(self, url: str, method: str = "GET",
                                   headers: Optional[Dict] = None,
                                   data: Optional[str] = None) -> Dict[str, Any]:
-        """Make async HTTP request with error handling"""
+        """Make async HTTP request with error handling.
+
+        The BLS API answers with Content-Type text/plain, so the body is
+        decoded manually instead of relying on response.json().
+        """
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 if method.upper() == "GET":
                     async with session.get(url) as response:
+                        body = await response.text()
                         if response.status == 200:
-                            result = await response.json()
-                            return {"success": True, "data": result}
-                        else:
-                            return BLSError(url, f"HTTP {response.status}: {await response.text()}", response.status).to_dict()
+                            return {"success": True, "data": json.loads(body)}
+                        return BLSError(url, f"HTTP {response.status}: {body}", response.status).to_dict()
                 elif method.upper() == "POST":
                     async with session.post(url, data=data) as response:
+                        body = await response.text()
                         if response.status == 200:
-                            result = await response.json()
-                            return {"success": True, "data": result}
-                        else:
-                            return BLSError(url, f"HTTP {response.status}: {await response.text()}", response.status).to_dict()
+                            return {"success": True, "data": json.loads(body)}
+                        return BLSError(url, f"HTTP {response.status}: {body}", response.status).to_dict()
 
         except aiohttp.ClientError as e:
             return BLSError(url, f"Network error: {str(e)}").to_dict()
@@ -196,16 +199,22 @@ class BLSDataAPI:
                                 catalog: bool = True,
                                 annual_average: bool = False,
                                 aspects: bool = False) -> Dict[str, Any]:
-        """Get BLS timeseries data with API request chunking"""
-        if not self.api_key:
-            return BLSError("bls_timeseries", "BLS API key required. Get one at: https://data.bls.gov/registrationEngine/").to_dict()
+        """Get BLS timeseries data with API request chunking
+
+        Without a registered key the keyless Version 1 API is used (25 series
+        and 10 years per request, no catalog/calculations). A configured key
+        upgrades to Version 2.
+        """
+        use_v1 = not self.api_key
+        url = BLS_API_URL_V1 if use_v1 else BLS_API_URL
 
         # Convert single series to list
         symbols = series_ids.split(",") if isinstance(series_ids, str) else series_ids
 
-        # Limit to 50 symbols per request
-        if len(symbols) > 50:
-            symbols = symbols[:50]
+        # Limit to 50 symbols per request (25 on the keyless V1 API)
+        limit = 25 if use_v1 else 50
+        if len(symbols) > limit:
+            symbols = symbols[:limit]
 
         # Default date range
         current_year = datetime.now().year
@@ -214,17 +223,23 @@ class BLSDataAPI:
         if not end_year:
             end_year = current_year
 
-        # Prepare request payload
-        payload = {
-            "seriesid": symbols,
-            "startyear": start_year,
-            "endyear": end_year,
-            "catalog": catalog,
-            "calculations": calculations,
-            "annualaverage": annual_average,
-            "aspects": aspects,
-            "registrationkey": self.api_key
-        }
+        if use_v1:
+            payload = {
+                "seriesid": symbols,
+                "startyear": start_year,
+                "endyear": end_year,
+            }
+        else:
+            payload = {
+                "seriesid": symbols,
+                "startyear": start_year,
+                "endyear": end_year,
+                "catalog": catalog,
+                "calculations": calculations,
+                "annualaverage": annual_average,
+                "aspects": aspects,
+                "registrationkey": self.api_key
+            }
 
         # Remove None values
         payload = {k: v for k, v in payload.items() if v}
@@ -233,13 +248,17 @@ class BLSDataAPI:
         payload_json = json.dumps(payload)
 
         # Make request
-        result = await self._make_async_request(BLS_API_URL, "POST", headers, payload_json)
+        result = await self._make_async_request(url, "POST", headers, payload_json)
 
         if "error" in result:
             return result
 
         # Parse BLS response
         bls_data = result.get("data", {})
+        status = bls_data.get("status")
+        if status and status != "REQUEST_SUCCEEDED":
+            messages = bls_data.get("message") or ["BLS request failed"]
+            return BLSError("bls_timeseries", "; ".join(str(m) for m in messages)).to_dict()
         if not bls_data or "Results" not in bls_data:
             return BLSError("bls_timeseries", "Invalid BLS response format").to_dict()
 
