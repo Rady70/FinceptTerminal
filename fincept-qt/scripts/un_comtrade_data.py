@@ -146,7 +146,7 @@ class UNComtradeWrapper:
     """
 
     def __init__(self, subscription_key: Optional[str] = None):
-        self.subscription_key = subscription_key or os.environ.get("UN_COMTRADE_API_KEY", None)
+        self.subscription_key = subscription_key or os.environ.get("COMTRADE_API_KEY") or os.environ.get("UN_COMTRADE_API_KEY", None)
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "MarketLabTerminal/0.1.0",

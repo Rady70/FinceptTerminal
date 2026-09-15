@@ -58,9 +58,11 @@ void OecdPanel::build_controls(QHBoxLayout* thl) {
     country_combo_->setFixedHeight(26);
 
     frequency_combo_ = new QComboBox;
-    frequency_combo_->addItem(tr("Annual"), "A");
-    frequency_combo_->addItem(tr("Quarterly"), "Q");
-    frequency_combo_->addItem(tr("Monthly"), "M");
+    // oecd_data.py validates the full words ("quarter"/"annual"/"monthly");
+    // the Q/A/M codes it once received were rejected by every dataset.
+    frequency_combo_->addItem(tr("Annual"), "annual");
+    frequency_combo_->addItem(tr("Quarterly"), "quarter");
+    frequency_combo_->addItem(tr("Monthly"), "monthly");
     frequency_combo_->setFixedHeight(26);
 
     thl->addWidget(dataset_lbl_ = lbl(tr("DATASET")));
@@ -76,9 +78,20 @@ void OecdPanel::on_fetch() {
     const QString country = country_combo_->currentData().toString();
     const QString freq = frequency_combo_->currentData().toString();
 
+    // oecd_data.py has three argv shapes: (country, expenditure, frequency,
+    // units) for cpi, (country) for gdp_forecast, and (country, frequency)
+    // for the rest. The panel used to send (country, frequency) to all of
+    // them, which mis-bound the arguments for cpi and gdp_forecast.
+    QStringList args{country};
+    if (cmd == QLatin1String("cpi")) {
+        args << QStringLiteral("total") << freq << QStringLiteral("index");
+    } else if (cmd != QLatin1String("gdp_forecast")) {
+        args << freq;
+    }
+
     show_loading(tr("Fetching OECD data…"));
-    services::EconomicsService::instance().execute(kOecdSourceId, kOecdScript, cmd, {country, freq},
-                                                   "oecd_" + cmd + "_" + country);
+    services::EconomicsService::instance().execute(kOecdSourceId, kOecdScript, cmd, args,
+                                                   "oecd_" + cmd + "_" + country + "_" + freq);
 }
 
 void OecdPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {

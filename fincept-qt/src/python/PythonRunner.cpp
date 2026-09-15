@@ -153,6 +153,10 @@ static const QStringList kManagedCredentialKeys = {
     "BINANCE_API_KEY",       "BINANCE_SECRET_KEY", "KRAKEN_API_KEY",    "KRAKEN_SECRET_KEY",  "IEX_CLOUD_TOKEN",
     "FINNHUB_API_KEY",       "TIINGO_API_KEY",     "QUANDL_API_KEY",    "POLYMARKET_API_KEY", "POLYMARKET_SECRET",
     "POLYMARKET_PASSPHRASE", "POLYMARKET_WALLET",
+    // Retained economics/gov panels whose scripts read these names. Without
+    // the entries the Settings credential cards could never reach them and
+    // the panels stayed permanently key-less.
+    "BLS_API_KEY",           "BEA_API_KEY",        "CONGRESS_GOV_API_KEY", "TRADING_ECONOMICS_API_KEY",
 // Keyed data-connector provider keys (auto-generated; see MCP data_* tools /
 // Settings › Credentials). Kept in sync with CredentialsSection.cpp CRED_KEYS
 // via the same shared X-macro include.

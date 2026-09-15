@@ -481,7 +481,9 @@ void GovDataTreasuryPanel::on_result(const QString& request_id, const services::
 // ── Populate ─────────────────────────────────────────────────────────────────
 
 void GovDataTreasuryPanel::populate_prices(const QJsonObject& json) {
-    const QJsonArray records = json["json"].toArray();
+    // government_us_data.py returns {"success": ..., "data": [...]}; the
+    // legacy "json" key never matched the retained script envelope.
+    const QJsonArray records = json["data"].toArray();
     prices_table_->setRowCount(0);
     prices_table_->setRowCount(records.size());
 
@@ -513,7 +515,9 @@ void GovDataTreasuryPanel::populate_prices(const QJsonObject& json) {
 }
 
 void GovDataTreasuryPanel::populate_auctions(const QJsonObject& json) {
-    const QJsonArray records = json["json"].toArray();
+    // government_us_data.py returns {"success": ..., "data": [...]}; the
+    // legacy "json" key never matched the retained script envelope.
+    const QJsonArray records = json["data"].toArray();
     auctions_table_->setRowCount(0);
     auctions_table_->setRowCount(records.size());
 

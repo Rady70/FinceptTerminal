@@ -75,7 +75,7 @@ class BLSError:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "error": True,
+            "error": self.error,
             "endpoint": self.endpoint,
             "message": self.error,
             "status_code": self.status_code,

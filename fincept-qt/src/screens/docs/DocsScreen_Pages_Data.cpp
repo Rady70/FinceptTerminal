@@ -143,7 +143,8 @@ QWidget* DocsScreen::page_geopolitics() {
 
 QWidget* DocsScreen::page_maritime() {
     return make_page(
-        tr("MARITIME"), tr("Maritime shipping and trade flow data"),
+        tr("MARITIME"), tr("Maritime shipping and trade flow data — NOT AVAILABLE in this build: no independent "
+                           "maritime connector is selected."),
         {
             {tr("OVERVIEW"), tr("The Maritime screen provides shipping and trade flow data for monitoring global "
                                 "supply chains, commodity transport, and maritime trade patterns.")},
@@ -165,7 +166,8 @@ QWidget* DocsScreen::page_maritime() {
 
 QWidget* DocsScreen::page_polymarket() {
     return make_page(
-        tr("POLYMARKET"), tr("Prediction markets and event probability trading"),
+        tr("POLYMARKET"), tr("Prediction markets and event probability trading — NOT AVAILABLE in this build: "
+                             "prediction-market order actions and private keys are removed."),
         {
             {tr("OVERVIEW"), tr("The Polymarket screen provides access to prediction market data, allowing you to "
                                 "track event probabilities and trade on real-world outcomes.")},
@@ -394,7 +396,8 @@ QWidget* DocsScreen::page_settings() {
 
 QWidget* DocsScreen::page_profile() {
     return make_page(
-        tr("PROFILE"), tr("User account, subscription, and usage tracking"),
+        tr("PROFILE"), tr("User account, subscription, and usage tracking — NOT AVAILABLE in this build: the "
+                          "Fincept account, billing and subscription profile is removed; use Settings."),
         {
             {tr("OVERVIEW"), tr("The Profile screen displays your account information, subscription status, "
                                 "usage statistics, and billing history.")},
