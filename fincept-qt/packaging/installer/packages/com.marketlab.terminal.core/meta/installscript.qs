@@ -1,26 +1,20 @@
-// installscript.qs -- Fincept Terminal QtIFW component script
+// installscript.qs -- MarketLab Terminal QtIFW component script
 //
 // Handles:
 //   - Platform shortcuts on install (Start Menu, Desktop, .desktop entry)
 //   - Full user-data cleanup on uninstall (with user confirmation)
 //
-// Data locations cleaned on uninstall:
-//   Windows : %LOCALAPPDATA%\com.fincept.terminal\
-//             %LOCALAPPDATA%\Fincept\*                  (legacy)
-//             %LOCALAPPDATA%\FinceptTerminal\*          (legacy)
-//             %APPDATA%\Fincept\*                       (QSettings roaming)
-//             HKCU\Software\Fincept                     (registry)
-//             Windows Credential Manager: FinceptTerminal/*
-//             %TEMP%\fincept_*
-//   macOS   : ~/Library/Application Support/com.fincept.terminal/
-//             ~/Library/Preferences/com.fincept.FinceptTerminal.plist
-//             ~/Library/Preferences/Fincept.plist (if present)
-//             Keychain: com.fincept.terminal service entries
-//             $TMPDIR/fincept_*, /tmp/fincept_*
-//   Linux   : ~/.local/share/com.fincept.terminal/
-//             ~/.config/Fincept/
-//             /tmp/fincept_*
-//             ~/.local/share/applications/fincept-terminal.desktop
+// Data locations cleaned on uninstall (only after explicit user confirmation):
+//   Windows : %LOCALAPPDATA%\com.marketlab.terminal\
+//             %APPDATA%\MarketLab\MarketLabTerminal\     (QSettings roaming)
+//             HKCU\Software\MarketLab\MarketLabTerminal  (registry)
+//   macOS/Linux: unchanged from main. Phase 6 is Windows-only; the non-Windows
+//             installer behavior (including its cleanup paths) is not modified
+//             here and remains unqualified until its own phase.
+//
+// On Windows, MarketLab never deletes upstream Fincept Terminal data: the fork
+// must not touch another product's profile, registry keys, credentials, or
+// temporary files on a shared machine.
 //
 // Debug: run the maintenance tool with `-v` (or `--verbose`) to see console.log output.
 
@@ -31,7 +25,7 @@
 function Component()
 {
     try {
-        console.log("[Fincept] Component() constructor — isInstaller=" +
+        console.log("[MarketLab] Component() constructor — isInstaller=" +
                     installer.isInstaller() +
                     " isUninstaller=" + installer.isUninstaller() +
                     " isUpdater=" + installer.isUpdater() +
@@ -46,7 +40,7 @@ function Component()
         // ID must match the first arg of QMessageBox.question() below.
         if (typeof QMessageBox !== "undefined" && installer.setMessageBoxAutomaticAnswer) {
             installer.setMessageBoxAutomaticAnswer(
-                "fincept.uninstall.data", QMessageBox.No);
+                "marketlab.uninstall.data", QMessageBox.No);
         }
 
         // Connect signals using the 1-arg form. The 2-arg form (thisObj, fn) is
@@ -64,7 +58,7 @@ function Component()
         // Never throw out of Component() — IFW treats that as a fatal load
         // error and aborts before any UI shows (the "GUI flashes and closes"
         // symptom in #240). Log and continue with defaults.
-        console.log("[Fincept] Component() constructor error: " + e);
+        console.log("[MarketLab] Component() constructor error: " + e);
     }
 }
 
@@ -80,25 +74,28 @@ Component.prototype.createOperations = function()
     var targetDir = installer.value("TargetDir");
 
     if (systemInfo.kernelType === "winnt") {
-        // Start Menu shortcut
+        // Start Menu shortcut. The installed binary is MarketLabTerminal.exe
+        // (CMake OUTPUT_NAME), not the internal FinceptTerminal target name.
         component.addOperation("CreateShortcut",
-            targetDir + "/FinceptTerminal.exe",
-            "@StartMenuDir@/Fincept Terminal.lnk",
+            targetDir + "/MarketLabTerminal.exe",
+            "@StartMenuDir@/MarketLab Terminal.lnk",
             "workingDirectory=" + targetDir,
-            "iconPath=" + targetDir + "/FinceptTerminal.exe",
+            "iconPath=" + targetDir + "/MarketLabTerminal.exe",
             "iconId=0",
-            "description=Professional Financial Intelligence Terminal");
+            "description=MarketLab Terminal — local-first research workspace");
 
         // Desktop shortcut
         component.addOperation("CreateShortcut",
-            targetDir + "/FinceptTerminal.exe",
-            "@DesktopDir@/Fincept Terminal.lnk",
+            targetDir + "/MarketLabTerminal.exe",
+            "@DesktopDir@/MarketLab Terminal.lnk",
             "workingDirectory=" + targetDir,
-            "iconPath=" + targetDir + "/FinceptTerminal.exe",
+            "iconPath=" + targetDir + "/MarketLabTerminal.exe",
             "iconId=0",
-            "description=Professional Financial Intelligence Terminal");
+            "description=MarketLab Terminal — local-first research workspace");
     }
 
+    // Non-Windows shortcut behavior is unchanged from main: Phase 6 qualifies
+    // Windows only, so no Linux/macOS installer behavior is modified here.
     if (systemInfo.kernelType === "linux") {
         component.addOperation("CreateDesktopEntry",
             "@HomeDir@/.local/share/applications/fincept-terminal.desktop",
@@ -121,7 +118,7 @@ Component.prototype.createOperations = function()
 
 function onInstallationFinished()
 {
-    console.log("[Fincept] Installation finished.");
+    console.log("[MarketLab] Installation finished.");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +128,7 @@ function onInstallationFinished()
 function onUninstallationStarted()
 {
     try {
-        console.log("[Fincept] uninstallationStarted.");
+        console.log("[MarketLab] uninstallationStarted.");
 
         // Per-machine install at C:\Program Files\... requires elevation to
         // delete files. Without this, the cmd.exe / reg.exe calls below
@@ -144,7 +141,7 @@ function onUninstallationStarted()
             try {
                 installer.gainAdminRights();
             } catch (e) {
-                console.log("[Fincept] gainAdminRights failed (continuing): " + e);
+                console.log("[MarketLab] gainAdminRights failed (continuing): " + e);
             }
         }
 
@@ -159,12 +156,12 @@ function onUninstallationStarted()
 
         var clean = false;
         if (headless) {
-            console.log("[Fincept] Headless uninstall — skipping data-cleanup prompt.");
+            console.log("[MarketLab] Headless uninstall — skipping data-cleanup prompt.");
         } else {
             var answer = QMessageBox.question(
-                "fincept.uninstall.data",
-                "Remove Fincept Terminal User Data?",
-                "Do you want to remove all Fincept Terminal user data?\n\n" +
+                "marketlab.uninstall.data",
+                "Remove MarketLab Terminal User Data?",
+                "Do you want to remove all MarketLab Terminal user data?\n\n" +
                 "This includes:\n" +
                 "  - Databases (portfolio, watchlists)\n" +
                 "  - Log files\n" +
@@ -182,26 +179,26 @@ function onUninstallationStarted()
         }
 
         if (clean) {
-            console.log("[Fincept] Cleaning user data.");
+            console.log("[MarketLab] Cleaning user data.");
             try {
                 cleanUserData();
             } catch (e) {
-                console.log("[Fincept] cleanUserData threw: " + e);
+                console.log("[MarketLab] cleanUserData threw: " + e);
             }
         } else {
-            console.log("[Fincept] Keeping user data.");
+            console.log("[MarketLab] Keeping user data.");
         }
     } catch (e) {
         // Never propagate — IFW treats a thrown signal handler as a fatal
         // uninstall error and exits 1 with no cleanup, which is exactly the
         // symptom from #240.
-        console.log("[Fincept] onUninstallationStarted error: " + e);
+        console.log("[MarketLab] onUninstallationStarted error: " + e);
     }
 }
 
 function onUninstallationFinished()
 {
-    console.log("[Fincept] Uninstallation finished.");
+    console.log("[MarketLab] Uninstallation finished.");
 }
 
 // ---------------------------------------------------------------------------
@@ -225,68 +222,34 @@ function cleanUserDataWindows()
 {
     var localAppData = installer.environmentVariable("LOCALAPPDATA");
     var appData      = installer.environmentVariable("APPDATA");
-    var tempDir      = installer.environmentVariable("TEMP");
 
-    // 1. Main data root
-    removeDirWindows(localAppData + "/com.fincept.terminal");
+    // 1. Main data root. Profiles, databases (portfolio, watchlists, cache),
+    //    logs, exported files, workspaces, and the app-managed Python runtimes
+    //    all live under AppPaths::root() = %LOCALAPPDATA%\com.marketlab.terminal,
+    //    separate from the installed binaries.
+    removeDirWindows(localAppData + "/com.marketlab.terminal");
 
-    // 2. Legacy data roots
-    removeDirWindows(localAppData + "/Fincept/FinceptTerminal");
-    removeDirWindows(localAppData + "/FinceptTerminal");
-    // Remove the Fincept/ parent if it's now empty
-    removeDirIfEmptyWindows(localAppData + "/Fincept");
+    // 2. Roaming QSettings (the Windows native format is the registry below;
+    //    an INI-formatted configuration would land in %APPDATA% instead).
+    removeDirWindows(appData + "/MarketLab/MarketLabTerminal");
+    removeDirIfEmptyWindows(appData + "/MarketLab");
 
-    // 3. Roaming QSettings (INI fallback, rare but possible)
-    removeDirWindows(appData + "/Fincept/FinceptTerminal");
-    removeDirIfEmptyWindows(appData + "/Fincept");
+    // 3. Registry — QSettings default (native) format on Windows. Only the
+    //    fork's own key is deleted. The parent HKCU\Software\MarketLab key is
+    //    left in place so no other MarketLab state is removed.
+    runAndLog("reg.exe", ["delete", "HKCU\\Software\\MarketLab\\MarketLabTerminal", "/f"]);
 
-    // 4. Registry — QSettings default format on Windows
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept\\FinceptTerminal", "/f"]);
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept\\FinceptTerminal-Secure", "/f"]);
-    // Remove parent key last — only succeeds if no other Fincept apps remain.
-    runAndLog("reg.exe", ["delete", "HKCU\\Software\\Fincept", "/f"]);
-
-    // 5. Windows Credential Manager entries: FinceptTerminal/*
-    //    cmdkey has no wildcard delete. Enumerate via a cmd.exe FOR loop —
-    //    we used PowerShell originally but #240 confirmed the maintenance
-    //    tool fails on locked-down Win11 boxes where AppLocker/Defender
-    //    blocks installer-spawned powershell.exe. cmd.exe has no such
-    //    restrictions. The FOR /F parses `cmdkey /list` lines that match
-    //    "Target: FinceptTerminal/..." and deletes each.
-    runAndLog("cmd.exe", ["/c",
-        "for /f \"tokens=1,* delims=:\" %a in ('cmdkey /list 2^>nul ^| findstr /i \"FinceptTerminal/\"') do " +
-        "(for /f \"tokens=*\" %c in (\"%b\") do cmdkey /delete:\"%c\" >nul 2>&1) & exit /b 0"
-    ]);
-
-    // 6. Temp files — single shell string so wildcards expand inside cmd.
-    //    Covers: fincept_cell_*, fincept_arg_*, fincept_report_autosave.*,
-    //            fincept_paste_*, fincept_chart_*, fincept_spark_*, UpdateService temp.
-    runAndLog("cmd.exe", ["/c",
-        "del /q /f \"" + toWin(tempDir) + "\\fincept_*\" 2>nul & " +
-        "del /q /f \"" + toWin(tempDir) + "\\fincept-boot.log\" 2>nul & " +
-        "exit /b 0"]);
-
-    // 7. Screenshots saved under %USERPROFILE% by MainWindow "save screenshot"
-    //    with the strict pattern fincept_YYYYMMDD_HHMMSS.png. cmd.exe's `del`
-    //    wildcards aren't strict enough on their own ("fincept_*.png" would
-    //    nuke any user file matching), so we narrow with a FOR loop that
-    //    checks the digit-shape via findstr.
-    var userProfile = installer.environmentVariable("USERPROFILE");
-    if (userProfile) {
-        var up = toWin(userProfile);
-        runAndLog("cmd.exe", ["/c",
-            "for /f \"delims=\" %f in ('dir /b /a-d \"" + up + "\\fincept_*.png\" 2^>nul ^| " +
-            "findstr /r \"^fincept_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]\\.png$\"') do " +
-            "del /q /f \"" + up + "\\%f\" 2>nul & exit /b 0"
-        ]);
-    }
+    // Deliberately NOT cleaned: %TEMP%\fincept_* / fincept-boot.log and
+    // %USERPROFILE%\fincept_*.png. Those prefixes are inherited from upstream
+    // and are also used by an official Fincept Terminal installation; deleting
+    // them here could destroy another product's data on a shared machine.
 }
 
 function removeDirWindows(pathFwd)
 {
     if (!pathFwd) return;
     if (!installer.fileExists(pathFwd)) {
-        console.log("[Fincept] skip (not present): " + pathFwd);
+        console.log("[MarketLab] skip (not present): " + pathFwd);
         return;
     }
     var win = toWin(pathFwd);
@@ -314,6 +277,7 @@ function toWin(pathFwd)
 
 function cleanUserDataMac()
 {
+    // Unchanged from main: Phase 6 is Windows-only.
     var home = installer.environmentVariable("HOME");
 
     // 1. Main data root
@@ -366,6 +330,8 @@ function cleanUserDataLinux()
     if (!xdgDat) xdgDat = home + "/.local/share";
     if (!xdgCch) xdgCch = home + "/.cache";
 
+    // Unchanged from main: Phase 6 is Windows-only.
+
     // 1. Main data root (respect XDG)
     removeDirPosix(xdgDat + "/com.fincept.terminal");
     removeDirPosix(home   + "/.local/share/com.fincept.terminal");
@@ -405,7 +371,7 @@ function removeDirPosix(path)
 {
     if (!path) return;
     if (!installer.fileExists(path)) {
-        console.log("[Fincept] skip (not present): " + path);
+        console.log("[MarketLab] skip (not present): " + path);
         return;
     }
     // Use /bin/rm with -rf so missing paths never error. Shell-wrap so the
@@ -417,7 +383,7 @@ function removeFilePosix(path)
 {
     if (!path) return;
     if (!installer.fileExists(path)) {
-        console.log("[Fincept] skip (not present): " + path);
+        console.log("[MarketLab] skip (not present): " + path);
         return;
     }
     runAndLog("/bin/bash", ["-c", "rm -f \"" + shellEscape(path) + "\"; exit 0"]);
@@ -444,9 +410,9 @@ function runAndLog(program, args)
     // installer.execute returns [stdout, exitCode] on success,
     // or [] (empty) if the program failed to launch.
     if (!result || result.length === 0) {
-        console.log("[Fincept] FAILED to launch: " + program + " " + args.join(" "));
+        console.log("[MarketLab] FAILED to launch: " + program + " " + args.join(" "));
         return;
     }
     var exitCode = result.length >= 2 ? result[1] : "?";
-    console.log("[Fincept] ran " + program + " (exit=" + exitCode + ")");
+    console.log("[MarketLab] ran " + program + " (exit=" + exitCode + ")");
 }

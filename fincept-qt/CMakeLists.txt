@@ -3525,7 +3525,9 @@ endif()
 #   cd build && cpack -G IFW -C Release
 #
 # Requires: Qt Installer Framework (binarycreator on PATH or in Qt install)
-# Output:   FinceptTerminal-<ver>-<platform>-setup.exe/.run/.app
+# Output:   MarketLabTerminal-<ver>-windows-x64-setup.exe on Windows; the
+#           macOS/Linux installer names stay as they are on main and remain
+#           unqualified until a non-Windows phase changes them.
 
 option(FINCEPT_BUILD_INSTALLER "Generate QtIFW installer via CPack" OFF)
 
@@ -3543,11 +3545,32 @@ if(FINCEPT_BUILD_INSTALLER)
 
     # ── Windows: capture windeployqt output for the installer ────────────────
     if(WIN32 AND DEPLOY_QT)
+        # MarketLab: exclusions are required for single-config generators
+        # (Ninja). There the target directory IS the build directory, so the
+        # recursive *.dll capture would also match (a) CPack's own staging tree
+        # -- which lives inside the build directory and made cpack recurse
+        # without bound -- and (b) dependency build trees under _deps/, whose
+        # private DLLs must not ship. With the Visual Studio generator the
+        # target directory is build/Release and neither directory is inside it.
         install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/"
                 DESTINATION "."
                 COMPONENT core
                 FILES_MATCHING
-                PATTERN "*.dll")
+                PATTERN "*.dll"
+                # install(DIRECTORY) recreates every directory it walks, even
+                # when FILES_MATCHING installs no file from it. Exclude the
+                # build-only trees so the installed product does not carry
+                # CMake's working directories.
+                PATTERN "_CPack_Packages" EXCLUDE
+                PATTERN "_deps" EXCLUDE
+                PATTERN "CMakeFiles" EXCLUDE
+                PATTERN "*_autogen" EXCLUDE
+                PATTERN ".qt" EXCLUDE
+                PATTERN ".lupdate" EXCLUDE
+                PATTERN "Testing" EXCLUDE
+                PATTERN "tests" EXCLUDE
+                PATTERN "x64" EXCLUDE
+                PATTERN "src" EXCLUDE)
         # Qt WebEngine runtime helper + data files. windeployqt / the CI stage
         # step place these next to the exe in the build dir, but the *.dll
         # pattern above silently drops them: QtWebEngineProcess.exe is an .exe,
@@ -3560,25 +3583,50 @@ if(FINCEPT_BUILD_INSTALLER)
         # Qt-Charts fallback in that case.
         install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/QtWebEngineProcess.exe"
                 DESTINATION "." COMPONENT core OPTIONAL)
+        # yt-dlp helper for the dashboard video widget. It is provisioned into
+        # the build output at configure/build time (FINCEPT_YTDLP_*), but the
+        # *.dll capture below silently drops .exe files, so it was missing from
+        # the shipped tree. Install it explicitly; OPTIONAL keeps builds
+        # without it packaging cleanly.
+        install(FILES "$<TARGET_FILE_DIR:FinceptTerminal>/yt-dlp.exe"
+                DESTINATION "." COMPONENT core OPTIONAL)
         # Chromium resource paks + ICU data. The source resources/ tree is
         # installed separately below (app assets); these are *additional* files
         # the CI stage step dropped into the build dir's resources/ folder, so
         # capture them by name from the staged dir rather than re-globbing.
         install(FILES
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/icudtl.dat"
+                "$<TARGET_FILE_DIR:FinceptTerminal>/resources/v8_context_snapshot.bin"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources_100p.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_resources_200p.pak"
                 "$<TARGET_FILE_DIR:FinceptTerminal>/resources/qtwebengine_devtools_resources.pak"
                 DESTINATION "resources" COMPONENT core OPTIONAL)
+        # MarketLab: when the WebEngine runtime ships, the V8 startup snapshot
+        # is crash-critical — without it the installed renderer logs
+        # "FATAL:v8_initializer.cc Error loading V8 startup snapshot file".
+        # The install() rules above are OPTIONAL so WebEngine-free builds still
+        # package, but the snapshot must not be silently optional for a build
+        # that ships WebEngine. Fail the package install step if it is absent.
+        if(HAS_WEBENGINE)
+            install(CODE "
+                if(NOT EXISTS \"$<TARGET_FILE_DIR:FinceptTerminal>/resources/v8_context_snapshot.bin\")
+                    message(FATAL_ERROR
+                        \"WebEngine is enabled but resources/v8_context_snapshot.bin was not staged next to the executable; the installed renderer would fail to start.\")
+                endif()
+            " COMPONENT core)
+        endif()
         # WebEngine locale paks (not covered by windeployqt --no-translations).
         install(DIRECTORY "$<TARGET_FILE_DIR:FinceptTerminal>/translations/qtwebengine_locales"
                 DESTINATION "translations" COMPONENT core OPTIONAL)
         # Python analytics scripts (4000+ files) — required at runtime by
         # PythonRunner / ExchangeService. Without this the Crypto tab and all
-        # Python-backed screens crash on an installed build.
+        # Python-backed screens crash on an installed build. Same junk
+        # exclusions as the generic Windows rule above: the installer must not
+        # carry local caches, bytecode, databases, or test leftovers.
         install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/"
-                DESTINATION "scripts" COMPONENT scripts)
+                DESTINATION "scripts" COMPONENT scripts
+                REGEX "(\\.deleted\\.|\\.pytest_cache|\\.benchmarks|__pycache__|\\.pyc$|\\.db$|\\.sqlite$|\\.sqlite3$|\\.bak$|\\.orig$)" EXCLUDE)
         # Full resources/ tree — icons, images, stylesheets, data files, etc.
         # Also catches requirements-*.txt. Without this, asset paths resolved
         # via AppPaths::resources_dir() return an empty dir and screens that
@@ -3604,15 +3652,17 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
 
     # ── CPack general metadata ───────────────────────────────────────────────
-    set(CPACK_PACKAGE_NAME "FinceptTerminal")
-    set(CPACK_PACKAGE_VENDOR "Fincept Corporation")
+    # MarketLab: installed-product identity is the fork identity, not upstream
+    # Fincept. Only the license text keeps upstream attribution.
+    set(CPACK_PACKAGE_NAME "MarketLabTerminal")
+    set(CPACK_PACKAGE_VENDOR "MarketLab")
     set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "Local-first financial research workspace with market data and analytics")
     set(CPACK_PACKAGE_HOMEPAGE_URL
-        "https://github.com/Fincept-Corporation/FinceptTerminal")
+        "https://github.com/Rady70/FinceptTerminal")
     set(CPACK_RESOURCE_FILE_LICENSE
-        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/license.txt")
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/license.txt")
     set(CPACK_PACKAGE_ICON
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.ico")
 
@@ -3683,13 +3733,16 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
 
     # ── CPackIFW installer configuration ─────────────────────────────────────
-    set(CPACK_IFW_PACKAGE_TITLE "Fincept Terminal")
-    set(CPACK_IFW_PACKAGE_NAME "com.fincept.terminal")
-    set(CPACK_IFW_PACKAGE_PUBLISHER "Fincept Corporation")
-    set(CPACK_IFW_PACKAGE_START_MENU_DIRECTORY "Fincept")
+    # MarketLab: the IFW package id is the fork's own product id so the
+    # maintenance tool, install detection, and Start Menu never collide with a
+    # real upstream Fincept Terminal installation on the same machine.
+    set(CPACK_IFW_PACKAGE_TITLE "MarketLab Terminal")
+    set(CPACK_IFW_PACKAGE_NAME "com.marketlab.terminal")
+    set(CPACK_IFW_PACKAGE_PUBLISHER "MarketLab")
+    set(CPACK_IFW_PACKAGE_START_MENU_DIRECTORY "MarketLab")
     set(CPACK_IFW_PACKAGE_ICON
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fincept.ico")
-    set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "FinceptMaintenanceTool")
+    set(CPACK_IFW_PACKAGE_MAINTENANCE_TOOL_NAME "MarketLabMaintenanceTool")
     set(CPACK_IFW_PACKAGE_WIZARD_STYLE "Modern")
     set(CPACK_IFW_PACKAGE_ALLOW_SPACE_IN_PATH ON)
     set(CPACK_IFW_PACKAGE_ALLOW_NON_ASCII_CHARACTERS ON)
@@ -3710,8 +3763,11 @@ if(FINCEPT_BUILD_INSTALLER)
     # wizard's Target Directory page lets the user pick any path (the page is
     # shown interactively now that controlscript.qs guards its auto-advance
     # with isCommandLineInstance()).
+    # MarketLab: only the Windows target path is rebranded in Phase 6. The
+    # macOS/Linux installer paths stay as they are on main and remain
+    # unqualified; a non-Windows packaging phase would change them.
     if(WIN32)
-        set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDirX64@/FinceptTerminal")
+        set(CPACK_IFW_TARGET_DIRECTORY "@ApplicationsDirX64@/MarketLabTerminal")
     elseif(APPLE)
         set(CPACK_IFW_TARGET_DIRECTORY "/Applications/FinceptTerminal")
     else()
@@ -3722,9 +3778,9 @@ if(FINCEPT_BUILD_INSTALLER)
         set(CPACK_IFW_ADMIN_TARGET_DIRECTORY "/opt/FinceptTerminal")
     endif()
 
-    # Output file naming — arch-aware so the auto-updater manifest can point
+    # Output file naming — arch-aware so a future update manifest could point
     # at predictable, stable URLs. Scheme:
-    #   FinceptTerminal-<version>-<platform>-<arch>-setup
+    #   MarketLabTerminal-<version>-<platform>-<arch>-setup
     # Platform: windows | linux | macos
     # Arch:     x64 | arm64
     # The CPack IFW generator appends .exe on Windows, .app on macOS, .run on Linux.
@@ -3736,7 +3792,7 @@ if(FINCEPT_BUILD_INSTALLER)
             set(_FINCEPT_PKG_ARCH "x64")
         endif()
         set(CPACK_PACKAGE_FILE_NAME
-            "FinceptTerminal-${CMAKE_PROJECT_VERSION}-windows-${_FINCEPT_PKG_ARCH}-setup")
+            "MarketLabTerminal-${CMAKE_PROJECT_VERSION}-windows-${_FINCEPT_PKG_ARCH}-setup")
     elseif(APPLE)
         # On macOS CMAKE_OSX_ARCHITECTURES is the authoritative source
         # (it drives the actual binary slice). Fall back to host processor.
@@ -3767,13 +3823,24 @@ if(FINCEPT_BUILD_INSTALLER)
     endif()
     message(STATUS "  Installer filename: ${CPACK_PACKAGE_FILE_NAME}")
 
+    # MarketLab: only the application's own components belong in a user-facing
+    # package. Bundled third-party dependencies (QXlsx, md4c, QGeoView,
+    # QtAdvancedDocking) register install rules under component names such as
+    # devel/headers/license, and CMAKE_SKIP_INSTALL_RULES cannot suppress them:
+    # it is a single global generate-time switch, so the final FALSE value
+    # re-enables every rule. Without this allowlist the Windows installer
+    # shipped ~67 MB of headers, static libraries, and the md2html build tool.
+    if(WIN32)
+        set(CPACK_COMPONENTS_ALL core scripts)
+    endif()
+
     # ── Include CPack + IFW module ───────────────────────────────────────────
     include(CPack)
     include(CPackIFW)
 
     # ── Define install components ────────────────────────────────────────────
     cpack_add_component(core
-        DISPLAY_NAME "Fincept Terminal"
+        DISPLAY_NAME "MarketLab Terminal"
         DESCRIPTION  "Core application executable and Qt runtime libraries"
         REQUIRED)
 
@@ -3789,21 +3856,21 @@ if(FINCEPT_BUILD_INSTALLER)
 
     # ── CPackIFW component configuration ─────────────────────────────────────
     cpack_ifw_configure_component(core
-        NAME "com.fincept.terminal.core"
+        NAME "com.marketlab.terminal.core"
         VERSION "${CMAKE_PROJECT_VERSION}"
-        SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/installscript.qs"
-        LICENSES "AGPL-3.0" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.fincept.terminal.core/meta/license.txt"
+        SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/installscript.qs"
+        LICENSES "AGPL-3.0" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/installer/packages/com.marketlab.terminal.core/meta/license.txt"
         SORTING_PRIORITY 100
         DEFAULT TRUE
         FORCED_INSTALLATION)
 
     if(WIN32)
         cpack_ifw_configure_component(scripts
-            NAME "com.fincept.terminal.scripts"
+            NAME "com.marketlab.terminal.scripts"
             VERSION "${CMAKE_PROJECT_VERSION}"
             SORTING_PRIORITY 50
             DEFAULT TRUE
-            DEPENDS "com.fincept.terminal.core")
+            DEPENDS "com.marketlab.terminal.core")
     endif()
 
     # ── Linux: AppImage helper target ────────────────────────────────────────
