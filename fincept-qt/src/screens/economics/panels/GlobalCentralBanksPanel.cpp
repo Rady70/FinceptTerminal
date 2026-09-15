@@ -33,7 +33,7 @@ struct CbSeries {
     QString label;
     QString command;
     // Default arguments that make the command work through the panel (the
-    // panel has no argument widgets). @today@ / @start30@ / @year@ are
+    // panel has no argument widgets). @today@ / @prevbusiness@ / @start30@ / @year@ are
     // expanded at fetch time. Empty when the command needs no arguments.
     QStringList args;
 };
@@ -114,10 +114,13 @@ static const QList<CbBank> kBanks = {
      {
          {"Exchange Rates (Latest)", "exchange_rates", {}},
          {"PRIBOR (Latest)", "pribor", {}},
+         {"PRIBOR (Year)", "pribor_year", {"@year@"}},
+         {"PRIBOR (History, 2y)", "pribor_history", {}},
          {"CZEONIA (Year)", "czeonia_year", {"@year@"}},
          {"CZEONIA (Latest)", "czeonia", {}},
          {"Exchange Rates (Year)", "exchange_rates_y", {"@year@"}},
          {"Monthly Average FX", "monthly_avg", {"@year@"}},
+         {"Open Market Operations (last business day)", "omo", {"@prevbusiness@"}},
          {"Overview", "overview", {}},
      }},
     {"NBP — National Bank of Poland",
@@ -131,7 +134,7 @@ static const QList<CbBank> kBanks = {
          {"EUR/PLN", "eur", {}},
          {"Bid/Ask Spreads", "bid_ask", {}},
          {"Single Currency (USD)", "currency", {"USD"}},
-         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@today@"}},
+         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@prevbusiness@"}},
      }},
     {"MNB — National Bank of Hungary",
      "mnb_data.py",
@@ -143,7 +146,7 @@ static const QList<CbBank> kBanks = {
          {"USD/HUF", "usd", {}},
          {"EUR/HUF", "eur", {}},
          {"Single Currency (USD)", "currency", {"USD"}},
-         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@today@"}},
+         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@prevbusiness@"}},
      }},
     {"HNB — Croatian National Bank",
      "hnb_data.py",
@@ -163,7 +166,7 @@ static const QList<CbBank> kBanks = {
          {"Overview", "overview", {}},
          {"Major Currencies", "major", {}},
          {"Single Currency (USD)", "currency", {"USD"}},
-         {"By Date (today)", "date", {"@today@"}},
+         {"By Date (last business day)", "date", {"@prevbusiness@"}},
          {"Exchange Rates (Range, 30 days)", "range", {"@start30@"}},
      }},
     {"BOI — Bank of Israel",
@@ -192,6 +195,18 @@ static const QList<CbBank> kBanks = {
 // ── Default-argument expansion ───────────────────────────────────────────────
 // Fixed per-command defaults keep every selectable entry functional; the date
 // tokens are resolved at fetch time so the ranges stay current.
+static QDate last_business_day(QDate date) {
+    while (date.dayOfWeek() > 5) // 6 = Saturday, 7 = Sunday
+        date = date.addDays(-1);
+    return date;
+}
+
+// The most recent business day whose official publication should already
+// exist (some providers publish during the day, so "today" can 404/400).
+static QDate previous_business_day(QDate date) {
+    return last_business_day(date.addDays(-1));
+}
+
 static QStringList expand_cb_args(const QStringList& raw) {
     const QDate today = QDate::currentDate();
     QStringList out;
@@ -199,8 +214,12 @@ static QStringList expand_cb_args(const QStringList& raw) {
     for (const QString& a : raw) {
         if (a == QLatin1String("@today@"))
             out << today.toString(Qt::ISODate);
+        else if (a == QLatin1String("@lastbusiness@"))
+            out << last_business_day(today).toString(Qt::ISODate);
+        else if (a == QLatin1String("@prevbusiness@"))
+            out << previous_business_day(today).toString(Qt::ISODate);
         else if (a == QLatin1String("@start30@"))
-            out << today.addDays(-30).toString(Qt::ISODate);
+            out << previous_business_day(today).addDays(-30).toString(Qt::ISODate);
         else if (a == QLatin1String("@year@"))
             out << QString::number(today.year());
         else

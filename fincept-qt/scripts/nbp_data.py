@@ -265,8 +265,13 @@ class NBPWrapper:
     def get_major_currencies(self, last_n: int = 30) -> Dict[str, Any]:
         """Last N observations for major currencies vs PLN."""
         try:
-            end   = date.today().isoformat()
-            start = (date.today() - timedelta(days=last_n * 2)).isoformat()  # buffer for weekends
+            # NBP rejects a range ending on a day whose table is not published
+            # yet, so end at the previous business day.
+            end_date = date.today() - timedelta(days=1)
+            while end_date.weekday() > 4:
+                end_date -= timedelta(days=1)
+            end   = end_date.isoformat()
+            start = (end_date - timedelta(days=last_n * 2)).isoformat()  # buffer for weekends
             raw   = self._get(f"exchangerates/tables/A/{start}/{end}/")
             rows  = self._flatten_table(raw)
             # Filter to major currencies only

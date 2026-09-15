@@ -281,12 +281,18 @@ class CNBWrapper:
                         term: str = "THREE_MONTHS") -> Dict[str, Any]:
         """PRIBOR for a specific term and year. term: ONE_DAY, THREE_MONTHS, etc."""
         y      = year or datetime.now(timezone.utc).year
-        params = {"year": y, "term": term}
         try:
-            raw   = self._get("pribor/daily-year-term", params)
+            # The CNB API serves the yearly series from pribor/daily-year and
+            # returns every period; the previous daily-year-term call with a
+            # "term" parameter was rejected (the API expects "period").
+            raw   = self._get("pribor/daily-year", {"year": y})
             pribs = raw.get("pribs", [])
+            # The API names the period THREE_MONTH; the script's term default
+            # is THREE_MONTHS, so compare without a trailing plural "S".
+            wanted = (term or "").rstrip("S")
             rows  = [{"date": p.get("validFor", ""), "pribor": p.get("pribor"),
-                      "pribid": p.get("pribid")} for p in pribs]
+                      "pribid": p.get("pribid")}
+                     for p in pribs if not wanted or (p.get("period") or "").rstrip("S") == wanted]
             return {
                 "success":   True,
                 "year":      y,
@@ -298,9 +304,9 @@ class CNBWrapper:
             }
         except requests.exceptions.HTTPError as e:
             sc = e.response.status_code if e.response is not None else None
-            return CNBError("pribor/daily-year-term", str(e), sc).to_dict()
+            return CNBError("pribor/daily-year", str(e), sc).to_dict()
         except Exception as e:
-            return CNBError("pribor/daily-year-term", str(e)).to_dict()
+            return CNBError("pribor/daily-year", str(e)).to_dict()
 
     def get_omo(self, trade_date: Optional[str] = None) -> Dict[str, Any]:
         """Open market operations (repo, deposit facility)."""
