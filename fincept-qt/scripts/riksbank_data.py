@@ -196,7 +196,7 @@ class RiksbankWrapper:
 
         for sid in series_ids:
             r = self._fetch_series(sid, from_date, to_date)
-            if r.get("success"):
+            if r.get("success") and r.get("data"):
                 fetched.append(sid)
                 for row in r.get("data", []):
                     d = row["date"]
@@ -204,7 +204,7 @@ class RiksbankWrapper:
                         wide[d] = {"date": d}
                     wide[d][sid] = row.get("value")
             else:
-                errors.append(f"{sid}: {r.get('error','unknown error')}")
+                errors.append(f"{sid}: {r.get('error') or 'provider returned no observations'}")
             if delay and sid != series_ids[-1]:
                 time.sleep(delay)
 

@@ -303,9 +303,13 @@ class BOIWrapper:
         else:
             failed.append(f"latest_rates: {today.get('error', 'no rows')}")
         if usd_hist.get("success"):
+            added = 0
             for r in (usd_hist.get("data") or [])[-5:]:
                 if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
                     rows.append({"component": "usd_week", **r})
+                    added += 1
+            if added == 0:
+                failed.append("usd_week: provider returned no observations")
         else:
             failed.append(f"usd_week: {usd_hist.get('error', 'no rows')}")
         if not rows:

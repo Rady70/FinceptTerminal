@@ -85,6 +85,21 @@ class TstNewsDateParse : public QObject {
         QVERIFY(within.isValid());
         QCOMPARE(within.toSecsSinceEpoch(), target);
     }
+
+    void epochWithinToleranceParses() {
+        const qint64 now = 1800000000;
+        const qint64 target = now + 5 * 3600;
+        const QDateTime within = news_parse_datetime(QString::number(target), now);
+        QVERIFY(within.isValid());
+        QCOMPARE(within.toSecsSinceEpoch(), target);
+    }
+
+    void epochFutureBeyondToleranceStaysUndated() {
+        const qint64 now = 1800000000;
+        // Seconds and milliseconds must both obey the same future tolerance.
+        QVERIFY(!news_parse_datetime(QString::number(now + 7 * 3600), now).isValid());
+        QVERIFY(!news_parse_datetime(QString::number((now + 7 * 3600) * 1000), now).isValid());
+    }
 };
 
 QTEST_MAIN(TstNewsDateParse)

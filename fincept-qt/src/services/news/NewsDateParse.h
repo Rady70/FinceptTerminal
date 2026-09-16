@@ -28,17 +28,21 @@ namespace fincept::services {
 
 inline QDateTime news_parse_datetime(const QString& text,
                                      qint64 now_secs = QDateTime::currentSecsSinceEpoch()) {
+    constexpr qint64 kFutureToleranceSec = 6 * 3600;
+
     const QString t = text.trimmed();
     if (t.isEmpty())
         return {};
 
-    // Epoch seconds/milliseconds (some JSON-backed feeds).
+    // Epoch seconds/milliseconds (some JSON-backed feeds). The same future
+    // tolerance applies here: an epoch seven hours or more ahead is a provider
+    // data error too, not a "current" article.
     bool numeric = false;
     const qlonglong as_number = t.toLongLong(&numeric);
     if (numeric && t.size() >= 9) {
         const qint64 secs = t.size() >= 12 ? as_number / 1000 : as_number;
         const QDateTime from_epoch = QDateTime::fromSecsSinceEpoch(secs);
-        if (from_epoch.isValid())
+        if (from_epoch.isValid() && from_epoch.toSecsSinceEpoch() <= now_secs + kFutureToleranceSec)
             return from_epoch;
     }
 
@@ -94,7 +98,6 @@ inline QDateTime news_parse_datetime(const QString& text,
     }
 
     if (dt.isValid()) {
-        constexpr qint64 kFutureToleranceSec = 6 * 3600;
         if (dt.toSecsSinceEpoch() > now_secs + kFutureToleranceSec)
             return {};
     }

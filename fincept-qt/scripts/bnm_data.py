@@ -139,6 +139,13 @@ class BNMWrapper:
     # Public methods
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _has_rate(parsed: Dict[str, Any]) -> bool:
+        """A rate row is only real when at least one rate was measured; the
+        `unit` metadata alone (always 1 for an empty item) is not data."""
+        return parsed.get("currency") not in (None, "") and any(
+            parsed.get(k) is not None for k in ("buying", "selling", "middle"))
+
     def get_exchange_rates(self, session: str = "1130") -> Dict[str, Any]:
         """All currency rates vs MYR for the specified daily session."""
         session = session.strip()
@@ -147,17 +154,21 @@ class BNMWrapper:
             items   = data.get("data", [])
             meta    = data.get("meta", {})
             parsed  = [self._parse_fx_item(i) for i in items]
+            kept    = [p for p in parsed if self._has_rate(p)]
+            if not kept:
+                return BNMError("exchange-rate",
+                                "provider returned no rate measurements for this session").to_dict()
             # Build simple flat dict: {USD: middle_rate, ...}
             flat: Dict[str, Optional[float]] = {}
-            for p in parsed:
+            for p in kept:
                 flat[p["currency"]] = p["middle"] or p["buying"]
             return {
                 "success":    True,
                 "session":    session,
-                "date":       parsed[0]["date"] if parsed else "",
+                "date":       kept[0]["date"],
                 "data":       flat,
-                "full_data":  parsed,
-                "count":      len(parsed),
+                "full_data":  kept,
+                "count":      len(kept),
                 "note":       "MYR per 1 unit of foreign currency (normalised from unit=100 where applicable)",
                 "source":     "Bank Negara Malaysia",
                 "url":        f"{BASE_URL}/exchange-rate",
@@ -178,6 +189,9 @@ class BNMWrapper:
             item   = data.get("data", {})
             meta   = data.get("meta", {})
             parsed = self._parse_fx_item(item)
+            if not self._has_rate(parsed):
+                return BNMError(f"exchange-rate/{currency}",
+                                "provider returned no rate for the requested currency").to_dict()
             return {
                 "success":   True,
                 "session":   session,
