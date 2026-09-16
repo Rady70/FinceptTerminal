@@ -196,9 +196,10 @@ class RiksbankWrapper:
 
         for sid in series_ids:
             r = self._fetch_series(sid, from_date, to_date)
-            if r.get("success") and r.get("data"):
+            measured = [row for row in r.get("data", []) if row.get("value") is not None]
+            if r.get("success") and measured:
                 fetched.append(sid)
-                for row in r.get("data", []):
+                for row in measured:
                     d = row["date"]
                     if d not in wide:
                         wide[d] = {"date": d}
@@ -319,12 +320,17 @@ class RiksbankWrapper:
             ("tbill_3m",    "SETB3MBENCH"),
         ]:
             r = self._fetch_series(sid, from_date)
-            if not r.get("success"):
-                failed.append(f"{name}: {r.get('error', 'failed')}")
+            latest = r.get("data", [{}])[-1] if r.get("data") else None
+            # A series only counts as fetched when it carries an actual
+            # measurement; success with no observations (or a None value) is
+            # a failed constituent, not a zero row.
+            ok = bool(r.get("success")) and isinstance(latest, dict) and latest.get("value") is not None
+            if not ok:
+                failed.append(f"{name}: {r.get('error') or 'provider returned no observations'}")
             results[name] = {
-                "success": r.get("success"),
+                "success": ok,
                 "label":   r.get("label", sid),
-                "latest":  r.get("data", [{}])[-1] if r.get("data") else None,
+                "latest":  latest,
             }
             time.sleep(0.3)  # be gentle with rate limits
         if all(not results[n].get("success") for n in results):

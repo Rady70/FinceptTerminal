@@ -47,6 +47,8 @@ class TstEconomicsEnvelope : public QObject {
     void partial_flag_is_a_failure_naming_components();
     void failed_sessions_without_flag_is_a_failure();
     void failed_years_without_flag_is_a_failure();
+    void failed_dates_without_flag_is_a_failure();
+    void failed_series_without_flag_is_a_failure();
     void partial_flag_without_details_is_a_failure();
     void benign_errors_key_is_not_a_partial_signal();
 };
@@ -150,6 +152,28 @@ void TstEconomicsEnvelope::failed_years_without_flag_is_a_failure() {
     QVERIFY(!d.ok);
     QVERIFY(d.partial);
     QVERIFY(d.error.contains(QStringLiteral("2025")));
+}
+
+void TstEconomicsEnvelope::failed_dates_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_dates": ["2026-09-15: timeout"],
+        "data": [{"date": "2026-09-14", "USD": 41.2}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("2026-09-15")));
+}
+
+void TstEconomicsEnvelope::failed_series_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_series": ["SEMB5YCACOMB: provider returned no observations"],
+        "data": [{"date": "2026-09-15", "SEMB2YCACOMB": 3.1}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("SEMB5YCACOMB")));
 }
 
 void TstEconomicsEnvelope::partial_flag_without_details_is_a_failure() {

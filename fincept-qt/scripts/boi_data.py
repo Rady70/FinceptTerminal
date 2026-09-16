@@ -297,9 +297,13 @@ class BOIWrapper:
         rows: List[Dict[str, Any]] = []
         failed: List[str] = []
         if today.get("success") and today.get("data"):
+            added = 0
             for r in today["data"]:
                 if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
                     rows.append({"component": "latest_rates", **r})
+                    added += 1
+            if added == 0:
+                failed.append("latest_rates: provider returned no observations")
         else:
             failed.append(f"latest_rates: {today.get('error', 'no rows')}")
         if usd_hist.get("success"):

@@ -152,7 +152,14 @@ class TCMBWrapper:
                                   max_lookback: int = 10) -> Optional[date]:
         """Walk back from `start` (default today) to the most recent
         published bulletin. Turkish bank holidays have no bulletin, so the
-        probe needs a few more days than a weekend."""
+        probe needs a few more days than a weekend.
+
+        Only the provider's no-bulletin condition (HTTP 404) may continue the
+        search. A timeout, other HTTP status or malformed XML is raised: the
+        date may well have a bulletin that simply could not be fetched, and
+        silently stepping over it would misreport an older day as the latest
+        published one.
+        """
         anchor = start or date.today()
         for i in range(max_lookback):
             d = anchor - timedelta(days=i)
@@ -160,8 +167,10 @@ class TCMBWrapper:
                 content = self._fetch(self._date_url(d))
                 ET.fromstring(content)   # verify it's valid XML
                 return d
-            except Exception:
-                continue
+            except Exception as exc:
+                if self._missing_bulletin(exc):
+                    continue
+                raise
         return None
 
     def _bulletin_rows(self, bulletin: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -169,17 +178,22 @@ class TCMBWrapper:
 
         The panel only keeps rows with a direct numeric value, so an object
         keyed by currency (each value an object) must never be returned raw.
+        A rate row requires at least one actual rate measurement; the `unit`
+        metadata alone (always present, even for an empty entry) is not data.
         """
         rows: List[Dict[str, Any]] = []
         for code, data in sorted(bulletin["rates"].items()):
             row: Dict[str, Any] = {"date": bulletin["date"], "currency": code}
+            has_rate = False
             for f in ("forex_buying", "forex_selling", "banknote_buying",
-                      "banknote_selling", "cross_rate_usd", "unit"):
+                      "banknote_selling", "cross_rate_usd"):
                 val = data.get(f)
                 if val is not None:
                     row[f] = val
-            if any(k not in ("date", "currency")
-                   for k in row):
+                    has_rate = True
+            if has_rate:
+                if data.get("unit") is not None:
+                    row["unit"] = data["unit"]
                 rows.append(row)
         return rows
 
@@ -355,11 +369,12 @@ class TCMBWrapper:
     def get_range(self, start_date: str, end_date: Optional[str] = None,
                   currencies: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        Exchange rates for a date range — fetches each business day individually.
-        Returns wide-format rows with forex_buying rates. Days with no bulletin
-        (weekends, Turkish bank holidays) are expected and reported under
-        `missing_dates`; genuine per-day failures make the result explicit
-        partial or, when nothing could be fetched, a typed failure.
+        Exchange rates for a date range — fetches each weekday individually.
+        Returns wide-format rows with forex_buying rates. Weekends are not
+        requested; a weekday with no published bulletin (Turkish bank holiday)
+        is expected and reported under `missing_dates`; genuine per-day
+        failures make the result explicit partial or, when nothing could be
+        fetched, a typed failure.
         """
         try:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
