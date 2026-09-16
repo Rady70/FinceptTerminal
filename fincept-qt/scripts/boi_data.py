@@ -167,19 +167,36 @@ class BOIWrapper:
     # ------------------------------------------------------------------
 
     def get_exchange_rates_today(self) -> Dict[str, Any]:
-        """Latest ILS exchange rates from the PublicApi (with daily change %)."""
+        """Latest ILS exchange rates from the PublicApi (with daily change %).
+
+        Missing values stay missing: a rate row only exists when
+        `currentExchangeRate` was actually measured, a missing `currentChange`
+        is omitted rather than manufactured as 0, and a missing `unit` is
+        omitted rather than defaulted to 1.
+        """
         try:
             data  = self._public_json("GetExchangeRates")
             rates = data.get("exchangeRates", [])
             result_rows = []
             for r in rates:
-                result_rows.append({
+                rate = r.get("currentExchangeRate")
+                if rate is None:
+                    continue  # no measurement is not a zero rate
+                row: Dict[str, Any] = {
                     "currency":    r.get("key"),
-                    "rate":        r.get("currentExchangeRate"),
-                    "change_pct":  round(r.get("currentChange", 0), 6),
-                    "unit":        r.get("unit", 1),
+                    "rate":        rate,
                     "last_update": r.get("lastUpdate"),
-                })
+                }
+                change = r.get("currentChange")
+                if change is not None:
+                    row["change_pct"] = round(change, 6)
+                unit = r.get("unit")
+                if unit is not None:
+                    row["unit"] = unit
+                result_rows.append(row)
+            if not result_rows:
+                return BOIError("GetExchangeRates",
+                                "provider returned no exchange-rate measurements").to_dict()
             return {
                 "success":   True,
                 "data":      result_rows,
@@ -299,11 +316,12 @@ class BOIWrapper:
         if today.get("success") and today.get("data"):
             added = 0
             for r in today["data"]:
-                if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
+                rate = r.get("rate") if isinstance(r, dict) else None
+                if isinstance(rate, (int, float)) and not isinstance(rate, bool):
                     rows.append({"component": "latest_rates", **r})
                     added += 1
             if added == 0:
-                failed.append("latest_rates: provider returned no observations")
+                failed.append("latest_rates: provider returned no measurements")
         else:
             failed.append(f"latest_rates: {today.get('error', 'no rows')}")
         if usd_hist.get("success"):
