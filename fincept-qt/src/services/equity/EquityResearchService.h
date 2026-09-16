@@ -85,6 +85,12 @@ class EquityResearchService : public QObject {
     // (fetch_company_news.py) is unavailable or returns no articles.
     void fetch_news_yfinance(const QString& symbol, int count);
 
+    // Public-provider candle path (cache with its named origin, then the
+    // yfinance sidecar). Used for symbols/periods not routed to IBKR and as the
+    // fallback when a routed IBKR request fails; the emitted provenance always
+    // names the provider that actually answered.
+    void fetch_public_history(const QString& symbol, const QString& period, const QString& cache_key);
+
     // NewsAPI.org path (native HTTP via news_nam_). Used when the equity News tab
     // selects the NewsApi provider and a key is configured. Caches under
     // "equity:news:newsapi:<symbol>"; on any failure (401/quota/network/empty)

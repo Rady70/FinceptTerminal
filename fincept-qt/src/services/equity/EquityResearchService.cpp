@@ -346,8 +346,13 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
     // symbol, bounded period, IBKR-only cache provenance) lives in
     // services/ibkr/IbkrHistoryRouting.h and is unit-tested there. Other
     // periods keep the public-provider path, and the provenance always names
-    // whichever provider answered. A routed symbol never falls back silently:
-    // an IBKR failure is reported and the displayed series is cleared.
+    // whichever provider answered.
+    //
+    // Failure policy (user decision, 2026-09-16): a failed IBKR request clears
+    // the displayed series and falls back to the public provider, whose
+    // provenance is then shown. The user asked to keep working data with a
+    // visible source instead of a hard "DATA UNAVAILABLE" banner whenever TWS
+    // is not running.
     const bool ibkr_configured = ibkr::IbkrTwsService::instance().configured();
     const bool ibkr_symbol_routed = ibkr_configured && ibkr::IbkrTwsService::instance().routes_symbol(symbol);
     const bool route_to_ibkr =
@@ -378,7 +383,7 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
         QPointer<EquityResearchService> self = this;
         ibkr::IbkrTwsService::instance().fetch_history(
             symbol, ibkr_duration, QStringLiteral("1 day"),
-            [self, symbol, cache_key](const ibkr::IbkrTwsHistoryResult& result) {
+            [self, symbol, period, cache_key](const ibkr::IbkrTwsHistoryResult& result) {
                 if (!self)
                     return;
                 if (!result.ok || !result.classification.usable || result.bars.isEmpty()) {
@@ -387,16 +392,20 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
                                                                                     ? result.classification.status
                                                                                     : QStringLiteral("no usable bars"));
                     LOG_WARN("EquityResearch", QString("IBKR history for %1 unavailable: %2").arg(symbol, reason));
+                    // User decision (2026-09-16): fall back to the public
+                    // provider. Clear first so the old series cannot stay
+                    // plotted under a stale label, then fetch the same window;
+                    // the provenance strip names the provider that answers.
+                    emit self->historical_loaded(symbol, {});
+                    if (ibkr::ibkr_history_failure_disposition() ==
+                        ibkr::IbkrHistoryFailureDisposition::FallbackToPublicProvider) {
+                        self->fetch_public_history(symbol, period, cache_key);
+                        return;
+                    }
                     RetrievalMeta meta;
                     meta.symbol = symbol;
                     meta.source = QStringLiteral("ibkr_tws");
                     meta.status = RetrievalStatus::Error;
-                    if (ibkr::ibkr_history_failure_disposition() ==
-                        ibkr::IbkrHistoryFailureDisposition::ClearSeriesAndReport) {
-                        // The previously displayed series must not stay plotted
-                        // while the provenance strip says IBKR/error.
-                        emit self->historical_loaded(symbol, {});
-                    }
                     emit self->historical_meta_loaded(symbol, meta);
                     emit self->error_occurred(
                         "Historical", QStringLiteral("IBKR history unavailable for %1 (%2)").arg(symbol, reason));
@@ -416,6 +425,13 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
         return;
     }
 
+    // Not routed to IBKR: the public-provider path (cache with named origin,
+    // then the yfinance sidecar) answers and its provenance is shown.
+    fetch_public_history(symbol, period, cache_key);
+}
+
+void EquityResearchService::fetch_public_history(const QString& symbol, const QString& period,
+                                                 const QString& cache_key) {
     const QVariant hcv = fincept::CacheManager::instance().get(cache_key);
     if (!hcv.isNull()) {
         auto arr = QJsonDocument::fromJson(hcv.toString().toUtf8()).array();
@@ -439,13 +455,14 @@ void EquityResearchService::load_historical_only(const QString& symbol, const QS
     }
     run_python("yfinance_data.py", {"historical_period", symbol, period, "1d"},
                [this, symbol, cache_key](bool ok, const QString& out) {
-                   if (!ok) {
-                       emit error_occurred("Historical", "Failed to fetch historical for " + symbol);
-                       return;
-                   }
-                   auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
-                   // Source branch 3 — yfinance for a symbol not explicitly
-                   // routed to IBKR (whose branch is handled above).
+                if (!ok) {
+                    emit error_occurred("Historical", "Failed to fetch historical for " + symbol +
+                                                        " from the public provider");
+                    return;
+                }
+                auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
+                // Source branch 3 - yfinance (public provider): unrouted
+                // symbols/periods and the fallback after a failed IBKR route.
                    const qint64 at = now_epoch_sec();
                    if (!arr.isEmpty()) {
                        fincept::CacheManager::instance().put(
