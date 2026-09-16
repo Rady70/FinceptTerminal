@@ -10,6 +10,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "network/http/HttpClient.h"
+#include "services/news/NewsDateParse.h"
 #include "services/news/NewsService.h"
 #include "storage/cache/CacheManager.h"
 
@@ -34,77 +35,6 @@ namespace fincept::services {
 
 // Max chars retained from an item's description after HTML stripping.
 static constexpr int kSummaryMaxChars = 300;
-
-// Common RSS/Atom date shapes. A date that does not match any of them stays
-// invalid so the article remains undated rather than being promoted to "now".
-static QDateTime parse_article_datetime(const QString& text) {
-    const QString t = text.trimmed();
-    if (t.isEmpty())
-        return {};
-
-    // Epoch seconds/milliseconds (some JSON-backed feeds).
-    bool numeric = false;
-    const qlonglong as_number = t.toLongLong(&numeric);
-    if (numeric && t.size() >= 9) {
-        const qint64 secs = t.size() >= 12 ? as_number / 1000 : as_number;
-        const QDateTime from_epoch = QDateTime::fromSecsSinceEpoch(secs);
-        if (from_epoch.isValid())
-            return from_epoch;
-    }
-
-    static const char* kFormats[] = {
-        "ddd, dd MMM yyyy HH:mm:ss t", // RFC 822 with a named zone (GMT/UTC/CET…)
-        "ddd, dd MMM yyyy HH:mm t",
-        "ddd, dd MMM yyyy HH:mm:ss",
-        "ddd, dd MMM yyyy HH:mm",
-        "dd MMM yyyy HH:mm:ss",
-        "dd MMM yyyy HH:mm",
-        "MMM dd, yyyy HH:mm",
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-dd HH:mm",
-    };
-
-    auto try_all = [&](const QString& value) -> QDateTime {
-        QDateTime parsed = QDateTime::fromString(value, Qt::RFC2822Date);
-        if (!parsed.isValid())
-            parsed = QDateTime::fromString(value, Qt::ISODate);
-        if (parsed.isValid())
-            return parsed;
-        for (const char* format : kFormats) {
-            parsed = QDateTime::fromString(value, QString::fromLatin1(format));
-            if (parsed.isValid())
-                return parsed;
-        }
-        return {};
-    };
-
-    QDateTime dt = try_all(t);
-
-    // Some feeds append a zone abbreviation Qt's RFC parser rejects (e.g.
-    // "… 21:58:41 GMT"); retry without it. AM/PM markers are not zones.
-    if (!dt.isValid()) {
-        const int space = t.lastIndexOf(QLatin1Char(' '));
-        if (space > 0) {
-            const QString tail = t.mid(space + 1);
-            const bool looks_like_zone = tail.size() >= 2 && tail.size() <= 5 &&
-                                         tail != QLatin1String("AM") && tail != QLatin1String("PM") &&
-                                         tail.at(0).isUpper() &&
-                                         std::all_of(tail.cbegin(), tail.cend(),
-                                                     [](QChar c) { return c.isLetter(); });
-            if (looks_like_zone)
-                dt = try_all(t.left(space));
-        }
-    }
-
-    // A publication time far in the future is a provider data error; keep the
-    // article undated instead of letting it pass every time window as "now".
-    if (dt.isValid()) {
-        constexpr qint64 kFutureToleranceSec = 6 * 3600;
-        if (dt.toSecsSinceEpoch() > QDateTime::currentSecsSinceEpoch() + kFutureToleranceSec)
-            return {};
-    }
-    return dt;
-}
 
 // ── RSS XML parser ──────────────────────────────────────────────────────────
 
@@ -162,7 +92,7 @@ QVector<NewsArticle> NewsService::parse_rss_xml(const QByteArray& xml, const RSS
             } else if (current_tag == "pubDate" || current_tag == "published" || current_tag == "updated" ||
                        current_tag == "date") {
                 if (current.sort_ts == 0) {
-                    const QDateTime dt = parse_article_datetime(text);
+                    const QDateTime dt = news_parse_datetime(text);
                     if (dt.isValid()) {
                         current.sort_ts = dt.toSecsSinceEpoch();
                         current.time = dt.toString("MMM dd, HH:mm");

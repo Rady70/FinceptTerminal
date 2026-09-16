@@ -284,6 +284,7 @@ void GlobalCentralBanksPanel::build_controls(QHBoxLayout* thl) {
     bank_lbl_->setStyleSheet(ctrl_label_style());
 
     bank_combo_ = new QComboBox;
+    bank_combo_->setObjectName("cbBankCombo");
     for (const auto& b : kBanks)
         bank_combo_->addItem(b.label);
     bank_combo_->setFixedHeight(26);
@@ -293,6 +294,7 @@ void GlobalCentralBanksPanel::build_controls(QHBoxLayout* thl) {
     series_lbl_->setStyleSheet(ctrl_label_style());
 
     series_combo_ = new QComboBox;
+    series_combo_->setObjectName("cbSeriesCombo");
     series_combo_->setFixedHeight(26);
     series_combo_->setMinimumWidth(200);
 

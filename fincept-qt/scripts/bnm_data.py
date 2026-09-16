@@ -194,23 +194,42 @@ class BNMWrapper:
             return BNMError(f"exchange-rate/{currency}", str(e)).to_dict()
 
     def get_all_sessions(self, currency: str = "USD") -> Dict[str, Any]:
-        """Fetch a currency rate across all three daily sessions."""
+        """Fetch a currency rate across all three daily sessions.
+
+        Composite action: rows carry the session label so the panel can render
+        them; a session that fails is reported (partial result with
+        `failed_sessions`) instead of being hidden behind success=true, and
+        losing every session is a failure.
+        """
         currency = currency.upper()
-        results: Dict[str, Any] = {}
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
         for sess in SESSIONS:
             r = self.get_currency(currency, sess)
-            if r.get("success"):
-                results[sess] = r.get("data", {})
-            else:
-                results[sess] = {"error": r.get("error", "failed")}
-        return {
+            if not r.get("success"):
+                failed.append(f"{sess}: {r.get('error', 'failed')}")
+                continue
+            data = r.get("data") or {}
+            if not data:
+                failed.append(f"{sess}: provider returned no rate")
+                continue
+            rows.append({"session": sess, **data})
+        if not rows:
+            return BNMError(f"exchange-rate/{currency}", "all sessions failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
             "currency":  currency,
-            "sessions":  results,
+            "data":      rows,
+            "count":     len(rows),
             "note":      "MYR per 1 unit; sessions: 0900=morning fix, 1200=noon, 1130=closing",
             "source":    "Bank Negara Malaysia",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]          = True
+            result["failed_sessions"]  = failed
+        return result
 
     def get_interest_rates(self) -> Dict[str, Any]:
         """Base rate, BLR, OPR, and KLIBOR rates."""
@@ -319,21 +338,65 @@ class BNMWrapper:
         }
 
     def get_overview(self) -> Dict[str, Any]:
-        """Snapshot: major rates + OPR + gold (Kijang Emas)."""
+        """Snapshot: major rates + OPR + gold (Kijang Emas), flattened to rows.
+
+        Composite action: each component becomes a numeric-bearing row the
+        panel can render. A failed component is reported (partial result with
+        `failed_components`) instead of being hidden behind success=true;
+        losing every component is a failure.
+        """
         fx   = self.get_major_currencies()
         opr  = self.get_opr()
         gold = self.get_kijang_emas()
-        return {
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
+
+        if fx.get("success") and fx.get("data"):
+            rows.append({"component": "exchange_rates", "date": fx.get("date", ""),
+                         **fx["data"]})
+        else:
+            failed.append(f"exchange_rates: {fx.get('error', 'no rows')}")
+
+        if opr.get("success") and isinstance(opr.get("data"), dict):
+            row = {k: v for k, v in opr["data"].items()
+                   if v is not None and not isinstance(v, (dict, list, bool))}
+            if row:
+                rows.append({"component": "opr", **row})
+            else:
+                failed.append("opr: provider returned no numeric row")
+        else:
+            failed.append(f"opr: {opr.get('error', 'no rows')}")
+
+        gold_data = gold.get("data") if gold.get("success") else None
+        if isinstance(gold_data, dict):
+            row = {"component": "kijang_emas", "date": gold_data.get("effective_date", "")}
+            for weight in ("one_oz", "half_oz", "quarter_oz"):
+                part = gold_data.get(weight)
+                if isinstance(part, dict):
+                    for side in ("buying", "selling"):
+                        if part.get(side) is not None:
+                            row[f"{weight}_{side}"] = part[side]
+            if any(k not in ("component", "date") for k in row):
+                rows.append(row)
+            else:
+                failed.append("kijang_emas: provider returned no numeric row")
+        else:
+            failed.append(f"kijang_emas: {gold.get('error', 'no rows')}")
+
+        if not rows:
+            return BNMError("overview", "all overview components failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
-            "date":      fx.get("date", ""),
-            "data": {
-                "exchange_rates": fx.get("data", {}),
-                "opr":            opr.get("data", {}),
-                "kijang_emas":    gold.get("data", {}),
-            },
+            "data":      rows,
+            "count":     len(rows),
             "source":    "Bank Negara Malaysia",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def available_currencies(self) -> Dict[str, Any]:
         """List available currencies and their unit multipliers."""

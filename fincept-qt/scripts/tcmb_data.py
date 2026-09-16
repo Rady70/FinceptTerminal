@@ -148,11 +148,14 @@ class TCMBWrapper:
     def _date_url(self, d: date) -> str:
         return f"{BASE_URL}/{d.strftime('%Y%m')}/{d.strftime('%d%m%Y')}.xml"
 
-    def _find_latest_business_day(self, max_lookback: int = 7) -> Optional[date]:
-        """Walk back from today to find the most recent published bulletin."""
-        today = date.today()
+    def _find_latest_business_day(self, start: Optional[date] = None,
+                                  max_lookback: int = 10) -> Optional[date]:
+        """Walk back from `start` (default today) to the most recent
+        published bulletin. Turkish bank holidays have no bulletin, so the
+        probe needs a few more days than a weekend."""
+        anchor = start or date.today()
         for i in range(max_lookback):
-            d = today - timedelta(days=i)
+            d = anchor - timedelta(days=i)
             try:
                 content = self._fetch(self._date_url(d))
                 ET.fromstring(content)   # verify it's valid XML
@@ -160,6 +163,25 @@ class TCMBWrapper:
             except Exception:
                 continue
         return None
+
+    def _bulletin_rows(self, bulletin: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Flatten one bulletin to per-currency rows the panel can render.
+
+        The panel only keeps rows with a direct numeric value, so an object
+        keyed by currency (each value an object) must never be returned raw.
+        """
+        rows: List[Dict[str, Any]] = []
+        for code, data in sorted(bulletin["rates"].items()):
+            row: Dict[str, Any] = {"date": bulletin["date"], "currency": code}
+            for f in ("forex_buying", "forex_selling", "banknote_buying",
+                      "banknote_selling", "cross_rate_usd", "unit"):
+                val = data.get(f)
+                if val is not None:
+                    row[f] = val
+            if any(k not in ("date", "currency")
+                   for k in row):
+                rows.append(row)
+        return rows
 
     def _flatten_rates(self, bulletin: Dict[str, Any],
                        fields: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -188,7 +210,8 @@ class TCMBWrapper:
                 "success":    True,
                 "date":       bulletin["date"],
                 "bulten_no":  bulletin["bulten_no"],
-                "data":       bulletin["rates"],
+                "data":       self._bulletin_rows(bulletin),
+                "count":      len(bulletin["rates"]),
                 "note":       "TRY per 1 unit of foreign currency (JPY normalised from per-100)",
                 "source":     "Central Bank of the Republic of Turkey",
                 "url":        f"{BASE_URL}/today.xml",
@@ -201,21 +224,41 @@ class TCMBWrapper:
             return TCMBError("today", str(e)).to_dict()
 
     def get_date(self, rate_date: str) -> Dict[str, Any]:
-        """Exchange rates for a specific date (YYYY-MM-DD). Must be a business day."""
+        """Exchange rates for a specific date (YYYY-MM-DD).
+
+        TCMB publishes bulletins on Turkish business days only; a requested
+        weekend or bank-holiday date has no bulletin. When the exact date has
+        none, walk backwards a small number of days to the latest published
+        bulletin instead of failing, and say which date was actually served.
+        """
         try:
             d        = datetime.strptime(rate_date, "%Y-%m-%d").date()
             url      = self._date_url(d)
-            content  = self._fetch(url)
-            bulletin = self._parse_bulletin(content)
+            try:
+                content  = self._fetch(url)
+                bulletin = self._parse_bulletin(content)
+                served   = d
+            except Exception as first_exc:
+                served = self._find_latest_business_day(start=d - timedelta(days=1),
+                                                        max_lookback=10)
+                if served is None:
+                    raise first_exc
+                url      = self._date_url(served)
+                content  = self._fetch(url)
+                bulletin = self._parse_bulletin(content)
             return {
-                "success":   True,
-                "date":      bulletin["date"],
-                "bulten_no": bulletin["bulten_no"],
-                "data":      bulletin["rates"],
-                "note":      "TRY per 1 unit of foreign currency",
-                "source":    "Central Bank of the Republic of Turkey",
-                "url":       url,
-                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                "success":        True,
+                "date":           bulletin["date"],
+                "requested_date": rate_date,
+                "bulten_no":      bulletin["bulten_no"],
+                "data":           self._bulletin_rows(bulletin),
+                "count":          len(bulletin["rates"]),
+                "note":           ("TRY per 1 unit of foreign currency"
+                                   + ("" if served == d else
+                                      f"; no bulletin for {rate_date}, showing the latest published day")),
+                "source":         "Central Bank of the Republic of Turkey",
+                "url":            url,
+                "timestamp":      int(datetime.now(timezone.utc).timestamp()),
             }
         except requests.exceptions.HTTPError as e:
             sc = e.response.status_code if e.response is not None else None
@@ -248,9 +291,15 @@ class TCMBWrapper:
                                 if buy is not None:
                                     row[code] = buy
                         rows.append(row)
-                    except Exception:
-                        pass   # holiday / no data for this day
+                    except Exception as exc:
+                        errors.append(f"{d.isoformat()}: {exc}")   # holiday / no data
                 d += timedelta(days=1)
+
+            if not rows and errors:
+                return TCMBError(
+                    "range",
+                    f"no bulletin fetched for {start.isoformat()}..{end.isoformat()} "
+                    f"({len(errors)} failed days; first: {errors[0]})").to_dict()
 
             return {
                 "success":    True,
@@ -282,6 +331,7 @@ class TCMBWrapper:
             start  = datetime.strptime(start_date, "%Y-%m-%d").date()
             end_d  = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
             rows: List[Dict[str, Any]] = []
+            errors: List[str] = []
             d = start
             while d <= end_d:
                 if d.weekday() < 5:
@@ -297,9 +347,15 @@ class TCMBWrapper:
                                 "banknote_buying":   cdata.get("banknote_buying"),
                                 "banknote_selling":  cdata.get("banknote_selling"),
                             })
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        errors.append(f"{d.isoformat()}: {exc}")
                 d += timedelta(days=1)
+
+            if not rows and errors:
+                return TCMBError(
+                    f"currency/{currency}",
+                    f"no bulletin fetched for {start.isoformat()}..{end_d.isoformat()} "
+                    f"({len(errors)} failed days; first: {errors[0]})").to_dict()
 
             return {
                 "success":    True,
@@ -326,20 +382,26 @@ class TCMBWrapper:
         today = self.get_today()
         if not today.get("success"):
             return today
-        all_rates = today.get("data", {})
-        snapshot  = {}
-        for c in MAJOR_CURRENCIES:
-            if c in all_rates:
-                snapshot[c] = {
-                    "buy":  all_rates[c].get("forex_buying"),
-                    "sell": all_rates[c].get("forex_selling"),
-                }
+        rows: List[Dict[str, Any]] = []
+        for r in today.get("data", []):
+            c = r.get("currency")
+            if c not in MAJOR_CURRENCIES:
+                continue
+            row: Dict[str, Any] = {"date": today.get("date"), "currency": c}
+            if r.get("forex_buying") is not None:
+                row["buy"] = r["forex_buying"]
+            if r.get("forex_selling") is not None:
+                row["sell"] = r["forex_selling"]
+            if len(row) > 2:
+                rows.append(row)
+        if not rows:
+            return TCMBError("overview", "today's bulletin carries no major-currency rates").to_dict()
         return {
             "success":    True,
             "date":       today.get("date"),
             "bulten_no":  today.get("bulten_no"),
-            "data":       snapshot,
-            "all_rates":  all_rates,
+            "data":       rows,
+            "count":      len(rows),
             "note":       "TRY per 1 unit of foreign currency",
             "source":     "Central Bank of the Republic of Turkey",
             "timestamp":  int(datetime.now(timezone.utc).timestamp()),

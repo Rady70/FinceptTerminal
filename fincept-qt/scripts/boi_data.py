@@ -283,20 +283,45 @@ class BOIWrapper:
             return BOIError("EXR all", str(e)).to_dict()
 
     def get_overview(self) -> Dict[str, Any]:
-        """Snapshot: latest rates (PublicApi) + USD & EUR history."""
+        """Snapshot: latest rates (PublicApi) + USD & EUR history.
+
+        Composite action: both components are flattened into one row list the
+        panel can render (the panel only looks one level deep for rows). A
+        failed component is reported instead of being hidden behind
+        success=true; losing both is a failure.
+        """
         today    = self.get_exchange_rates_today()
         usd_hist = self.get_usd_ils(
             start=(date.today() - timedelta(days=7)).isoformat()
         )
-        return {
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        if today.get("success") and today.get("data"):
+            for r in today["data"]:
+                if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
+                    rows.append({"component": "latest_rates", **r})
+        else:
+            failed.append(f"latest_rates: {today.get('error', 'no rows')}")
+        if usd_hist.get("success"):
+            for r in (usd_hist.get("data") or [])[-5:]:
+                if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
+                    rows.append({"component": "usd_week", **r})
+        else:
+            failed.append(f"usd_week: {usd_hist.get('error', 'no rows')}")
+        if not rows:
+            return BOIError("overview", "all overview components failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
-            "data": {
-                "latest_rates": today,
-                "usd_week":     usd_hist.get("data", [])[-5:],
-            },
+            "data":      rows,
+            "count":     len(rows),
             "source":    "Bank of Israel",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def available_series(self) -> Dict[str, Any]:
         """Built-in EXR series catalogue."""
