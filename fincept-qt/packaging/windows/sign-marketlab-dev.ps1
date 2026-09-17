@@ -11,7 +11,7 @@
 # Valid signatures are preserved. NotSigned files are signed only when they
 # are MarketLab-owned, the approved qgeoview.dll exception, or explicitly
 # named on the command line. Any other signature status fails unless -Force is
-# supplied.
+# supplied for an approved target; unapproved files are always skipped.
 #
 # Usage:
 #   powershell -File packaging/windows/sign-marketlab-dev.ps1 -Path build/win-dev
@@ -41,8 +41,7 @@ $MarketLabOwnedNames = @(
 # Explicitly approved bundled third-party exception: QGeoView ships inside the
 # MarketLab package, is not MarketLab-owned, and was the confirmed Smart App
 # Control launch blocker. It is signed only because of that exception. Do not
-# add other bundled third-party files here; pass -IncludeBundledThirdParty
-# only after an actual SAC block and with that file explicitly named.
+# add other bundled third-party files here.
 $BundledThirdPartyExceptions = @(
     "qgeoview.dll"
 )
@@ -156,6 +155,9 @@ foreach ($entry in Resolve-TargetFiles) {
         $action = "skip-valid"
     } elseif ($sig.Status -eq "NotSigned") {
         $action = if ($eligible) { "sign" } else { "skip-not-approved" }
+    } elseif (-not $eligible) {
+        # -Force never makes an unapproved file signable.
+        $action = "skip-not-approved"
     } elseif ($Force) {
         $action = "sign-force"
     } else {

@@ -25,6 +25,7 @@ $cert = New-SelfSignedCertificate `
     -Type CodeSigningCert -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
     -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(2) `
     -CertStoreLocation Cert:\CurrentUser\My
+New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\MarketLab\certs" | Out-Null
 Export-Certificate -Cert $cert -FilePath "$env:LOCALAPPDATA\MarketLab\certs\marketlab-dev-codesign.cer" -Type CERT
 certutil -user -addstore Root "$env:LOCALAPPDATA\MarketLab\certs\marketlab-dev-codesign.cer"
 Import-Certificate -FilePath "$env:LOCALAPPDATA\MarketLab\certs\marketlab-dev-codesign.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
@@ -50,7 +51,8 @@ Selection:
 - other bundled third-party files (`libcrypto`, `libssl`, `yt-dlp`, ...) are
   never touched by directory scans;
 - a `Valid` signature is preserved; `NotSigned` files are signed only when
-  approved; any other signature status fails the run unless `-Force` is given.
+  approved; any other signature status fails the run unless `-Force` is given
+  for an approved target. `-Force` never makes an unapproved file signable.
 
 Each result row is classified as `marketlab-owned`, `bundled-exception`,
 `explicit` or `third-party`.
