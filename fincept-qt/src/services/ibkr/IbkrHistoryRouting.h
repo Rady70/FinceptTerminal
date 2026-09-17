@@ -58,4 +58,12 @@ inline IbkrHistoryFailureDisposition ibkr_history_failure_disposition() {
     return IbkrHistoryFailureDisposition::FallbackToPublicProvider;
 }
 
+/// The public provider (or its cache) only counts as an answer when it carries
+/// at least one usable bar. An empty result after a failed routed request is
+/// the both-providers-failed case and must surface as unavailable instead of
+/// leaving an empty chart without explanation.
+inline bool public_history_result_is_usable(int usable_bars) {
+    return usable_bars > 0;
+}
+
 } // namespace fincept::services::ibkr

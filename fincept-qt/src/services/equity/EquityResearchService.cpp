@@ -436,42 +436,60 @@ void EquityResearchService::fetch_public_history(const QString& symbol, const QS
     if (!hcv.isNull()) {
         auto arr = QJsonDocument::fromJson(hcv.toString().toUtf8()).array();
         if (!arr.isEmpty()) {
-            // Source branch 1 — the local cache. The sidecar remembers who
-            // originally answered and when, so a cached series still names its
-            // provider rather than implying the cache produced the prices.
             CandleParseStats stats;
             const auto candles = parse_candles_json(arr, &stats);
-            QString origin;
-            qint64 at = 0;
-            get_retrieval_meta(cache_key, origin, at);
-            RetrievalMeta meta =
-                candles_meta(symbol, cache_source_label(origin), at, static_cast<int>(candles.size()), stats);
-            if (at > 0 && now_epoch_sec() - at > kHistoricalTtlSec)
-                meta.status = RetrievalStatus::Stale;
-            emit historical_meta_loaded(symbol, meta);
-            emit historical_loaded(symbol, candles);
-            return;
+            if (ibkr::public_history_result_is_usable(static_cast<int>(candles.size()))) {
+                // Source branch 1 - the local cache. The sidecar remembers who
+                // originally answered and when, so a cached series still names
+                // its provider rather than implying the cache produced the
+                // prices.
+                QString origin;
+                qint64 at = 0;
+                get_retrieval_meta(cache_key, origin, at);
+                RetrievalMeta meta =
+                    candles_meta(symbol, cache_source_label(origin), at, static_cast<int>(candles.size()), stats);
+                if (at > 0 && now_epoch_sec() - at > kHistoricalTtlSec)
+                    meta.status = RetrievalStatus::Stale;
+                emit historical_meta_loaded(symbol, meta);
+                emit historical_loaded(symbol, candles);
+                return;
+            }
+            // A cache entry with no usable bars is not an answer; fall through
+            // to the provider fetch below.
         }
     }
     run_python("yfinance_data.py", {"historical_period", symbol, period, "1d"},
                [this, symbol, cache_key](bool ok, const QString& out) {
-                if (!ok) {
-                    emit error_occurred("Historical", "Failed to fetch historical for " + symbol +
-                                                        " from the public provider");
-                    return;
-                }
-                auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
-                // Source branch 3 - yfinance (public provider): unrouted
-                // symbols/periods and the fallback after a failed IBKR route.
-                   const qint64 at = now_epoch_sec();
-                   if (!arr.isEmpty()) {
-                       fincept::CacheManager::instance().put(
-                           cache_key, QVariant(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact))),
-                           kHistoricalTtlSec, "equity");
-                       put_retrieval_meta(cache_key, QStringLiteral("yfinance"), at, kHistoricalTtlSec);
+                   if (!ok) {
+                       emit error_occurred("Historical", "Failed to fetch historical for " + symbol +
+                                                           " from the public provider");
+                       return;
                    }
+                   auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
                    CandleParseStats stats;
                    const auto candles = parse_candles_json(arr, &stats);
+                   const qint64 at = now_epoch_sec();
+                   // Source branch 3 - yfinance (public provider): unrouted
+                   // symbols/periods and the fallback after a failed IBKR route.
+                   if (!ibkr::public_history_result_is_usable(static_cast<int>(candles.size()))) {
+                       // Both providers failed: the routed IBKR request already
+                       // failed and the public provider produced no usable bars.
+                       // Clear the series, mark the provenance as an error and
+                       // raise the unavailable banner instead of an empty chart.
+                       RetrievalMeta meta;
+                       meta.symbol = symbol;
+                       meta.source = QStringLiteral("yfinance");
+                       meta.status = RetrievalStatus::Error;
+                       emit historical_meta_loaded(symbol, meta);
+                       emit historical_loaded(symbol, {});
+                       emit error_occurred("Historical", "No usable historical data for " + symbol +
+                                                           " from the public provider");
+                       return;
+                   }
+                   fincept::CacheManager::instance().put(
+                       cache_key, QVariant(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact))),
+                       kHistoricalTtlSec, "equity");
+                   put_retrieval_meta(cache_key, QStringLiteral("yfinance"), at, kHistoricalTtlSec);
                    emit historical_meta_loaded(symbol, candles_meta(symbol, QStringLiteral("yfinance"), at,
                                                                     static_cast<int>(candles.size()), stats));
                    emit historical_loaded(symbol, candles);

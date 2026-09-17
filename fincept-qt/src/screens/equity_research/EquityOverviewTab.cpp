@@ -44,6 +44,9 @@ namespace {
 constexpr const char* kErrorBannerName = "overviewErrorBanner";
 constexpr const char* kErrorMessageName = "overviewErrorMessage";
 constexpr const char* kRetryButtonName = "overviewRetryButton";
+// The chart-history provenance strip. Named so the qualification driver can
+// assert on this label specifically instead of any other "SRC:" text.
+constexpr const char* kHistSourceName = "overviewHistSource";
 
 // Style for the chart's provenance strip; %1 is the text colour. Mirrors the
 // value-label shape add_row_ gives every other value on this tab, one size down
@@ -525,6 +528,7 @@ QWidget* EquityOverviewTab::build_chart_panel() {
     // source and retrieval status; a chart that cannot say where its bars came
     // from satisfies neither half.
     hist_source_label_ = new QLabel(QString::fromUtf8("\xe2\x80\x94"));
+    hist_source_label_->setObjectName(QLatin1String(kHistSourceName));
     hist_source_label_->setStyleSheet(QString(kHistSrcStyle).arg(ui::colors::TEXT_TERTIARY()));
     btn_row->addWidget(hist_source_label_);
 
