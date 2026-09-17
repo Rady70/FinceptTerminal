@@ -89,8 +89,9 @@ QWidget* DocsScreen::page_crypto_trading() {
 
 QWidget* DocsScreen::page_paper_trading() {
     return make_page(
-        tr("PAPER TRADING"), tr("Risk-free simulated trading engine — NOT AVAILABLE in this build: the paper path "
-                                "belonged to the removed crypto/exchange screens."),
+        tr("PAPER TRADING"),
+        tr("Risk-free simulated trading engine — NOT AVAILABLE in this build: the paper path "
+           "belonged to the removed crypto/exchange screens."),
         {
             {tr("OVERVIEW"), tr("The paper trading engine simulates real market execution with a virtual portfolio. "
                                 "Available in Crypto Trading screen via the Paper/Live toggle. Your paper portfolio "
@@ -115,8 +116,9 @@ QWidget* DocsScreen::page_paper_trading() {
 
 QWidget* DocsScreen::page_algo_trading() {
     return make_page(
-        tr("ALGO TRADING"), tr("Algorithmic strategy builder, scanner, and deployment — NOT AVAILABLE in this build: "
-                               "live/paper algo deployment is not exposed."),
+        tr("ALGO TRADING"),
+        tr("Algorithmic strategy builder, scanner, and deployment — NOT AVAILABLE in this build: "
+           "live/paper algo deployment is not exposed."),
         {
             {tr("OVERVIEW"), tr("The Algo Trading screen provides a complete environment for building, testing, "
                                 "and deploying algorithmic trading strategies. It includes a strategy builder, "
@@ -299,8 +301,9 @@ QWidget* DocsScreen::page_ma_analytics() {
 
 QWidget* DocsScreen::page_quantlib() {
     return make_page(
-        tr("QUANTLIB SUITE"), tr("18 quantitative analysis modules with 590+ endpoints — NOT AVAILABLE in this build: "
-                                 "the hosted QuantLib suite is removed; use the local Derivatives calculator."),
+        tr("QUANTLIB SUITE"),
+        tr("18 quantitative analysis modules with 590+ endpoints — NOT AVAILABLE in this build: "
+           "the hosted QuantLib suite is removed; use the local Derivatives calculator."),
         {
             {tr("OVERVIEW"), tr("The QuantLib Suite provides access to 590+ quantitative analysis endpoints organized "
                                 "into 18 modules. Powered by a REST API backend, it covers everything from basic "

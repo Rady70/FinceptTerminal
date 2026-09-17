@@ -461,8 +461,8 @@ void EquityResearchService::fetch_public_history(const QString& symbol, const QS
     run_python("yfinance_data.py", {"historical_period", symbol, period, "1d"},
                [this, symbol, cache_key](bool ok, const QString& out) {
                    if (!ok) {
-                       emit error_occurred("Historical", "Failed to fetch historical for " + symbol +
-                                                           " from the public provider");
+                       emit error_occurred("Historical",
+                                           "Failed to fetch historical for " + symbol + " from the public provider");
                        return;
                    }
                    auto arr = QJsonDocument::fromJson(python::extract_json(out).toUtf8()).array();
@@ -482,8 +482,8 @@ void EquityResearchService::fetch_public_history(const QString& symbol, const QS
                        meta.status = RetrievalStatus::Error;
                        emit historical_meta_loaded(symbol, meta);
                        emit historical_loaded(symbol, {});
-                       emit error_occurred("Historical", "No usable historical data for " + symbol +
-                                                           " from the public provider");
+                       emit error_occurred("Historical",
+                                           "No usable historical data for " + symbol + " from the public provider");
                        return;
                    }
                    fincept::CacheManager::instance().put(

@@ -26,8 +26,7 @@
 
 namespace fincept::services {
 
-inline QDateTime news_parse_datetime(const QString& text,
-                                     qint64 now_secs = QDateTime::currentSecsSinceEpoch()) {
+inline QDateTime news_parse_datetime(const QString& text, qint64 now_secs = QDateTime::currentSecsSinceEpoch()) {
     constexpr qint64 kFutureToleranceSec = 6 * 3600;
 
     const QString t = text.trimmed();
@@ -47,13 +46,8 @@ inline QDateTime news_parse_datetime(const QString& text,
     }
 
     static const char* kFormats[] = {
-        "ddd, dd MMM yyyy HH:mm:ss",
-        "ddd, dd MMM yyyy HH:mm",
-        "dd MMM yyyy HH:mm:ss",
-        "dd MMM yyyy HH:mm",
-        "MMM dd, yyyy HH:mm",
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-dd HH:mm",
+        "ddd, dd MMM yyyy HH:mm:ss", "ddd, dd MMM yyyy HH:mm", "dd MMM yyyy HH:mm:ss", "dd MMM yyyy HH:mm",
+        "MMM dd, yyyy HH:mm",        "yyyy-MM-dd HH:mm:ss",    "yyyy-MM-dd HH:mm",
     };
 
     auto try_all = [&](const QString& value) -> QDateTime {
@@ -79,11 +73,9 @@ inline QDateTime news_parse_datetime(const QString& text,
         const int space = t.lastIndexOf(QLatin1Char(' '));
         if (space > 0) {
             const QString tail = t.mid(space + 1);
-            const bool looks_like_zone = tail.size() >= 2 && tail.size() <= 5 &&
-                                         tail != QLatin1String("AM") && tail != QLatin1String("PM") &&
-                                         tail.at(0).isUpper() &&
-                                         std::all_of(tail.cbegin(), tail.cend(),
-                                                     [](QChar c) { return c.isLetter(); });
+            const bool looks_like_zone = tail.size() >= 2 && tail.size() <= 5 && tail != QLatin1String("AM") &&
+                                         tail != QLatin1String("PM") && tail.at(0).isUpper() &&
+                                         std::all_of(tail.cbegin(), tail.cend(), [](QChar c) { return c.isLetter(); });
             if (looks_like_zone) {
                 const QString zone = tail.toUpper();
                 if (zone == QLatin1String("GMT") || zone == QLatin1String("UTC")) {

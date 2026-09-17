@@ -114,7 +114,10 @@ QVector<NewsArticle> NewsService::parse_rss_xml(const QByteArray& xml, const RSS
                 // Undated articles keep sort_ts == 0 so every time-window
                 // filter excludes them instead of showing them as current.
                 enrich_article(current);
-                articles.append(std::move(current));
+                // Copy rather than move: the loop reuses `current`, and a move
+                // here confuses use-after-move analysis about the guarded
+                // reuse above (bugprone-use-after-move false positive).
+                articles.append(current);
             }
         }
     }
