@@ -3957,26 +3957,38 @@ endif()
 if(WIN32)
     set(FINCEPT_WIN_SIGN_CERT     "" CACHE FILEPATH "Path to .pfx code-signing certificate")
     set(FINCEPT_WIN_SIGN_PASSWORD "" CACHE STRING   "Password for the .pfx certificate")
+    set(FINCEPT_WIN_SIGN_SHA1     "" CACHE STRING
+        "Thumbprint of a code-signing certificate in the CurrentUser store (local development)")
     set(FINCEPT_WIN_SIGN_TIMESTAMP_URL
         "http://timestamp.digicert.com" CACHE STRING "RFC 3161 timestamp URL")
 
-    if(FINCEPT_WIN_SIGN_CERT)
+    if(FINCEPT_WIN_SIGN_CERT OR FINCEPT_WIN_SIGN_SHA1)
         find_program(_FINCEPT_SIGNTOOL signtool
             HINTS ${_fincept_sdk_dirs}
                   "$ENV{WindowsSdkVerBinPath}x64")
         if(_FINCEPT_SIGNTOOL)
+            if(FINCEPT_WIN_SIGN_SHA1)
+                set(_FINCEPT_SIGN_CREDENTIALS /sha1 "${FINCEPT_WIN_SIGN_SHA1}")
+            else()
+                set(_FINCEPT_SIGN_CREDENTIALS
+                    /f "${FINCEPT_WIN_SIGN_CERT}" /p "${FINCEPT_WIN_SIGN_PASSWORD}")
+            endif()
+            # Sign the runtime components the app loads at startup, not just
+            # the EXE: qgeoview.dll is an approved bundled third-party
+            # exception (QGeoView) that blocks launch when unsigned, so it is
+            # signed alongside the MarketLab-owned EXE.
             add_custom_target(sign-windows
                 COMMAND "${_FINCEPT_SIGNTOOL}" sign
                     /fd SHA256
                     /tr "${FINCEPT_WIN_SIGN_TIMESTAMP_URL}"
                     /td SHA256
-                    /f  "${FINCEPT_WIN_SIGN_CERT}"
-                    /p  "${FINCEPT_WIN_SIGN_PASSWORD}"
+                    ${_FINCEPT_SIGN_CREDENTIALS}
                     "$<TARGET_FILE:FinceptTerminal>"
-                COMMENT "Signing FinceptTerminal.exe with Authenticode..."
+                    "$<TARGET_FILE_DIR:FinceptTerminal>/qgeoview.dll"
+                COMMENT "Signing MarketLab Windows binaries with Authenticode..."
                 VERBATIM)
         else()
-            message(WARNING "FINCEPT_WIN_SIGN_CERT set but signtool.exe not found")
+            message(WARNING "A Windows signing certificate was configured but signtool.exe was not found")
         endif()
     endif()
 endif()
