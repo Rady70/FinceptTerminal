@@ -44,15 +44,13 @@ is runtime state: pass it with `-Thumbprint` or configure
 Selection:
 
 - explicit file arguments are always considered;
-- directory scans sign MarketLab-owned files (`MarketLabTerminal.exe`,
-  `MarketLabMaintenanceTool.exe`);
-- `qgeoview.dll` (QGeoView) is an explicitly approved bundled third-party
-  exception and is signed for the SAC startup path;
+- directory scans sign only `MarketLabTerminal.exe`,
+  `MarketLabMaintenanceTool.exe`, and the explicitly approved `qgeoview.dll`
+  (QGeoView) bundled third-party exception;
 - other bundled third-party files (`libcrypto`, `libssl`, `yt-dlp`, ...) are
-  left untouched unless `-IncludeBundledThirdParty` is passed after an actual
-  SAC block;
-- files with an existing valid signature are skipped, so Qt and Microsoft
-  signatures are preserved.
+  never touched by directory scans;
+- a `Valid` signature is preserved; `NotSigned` files are signed only when
+  approved; any other signature status fails the run unless `-Force` is given.
 
 Each result row is classified as `marketlab-owned`, `bundled-exception`,
 `explicit` or `third-party`.
@@ -67,9 +65,9 @@ Installing from an Authenticode-signed setup makes Qt IFW generate
 `MarketLabMaintenanceTool.exe` from the installer's PE header. The generated
 tool then carries a certificate-table pointer that points past EOF, and
 `signtool` refuses it with `0x800700C1`. `Repair-DanglingCertificateTable`
-zeroes that entry only when it is actually outside the file, then signing
-proceeds normally. Files without a certificate table and files with a valid
-one are left byte-identical.
+is called only for `MarketLabMaintenanceTool.exe`; it zeroes that entry only
+when it is actually outside the file, then signing proceeds normally. Files
+without a certificate table and files with a valid one are left byte-identical.
 
 ## Limitations
 

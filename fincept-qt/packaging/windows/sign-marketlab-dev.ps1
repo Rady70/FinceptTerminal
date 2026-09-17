@@ -8,12 +8,10 @@
 # self-signed certificate may still be blocked. Never use this certificate or
 # this script for release artifacts.
 #
-# Only files without an existing valid signature are signed. Valid Qt,
-# Microsoft or other third-party signatures are preserved. MarketLab-owned
-# files are selected by name; qgeoview.dll is an explicitly approved bundled
-# third-party exception ($BundledThirdPartyExceptions). Other bundled
-# third-party files are signed only with -IncludeBundledThirdParty, after an
-# actual Smart App Control block.
+# Valid signatures are preserved. NotSigned files are signed only when they
+# are MarketLab-owned, the approved qgeoview.dll exception, or explicitly
+# named on the command line. Any other signature status fails unless -Force is
+# supplied.
 #
 # Usage:
 #   powershell -File packaging/windows/sign-marketlab-dev.ps1 -Path build/win-dev
@@ -29,7 +27,6 @@ param(
     [string]$CertSubject = "CN=MarketLab Development Code Signing (LOCAL ONLY)",
     [string]$Thumbprint,
     [string]$TimestampUrl = "",
-    [switch]$IncludeBundledThirdParty,
     [switch]$Recurse,
     [switch]$Force
 )
@@ -143,7 +140,7 @@ foreach ($entry in Resolve-TargetFiles) {
     $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
     $isOwned = $MarketLabOwnedNames -contains $name
     $isBundledException = $BundledThirdPartyExceptions -contains $name
-    $eligible = $entry.Explicit -or $isOwned -or $isBundledException -or $IncludeBundledThirdParty
+    $eligible = $entry.Explicit -or $isOwned -or $isBundledException
     if ($entry.Explicit) {
         $class = "explicit"
     } elseif ($isOwned) {
@@ -155,21 +152,20 @@ foreach ($entry in Resolve-TargetFiles) {
     }
 
     $action = $null
-    if ($sig.Status -eq "Valid" -and $sig.SignerCertificate -and $sig.SignerCertificate.Thumbprint -eq $cert.Thumbprint) {
-        $action = "skip-already-signed"
-    } elseif ($sig.Status -eq "Valid") {
-        $action = "skip-third-party-signed"
-    } elseif (-not $eligible) {
-        $action = "skip-not-owned-or-approved"
-    } elseif ($sig.Status -eq "Invalid" -and -not $Force) {
-        $action = "skip-invalid-use-force"
-        $failed = $true
+    if ($sig.Status -eq "Valid") {
+        $action = "skip-valid"
+    } elseif ($sig.Status -eq "NotSigned") {
+        $action = if ($eligible) { "sign" } else { "skip-not-approved" }
+    } elseif ($Force) {
+        $action = "sign-force"
     } else {
-        $action = "sign"
+        $action = "fail-unexpected-status"
+        $failed = $true
     }
 
-    if ($action -eq "sign") {
-        if (Repair-DanglingCertificateTable -FilePath $file.FullName) {
+    if ($action -eq "sign" -or $action -eq "sign-force") {
+        if (($name -eq "MarketLabMaintenanceTool.exe") -and
+            (Repair-DanglingCertificateTable -FilePath $file.FullName)) {
             Write-Host ("  repaired dangling certificate-table pointer in {0}" -f $name) -ForegroundColor Yellow
         }
         $signArgs = @("sign", "/fd", "SHA256", "/sha1", $cert.Thumbprint, "/v")
