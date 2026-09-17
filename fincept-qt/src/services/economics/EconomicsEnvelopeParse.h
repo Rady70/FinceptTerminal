@@ -80,8 +80,7 @@ inline QString partial_failure_details(const QJsonObject& obj) {
         const QJsonValue v = obj.value(QLatin1String(key));
         if (v.isArray()) {
             for (const QJsonValue& item : v.toArray()) {
-                const QString text = item.isString() ? item.toString().trimmed()
-                                                     : error_message(item);
+                const QString text = item.isString() ? item.toString().trimmed() : error_message(item);
                 if (!text.isEmpty())
                     parts << text;
             }

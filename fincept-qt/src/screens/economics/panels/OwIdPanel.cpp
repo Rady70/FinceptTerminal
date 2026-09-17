@@ -31,7 +31,8 @@ static const QList<OwIdSeries> kOwIdSeries = {
     // build; the OWID indicator API used by the former health/poverty entries
     // no longer returns data, and co2_per_capita/gdp_per_capita were never
     // implemented by the script.
-    {"CO2 Emissions", "co2", "United States"}, {"Energy Consumption", "energy", "China"},
+    {"CO2 Emissions", "co2", "United States"},
+    {"Energy Consumption", "energy", "China"},
 };
 
 } // namespace

@@ -14,11 +14,11 @@
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
 
+#include <QDate>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
-#include <QDate>
 
 namespace fincept::screens {
 namespace {
@@ -35,7 +35,9 @@ struct CbSeries {
     // Default arguments that make the command work through the panel (the
     // panel has no argument widgets). @today@ / @prevbusiness@ / @start30@ / @year@ are
     // expanded at fetch time. Empty when the command needs no arguments.
-    QStringList args;
+    // The default member initializer also keeps complete-aggregate checks
+    // (clang -Wmissing-field-initializers) quiet for entries that omit it.
+    QStringList args{};
 };
 
 struct CbBank {
@@ -332,8 +334,7 @@ void GlobalCentralBanksPanel::on_fetch() {
 
     show_loading(tr("Fetching %1: %2…").arg(bank.label, series.label));
     services::EconomicsService::instance().execute(kGlobalCentralBanksSourceId, bank.script, series.command,
-                                                   expand_cb_args(series.args),
-                                                   bank.req_prefix + "_" + series.command);
+                                                   expand_cb_args(series.args), bank.req_prefix + "_" + series.command);
 }
 
 void GlobalCentralBanksPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {
