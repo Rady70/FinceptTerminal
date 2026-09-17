@@ -23,6 +23,7 @@ class OecdPanel : public EconPanelBase {
 
   private:
     void retranslateUi() override;
+    void update_frequency_options();
 
     QComboBox* dataset_combo_ = nullptr;
     QComboBox* country_combo_ = nullptr;

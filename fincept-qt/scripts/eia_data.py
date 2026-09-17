@@ -3,6 +3,7 @@
 
 import sys
 import json
+import os
 import asyncio
 from typing import Dict, List, Optional, Union, Any, Literal
 from datetime import datetime, date
@@ -410,7 +411,9 @@ def main(args=None):
         sys.exit(1)
 
     command = args[0]
-    api_key = None  # In production, this should come from environment variables or config
+    # The host injects EIA_API_KEY from SecureStorage; without this read the
+    # STEO path could never see a configured key.
+    api_key = os.environ.get("EIA_API_KEY") or None
 
     try:
         fetcher = EIADataFetcher(api_key=api_key)

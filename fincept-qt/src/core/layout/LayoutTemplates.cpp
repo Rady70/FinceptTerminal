@@ -9,9 +9,9 @@ namespace fincept::layout {
 QList<LayoutTemplates::Persona> LayoutTemplates::personas() {
     return {
         {QStringLiteral("equity_trader"), QStringLiteral("Equity Trader"),
-         QStringLiteral("Stock trading with watchlist, ticker chart, and order book.")},
+         QStringLiteral("Public equity quotes, history and watchlist tracking (no order route).")},
         {QStringLiteral("crypto_trader"), QStringLiteral("Crypto Trader"),
-         QStringLiteral("Live order book and chart for spot and perpetual markets.")},
+         QStringLiteral("Public crypto and market quotes with charts (no order route).")},
         {QStringLiteral("portfolio_manager"), QStringLiteral("Portfolio Manager"),
          QStringLiteral("Holdings, allocation, risk and performance dashboard.")},
         {QStringLiteral("research_analyst"), QStringLiteral("Research Analyst"),
@@ -37,13 +37,16 @@ Workspace LayoutTemplates::make(const QString& persona_id) {
     p.instance_id = PanelInstanceId::generate();
 
     if (persona_id == QStringLiteral("equity_trader")) {
+        // The fork has no order route; the persona opens the retained public
+        // watchlist instead of the unregistered equity_trading screen.
         w.name = QStringLiteral("Equity Trader");
-        p.type_id = QStringLiteral("equity_trading");
-        p.title = QStringLiteral("Equity Trading");
+        p.type_id = QStringLiteral("watchlist");
+        p.title = QStringLiteral("Watchlist");
     } else if (persona_id == QStringLiteral("crypto_trader")) {
+        // Same boundary: public market data only, no exchange order surface.
         w.name = QStringLiteral("Crypto Trader");
-        p.type_id = QStringLiteral("crypto_trading");
-        p.title = QStringLiteral("Crypto Trading");
+        p.type_id = QStringLiteral("markets");
+        p.title = QStringLiteral("Markets");
     } else if (persona_id == QStringLiteral("portfolio_manager")) {
         w.name = QStringLiteral("Portfolio Manager");
         p.type_id = QStringLiteral("portfolio");

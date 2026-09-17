@@ -5,6 +5,9 @@ Uses OWID API and GitHub CSV data. No API key required.
 """
 import sys
 import json
+import csv
+import io
+import math
 import os
 import requests
 from typing import Dict, Any, Optional, List
@@ -61,76 +64,66 @@ def search_indicators(query: str) -> Any:
     return data
 
 
+def _coerce_owid_value(value):
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def _fetch_owid_csv(url: str, country: str, limit: int) -> Any:
+    """OWID retired the JSON dumps for these datasets; the same series ship as
+    CSV. Fetch the CSV, select the country block and return the last records."""
+    try:
+        response = session.get(url, timeout=60)
+        response.raise_for_status()
+        rows = list(csv.DictReader(io.StringIO(response.text)))
+        wanted = country.lower()
+        matches = [r for r in rows if (r.get("country") or "").lower() == wanted]
+        matched_country = country
+        available = []
+        if not matches:
+            available = sorted({(r.get("country") or "") for r in rows if r.get("country")})
+            fuzzy = [name for name in available if wanted in name.lower()]
+            if fuzzy:
+                matched_country = fuzzy[0]
+                matches = [r for r in rows if (r.get("country") or "") == matched_country]
+        if not matches:
+            return {"error": f"Country '{country}' not found", "available_sample": available[:20]}
+        matches.sort(key=lambda r: r.get("year") or "")
+        recent = matches[-limit:]
+        records = [{k: _coerce_owid_value(v) for k, v in r.items()} for r in recent]
+        return {
+            "country": matched_country,
+            "data": records,
+            "count": len(records),
+            "fields": list(records[0].keys()) if records else [],
+            "source": "Our World in Data (CSV distribution)",
+        }
+    except Exception as e:
+        return {"error": f"Failed to fetch OWID data: {str(e)}"}
+
+
 def get_co2_data(country: str = "World") -> Any:
     """Get CO2 and greenhouse gas emissions data for a country.
     Uses Our World in Data CO2 dataset via GitHub.
     country: Country name as in OWID (e.g. 'United States', 'Germany', 'China', 'World').
     """
-    url = "https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.json"
-    try:
-        response = session.get(url, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        # Find country
-        country_data = None
-        for key, val in data.items():
-            if key.lower() == country.lower():
-                country_data = val
-                break
-        if country_data is None:
-            # fuzzy search
-            matches = [k for k in data.keys() if country.lower() in k.lower()]
-            if matches:
-                country_data = data[matches[0]]
-                country = matches[0]
-            else:
-                return {"error": f"Country '{country}' not found", "available_sample": list(data.keys())[:20]}
-
-        # Return last 50 years of data
-        records = country_data.get("data", [])
-        recent = records[-50:] if len(records) > 50 else records
-        return {
-            "country": country,
-            "data": recent,
-            "count": len(recent),
-            "fields": list(recent[0].keys()) if recent else [],
-        }
-    except Exception as e:
-        return {"error": f"Failed to fetch CO2 data: {str(e)}"}
+    url = "https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.csv"
+    return _fetch_owid_csv(url, country, 50)
 
 
 def get_energy_data(country: str = "World") -> Any:
     """Get energy consumption and production data for a country.
     country: Country name as in OWID.
     """
-    url = "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.json"
-    try:
-        response = session.get(url, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        country_data = None
-        for key, val in data.items():
-            if key.lower() == country.lower():
-                country_data = val
-                break
-        if country_data is None:
-            matches = [k for k in data.keys() if country.lower() in k.lower()]
-            if matches:
-                country_data = data[matches[0]]
-                country = matches[0]
-            else:
-                return {"error": f"Country '{country}' not found", "available_sample": list(data.keys())[:20]}
-
-        records = country_data.get("data", [])
-        recent = records[-30:] if len(records) > 30 else records
-        return {
-            "country": country,
-            "data": recent,
-            "count": len(recent),
-            "fields": list(recent[0].keys()) if recent else [],
-        }
-    except Exception as e:
-        return {"error": f"Failed to fetch energy data: {str(e)}"}
+    url = "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.csv"
+    return _fetch_owid_csv(url, country, 30)
 
 
 def get_health_data(country: str = None) -> Any:

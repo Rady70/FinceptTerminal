@@ -220,4 +220,12 @@ fincept_add_test(tst_redirect_guard
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard")
+# MarketLab: news timestamp parsing — missing/unparsable dates and unknown
+# zone abbreviations stay undated (never promoted to "now" and never
+# reinterpreted as local time), GMT/UTC and numeric offsets parse exactly, and
+# a date more than 6h in the future is a provider error. Header-only over Qt
+# Core; no app sources.
+fincept_add_test(tst_news_date_parse
+    tst_news_date_parse.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse")

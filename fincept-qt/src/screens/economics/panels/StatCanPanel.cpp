@@ -44,9 +44,8 @@ StatCanPanel::StatCanPanel(QWidget* parent) : EconPanelBase(kStatCanSourceId, kS
 }
 
 void StatCanPanel::activate() {
-    show_empty(tr("Select a series and click FETCH\n"
-                  "Source: Statistics Canada WDS API (www150.statcan.gc.ca)\n"
-                  "No API key required — data via vector IDs for reliability"));
+    mark_source_unavailable(tr("Statistics Canada retired the download endpoint this connector used "
+                               "(HTTP 404). Migration to the WDS REST API is pending, so this source is unavailable."));
 }
 
 void StatCanPanel::build_controls(QHBoxLayout* thl) {

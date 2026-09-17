@@ -3,7 +3,9 @@
 // Pins the contract EconomicsService applies to both freshly fetched and
 // cached payloads: a CFTC-shaped {"error": {...}} object is a failure (never a
 // success, never cached as one), a plain string error is a failure, an
-// explicit success:false is a failure, and a success payload whose error is
+// explicit success:false is a failure, an explicit partial signal is a failure
+// naming the failed constituents (so composite output cannot be cached or
+// rendered as complete success), and a success payload whose error is
 // null/absent/empty is OK. The real CFTC error envelope is reproduced here
 // exactly as scripts/cftc_data.py emits it.
 //
@@ -42,6 +44,13 @@ class TstEconomicsEnvelope : public QObject {
     void success_false_is_a_failure_even_without_an_error();
     void error_code_prefix_is_preserved();
     void success_payload_with_null_error_is_ok();
+    void partial_flag_is_a_failure_naming_components();
+    void failed_sessions_without_flag_is_a_failure();
+    void failed_years_without_flag_is_a_failure();
+    void failed_dates_without_flag_is_a_failure();
+    void failed_series_without_flag_is_a_failure();
+    void partial_flag_without_details_is_a_failure();
+    void benign_errors_key_is_not_a_partial_signal();
 };
 
 // The exact shape cftc_data.py returns for every CFTCError, including the
@@ -101,7 +110,87 @@ void TstEconomicsEnvelope::success_payload_with_null_error_is_ok() {
                                        "parameters": {"source": "example"}})");
     const EnvelopeDecision d = classify(o);
     QVERIFY(d.ok);
+    QVERIFY(!d.partial);
     QVERIFY(d.error.isEmpty());
+}
+
+// A composite action that served only some constituents must fail closed and
+// name them, so the partial payload can never be cached or displayed as a
+// complete success.
+void TstEconomicsEnvelope::partial_flag_is_a_failure_naming_components() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "partial": true,
+        "failed_components": ["omo: HTTP 500", "forward_rates: timeout"],
+        "data": [{"component": "pribor", "date": "2026-09-15", "THREE_MONTH": 2.75}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY2(d.error.startsWith(QStringLiteral("Partial provider result:")), qPrintable(d.error));
+    QVERIFY(d.error.contains(QStringLiteral("omo: HTTP 500")));
+    QVERIFY(d.error.contains(QStringLiteral("forward_rates: timeout")));
+}
+
+// The failed-constituent list alone is enough: a script that forgets the
+// boolean flag must still fail closed.
+void TstEconomicsEnvelope::failed_sessions_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_sessions": ["1130: provider returned no rate"],
+        "data": [{"session": "0900", "middle": 4.07}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("1130")));
+}
+
+void TstEconomicsEnvelope::failed_years_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_years": ["2025: HTTP 500"], "data": []
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("2025")));
+}
+
+void TstEconomicsEnvelope::failed_dates_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_dates": ["2026-09-15: timeout"],
+        "data": [{"date": "2026-09-14", "USD": 41.2}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("2026-09-15")));
+}
+
+void TstEconomicsEnvelope::failed_series_without_flag_is_a_failure() {
+    const QJsonObject o = obj_from(R"({
+        "success": true, "failed_series": ["SEMB5YCACOMB: provider returned no observations"],
+        "data": [{"date": "2026-09-15", "SEMB2YCACOMB": 3.1}]
+    })");
+    const EnvelopeDecision d = classify(o);
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("SEMB5YCACOMB")));
+}
+
+void TstEconomicsEnvelope::partial_flag_without_details_is_a_failure() {
+    const EnvelopeDecision d =
+        classify(obj_from(R"({"success": true, "partial": true, "data": [{"x": 1}]})"));
+    QVERIFY(!d.ok);
+    QVERIFY(d.partial);
+    QVERIFY(d.error.contains(QStringLiteral("some components failed")));
+}
+
+// `errors` is a generic key some scripts use for benign notices; it must not
+// make an otherwise complete payload fail.
+void TstEconomicsEnvelope::benign_errors_key_is_not_a_partial_signal() {
+    const EnvelopeDecision d = classify(
+        obj_from(R"({"success": true, "errors": ["cache warm"], "data": [{"x": 1}]})"));
+    QVERIFY(d.ok);
+    QVERIFY(!d.partial);
 }
 
 QTEST_GUILESS_MAIN(TstEconomicsEnvelope)

@@ -31,7 +31,16 @@ PARAMETERS:
 
 from decimal import Decimal
 from typing import Dict, List, Any, Tuple
-from .core import EconomicsBase, ValidationError
+import os
+import sys
+
+# The host runs retained analytics as plain script paths, so the package
+# relative import must fall back to a sibling import in that mode.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from core import EconomicsBase, ValidationError
+else:
+    from .core import EconomicsBase, ValidationError
 
 
 class TradeAnalyzer(EconomicsBase):

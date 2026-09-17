@@ -148,18 +148,54 @@ class TCMBWrapper:
     def _date_url(self, d: date) -> str:
         return f"{BASE_URL}/{d.strftime('%Y%m')}/{d.strftime('%d%m%Y')}.xml"
 
-    def _find_latest_business_day(self, max_lookback: int = 7) -> Optional[date]:
-        """Walk back from today to find the most recent published bulletin."""
-        today = date.today()
+    def _find_latest_business_day(self, start: Optional[date] = None,
+                                  max_lookback: int = 10) -> Optional[date]:
+        """Walk back from `start` (default today) to the most recent
+        published bulletin. Turkish bank holidays have no bulletin, so the
+        probe needs a few more days than a weekend.
+
+        Only the provider's no-bulletin condition (HTTP 404) may continue the
+        search. A timeout, other HTTP status or malformed XML is raised: the
+        date may well have a bulletin that simply could not be fetched, and
+        silently stepping over it would misreport an older day as the latest
+        published one.
+        """
+        anchor = start or date.today()
         for i in range(max_lookback):
-            d = today - timedelta(days=i)
+            d = anchor - timedelta(days=i)
             try:
                 content = self._fetch(self._date_url(d))
                 ET.fromstring(content)   # verify it's valid XML
                 return d
-            except Exception:
-                continue
+            except Exception as exc:
+                if self._missing_bulletin(exc):
+                    continue
+                raise
         return None
+
+    def _bulletin_rows(self, bulletin: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Flatten one bulletin to per-currency rows the panel can render.
+
+        The panel only keeps rows with a direct numeric value, so an object
+        keyed by currency (each value an object) must never be returned raw.
+        A rate row requires at least one actual rate measurement; the `unit`
+        metadata alone (always present, even for an empty entry) is not data.
+        """
+        rows: List[Dict[str, Any]] = []
+        for code, data in sorted(bulletin["rates"].items()):
+            row: Dict[str, Any] = {"date": bulletin["date"], "currency": code}
+            has_rate = False
+            for f in ("forex_buying", "forex_selling", "banknote_buying",
+                      "banknote_selling", "cross_rate_usd"):
+                val = data.get(f)
+                if val is not None:
+                    row[f] = val
+                    has_rate = True
+            if has_rate:
+                if data.get("unit") is not None:
+                    row["unit"] = data["unit"]
+                rows.append(row)
+        return rows
 
     def _flatten_rates(self, bulletin: Dict[str, Any],
                        fields: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -188,7 +224,8 @@ class TCMBWrapper:
                 "success":    True,
                 "date":       bulletin["date"],
                 "bulten_no":  bulletin["bulten_no"],
-                "data":       bulletin["rates"],
+                "data":       self._bulletin_rows(bulletin),
+                "count":      len(bulletin["rates"]),
                 "note":       "TRY per 1 unit of foreign currency (JPY normalised from per-100)",
                 "source":     "Central Bank of the Republic of Turkey",
                 "url":        f"{BASE_URL}/today.xml",
@@ -200,22 +237,56 @@ class TCMBWrapper:
         except Exception as e:
             return TCMBError("today", str(e)).to_dict()
 
+    @staticmethod
+    def _missing_bulletin(exc: Exception) -> bool:
+        """True only for the provider condition that means 'no bulletin for
+        this date'. TCMB answers 404 for weekends/bank holidays; any other
+        status or a network/parse error is a genuine failure and must stay
+        typed, never be converted into a 'no bulletin' walk-back."""
+        if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+            return exc.response.status_code == 404
+        return False
+
     def get_date(self, rate_date: str) -> Dict[str, Any]:
-        """Exchange rates for a specific date (YYYY-MM-DD). Must be a business day."""
+        """Exchange rates for a specific date (YYYY-MM-DD).
+
+        TCMB publishes bulletins on Turkish business days only; a requested
+        weekend or bank-holiday date has no bulletin. Only that provider
+        condition triggers the bounded walk-back to the latest published
+        bulletin; every other failure stays a typed error, because the
+        requested bulletin may exist and merely have failed to download or
+        parse.
+        """
         try:
             d        = datetime.strptime(rate_date, "%Y-%m-%d").date()
             url      = self._date_url(d)
-            content  = self._fetch(url)
-            bulletin = self._parse_bulletin(content)
+            try:
+                content  = self._fetch(url)
+                bulletin = self._parse_bulletin(content)
+                served   = d
+            except Exception as first_exc:
+                if not self._missing_bulletin(first_exc):
+                    raise
+                served = self._find_latest_business_day(start=d - timedelta(days=1),
+                                                        max_lookback=10)
+                if served is None:
+                    raise first_exc
+                url      = self._date_url(served)
+                content  = self._fetch(url)
+                bulletin = self._parse_bulletin(content)
             return {
-                "success":   True,
-                "date":      bulletin["date"],
-                "bulten_no": bulletin["bulten_no"],
-                "data":      bulletin["rates"],
-                "note":      "TRY per 1 unit of foreign currency",
-                "source":    "Central Bank of the Republic of Turkey",
-                "url":       url,
-                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                "success":        True,
+                "date":           bulletin["date"],
+                "requested_date": rate_date,
+                "bulten_no":      bulletin["bulten_no"],
+                "data":           self._bulletin_rows(bulletin),
+                "count":          len(bulletin["rates"]),
+                "note":           ("TRY per 1 unit of foreign currency"
+                                   + ("" if served == d else
+                                      f"; no bulletin for {rate_date}, showing the latest published day")),
+                "source":         "Central Bank of the Republic of Turkey",
+                "url":            url,
+                "timestamp":      int(datetime.now(timezone.utc).timestamp()),
             }
         except requests.exceptions.HTTPError as e:
             sc = e.response.status_code if e.response is not None else None
@@ -223,46 +294,97 @@ class TCMBWrapper:
         except Exception as e:
             return TCMBError(f"date/{rate_date}", str(e)).to_dict()
 
-    def get_range(self, start_date: str, end_date: Optional[str] = None,
-                  currencies: Optional[List[str]] = None) -> Dict[str, Any]:
-        """
-        Exchange rates for a date range — fetches each business day individually.
-        Returns wide-format rows with forex_buying rates.
-        """
-        try:
-            start = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end   = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+    def _collect_range(self, start: date, end: date,
+                       currencies: Optional[List[str]] = None,
+                       fields: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Fetch every weekday bulletin in [start, end] once.
 
-            rows: List[Dict[str, Any]] = []
-            errors: List[str] = []
-            d = start
-            while d <= end:
-                if d.weekday() < 5:   # Mon–Fri only
-                    try:
-                        content  = self._fetch(self._date_url(d))
-                        bulletin = self._parse_bulletin(content)
+        Returns (rows, missing_dates, failed_dates):
+          * missing_dates — provider returned 'no bulletin' (expected holidays),
+          * failed_dates  — genuine fetch/parse failure for a day that produced
+            no row; these must be reported, never swallowed.
+        """
+        rows: List[Dict[str, Any]] = []
+        missing: List[str] = []
+        failed: List[str] = []
+        d = start
+        while d <= end:
+            if d.weekday() < 5:   # Mon–Fri only
+                try:
+                    content  = self._fetch(self._date_url(d))
+                    bulletin = self._parse_bulletin(content)
+                    if fields:
+                        row: Dict[str, Any] = {"date": bulletin["date"]}
+                        for code, data in bulletin["rates"].items():
+                            if currencies is None or code in currencies:
+                                for f in fields:
+                                    val = data.get(f)
+                                    if val is not None:
+                                        row[f if len(currencies or []) == 1 else f"{code}_{f}"] = val
+                    else:
                         row = {"date": bulletin["date"]}
                         for code, data in bulletin["rates"].items():
                             if currencies is None or code in currencies:
                                 buy = data.get("forex_buying")
                                 if buy is not None:
                                     row[code] = buy
+                    if any(k != "date" for k in row):
                         rows.append(row)
-                    except Exception:
-                        pass   # holiday / no data for this day
-                d += timedelta(days=1)
+                    else:
+                        failed.append(f"{d.isoformat()}: bulletin carried no matching rates")
+                except Exception as exc:
+                    if self._missing_bulletin(exc):
+                        missing.append(d.isoformat())
+                    else:
+                        failed.append(f"{d.isoformat()}: {exc}")
+            d += timedelta(days=1)
+        return {"rows": rows, "missing_dates": missing, "failed_dates": failed}
 
-            return {
-                "success":    True,
-                "start_date": start_date,
-                "end_date":   end.isoformat(),
-                "currencies": currencies or "all",
-                "data":       rows,
-                "count":      len(rows),
-                "note":       "TRY per 1 unit (forex buying rate)",
-                "source":     "Central Bank of the Republic of Turkey",
-                "timestamp":  int(datetime.now(timezone.utc).timestamp()),
-            }
+    def _range_result(self, start: date, end: date, label: str,
+                      collected: Dict[str, Any]) -> Dict[str, Any]:
+        rows         = collected["rows"]
+        missing      = collected["missing_dates"]
+        failed       = collected["failed_dates"]
+        if not rows and failed:
+            return TCMBError(
+                label,
+                f"no bulletin fetched for {start.isoformat()}..{end.isoformat()} "
+                f"({len(failed)} failed days; first: {failed[0]})").to_dict()
+        result: Dict[str, Any] = {
+            "success":      True,
+            "start_date":   start.isoformat(),
+            "end_date":     end.isoformat(),
+            "data":         rows,
+            "count":        len(rows),
+            "missing_dates": missing,
+            "note":         "TRY per 1 unit (forex buying rate)",
+            "source":       "Central Bank of the Republic of Turkey",
+            "timestamp":    int(datetime.now(timezone.utc).timestamp()),
+        }
+        if failed:
+            result["partial"]      = True
+            result["failed_dates"] = failed
+        return result
+
+    def get_range(self, start_date: str, end_date: Optional[str] = None,
+                  currencies: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Exchange rates for a date range — fetches each weekday individually.
+        Returns wide-format rows with forex_buying rates. Weekends are not
+        requested; a weekday with no published bulletin (Turkish bank holiday)
+        is expected and reported under `missing_dates`; genuine per-day
+        failures make the result explicit partial or, when nothing could be
+        fetched, a typed failure.
+        """
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end   = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+
+            collected = self._collect_range(start, end, currencies)
+            result    = self._range_result(start, end, "range", collected)
+            if result.get("success"):
+                result["currencies"] = currencies or "all"
+            return result
         except Exception as e:
             return TCMBError("range", str(e)).to_dict()
 
@@ -271,47 +393,26 @@ class TCMBWrapper:
                      end_date: Optional[str] = None) -> Dict[str, Any]:
         """
         Buying and selling rates for a single currency over a date range.
-        Defaults to the last 30 calendar days.
+        Defaults to the last 30 calendar days. Fetches each date exactly once;
+        expected missing bulletins are reported under `missing_dates`, genuine
+        per-day failures under `failed_dates` (explicit partial), and a range
+        where nothing could be fetched is a typed failure.
         """
         currency = currency.upper()
         if start_date is None:
             start_date = (date.today() - timedelta(days=30)).isoformat()
         try:
-            result = self.get_range(start_date, end_date, [currency])
-            # Enrich each row with both buy and sell
-            start  = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_d  = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
-            rows: List[Dict[str, Any]] = []
-            d = start
-            while d <= end_d:
-                if d.weekday() < 5:
-                    try:
-                        content  = self._fetch(self._date_url(d))
-                        bulletin = self._parse_bulletin(content)
-                        cdata    = bulletin["rates"].get(currency, {})
-                        if cdata.get("forex_buying") is not None:
-                            rows.append({
-                                "date":              bulletin["date"],
-                                "forex_buying":      cdata.get("forex_buying"),
-                                "forex_selling":     cdata.get("forex_selling"),
-                                "banknote_buying":   cdata.get("banknote_buying"),
-                                "banknote_selling":  cdata.get("banknote_selling"),
-                            })
-                    except Exception:
-                        pass
-                d += timedelta(days=1)
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
 
-            return {
-                "success":    True,
-                "currency":   currency,
-                "start_date": start_date,
-                "end_date":   end_d.isoformat(),
-                "data":       rows,
-                "count":      len(rows),
-                "note":       f"TRY per 1 {currency}",
-                "source":     "Central Bank of the Republic of Turkey",
-                "timestamp":  int(datetime.now(timezone.utc).timestamp()),
-            }
+            collected = self._collect_range(
+                start, end_d, [currency],
+                fields=["forex_buying", "forex_selling", "banknote_buying", "banknote_selling"])
+            result = self._range_result(start, end_d, f"currency/{currency}", collected)
+            if result.get("success"):
+                result["currency"] = currency
+                result["note"]     = f"TRY per 1 {currency}"
+            return result
         except Exception as e:
             return TCMBError(f"currency/{currency}", str(e)).to_dict()
 
@@ -326,20 +427,26 @@ class TCMBWrapper:
         today = self.get_today()
         if not today.get("success"):
             return today
-        all_rates = today.get("data", {})
-        snapshot  = {}
-        for c in MAJOR_CURRENCIES:
-            if c in all_rates:
-                snapshot[c] = {
-                    "buy":  all_rates[c].get("forex_buying"),
-                    "sell": all_rates[c].get("forex_selling"),
-                }
+        rows: List[Dict[str, Any]] = []
+        for r in today.get("data", []):
+            c = r.get("currency")
+            if c not in MAJOR_CURRENCIES:
+                continue
+            row: Dict[str, Any] = {"date": today.get("date"), "currency": c}
+            if r.get("forex_buying") is not None:
+                row["buy"] = r["forex_buying"]
+            if r.get("forex_selling") is not None:
+                row["sell"] = r["forex_selling"]
+            if len(row) > 2:
+                rows.append(row)
+        if not rows:
+            return TCMBError("overview", "today's bulletin carries no major-currency rates").to_dict()
         return {
             "success":    True,
             "date":       today.get("date"),
             "bulten_no":  today.get("bulten_no"),
-            "data":       snapshot,
-            "all_rates":  all_rates,
+            "data":       rows,
+            "count":      len(rows),
             "note":       "TRY per 1 unit of foreign currency",
             "source":     "Central Bank of the Republic of Turkey",
             "timestamp":  int(datetime.now(timezone.utc).timestamp()),

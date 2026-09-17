@@ -36,7 +36,7 @@ void UnComtradePanel::activate() {
     show_empty(tr("Select reporter, flow, year and commodity level, then click FETCH\n"
                   "Source: UN Comtrade — annual (A) merchandise trade, HS classification\n"
                   "Values are current US dollars. Free tier: up to 500 records per request;\n"
-                  "set UN_COMTRADE_API_KEY for 100,000 records/call (register at comtradedeveloper.un.org)"));
+                  "set COMTRADE_API_KEY for 100,000 records/call (register at comtradedeveloper.un.org)"));
 }
 
 void UnComtradePanel::build_controls(QHBoxLayout* thl) {
@@ -90,7 +90,7 @@ void UnComtradePanel::on_fetch() {
 
     // Was: `trade_balance <reporter> <period>` — that endpoint takes NO flow
     // argument (so the FLOW selector only changed the title, never the data)
-    // and it requires a UN_COMTRADE_API_KEY, so the key-free default path
+    // and it requires a COMTRADE_API_KEY, so the key-free default path
     // always errored. `trade_data` honours flow + commodity and works on the
     // free preview tier.
     // CLI: trade_data <reporter_code> <period> [flow_code] [cmd_code]
@@ -113,7 +113,7 @@ void UnComtradePanel::on_result(const QString& request_id, const services::Econo
         const QJsonArray arr = result.data["data"].toArray();
         if (arr.isEmpty()) {
             show_empty(tr("No trade records returned for this reporter/flow/year.\n"
-                          "Free tier is capped at 500 records — set UN_COMTRADE_API_KEY for full access."));
+                          "Free tier is capped at 500 records — set COMTRADE_API_KEY for full access."));
             return;
         }
         // One row per commodity line for a single year is a cross-section, not a

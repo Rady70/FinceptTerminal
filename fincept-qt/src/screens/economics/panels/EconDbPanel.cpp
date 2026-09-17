@@ -71,8 +71,8 @@ EconDbPanel::EconDbPanel(QWidget* parent) : EconPanelBase(kEconDbSourceId, kEcon
 }
 
 void EconDbPanel::activate() {
-    show_empty(tr("Select an indicator and country, then click FETCH\n"
-                  "Source: EconDB — macroeconomic data, no API key required"));
+    mark_source_unavailable(tr("EconDB now answers with HTTP 401 Unauthorized and this connector has "
+                               "no credentialed request path. This source is unavailable."));
 }
 
 void EconDbPanel::build_controls(QHBoxLayout* thl) {

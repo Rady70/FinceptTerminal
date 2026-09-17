@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QDate>
 
 namespace fincept::screens {
 namespace {
@@ -31,6 +32,10 @@ static constexpr const char* kGlobalCentralBanksColor = "#6366F1"; // indigo
 struct CbSeries {
     QString label;
     QString command;
+    // Default arguments that make the command work through the panel (the
+    // panel has no argument widgets). @today@ / @prevbusiness@ / @start30@ / @year@ are
+    // expanded at fetch time. Empty when the command needs no arguments.
+    QStringList args;
 };
 
 struct CbBank {
@@ -99,82 +104,70 @@ static const QList<CbBank> kBanks = {
          {"NIBOR / Interest Rates", "interest_rates"},
      }},
     // ── Central & Eastern Europe, Middle East, SE Asia ───────────────────────
-    // These eight connectors already shipped in scripts/ and were already
-    // exposed as MCP tools (DataConnectorManifest.inc) — the AI could query
-    // them, a human could not. None requires an API key. Commands below are
-    // taken verbatim from that manifest.
+    // Every entry below is verified with its default arguments (the panel has
+    // no argument widgets): argument-needing commands carry fixed defaults and
+    // BNR is omitted because its public XML feed was retired and now returns
+    // the bank's HTML site for every documented XML URL.
     {"CNB — Czech National Bank",
      "cnb_data.py",
      "cnb",
      {
-         {"PRIBOR (History)", "pribor_history"},
-         {"PRIBOR (Year)", "pribor_year"},
-         {"PRIBOR (Latest)", "pribor"},
-         {"CZEONIA (Year)", "czeonia_year"},
-         {"CZEONIA (Latest)", "czeonia"},
-         {"Exchange Rates (Year)", "exchange_rates_y"},
-         {"Exchange Rates (Latest)", "exchange_rates"},
-         {"Monthly Average FX", "monthly_avg"},
-         {"Open Market Operations", "omo"},
-         {"Overview", "overview"},
+         {"Exchange Rates (Latest)", "exchange_rates", {}},
+         {"PRIBOR (Latest)", "pribor", {}},
+         {"PRIBOR (Year)", "pribor_year", {"@year@"}},
+         {"PRIBOR (History, 2y)", "pribor_history", {}},
+         {"CZEONIA (Year)", "czeonia_year", {"@year@"}},
+         {"CZEONIA (Latest)", "czeonia", {}},
+         {"Exchange Rates (Year)", "exchange_rates_y", {"@year@"}},
+         {"Monthly Average FX", "monthly_avg", {"@year@"}},
+         {"Open Market Operations (last business day)", "omo", {"@prevbusiness@"}},
+         {"Overview", "overview", {}},
      }},
     {"NBP — National Bank of Poland",
      "nbp_data.py",
      "nbp",
      {
-         {"Exchange Rates (Range)", "range"},
-         {"Major Currencies", "major"},
-         {"USD/PLN", "usd"},
-         {"EUR/PLN", "eur"},
-         {"Bid/Ask Spreads", "bid_ask"},
-         {"Single Currency", "currency"},
-         {"Today", "today"},
-         {"Overview", "overview"},
+         {"Today", "today", {}},
+         {"Overview", "overview", {}},
+         {"Major Currencies", "major", {}},
+         {"USD/PLN", "usd", {}},
+         {"EUR/PLN", "eur", {}},
+         {"Bid/Ask Spreads", "bid_ask", {}},
+         {"Single Currency (USD)", "currency", {"USD"}},
+         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@prevbusiness@"}},
      }},
     {"MNB — National Bank of Hungary",
      "mnb_data.py",
      "mnb",
      {
-         {"Exchange Rates (Range)", "range"},
-         {"Major Currencies", "major"},
-         {"USD/HUF", "usd"},
-         {"EUR/HUF", "eur"},
-         {"Single Currency", "currency"},
-         {"Today", "today"},
-         {"Overview", "overview"},
-     }},
-    {"BNR — National Bank of Romania",
-     "bnr_data.py",
-     "bnr",
-     {
-         {"Exchange Rates (Year)", "year"},
-         {"Exchange Rates (Range)", "range"},
-         {"Single Currency", "currency"},
-         {"Major Currencies", "major"},
-         {"Today", "today"},
-         {"Overview", "overview"},
+         {"Today", "today", {}},
+         {"Overview", "overview", {}},
+         {"Major Currencies", "major", {}},
+         {"USD/HUF", "usd", {}},
+         {"EUR/HUF", "eur", {}},
+         {"Single Currency (USD)", "currency", {"USD"}},
+         {"Exchange Rates (Range, 30 days)", "range", {"@start30@", "@prevbusiness@"}},
      }},
     {"HNB — Croatian National Bank",
      "hnb_data.py",
      "hnb",
      {
-         {"Exchange Rates (Range)", "range"},
-         {"Single Currency", "currency"},
-         {"USD/EUR", "usd"},
-         {"GBP", "gbp"},
-         {"Today", "today"},
-         {"Overview", "overview"},
+         {"Today", "today", {}},
+         {"Overview", "overview", {}},
+         {"USD/EUR", "usd", {}},
+         {"GBP", "gbp", {}},
+         {"Single Currency (USD)", "currency", {"USD"}},
      }},
     {"TCMB — Central Bank of Türkiye",
      "tcmb_data.py",
      "tcmb",
      {
-         {"Exchange Rates (Range)", "range"},
-         {"Major Currencies", "major"},
-         {"Single Currency", "currency"},
-         {"By Date", "date"},
-         {"Today", "today"},
-         {"Overview", "overview"},
+         {"Today", "today", {}},
+         {"Overview", "overview", {}},
+         {"Major Currencies", "major", {}},
+         {"Single Currency (USD)", "currency", {"USD"}},
+         {"By Date (last business day)", "date", {"@prevbusiness@"}},
+         {"Exchange Rates (Range, 30 days)", "range", {"@start30@"}},
      }},
     {"BOI — Bank of Israel",
      "boi_data.py",
@@ -193,11 +186,47 @@ static const QList<CbBank> kBanks = {
          {"Overnight Policy Rate (OPR)", "opr"},
          {"Major Currencies", "major"},
          {"ASEAN Currencies", "asean"},
-         {"Single Currency", "currency"},
-         {"Trading Sessions", "sessions"},
+         {"Single Currency (USD)", "currency", {"USD"}},
+         {"Trading Sessions (USD)", "sessions", {"USD"}},
          {"Overview", "overview"},
      }},
 };
+
+// ── Default-argument expansion ───────────────────────────────────────────────
+// Fixed per-command defaults keep every selectable entry functional; the date
+// tokens are resolved at fetch time so the ranges stay current.
+static QDate last_business_day(QDate date) {
+    while (date.dayOfWeek() > 5) // 6 = Saturday, 7 = Sunday
+        date = date.addDays(-1);
+    return date;
+}
+
+// The most recent business day whose official publication should already
+// exist (some providers publish during the day, so "today" can 404/400).
+static QDate previous_business_day(QDate date) {
+    return last_business_day(date.addDays(-1));
+}
+
+static QStringList expand_cb_args(const QStringList& raw) {
+    const QDate today = QDate::currentDate();
+    QStringList out;
+    out.reserve(raw.size());
+    for (const QString& a : raw) {
+        if (a == QLatin1String("@today@"))
+            out << today.toString(Qt::ISODate);
+        else if (a == QLatin1String("@lastbusiness@"))
+            out << last_business_day(today).toString(Qt::ISODate);
+        else if (a == QLatin1String("@prevbusiness@"))
+            out << previous_business_day(today).toString(Qt::ISODate);
+        else if (a == QLatin1String("@start30@"))
+            out << previous_business_day(today).addDays(-30).toString(Qt::ISODate);
+        else if (a == QLatin1String("@year@"))
+            out << QString::number(today.year());
+        else
+            out << a;
+    }
+    return out;
+}
 
 // ── Flatten helpers ──────────────────────────────────────────────────────────
 
@@ -244,9 +273,10 @@ GlobalCentralBanksPanel::GlobalCentralBanksPanel(QWidget* parent)
 void GlobalCentralBanksPanel::activate() {
     show_empty(tr("Select a central bank and series, then click FETCH\n"
                   "Sources: BOE, RBA, Bank of Canada, Riksbank, SNB, Norges Bank,\n"
-                  "CNB (Czechia), NBP (Poland), MNB (Hungary), BNR (Romania),\n"
+                  "CNB (Czechia), NBP (Poland), MNB (Hungary),\n"
                   "HNB (Croatia), TCMB (Türkiye), BOI (Israel), BNM (Malaysia)\n"
-                  "No API key required for any source"));
+                  "No API key required for any source\n"
+                  "BNR (Romania) unavailable: its public XML feed was retired."));
 }
 
 void GlobalCentralBanksPanel::build_controls(QHBoxLayout* thl) {
@@ -254,6 +284,7 @@ void GlobalCentralBanksPanel::build_controls(QHBoxLayout* thl) {
     bank_lbl_->setStyleSheet(ctrl_label_style());
 
     bank_combo_ = new QComboBox;
+    bank_combo_->setObjectName("cbBankCombo");
     for (const auto& b : kBanks)
         bank_combo_->addItem(b.label);
     bank_combo_->setFixedHeight(26);
@@ -263,6 +294,7 @@ void GlobalCentralBanksPanel::build_controls(QHBoxLayout* thl) {
     series_lbl_->setStyleSheet(ctrl_label_style());
 
     series_combo_ = new QComboBox;
+    series_combo_->setObjectName("cbSeriesCombo");
     series_combo_->setFixedHeight(26);
     series_combo_->setMinimumWidth(200);
 
@@ -299,7 +331,8 @@ void GlobalCentralBanksPanel::on_fetch() {
     const auto& series = bank.series[si];
 
     show_loading(tr("Fetching %1: %2…").arg(bank.label, series.label));
-    services::EconomicsService::instance().execute(kGlobalCentralBanksSourceId, bank.script, series.command, {},
+    services::EconomicsService::instance().execute(kGlobalCentralBanksSourceId, bank.script, series.command,
+                                                   expand_cb_args(series.args),
                                                    bank.req_prefix + "_" + series.command);
 }
 

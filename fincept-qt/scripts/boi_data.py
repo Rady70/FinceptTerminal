@@ -167,19 +167,36 @@ class BOIWrapper:
     # ------------------------------------------------------------------
 
     def get_exchange_rates_today(self) -> Dict[str, Any]:
-        """Latest ILS exchange rates from the PublicApi (with daily change %)."""
+        """Latest ILS exchange rates from the PublicApi (with daily change %).
+
+        Missing values stay missing: a rate row only exists when
+        `currentExchangeRate` was actually measured, a missing `currentChange`
+        is omitted rather than manufactured as 0, and a missing `unit` is
+        omitted rather than defaulted to 1.
+        """
         try:
             data  = self._public_json("GetExchangeRates")
             rates = data.get("exchangeRates", [])
             result_rows = []
             for r in rates:
-                result_rows.append({
+                rate = r.get("currentExchangeRate")
+                if rate is None:
+                    continue  # no measurement is not a zero rate
+                row: Dict[str, Any] = {
                     "currency":    r.get("key"),
-                    "rate":        r.get("currentExchangeRate"),
-                    "change_pct":  round(r.get("currentChange", 0), 6),
-                    "unit":        r.get("unit", 1),
+                    "rate":        rate,
                     "last_update": r.get("lastUpdate"),
-                })
+                }
+                change = r.get("currentChange")
+                if change is not None:
+                    row["change_pct"] = round(change, 6)
+                unit = r.get("unit")
+                if unit is not None:
+                    row["unit"] = unit
+                result_rows.append(row)
+            if not result_rows:
+                return BOIError("GetExchangeRates",
+                                "provider returned no exchange-rate measurements").to_dict()
             return {
                 "success":   True,
                 "data":      result_rows,
@@ -283,20 +300,54 @@ class BOIWrapper:
             return BOIError("EXR all", str(e)).to_dict()
 
     def get_overview(self) -> Dict[str, Any]:
-        """Snapshot: latest rates (PublicApi) + USD & EUR history."""
+        """Snapshot: latest rates (PublicApi) + USD & EUR history.
+
+        Composite action: both components are flattened into one row list the
+        panel can render (the panel only looks one level deep for rows). A
+        failed component is reported instead of being hidden behind
+        success=true; losing both is a failure.
+        """
         today    = self.get_exchange_rates_today()
         usd_hist = self.get_usd_ils(
             start=(date.today() - timedelta(days=7)).isoformat()
         )
-        return {
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        if today.get("success") and today.get("data"):
+            added = 0
+            for r in today["data"]:
+                rate = r.get("rate") if isinstance(r, dict) else None
+                if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+                    rows.append({"component": "latest_rates", **r})
+                    added += 1
+            if added == 0:
+                failed.append("latest_rates: provider returned no measurements")
+        else:
+            failed.append(f"latest_rates: {today.get('error', 'no rows')}")
+        if usd_hist.get("success"):
+            added = 0
+            for r in (usd_hist.get("data") or [])[-5:]:
+                if isinstance(r, dict) and any(isinstance(v, (int, float)) for v in r.values()):
+                    rows.append({"component": "usd_week", **r})
+                    added += 1
+            if added == 0:
+                failed.append("usd_week: provider returned no observations")
+        else:
+            failed.append(f"usd_week: {usd_hist.get('error', 'no rows')}")
+        if not rows:
+            return BOIError("overview", "all overview components failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
-            "data": {
-                "latest_rates": today,
-                "usd_week":     usd_hist.get("data", [])[-5:],
-            },
+            "data":      rows,
+            "count":     len(rows),
             "source":    "Bank of Israel",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def available_series(self) -> Dict[str, Any]:
         """Built-in EXR series catalogue."""

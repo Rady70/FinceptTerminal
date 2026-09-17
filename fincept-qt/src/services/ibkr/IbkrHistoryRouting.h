@@ -6,9 +6,13 @@
 //
 // Phase 5 accepts IBKR history only for explicitly routed symbols and only for
 // periods that map to a single bounded IBKR request; every other case stays on
-// the public provider, whose provenance names it. A routed-history failure is
-// never allowed to leave the previously displayed series plotted under the
-// failed provider's provenance.
+// the public provider, whose provenance names it.
+//
+// Failure policy (user decision, 2026-09-16): when a routed IBKR request
+// fails, the service clears the displayed series and re-fetches from the
+// public provider, and the provenance strip names that provider. A failed
+// IBKR route is therefore never left plotted under the failed provider's
+// source label, and the user keeps working data with a visible source.
 #pragma once
 #include <QLatin1String>
 #include <QString>
@@ -18,9 +22,9 @@ namespace fincept::services::ibkr {
 enum class IbkrHistoryRoute { Ibkr, PublicProvider };
 
 enum class IbkrHistoryFailureDisposition {
-    /// Emit an empty series before the error metadata so no old data remains
-    /// visible with the failed provider's source label.
-    ClearSeriesAndReport,
+    /// Clear the series, then fetch the same window from the public provider
+    /// and let its provenance strip name the answering source.
+    FallbackToPublicProvider,
 };
 
 /// The IBKR duration for a chart period, or empty when the period is not a
@@ -51,7 +55,15 @@ inline bool ibkr_cache_origin_is_ibkr(const QString& origin) {
 }
 
 inline IbkrHistoryFailureDisposition ibkr_history_failure_disposition() {
-    return IbkrHistoryFailureDisposition::ClearSeriesAndReport;
+    return IbkrHistoryFailureDisposition::FallbackToPublicProvider;
+}
+
+/// The public provider (or its cache) only counts as an answer when it carries
+/// at least one usable bar. An empty result after a failed routed request is
+/// the both-providers-failed case and must surface as unavailable instead of
+/// leaving an empty chart without explanation.
+inline bool public_history_result_is_usable(int usable_bars) {
+    return usable_bars > 0;
 }
 
 } // namespace fincept::services::ibkr

@@ -265,8 +265,13 @@ class NBPWrapper:
     def get_major_currencies(self, last_n: int = 30) -> Dict[str, Any]:
         """Last N observations for major currencies vs PLN."""
         try:
-            end   = date.today().isoformat()
-            start = (date.today() - timedelta(days=last_n * 2)).isoformat()  # buffer for weekends
+            # NBP rejects a range ending on a day whose table is not published
+            # yet, so end at the previous business day.
+            end_date = date.today() - timedelta(days=1)
+            while end_date.weekday() > 4:
+                end_date -= timedelta(days=1)
+            end   = end_date.isoformat()
+            start = (end_date - timedelta(days=last_n * 2)).isoformat()  # buffer for weekends
             raw   = self._get(f"exchangerates/tables/A/{start}/{end}/")
             rows  = self._flatten_table(raw)
             # Filter to major currencies only
@@ -300,21 +305,40 @@ class NBPWrapper:
         return self.get_exchange_rates_today("C")
 
     def get_overview(self) -> Dict[str, Any]:
-        """Latest rates snapshot — today's Table A + C."""
-        results: Dict[str, Any] = {}
-        for name, call in [
-            ("table_a_today", lambda: self.get_exchange_rates_today("A")),
-            ("table_c_today", lambda: self.get_exchange_rates_today("C")),
-        ]:
-            r = call()
-            latest = r.get("data", [{}])[-1] if r.get("data") else None
-            results[name] = {"success": r.get("success"), "count": r.get("count"), "latest": latest}
-        return {
+        """Latest rates snapshot — today's Table A + C, flattened to rows.
+
+        Composite action: each table becomes one numeric-bearing row the panel
+        can render. A failed table is reported (partial result with
+        `failed_components`) instead of being hidden behind success=true;
+        losing both tables is a failure.
+        """
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
+        for name, table in [("table_a_today", "A"), ("table_c_today", "C")]:
+            r = self.get_exchange_rates_today(table)
+            if not r.get("success"):
+                failed.append(f"{name}: {r.get('error', 'failed')}")
+                continue
+            data = r.get("data") or []
+            latest = data[-1] if data else None
+            if not latest:
+                failed.append(f"{name}: provider returned no table rows")
+                continue
+            rows.append({"component": name, **latest})
+        if not rows:
+            return NBPError("overview", "both Table A and Table C failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
-            "data":      results,
+            "data":      rows,
+            "count":     len(rows),
             "source":    "National Bank of Poland",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def get_all_currencies(self) -> Dict[str, Any]:
         """All currencies available in Table A + B."""

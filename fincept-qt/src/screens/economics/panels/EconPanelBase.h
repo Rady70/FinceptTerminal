@@ -53,6 +53,10 @@ class EconPanelBase : public QWidget {
     void show_empty(const QString& msg = {});
     void show_table();
 
+    /// Deliberately unavailable source: show why and disable FETCH so the
+    /// panel cannot offer actions that are known to fail.
+    void mark_source_unavailable(const QString& reason);
+
     /// Populate the shared table + update stat cards.
     void display(const QJsonArray& rows, const QString& title = {});
     void export_csv();

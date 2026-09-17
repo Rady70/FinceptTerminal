@@ -196,20 +196,23 @@ class RiksbankWrapper:
 
         for sid in series_ids:
             r = self._fetch_series(sid, from_date, to_date)
-            if r.get("success"):
+            measured = [row for row in r.get("data", []) if row.get("value") is not None]
+            if r.get("success") and measured:
                 fetched.append(sid)
-                for row in r.get("data", []):
+                for row in measured:
                     d = row["date"]
                     if d not in wide:
                         wide[d] = {"date": d}
                     wide[d][sid] = row.get("value")
             else:
-                errors.append(f"{sid}: {r.get('error','unknown error')}")
+                errors.append(f"{sid}: {r.get('error') or 'provider returned no observations'}")
             if delay and sid != series_ids[-1]:
                 time.sleep(delay)
 
         rows = sorted(wide.values(), key=lambda x: x["date"])
-        return {
+        if not rows and errors:
+            return RiksbankError("multi", "all series failed: " + "; ".join(errors)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
             "series":    fetched,
             "errors":    errors,
@@ -220,6 +223,10 @@ class RiksbankWrapper:
             "source":    "Sveriges Riksbank",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if errors:
+            result["partial"]        = True
+            result["failed_series"]  = errors
+        return result
 
     # ------------------------------------------------------------------
     # Public methods
@@ -301,6 +308,7 @@ class RiksbankWrapper:
     def get_overview(self) -> Dict[str, Any]:
         """Snapshot: latest policy rate, EUR/SEK, USD/SEK, 10Y bond."""
         results: Dict[str, Any] = {}
+        failed: List[str] = []
         from_date = (date.today() - timedelta(days=7)).isoformat()
         for name, sid in [
             ("policy_rate", "SECBREPOEFF"),
@@ -312,18 +320,32 @@ class RiksbankWrapper:
             ("tbill_3m",    "SETB3MBENCH"),
         ]:
             r = self._fetch_series(sid, from_date)
+            latest = r.get("data", [{}])[-1] if r.get("data") else None
+            # A series only counts as fetched when it carries an actual
+            # measurement; success with no observations (or a None value) is
+            # a failed constituent, not a zero row.
+            ok = bool(r.get("success")) and isinstance(latest, dict) and latest.get("value") is not None
+            if not ok:
+                failed.append(f"{name}: {r.get('error') or 'provider returned no observations'}")
             results[name] = {
-                "success": r.get("success"),
+                "success": ok,
                 "label":   r.get("label", sid),
-                "latest":  r.get("data", [{}])[-1] if r.get("data") else None,
+                "latest":  latest,
             }
             time.sleep(0.3)  # be gentle with rate limits
-        return {
+        if all(not results[n].get("success") for n in results):
+            return RiksbankError("overview", "all overview series failed: "
+                                 + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
             "data":      results,
             "source":    "Sveriges Riksbank",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def available_series(self) -> Dict[str, Any]:
         """Built-in series catalogue by category."""

@@ -6,6 +6,15 @@
 //   {"error": {...}}                                    -> failure (CFTC shape)
 //   {"error": "..."}                                    -> failure
 //   {"success": false, ...}                             -> failure
+//   {"success": true, "partial": true, "failed_*": ...} -> failure (partial)
+//
+// Composite commands (central-bank overviews, multi-series fetches) may serve
+// only some of their constituents. Those envelopes carry the explicit partial
+// signal (`partial: true` and/or a non-empty `failed_*` list); the application
+// must never cache or present them as an ordinary complete success, so classify
+// treats them as failures with the failed constituents named in the message.
+// The generic `errors` key is deliberately NOT a partial signal: some scripts
+// use it for benign notices.
 //
 // PythonRunner already turns a script-level `{"error": ...}` envelope into a
 // failed PythonResult, but EconomicsService also has a cache path that never
@@ -20,11 +29,13 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QStringList>
 
 namespace fincept::services::economics_detail {
 
 struct EnvelopeDecision {
     bool ok = true;
+    bool partial = false;
     QString error;
 };
 
@@ -60,8 +71,31 @@ inline QString error_message(const QJsonValue& v) {
     return {};
 }
 
+/// Names of the explicit partial-failure markers the composite scripts emit.
+inline QString partial_failure_details(const QJsonObject& obj) {
+    static const char* kKeys[] = {"failed_components", "failed_sessions", "failed_years", "failed_dates",
+                                  "failed_series"};
+    QStringList parts;
+    for (const char* key : kKeys) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        if (v.isArray()) {
+            for (const QJsonValue& item : v.toArray()) {
+                const QString text = item.isString() ? item.toString().trimmed()
+                                                     : error_message(item);
+                if (!text.isEmpty())
+                    parts << text;
+            }
+        } else if (v.isString() && !v.toString().trimmed().isEmpty()) {
+            parts << v.toString().trimmed();
+        }
+    }
+    return parts.join(QStringLiteral("; "));
+}
+
 /// Classify one economics response envelope. An error value fails even when
-/// `data` is present; an explicit `success: false` fails even without one.
+/// `data` is present; an explicit `success: false` fails even without one; an
+/// explicit partial signal fails so partial constituent failures cannot be
+/// cached or rendered as complete success.
 inline EnvelopeDecision classify(const QJsonObject& obj) {
     EnvelopeDecision decision;
     const QJsonValue error = obj.value("error");
@@ -81,6 +115,16 @@ inline EnvelopeDecision classify(const QJsonObject& obj) {
     if (success.isBool() && !success.toBool()) {
         decision.ok = false;
         decision.error = QStringLiteral("provider reported failure");
+        return decision;
+    }
+    const QJsonValue partial_flag = obj.value("partial");
+    const bool partial = partial_flag.isBool() && partial_flag.toBool();
+    const QString details = partial_failure_details(obj);
+    if (partial || !details.isEmpty()) {
+        decision.ok = false;
+        decision.partial = true;
+        decision.error = QStringLiteral("Partial provider result: ") +
+                         (details.isEmpty() ? QStringLiteral("some components failed") : details);
         return decision;
     }
     return decision; // ok

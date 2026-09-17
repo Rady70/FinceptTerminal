@@ -24,9 +24,9 @@ Verified Endpoints:
   GET /pribor/daily?[date=YYYY-MM-DD]&lang=EN
       PRIBOR fixing (1D, 1W, 2W, 1M, 2M, 3M, 6M, 9M, 12M)
   GET /pribor/daily-year?year=YYYY&lang=EN
-      PRIBOR for a full year
-  GET /pribor/daily-year-term?year=YYYY&term=THREE_MONTH&lang=EN
-      PRIBOR for a term and year
+      PRIBOR for a full year, every period in one response
+      (the retired /pribor/daily-year-term contract with a `term` parameter
+      was rejected by the API; filter the `period` field client-side)
   GET /omo/daily?[date=YYYY-MM-DD]&lang=EN
       Open market operations (repo, deposit facility)
   GET /forward/daily?[date=YYYY-MM-DD]&lang=EN
@@ -235,12 +235,64 @@ class CNBWrapper:
         except Exception as e:
             return CNBError("exrates/monthly-averages-year", str(e)).to_dict()
 
+    def _first_scalar_row(self, payload: Any) -> Optional[Dict[str, Any]]:
+        """Reduce a payload to one flat, numeric-bearing row.
+
+        The panel keeps only rows with a direct numeric value, so wrapper
+        objects and component objects must be reduced before they are returned.
+        """
+        obj: Optional[Dict[str, Any]] = None
+        if isinstance(payload, dict):
+            if any(not isinstance(v, (dict, list)) for v in payload.values()):
+                obj = payload
+            else:
+                for v in payload.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        obj = v[0]
+                        break
+                    if isinstance(v, dict):
+                        obj = v
+                        break
+        elif isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            obj = payload[0]
+        if not obj:
+            return None
+        row = {k: v for k, v in obj.items()
+               if v is not None and not isinstance(v, (dict, list, bool))
+               and isinstance(v, (int, float, str))}
+        return row or None
+
     def get_czeonia(self, rate_date: Optional[str] = None) -> Dict[str, Any]:
         """CZEONIA overnight rate (latest or specific date)."""
         params = {}
         if rate_date:
             params["date"] = rate_date
-        return self._safe("czeonia/daily", "czeonia/daily", params)
+        try:
+            raw   = self._get("czeonia/daily", params)
+            entry = raw.get("czeoniaDaily", {}) if isinstance(raw, dict) else {}
+            row: Dict[str, Any] = {}
+            if entry.get("validFor"):
+                row["date"] = entry["validFor"]
+            if entry.get("rate") is not None:
+                row["czeonia"] = entry["rate"]
+            if entry.get("volumeInCZKmio") is not None:
+                row["volume_czk_mio"] = entry["volumeInCZKmio"]
+            if not any(k != "date" for k in row):
+                return CNBError("czeonia/daily",
+                                "provider returned no CZEONIA fixing for the requested date").to_dict()
+            return {
+                "success":   True,
+                "data":      row,
+                "count":     1,
+                "source":    "Czech National Bank",
+                "url":       f"{BASE_URL}/czeonia/daily",
+                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+            }
+        except requests.exceptions.HTTPError as e:
+            sc = e.response.status_code if e.response is not None else None
+            return CNBError("czeonia/daily", str(e), sc).to_dict()
+        except Exception as e:
+            return CNBError("czeonia/daily", str(e)).to_dict()
 
     def get_czeonia_year(self, year: Optional[int] = None) -> Dict[str, Any]:
         """CZEONIA for full year."""
@@ -281,12 +333,18 @@ class CNBWrapper:
                         term: str = "THREE_MONTHS") -> Dict[str, Any]:
         """PRIBOR for a specific term and year. term: ONE_DAY, THREE_MONTHS, etc."""
         y      = year or datetime.now(timezone.utc).year
-        params = {"year": y, "term": term}
         try:
-            raw   = self._get("pribor/daily-year-term", params)
+            # The CNB API serves the yearly series from pribor/daily-year and
+            # returns every period; the previous daily-year-term call with a
+            # "term" parameter was rejected (the API expects "period").
+            raw   = self._get("pribor/daily-year", {"year": y})
             pribs = raw.get("pribs", [])
+            # The API names the period THREE_MONTH; the script's term default
+            # is THREE_MONTHS, so compare without a trailing plural "S".
+            wanted = (term or "").rstrip("S")
             rows  = [{"date": p.get("validFor", ""), "pribor": p.get("pribor"),
-                      "pribid": p.get("pribid")} for p in pribs]
+                      "pribid": p.get("pribid")}
+                     for p in pribs if not wanted or (p.get("period") or "").rstrip("S") == wanted]
             return {
                 "success":   True,
                 "year":      y,
@@ -298,9 +356,9 @@ class CNBWrapper:
             }
         except requests.exceptions.HTTPError as e:
             sc = e.response.status_code if e.response is not None else None
-            return CNBError("pribor/daily-year-term", str(e), sc).to_dict()
+            return CNBError("pribor/daily-year", str(e), sc).to_dict()
         except Exception as e:
-            return CNBError("pribor/daily-year-term", str(e)).to_dict()
+            return CNBError("pribor/daily-year", str(e)).to_dict()
 
     def get_omo(self, trade_date: Optional[str] = None) -> Dict[str, Any]:
         """Open market operations (repo, deposit facility)."""
@@ -324,8 +382,15 @@ class CNBWrapper:
         return self._safe("skd/daily", "skd/daily", params)
 
     def get_overview(self) -> Dict[str, Any]:
-        """Snapshot: today's FX rates, PRIBOR, CZEONIA, OMO."""
-        results: Dict[str, Any] = {}
+        """Snapshot: today's FX rates, PRIBOR, CZEONIA, OMO, forwards.
+
+        Composite action: every component's result is flattened to a row the
+        panel can render. A component failure is reported (partial result with
+        `failed_components`) instead of being hidden behind success=true; total
+        failure is a failure.
+        """
+        rows: List[Dict[str, Any]] = []
+        failed: List[str] = []
         for name, call in [
             ("exchange_rates", self.get_exchange_rates),
             ("pribor",         self.get_pribor),
@@ -334,26 +399,45 @@ class CNBWrapper:
             ("forward_rates",  self.get_forward_rates),
         ]:
             r = call()
-            results[name] = {
-                "success": r.get("success"),
-                "data":    r.get("data"),
-            }
-        return {
+            if not r.get("success"):
+                failed.append(f"{name}: {r.get('error', 'failed')}")
+                continue
+            row = self._first_scalar_row(r.get("data"))
+            if row is None:
+                failed.append(f"{name}: provider returned no numeric row")
+                continue
+            rows.append({"component": name, **row})
+        if not rows:
+            return CNBError("overview", "all overview components failed: "
+                            + "; ".join(failed)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
-            "data":      results,
+            "data":      rows,
+            "count":     len(rows),
             "source":    "Czech National Bank",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed:
+            result["partial"]           = True
+            result["failed_components"] = failed
+        return result
 
     def get_pribor_history(self, years: int = 2,
                            term: str = "THREE_MONTHS") -> Dict[str, Any]:
         """PRIBOR for multiple years merged into one series."""
         current_year = datetime.now(timezone.utc).year
         all_rows: List[Dict] = []
+        failed_years: List[str] = []
         for y in range(current_year - years + 1, current_year + 1):
             r = self.get_pribor_year(y, term)
+            if not r.get("success"):
+                failed_years.append(f"{y}: {r.get('error', 'failed')}")
+                continue
             all_rows.extend(r.get("data", []))
-        return {
+        if not all_rows:
+            return CNBError("pribor/daily-year",
+                            "all years failed: " + "; ".join(failed_years)).to_dict()
+        result: Dict[str, Any] = {
             "success":   True,
             "term":      term,
             "years":     years,
@@ -362,6 +446,10 @@ class CNBWrapper:
             "source":    "Czech National Bank",
             "timestamp": int(datetime.now(timezone.utc).timestamp()),
         }
+        if failed_years:
+            result["partial"]      = True
+            result["failed_years"] = failed_years
+        return result
 
     def available_endpoints(self) -> Dict[str, Any]:
         """List all available endpoints."""
@@ -376,8 +464,7 @@ class CNBWrapper:
                 },
                 "interest_rates": {
                     "pribor_today":  "/pribor/daily",
-                    "pribor_year":   "/pribor/daily-year?year=YYYY",
-                    "pribor_term":   "/pribor/daily-year-term?year=YYYY&term=THREE_MONTHS",
+                    "pribor_year":   "/pribor/daily-year?year=YYYY (all periods; filter the `period` field client-side)",
                     "czeonia_today": "/czeonia/daily",
                     "czeonia_year":  "/czeonia/daily-year?year=YYYY",
                 },

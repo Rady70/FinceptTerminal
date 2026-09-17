@@ -5,7 +5,8 @@
 // deterministic and do not depend on the cache, the Python runner or signals:
 // IBKR is used only for explicitly routed symbols and bounded periods, an IBKR
 // cache hit must carry IBKR provenance, and a routed-history failure clears the
-// displayed series instead of leaving old bars under the failed source label.
+// displayed series and falls back to the public provider, whose provenance is
+// then shown.
 
 #include "services/ibkr/IbkrHistoryRouting.h"
 
@@ -21,7 +22,8 @@ class TstIbkrHistoryRoute : public QObject {
     void non_routed_or_unconfigured_symbol_stays_public();
     void unsupported_period_stays_public();
     void ibkr_cache_requires_ibkr_origin();
-    void failure_disposition_clears_series();
+    void failure_disposition_falls_back_to_public();
+    void public_history_empty_result_is_not_usable();
     void duration_map_stays_within_one_bounded_request();
 };
 
@@ -53,10 +55,18 @@ void TstIbkrHistoryRoute::ibkr_cache_requires_ibkr_origin() {
     QVERIFY(!ibkr_cache_origin_is_ibkr(QString()));
 }
 
-void TstIbkrHistoryRoute::failure_disposition_clears_series() {
-    // A routed IBKR failure reports with an empty series so the previous
-    // provider's bars cannot remain plotted under an IBKR error label.
-    QCOMPARE(ibkr_history_failure_disposition(), IbkrHistoryFailureDisposition::ClearSeriesAndReport);
+void TstIbkrHistoryRoute::failure_disposition_falls_back_to_public() {
+    // A routed IBKR failure clears the series and re-fetches from the public
+    // provider; the provenance strip then names the provider that answered
+    // (user decision 2026-09-16: keep working data with a visible source).
+    QCOMPARE(ibkr_history_failure_disposition(), IbkrHistoryFailureDisposition::FallbackToPublicProvider);
+}
+
+void TstIbkrHistoryRoute::public_history_empty_result_is_not_usable() {
+    // Both-providers-failed rule: an empty public result after a failed routed
+    // request must surface as unavailable, never as an empty success.
+    QVERIFY(!public_history_result_is_usable(0));
+    QVERIFY(public_history_result_is_usable(1));
 }
 
 void TstIbkrHistoryRoute::duration_map_stays_within_one_bounded_request() {

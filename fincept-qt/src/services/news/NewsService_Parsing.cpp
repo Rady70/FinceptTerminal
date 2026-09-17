@@ -10,6 +10,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "network/http/HttpClient.h"
+#include "services/news/NewsDateParse.h"
 #include "services/news/NewsService.h"
 #include "storage/cache/CacheManager.h"
 
@@ -91,16 +92,15 @@ QVector<NewsArticle> NewsService::parse_rss_xml(const QByteArray& xml, const RSS
             } else if (current_tag == "pubDate" || current_tag == "published" || current_tag == "updated" ||
                        current_tag == "date") {
                 if (current.sort_ts == 0) {
-                    QDateTime dt = QDateTime::fromString(text, Qt::RFC2822Date);
-                    if (!dt.isValid())
-                        dt = QDateTime::fromString(text, Qt::ISODate);
-                    if (!dt.isValid())
-                        dt = QDateTime::fromString(text, "ddd, dd MMM yyyy HH:mm:ss");
+                    const QDateTime dt = news_parse_datetime(text);
                     if (dt.isValid()) {
                         current.sort_ts = dt.toSecsSinceEpoch();
                         current.time = dt.toString("MMM dd, HH:mm");
                     } else {
-                        current.time = text.left(22);
+                        // Keep the provider's raw text and leave the article
+                        // undated (sort_ts stays 0). A missing or unparsable
+                        // date must not be promoted to "now".
+                        current.time = text.left(32);
                     }
                 }
             }
@@ -111,11 +111,8 @@ QVector<NewsArticle> NewsService::parse_rss_xml(const QByteArray& xml, const RSS
                 if (current.headline.isEmpty())
                     continue;
 
-                if (current.time.isEmpty())
-                    current.time = QDateTime::currentDateTime().toString("MMM dd, HH:mm");
-                if (current.sort_ts == 0)
-                    current.sort_ts = QDateTime::currentSecsSinceEpoch();
-
+                // Undated articles keep sort_ts == 0 so every time-window
+                // filter excludes them instead of showing them as current.
                 enrich_article(current);
                 articles.append(std::move(current));
             }
