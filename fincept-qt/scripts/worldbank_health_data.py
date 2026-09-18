@@ -73,14 +73,14 @@ def get_gini_index(country: str, start_year: int = None, end_year: int = None) -
 
 
 def get_hdi_proxy(country: str, year: int = None) -> Any:
-    """Human Development Index proxy via GNI per capita (constant 2017 PPP$) — NY.GNP.PCAP.PP.KD."""
+    """Human Development Index proxy via GNI per capita (constant 2021 international $) — NY.GNP.PCAP.PP.KD."""
     start = year
     end = year
     return _fetch_indicator("NY.GNP.PCAP.PP.KD", country, start, end)
 
 
 def get_poverty_headcount(country: str, year: int = None) -> Any:
-    """Poverty headcount ratio at $2.15/day (2017 PPP, % of population) — SI.POV.DDAY."""
+    """Poverty headcount ratio at $3.00 a day (2021 PPP, % of population) — SI.POV.DDAY."""
     start = year
     end = year
     return _fetch_indicator("SI.POV.DDAY", country, start, end)

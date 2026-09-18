@@ -55,7 +55,7 @@ static const QList<WbHealthIndicator> kWbHealthIndicators = {
     // flatten_wb() — which expects World Bank's `records` array — cannot parse.
     // Wiring it needs a second flattener and a key, and is tracked separately.
     {"GNI per Capita (PPP, HDI proxy)", "hdi", "int'l $"},
-    {"Poverty Rate ($2.15/day)", "poverty", "%"},
+    {"Poverty Rate ($3.00/day, 2021 PPP)", "poverty", "%"},
 };
 
 static const QList<QPair<QString, QString>> kWbHealthCountries = {

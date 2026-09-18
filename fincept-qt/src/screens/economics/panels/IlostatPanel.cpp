@@ -45,7 +45,8 @@ IlostatPanel::IlostatPanel(QWidget* parent) : EconPanelBase(kIlostatSourceId, kI
 void IlostatPanel::activate() {
     show_empty(tr("Select a series, enter a country code, then click FETCH\n"
                   "Source: ILO ILOSTAT SDMX REST API (sdmx.ilo.org) — no API key required\n"
-                  "Series are ANNUAL, both sexes, age 15+, harmonised (modelled) estimates — percent.\n"
+                  "Series are the ILO annual by-sex-and-age rate dataflows (both sexes, age 15+) — percent,\n"
+                  "not the separate 'ILO modelled estimates' datasets.\n"
                   "Country codes (ISO-3): USA, GBR, DEU, FRA, IND, CHN, JPN, BRA, ZAF · "
                   "G7 = CAN+USA+GBR+DEU+FRA+ITA+JPN"));
 }
@@ -106,6 +107,11 @@ void IlostatPanel::on_fetch() {
     const QString end = end_edit_->text().trimmed();
 
     if (country.isEmpty()) {
+        // Enter in a toolbar field runs the query even while an earlier request
+        // is still in flight, so this rejected attempt must supersede it:
+        // clearing the pending id stops the older response from later replacing
+        // this error state.
+        pending_request_.clear();
         show_error(tr("Please enter a country code (e.g. USA)"));
         return;
     }
