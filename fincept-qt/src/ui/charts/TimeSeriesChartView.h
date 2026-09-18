@@ -43,13 +43,11 @@ class TimeSeriesChartView : public QWidget {
     void rebuild_chart(bool reset_zoom);
     void apply_range(TimeRange range);
     void update_range_buttons();
-    void update_provenance();
     void retranslateUi();
 
     QLabel* range_lbl_ = nullptr;
     QVector<QPushButton*> range_btns_;
     QVector<TimeRange> range_values_;
-    QLabel* provenance_lbl_ = nullptr;
     TimeSeriesCrosshairView* chart_view_ = nullptr;
     QLabel* empty_lbl_ = nullptr;
 

@@ -95,7 +95,9 @@ def _make_request(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dic
                     "per_page": metadata.get("per_page", 50) if isinstance(metadata, dict) else 50,
                     "total": metadata.get("total", 0) if isinstance(metadata, dict) else 0,
                     "source": metadata.get("source", "World Bank") if isinstance(metadata, dict) else "World Bank",
-                    "last_updated": metadata.get("lastupdated", datetime.now().isoformat()) if isinstance(metadata, dict) else datetime.now().isoformat()
+                    # Provider-update freshness only when the provider actually
+                    # supplied it; never substitute the local clock.
+                    "last_updated": metadata.get("lastupdated") if isinstance(metadata, dict) else None
                 },
                 "error": None
             }
@@ -104,18 +106,18 @@ def _make_request(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dic
             if isinstance(data[0], dict) and "message" in data[0]:
                 return {
                     "data": [],
-                    "metadata": {"source": "World Bank", "last_updated": datetime.now().isoformat()},
+                    "metadata": {"source": "World Bank", "last_updated": None},
                     "error": f"API message: {data[0].get('message', [{}])[0].get('value', 'No data available')}"
                 }
             return {
                 "data": [],
-                "metadata": {"source": "World Bank", "last_updated": datetime.now().isoformat()},
+                "metadata": {"source": "World Bank", "last_updated": None},
                 "error": None
             }
         else:
             return {
                 "data": data if data is not None else [],
-                "metadata": {"source": "World Bank", "last_updated": datetime.now().isoformat()},
+                "metadata": {"source": "World Bank", "last_updated": None},
                 "error": None
             }
 
@@ -514,7 +516,7 @@ def get_economic_snapshot(country_code: str = "USA") -> Dict[str, Any]:
                 "date_range": date_range,
                 "indicators_requested": len(indicators),
                 "indicators_success": len(snapshot_data),
-                "last_updated": datetime.now().isoformat()
+                "last_updated": None
             },
             "error": "; ".join(errors) if errors else None
         }
@@ -583,7 +585,7 @@ def get_regional_comparison(region_code: str, indicator: str = GDP_PER_CAPITA, y
                 "date_range": date_range,
                 "countries_in_region": len(country_codes),
                 "observation_count": len(all_data),
-                "last_updated": datetime.now().isoformat()
+                "last_updated": None
             },
             "error": "; ".join(errors) if errors else None
         }

@@ -85,6 +85,8 @@ QString EconPanelBase::panel_style() const {
                "#econTitleLbl { color:%10; font-size:11px; font-weight:700;"
                "  background:transparent; }"
                "#econRowCount { color:%14; font-size:9px; background:transparent; }"
+               "#econProvenance { color:%14; font-size:9px; background:transparent;"
+               "  padding:0 12px 4px 12px; }"
                "#econViewBar  { background:%7; border-bottom:1px solid %6; }"
                "#econViewTab  { background:transparent; color:%9; border:1px solid %6;"
                "  font-size:10px; font-weight:700; padding:3px 10px; }"
@@ -205,6 +207,7 @@ void EconPanelBase::build_base_ui(QWidget* container) {
     export_btn_->setCursor(Qt::PointingHandCursor);
     export_btn_->setAccessibleName(tr("Export results as CSV"));
     export_btn_->setToolTip(tr("Export the full result set (all pages) as CSV"));
+    export_btn_->setEnabled(false); // enabled only while a result is displayed
     connect(export_btn_, &QPushButton::clicked, this, &EconPanelBase::export_csv);
 
     thl->addWidget(fetch_btn_);
@@ -274,6 +277,15 @@ void EconPanelBase::build_base_ui(QWidget* container) {
     tbhl->addStretch(1);
     tbhl->addWidget(row_count_);
     root->addWidget(title_bar_);
+
+    // Result-level provenance — belongs to the result, not to one page, so it
+    // stays visible on both Chart and Raw Data. Hidden unless a time-series
+    // result supplies it.
+    provenance_lbl_ = new QLabel(this);
+    provenance_lbl_->setObjectName("econProvenance");
+    provenance_lbl_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    provenance_lbl_->hide();
+    root->addWidget(provenance_lbl_);
 
     // Chart | Raw Data switcher — hidden until a time-series result opts in.
     view_bar_ = new QWidget(this);
@@ -357,8 +369,7 @@ void EconPanelBase::refresh_panel_theme() {
 void EconPanelBase::show_loading(const QString& msg) {
     if (!empty_lbl_)
         return;
-    if (view_bar_)
-        view_bar_->hide();
+    clear_result_state();
     status_kind_ = StatusKind::Loading;
     status_msg_ = msg.isEmpty() ? tr("Fetching data…") : msg;
     empty_lbl_->setObjectName("econLoadingMsg");
@@ -373,8 +384,7 @@ void EconPanelBase::show_loading(const QString& msg) {
 void EconPanelBase::show_error(const QString& msg) {
     if (!empty_lbl_)
         return;
-    if (view_bar_)
-        view_bar_->hide();
+    clear_result_state();
     status_kind_ = StatusKind::Error;
     status_msg_ = msg;
     empty_lbl_->setObjectName("econErrMsg");
@@ -398,8 +408,7 @@ void EconPanelBase::mark_source_unavailable(const QString& reason) {
 void EconPanelBase::show_empty(const QString& msg) {
     if (!empty_lbl_)
         return;
-    if (view_bar_)
-        view_bar_->hide();
+    clear_result_state();
     status_kind_ = StatusKind::Empty;
     status_msg_ = msg.isEmpty() ? tr("Select parameters and click FETCH") : msg;
     empty_lbl_->setObjectName("econEmptyMsg");
@@ -434,6 +443,67 @@ void EconPanelBase::show_content_page(int index) {
 void EconPanelBase::set_stats_visible(bool visible) {
     if (cards_row_)
         cards_row_->setVisible(visible);
+}
+
+void EconPanelBase::clear_result_state() {
+    // A loading/error/empty state must not leave a previous success looking
+    // current: drop the rows (so CSV cannot export them), the table page, the
+    // stat summary, the title/record count, the provenance line and the chart.
+    all_rows_ = QJsonArray();
+    columns_.clear();
+    latest_date_.clear();
+
+    if (table_) {
+        table_->clearContents();
+        table_->setRowCount(0);
+    }
+    if (pager_)
+        pager_->set_total(0);
+
+    for (auto* label : {stat_latest_, stat_change_, stat_min_, stat_max_, stat_avg_, stat_count_}) {
+        if (label)
+            label->setText(QStringLiteral("—"));
+    }
+    if (stat_change_) {
+        stat_change_->setObjectName("econStatVal");
+        stat_change_->style()->unpolish(stat_change_);
+        stat_change_->style()->polish(stat_change_);
+    }
+
+    if (title_lbl_)
+        title_lbl_->clear();
+    if (row_count_)
+        row_count_->clear();
+
+    has_result_provenance_ = false;
+    result_meta_ = {};
+    result_frequency_.clear();
+    update_provenance_label();
+
+    if (view_bar_)
+        view_bar_->hide();
+    if (chart_view_)
+        chart_view_->clear_series();
+    if (export_btn_)
+        export_btn_->setEnabled(false);
+}
+
+void EconPanelBase::update_provenance_label() {
+    if (!provenance_lbl_)
+        return;
+    QStringList parts;
+    if (has_result_provenance_) {
+        if (!result_meta_.source.isEmpty())
+            parts << result_meta_.source;
+        if (!result_frequency_.isEmpty())
+            parts << tr("Frequency: %1").arg(result_frequency_);
+        if (!result_meta_.unit.isEmpty())
+            parts << tr("Unit: %1").arg(result_meta_.unit);
+        if (!result_meta_.last_updated.isEmpty())
+            parts << tr("Provider updated: %1").arg(result_meta_.last_updated);
+    }
+    provenance_lbl_->setText(parts.join(QStringLiteral(" · ")));
+    provenance_lbl_->setVisible(!parts.isEmpty());
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────
@@ -490,6 +560,15 @@ void EconPanelBase::display(const QJsonArray& rows, const QString& title) {
         row_count_->setText(latest_date_.isEmpty()
                                 ? tr("%1 records").arg(rows.size())
                                 : tr("%1 records · as of %2").arg(rows.size()).arg(latest_date_));
+
+    // This is the current result again: a plain result carries no time-series
+    // provenance and CSV may export exactly these rows.
+    has_result_provenance_ = false;
+    result_meta_ = {};
+    result_frequency_.clear();
+    update_provenance_label();
+    if (export_btn_)
+        export_btn_->setEnabled(true);
 
     show_table();
 }
@@ -558,6 +637,14 @@ void EconPanelBase::display_time_series(const QJsonArray& rows, const QString& t
     }
 
     display(ordered_rows, series.meta.title);
+
+    // Provenance belongs to the result, not the chart page: keep it visible
+    // while the user inspects Raw Data too.
+    result_meta_ = series.meta;
+    result_frequency_ =
+        series.meta.frequency.isEmpty() ? ui::inferred_frequency_label(series.points) : series.meta.frequency;
+    has_result_provenance_ = true;
+    update_provenance_label();
 
     if (chart_view_) {
         chart_view_->set_accent_color(QColor(color_));
@@ -839,6 +926,9 @@ void EconPanelBase::retranslateUi() {
         chart_view_btn_->setText(tr("Chart"));
     if (raw_view_btn_)
         raw_view_btn_->setText(tr("Raw Data"));
+
+    // Result provenance (re-applied from the stored result metadata)
+    update_provenance_label();
 
     // Current status message. The empty default re-translates; loading/error
     // messages keep the message that was last shown (data-derived prefixes are

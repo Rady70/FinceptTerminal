@@ -136,10 +136,19 @@ class EconPanelBase : public QWidget {
   private:
     void update_stats(const QJsonArray& rows);
     void render_page();
+    /// Drop any previously displayed result (rows, columns, stats, title,
+    /// record count, provenance, chart) so a loading/error/empty state cannot
+    /// present or export stale data as current. CSV is disabled until the next
+    /// successful display()/display_time_series().
+    void clear_result_state();
+    /// Render the result-level provenance line shown for both Chart and Raw
+    /// Data (empty unless a time-series result supplied it).
+    void update_provenance_label();
 
     QWidget* container_ = nullptr;
     QWidget* cards_row_ = nullptr;
     QWidget* title_bar_ = nullptr;
+    QLabel* provenance_lbl_ = nullptr;
     QStackedWidget* stack_ = nullptr; // 0=empty/status  1=table+pager
     QLabel* empty_lbl_ = nullptr;
     QTableWidget* table_ = nullptr;
@@ -166,6 +175,11 @@ class EconPanelBase : public QWidget {
     QPushButton* raw_view_btn_ = nullptr;
     ui::TimeSeriesChartView* chart_view_ = nullptr;
     int chart_page_ = -1;
+
+    // Result-level provenance (visible on both Chart and Raw Data pages).
+    ui::TimeSeriesMeta result_meta_;
+    QString result_frequency_;
+    bool has_result_provenance_ = false;
 
     QJsonArray all_rows_;
     QStringList columns_;

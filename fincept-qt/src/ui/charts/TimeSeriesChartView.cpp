@@ -15,7 +15,6 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QSignalBlocker>
-#include <QStringList>
 #include <QTimeZone>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -311,10 +310,6 @@ void TimeSeriesChartView::build_ui() {
         top->addWidget(button);
     }
     top->addStretch(1);
-
-    provenance_lbl_ = new QLabel(this);
-    provenance_lbl_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    top->addWidget(provenance_lbl_);
     root->addLayout(top);
 
     chart_view_ = new TimeSeriesCrosshairView(this);
@@ -351,7 +346,6 @@ void TimeSeriesChartView::set_series(const TimeSeries& series) {
     series_.points = sorted_time_series(series_.points);
     range_ = TimeRange::Max;
     navigator_.reset();
-    update_provenance();
     update_range_buttons();
     rebuild_chart(true);
 }
@@ -359,7 +353,6 @@ void TimeSeriesChartView::set_series(const TimeSeries& series) {
 void TimeSeriesChartView::clear_series() {
     series_ = {};
     navigator_.reset();
-    update_provenance();
     update_range_buttons();
     rebuild_chart(true);
 }
@@ -387,8 +380,6 @@ void TimeSeriesChartView::refresh_theme() {
 
     range_lbl_->setStyleSheet(
         QString("color:%1; font-size:9px; font-weight:700; background:transparent;").arg(ui::colors::TEXT_TERTIARY()));
-    provenance_lbl_->setStyleSheet(
-        QString("color:%1; font-size:9px; background:transparent;").arg(ui::colors::TEXT_TERTIARY()));
     empty_lbl_->setStyleSheet(
         QString("color:%1; font-size:13px; background:transparent;").arg(ui::colors::TEXT_SECONDARY()));
     if (chart_view_)
@@ -419,23 +410,6 @@ void TimeSeriesChartView::update_range_buttons() {
         QSignalBlocker block(range_btns_[index]);
         range_btns_[index]->setChecked(true);
     }
-}
-
-void TimeSeriesChartView::update_provenance() {
-    QStringList parts;
-    if (!series_.meta.source.isEmpty())
-        parts << series_.meta.source;
-    QString frequency = series_.meta.frequency;
-    if (frequency.isEmpty())
-        frequency = inferred_frequency_label(series_.points);
-    if (!frequency.isEmpty())
-        parts << tr("Frequency: %1").arg(frequency);
-    if (!series_.meta.unit.isEmpty())
-        parts << tr("Unit: %1").arg(series_.meta.unit);
-    if (!series_.meta.last_updated.isEmpty())
-        parts << tr("Provider updated: %1").arg(series_.meta.last_updated);
-    provenance_lbl_->setText(parts.join(QStringLiteral(" · ")));
-    provenance_lbl_->setVisible(!parts.isEmpty());
 }
 
 void TimeSeriesChartView::rebuild_chart(bool reset_zoom) {
@@ -576,7 +550,6 @@ void TimeSeriesChartView::retranslateUi() {
         range_lbl_->setText(tr("RANGE"));
     if (empty_lbl_)
         empty_lbl_->setText(tr("No observations to chart"));
-    update_provenance();
     update_range_buttons(); // re-applies the translated availability tooltip
 }
 
