@@ -302,8 +302,7 @@ void UnescoPanel::on_fetch() {
     // The id must identify the full request: two fetches for the same
     // indicator+country with different year windows are different operations,
     // and a late response for one must not replace the other.
-    pending_request_ =
-        "unesco_fetch_" + indicator_code + "_" + country + "_" + start + "_" + end;
+    pending_request_ = "unesco_fetch_" + indicator_code + "_" + country + "_" + start + "_" + end;
     services::EconomicsService::instance().execute(kUnescoSourceId, kUnescoScript, "fetch", args, pending_request_);
 }
 
