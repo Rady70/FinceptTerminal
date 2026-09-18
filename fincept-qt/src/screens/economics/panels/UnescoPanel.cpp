@@ -283,11 +283,20 @@ void UnescoPanel::on_fetch() {
         return;
     }
 
+    // The provider CLI takes [start [end]] positionally, so an end year cannot
+    // be expressed without a start year. Accepting one here would silently drop
+    // the user's constraint from the request; ask for the missing bound instead.
+    if (start.isEmpty() && !end.isEmpty()) {
+        show_empty(tr("Enter a start year as well, or clear the end year"));
+        return;
+    }
+
     QStringList args = {indicator_code, country};
-    if (!start.isEmpty())
+    if (!start.isEmpty()) {
         args << start;
-    if (!start.isEmpty() && !end.isEmpty())
-        args << end;
+        if (!end.isEmpty())
+            args << end;
+    }
 
     show_loading(tr("Fetching UNESCO: %1 for %2…").arg(sel_item->text(), country));
     // The id must identify the full request: two fetches for the same
