@@ -4,6 +4,7 @@
 
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -46,6 +47,22 @@ static const QList<QPair<QString, QString>> kImfCountries = {
     {"Russia", "RUS"},     {"Mexico", "MEX"},         {"Indonesia", "IDN"},   {"Saudi Arabia", "SAU"},
     {"Turkey", "TUR"},     {"Netherlands", "NLD"},    {"Switzerland", "CHE"}, {"Argentina", "ARG"},
 };
+
+/// Display label for an indicator code (falls back to the code itself).
+static QString imf_indicator_label(const QString& code) {
+    for (const auto& pair : kImfIndicators)
+        if (pair.second == code)
+            return pair.first;
+    return code;
+}
+
+/// Display label for a country code (falls back to the code itself).
+static QString imf_country_label(const QString& code) {
+    for (const auto& pair : kImfCountries)
+        if (pair.second == code)
+            return pair.first;
+    return code;
+}
 
 } // namespace
 
@@ -127,8 +144,8 @@ void ImfPanel::on_fetch() {
     const QString country = country_combo_->currentData().toString();
 
     show_loading(tr("Fetching IMF DataMapper data…"));
-    services::EconomicsService::instance().execute(kImfSourceId, kImfScript, "data", {code},
-                                                   "imf_data_" + code + "_" + country);
+    pending_request_ = "imf_data_" + code + "_" + country;
+    services::EconomicsService::instance().execute(kImfSourceId, kImfScript, "data", {code}, pending_request_);
 }
 
 // ── Result ────────────────────────────────────────────────────────────────────
@@ -136,34 +153,64 @@ void ImfPanel::on_fetch() {
 void ImfPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {
     if (result.source_id != kImfSourceId)
         return;
+    if (!request_id.startsWith("imf_data_"))
+        return;
+
+    // A newer fetch supersedes an older response that arrives late — including
+    // a stale failure, which must not overwrite a newer success.
+    if (request_id != pending_request_)
+        return;
+
     if (!result.success) {
         show_error(result.error);
         return;
     }
 
-    if (request_id.startsWith("imf_data_")) {
-        // Response: {values: {CODE: {COUNTRY: {YEAR: value}}}}
-        const QJsonObject values = result.data["values"].toObject();
-        if (values.isEmpty()) {
-            show_error(tr("No data in response"));
-            return;
-        }
+    // Response: {values: {CODE: {COUNTRY: {YEAR: value}}}}
+    const QJsonObject values = result.data["values"].toObject();
+    if (values.isEmpty()) {
+        show_error(tr("No data in response"));
+        return;
+    }
 
-        auto* ind_item = indicator_list_->currentItem();
-        const QString code = ind_item ? ind_item->data(Qt::UserRole).toString() : values.keys().first();
-        const QString country = country_combo_->currentData().toString();
+    // Resolve the request from its id, not the live controls, so an async
+    // result is never labelled or reshaped with a later user selection.
+    const QString payload = request_id.mid(QStringLiteral("imf_data_").size());
+    QString code;
+    QString country;
+    if (payload.endsWith(QLatin1Char('_'))) {
+        code = payload.left(payload.size() - 1);
+    } else {
+        const int sep = payload.lastIndexOf(QLatin1Char('_'));
+        code = sep > 0 ? payload.left(sep) : payload;
+        country = sep > 0 ? payload.mid(sep + 1) : QString();
+    }
+    // A request id that does not name a series present in the payload is a
+    // contract failure, not a licence to chart an arbitrary indicator.
+    if (code.isEmpty() || !values.contains(code)) {
+        show_error(tr("No data in response"));
+        return;
+    }
 
-        const QJsonArray rows = flatten_pivot(values, code, country);
-        const QString title = (ind_item ? ind_item->text() : code) +
-                              (country.isEmpty() ? tr(" — All Countries") : " — " + country_combo_->currentText());
+    const QJsonArray rows = flatten_pivot(values, code, country);
+    const QString title =
+        imf_indicator_label(code) + (country.isEmpty() ? tr(" — All Countries") : " — " + imf_country_label(country));
+
+    if (country.isEmpty()) {
         // "All Countries" produces a wide cross-section (one row per country,
         // one column per year). LATEST/CHANGE/MIN/MAX/AVG would then be computed
         // over an arbitrary single year column across unrelated countries — hide
         // them rather than show a number nobody can interpret.
-        set_stats_visible(!country.isEmpty());
+        set_stats_visible(false);
         display(rows, title);
-        LOG_INFO("ImfPanel", QString("Displayed %1 rows").arg(rows.size()));
+    } else {
+        // A single country is one ordinary annual historical series.
+        set_stats_visible(true);
+        ui::TimeSeriesMeta meta;
+        meta.source = QStringLiteral("IMF DataMapper");
+        display_time_series(rows, title, QStringLiteral("year"), QStringLiteral("value"), meta);
     }
+    LOG_INFO("ImfPanel", QString("Displayed %1 rows").arg(rows.size()));
 }
 
 QJsonArray ImfPanel::flatten_pivot(const QJsonObject& values, const QString& indicator_code,

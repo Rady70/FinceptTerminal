@@ -4,11 +4,13 @@
 //
 // Response shape: { success:true, series, series_id, name, unit, frequency,
 //   data:[{date:"DD/MM/YYYY", <value_key>:float}], count, source }
-// Normalise: rename value key to "value", parse date to ISO format.
+// Normalise: rename value key to "value", parse date to ISO format, then hand
+// the ordinary historical series to the shared chart-first path.
 #include "screens/economics/panels/BcbPanel.h"
 
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -78,8 +80,8 @@ void BcbPanel::on_fetch() {
     const auto& series = kBcbSeries[idx];
 
     show_loading(tr("Fetching BCB: %1…").arg(series.label));
-    services::EconomicsService::instance().execute(kBcbSourceId, kBcbScript, series.command, {},
-                                                   "bcb_" + series.command);
+    pending_request_ = "bcb_" + series.command;
+    services::EconomicsService::instance().execute(kBcbSourceId, kBcbScript, series.command, {}, pending_request_);
 }
 
 void BcbPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {
@@ -87,6 +89,12 @@ void BcbPanel::on_result(const QString& request_id, const services::EconomicsRes
         return;
     if (!request_id.startsWith("bcb_"))
         return;
+
+    // A newer fetch supersedes an older response that arrives late — including
+    // a stale failure, which must not overwrite a newer success.
+    if (request_id != pending_request_)
+        return;
+
     if (!result.success) {
         show_error(result.error);
         return;
@@ -109,17 +117,25 @@ void BcbPanel::on_result(const QString& request_id, const services::EconomicsRes
         return;
     }
 
-    // Normalise: rename value_key -> "value", convert date format
+    // Normalise: rename value_key -> "value", convert date format. A missing
+    // provider cell stays a JSON null so the shared chart path falls back to
+    // the raw table rather than drawing a fabricated value.
     QJsonArray rows;
+    bool contract_ok = series_ptr != nullptr;
     for (const auto& rv : raw) {
         const QJsonObject r = rv.toObject();
         QJsonObject row;
         row["date"] = bcb_date_to_iso(r["date"].toString());
-        // value may be under the specific key or already normalised
-        if (series_ptr && r.contains(series_ptr->value_key)) {
+        if (series_ptr) {
+            // The requested series key is the payload contract. A row without
+            // it is a mismatch, never a reason to chart some other column.
+            if (!r.contains(series_ptr->value_key)) {
+                contract_ok = false;
+                break;
+            }
             row["value"] = r[series_ptr->value_key];
         } else {
-            // Pick first numeric field that isn't "date"
+            // Unknown command id: no expected key to check against.
             for (auto it = r.constBegin(); it != r.constEnd(); ++it) {
                 if (it.key() != "date" && it.value().isDouble()) {
                     row["value"] = it.value();
@@ -129,12 +145,27 @@ void BcbPanel::on_result(const QString& request_id, const services::EconomicsRes
         }
         rows.append(row);
     }
+    if (!contract_ok) {
+        show_error(tr("Unexpected BCB payload for this series"));
+        return;
+    }
 
-    const int idx = series_combo_->currentIndex();
-    const QString unit = (idx >= 0 && idx < kBcbSeries.size()) ? " (" + kBcbSeries[idx].unit + ")" : "";
-    const QString title = "BCB: " + (series_ptr ? series_ptr->label : cmd) + unit;
+    // Provenance comes from the provider's own payload; the request-bound
+    // descriptor is only a fallback for title/unit.
+    ui::TimeSeriesMeta meta;
+    meta.source = result.data["source"].toString();
+    if (meta.source.isEmpty())
+        meta.source = QStringLiteral("Banco Central do Brasil");
+    meta.unit = result.data["unit"].toString();
+    if (meta.unit.isEmpty() && series_ptr)
+        meta.unit = series_ptr->unit;
+    meta.frequency = result.data["frequency"].toString();
+    QString series_name = result.data["name"].toString();
+    if (series_name.isEmpty())
+        series_name = series_ptr ? series_ptr->label : cmd;
+    const QString title = "BCB: " + series_name;
 
-    display(rows, title);
+    display_time_series(rows, title, QStringLiteral("date"), QStringLiteral("value"), meta);
     LOG_INFO("BcbPanel", QString("Displayed %1 records: %2").arg(rows.size()).arg(title));
 }
 

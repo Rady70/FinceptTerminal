@@ -57,6 +57,9 @@ class UnescoPanel : public EconPanelBase {
     /// Raw `list_indicators` catalogue records, cached for theme re-filtering.
     QJsonArray all_records_;
     bool indicators_loaded_ = false;
+    /// Request id of the in-flight fetch; a late response (success or failure)
+    /// for an older request must not overwrite the current one.
+    QString pending_request_;
 };
 
 } // namespace fincept::screens

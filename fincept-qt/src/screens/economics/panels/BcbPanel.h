@@ -26,6 +26,9 @@ class BcbPanel : public EconPanelBase {
     void retranslateUi() override;
 
     QComboBox* series_combo_ = nullptr;
+    /// Request id of the in-flight fetch; a late response (success or
+    /// failure) for an older request must not overwrite the current one.
+    QString pending_request_;
 
     // Cached for retranslateUi
     QLabel* series_lbl_ = nullptr;
