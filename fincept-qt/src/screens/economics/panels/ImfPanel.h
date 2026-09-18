@@ -33,6 +33,9 @@ class ImfPanel : public EconPanelBase {
     QLineEdit* indicator_search_ = nullptr;
     QListWidget* indicator_list_ = nullptr;
     QComboBox* country_combo_ = nullptr;
+    /// Request id of the in-flight fetch; a late response for an older request
+    /// must not overwrite the current one.
+    QString pending_request_;
 
     // Cached for retranslateUi
     QLabel* indicator_hdr_ = nullptr;

@@ -18,6 +18,7 @@
 
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -289,8 +290,12 @@ void UnescoPanel::on_fetch() {
         args << end;
 
     show_loading(tr("Fetching UNESCO: %1 for %2…").arg(sel_item->text(), country));
-    services::EconomicsService::instance().execute(kUnescoSourceId, kUnescoScript, "fetch", args,
-                                                   "unesco_fetch_" + indicator_code + "_" + country);
+    // The id must identify the full request: two fetches for the same
+    // indicator+country with different year windows are different operations,
+    // and a late response for one must not replace the other.
+    pending_request_ =
+        "unesco_fetch_" + indicator_code + "_" + country + "_" + start + "_" + end;
+    services::EconomicsService::instance().execute(kUnescoSourceId, kUnescoScript, "fetch", args, pending_request_);
 }
 
 // ── Result ────────────────────────────────────────────────────────────────────
@@ -320,6 +325,11 @@ void UnescoPanel::on_result(const QString& request_id, const services::Economics
     if (!request_id.startsWith("unesco_fetch_"))
         return;
 
+    // A newer fetch supersedes an older response that arrives late — including
+    // a stale failure, which must not overwrite a newer success.
+    if (request_id != pending_request_)
+        return;
+
     if (!result.success) {
         show_error(result.error);
         return;
@@ -336,14 +346,19 @@ void UnescoPanel::on_result(const QString& request_id, const services::Economics
         return;
     }
 
-    // Build title from metadata
-    const QJsonObject meta = result.data["metadata"].toObject();
-    const QString ind_name = meta["indicator_name"].toString(
+    // Build title and provenance from the payload metadata, falling back to
+    // the live selection only when the provider sent no indicator name.
+    const QJsonObject payload_meta = result.data["metadata"].toObject();
+    const QString ind_name = payload_meta["indicator_name"].toString(
         indicator_list_->currentItem() ? indicator_list_->currentItem()->text() : tr("Indicator"));
-    const QString country = meta["country"].toString(country_input_->text().toUpper());
-
+    const QString country = payload_meta["country"].toString(country_input_->text().toUpper());
     const QString title = "UNESCO: " + ind_name + " — " + country;
-    display(rows, title);
+
+    ui::TimeSeriesMeta ts_meta;
+    ts_meta.source = payload_meta["source"].toString();
+    if (ts_meta.source.isEmpty())
+        ts_meta.source = QStringLiteral("UNESCO UIS");
+    display_time_series(rows, title, QStringLiteral("date"), QStringLiteral("value"), ts_meta);
 
     LOG_INFO("UnescoPanel", QString("Displayed %1 data points for %2").arg(rows.size()).arg(request_id));
 }
