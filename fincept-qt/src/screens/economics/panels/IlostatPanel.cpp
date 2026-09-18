@@ -6,7 +6,9 @@
 #include "screens/economics/panels/IlostatPanel.h"
 
 #include "core/logging/Logger.h"
+#include "screens/economics/panels/IlostatSeriesData.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -24,13 +26,14 @@ static constexpr const char* kIlostatColor = "#3B82F6"; // ILO blue
 struct IloSeries {
     QString label;
     QString command;
+    QString unit;
     QString description;
 };
 
 static const QList<IloSeries> kIlostatSeries = {
-    {"Unemployment Rate", "unemployment", "UNE_DEAP_SEX_AGE_RT — annual, total, 15+"},
-    {"Labour Force Participation Rate", "lfpr", "EAP_DWAP_SEX_AGE_RT — annual, total, 15+"},
-    {"Employment-to-Population Ratio", "emp_to_pop", "EMP_DWAP_SEX_AGE_RT — annual, total, 15+"},
+    {"Unemployment Rate", "unemployment", "Percent", "UNE_DEAP_SEX_AGE_RT — annual, total, 15+"},
+    {"Labour Force Participation Rate", "lfpr", "Percent", "EAP_DWAP_SEX_AGE_RT — annual, total, 15+"},
+    {"Employment-to-Population Ratio", "emp_to_pop", "Percent", "EMP_DWAP_SEX_AGE_RT — annual, total, 15+"},
 };
 
 IlostatPanel::IlostatPanel(QWidget* parent) : EconPanelBase(kIlostatSourceId, kIlostatColor, parent) {
@@ -42,7 +45,8 @@ IlostatPanel::IlostatPanel(QWidget* parent) : EconPanelBase(kIlostatSourceId, kI
 void IlostatPanel::activate() {
     show_empty(tr("Select a series, enter a country code, then click FETCH\n"
                   "Source: ILO ILOSTAT SDMX REST API (sdmx.ilo.org) — no API key required\n"
-                  "Series are ANNUAL, both sexes, age 15+, harmonised (modelled) estimates — percent.\n"
+                  "Series are the ILO annual by-sex-and-age rate dataflows (both sexes, age 15+) — percent,\n"
+                  "not the separate 'ILO modelled estimates' datasets.\n"
                   "Country codes (ISO-3): USA, GBR, DEU, FRA, IND, CHN, JPN, BRA, ZAF · "
                   "G7 = CAN+USA+GBR+DEU+FRA+ITA+JPN"));
 }
@@ -103,15 +107,26 @@ void IlostatPanel::on_fetch() {
     const QString end = end_edit_->text().trimmed();
 
     if (country.isEmpty()) {
+        // Enter in a toolbar field runs the query even while an earlier request
+        // is still in flight, so this rejected attempt must supersede it:
+        // clearing the pending id stops the older response from later replacing
+        // this error state.
+        pending_request_.clear();
         show_error(tr("Please enter a country code (e.g. USA)"));
         return;
     }
 
     show_loading(tr("Fetching ILO: %1 — %2…").arg(series.label, country));
 
+    // The id must identify the full request: two fetches for the same series
+    // with different country/year windows are different operations, and a late
+    // response for one must not replace the other.
+    pending_request_ = "ilostat_" + series.command + "_" + country + "_" + start + "_" + end;
+    pending_series_index_ = idx;
+    pending_country_ = country;
     services::EconomicsService::instance().execute(kIlostatSourceId, kIlostatScript, series.command,
                                                    {country, "A", "SEX_T", "AGE_YTHADULT_YGE15", start, end},
-                                                   "ilostat_" + series.command);
+                                                   pending_request_);
 }
 
 void IlostatPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {
@@ -119,6 +134,12 @@ void IlostatPanel::on_result(const QString& request_id, const services::Economic
         return;
     if (!request_id.startsWith("ilostat_"))
         return;
+
+    // A newer fetch supersedes an older response that arrives late — including
+    // a stale failure, which must not overwrite a newer success.
+    if (request_id != pending_request_)
+        return;
+
     if (!result.success) {
         show_error(result.error);
         return;
@@ -131,26 +152,44 @@ void IlostatPanel::on_result(const QString& request_id, const services::Economic
     }
 
     // Response: { success, indicator, dataflow, key, data:[{TIME_PERIOD, OBS_VALUE, REF_AREA, ...}] }
-    QJsonArray rows = result.data["data"].toArray();
+    const QJsonArray rows = ilostat_normalize_periods(result.data["data"].toArray());
 
     if (rows.isEmpty()) {
         show_error(tr("No data returned — try a different country code or year range"));
         return;
     }
 
-    // Build title
-    const QString cmd = request_id.mid(8); // strip "ilostat_"
-    QString label;
-    for (const auto& s : kIlostatSeries) {
-        if (s.command == cmd) {
-            label = s.label;
-            break;
-        }
-    }
-    const QString country = country_edit_->text().trimmed().toUpper();
-    const QString title = "ILO: " + (label.isEmpty() ? cmd : label) + (country.isEmpty() ? "" : " — " + country);
+    // Label the result from the request that produced it, never from a later
+    // user selection.
+    const bool have_series = pending_series_index_ >= 0 && pending_series_index_ < kIlostatSeries.size();
+    const QString series_label = have_series ? kIlostatSeries[pending_series_index_].label : QString();
+    const QString title = "ILO: " + (series_label.isEmpty() ? tr("Series") : series_label) +
+                          (pending_country_.isEmpty() ? QString() : " — " + pending_country_);
 
-    display(rows, title);
+    // One chart means one series. It is offered only when the request named a
+    // single country and every returned row carries that same area; multi-
+    // country lists, ALL and any area mismatch stay tabular because one line
+    // cannot represent them. Their pooled LATEST/CHANGE/... would mix
+    // countries, so the stat cards are hidden for that display and restored
+    // for a real series.
+    const bool single_country_request = !pending_country_.isEmpty() && !pending_country_.contains(QLatin1Char('+')) &&
+                                        pending_country_ != QLatin1String("ALL");
+    const QString area = ilostat_single_series_area(rows);
+    if (!single_country_request || area.isEmpty() || area != pending_country_) {
+        set_stats_visible(false);
+        display(rows, title);
+    } else {
+        set_stats_visible(true);
+        ui::TimeSeriesMeta meta;
+        meta.source = QStringLiteral("ILO ILOSTAT");
+        // Prefer the provider's own unit when it states one; the three retained
+        // series are rates, so the panel's descriptor is the fallback.
+        meta.unit = rows.first().toObject().value(QStringLiteral("UNIT_MEASURE")).toString().trimmed();
+        if (meta.unit.isEmpty() && have_series)
+            meta.unit = kIlostatSeries[pending_series_index_].unit;
+        meta.frequency = QStringLiteral("Annual");
+        display_time_series(rows, title, QStringLiteral("TIME_PERIOD"), QStringLiteral("OBS_VALUE"), meta);
+    }
     LOG_INFO("IlostatPanel", QString("Displayed %1 rows: %2").arg(rows.size()).arg(title));
 }
 

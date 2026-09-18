@@ -72,7 +72,6 @@ INDICATOR_EMP_MODELLED              = "EMP_2EMP_SEX_AGE_NB"   # ILO modelled est
 # Unemployment
 INDICATOR_UNE_RATE_SEX_AGE          = "UNE_DEAP_SEX_AGE_RT"   # Unemployment rate by sex & age (used in SDMX key)
 INDICATOR_UNE_TOTAL_SEX_AGE_NB      = "UNE_2UNE_SEX_AGE_NB"   # Unemployment count (annual)
-INDICATOR_UNE_MODELLED_RATE         = "UNE_DEAP_SEX_AGE_RT"   # ILO modelled unemployment rate
 
 # Labour Force / Working-Age Population
 INDICATOR_EAP_TOTAL_SEX_AGE         = "EAP_TEAP_SEX_AGE_NB"   # Labour force by sex & age
@@ -600,7 +599,7 @@ class ILOStatWrapper:
         """
         Fetch unemployment rate data.
 
-        Indicator:  DF_UNE_DEAP_SEX_AGE_RT  (ILO modelled estimates — unemployment rate)
+        Indicator:  DF_UNE_DEAP_SEX_AGE_RT  (unemployment rate by sex and age)
         Dataflow:   https://sdmx.ilo.org/rest/data/ILO,DF_UNE_DEAP_SEX_AGE_RT,1.0/{key}
 
         Dimension key order:  REF_AREA . FREQ . MEASURE . SEX . AGE
@@ -1382,7 +1381,7 @@ class ILOStatWrapper:
                 {"code": "EMP_2EMP_SEX_STE_RT",  "freq": ["A"],            "description": "Informal employment share by sex and status"},
             ],
             "unemployment": [
-                {"code": "UNE_DEAP_SEX_AGE_RT",  "freq": ["A", "Q", "M"], "description": "Unemployment rate by sex and age (ILO modelled)"},
+                {"code": "UNE_DEAP_SEX_AGE_RT",  "freq": ["A", "Q", "M"], "description": "Unemployment rate by sex and age"},
                 {"code": "UNE_2UNE_SEX_AGE_NB",  "freq": ["A"],            "description": "Unemployment count by sex and age (annual)"},
                 {"code": "UNE_TUNE_SEX_AGE_NB",  "freq": ["Q"],            "description": "Unemployment by sex and age (quarterly)"},
             ],

@@ -25,11 +25,16 @@ class WorldBankHealthPanel : public EconPanelBase {
   private:
     void retranslateUi() override;
     /// Flatten WB records [{date, value, indicator:{value}, country:{value}}]
-    /// into [{date, value}], filtering null values, sorted oldest→newest.
+    /// into [{date, value}], keeping only real numeric observations, sorted
+    /// oldest→newest.
     static QJsonArray flatten_wb(const QJsonObject& response);
 
     QComboBox* indicator_combo_ = nullptr;
     QComboBox* country_combo_ = nullptr;
+
+    /// Request id of the in-flight fetch; a late response (success or failure)
+    /// for an older request must not overwrite the current one.
+    QString pending_request_;
 
     // Cached for retranslateUi
     QLabel* indicator_lbl_ = nullptr;
