@@ -7,6 +7,7 @@
 #pragma once
 
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 #include "ui/widgets/PaginationBar.h"
 
 #include <QDate>
@@ -18,6 +19,10 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QWidget>
+
+namespace fincept::ui {
+class TimeSeriesChartView;
+}
 
 namespace fincept::screens {
 
@@ -61,9 +66,23 @@ class EconPanelBase : public QWidget {
     void display(const QJsonArray& rows, const QString& title = {});
     void export_csv();
 
+    /// Chart-first presentation for an ordinary historical numeric series.
+    /// `date_key`/`value_key` name the provider's fields explicitly (no key
+    /// guessing); every row must carry a parseable date and a numeric value or
+    /// the call falls back to the ordinary table-only display().
+    ///
+    /// On success the raw table/CSV hold the same observations ordered
+    /// newest-first, the chart page becomes the default view, and the raw table
+    /// stays one click away. Missing periods are absent from both views — they
+    /// are never zero and never interpolated.
+    void display_time_series(const QJsonArray& rows, const QString& title, const QString& date_key,
+                             const QString& value_key, const ui::TimeSeriesMeta& meta);
+
     /// Append a subclass-owned page to the shared content stack.
-    /// Returns the page index (>= 2; 0 = status page, 1 = table page), or -1
-    /// if build_base_ui() has not run yet.
+    /// Returns the page index (0 = status page, 1 = table page; the chart page
+    /// is created on first use and may take index 2), or -1 if build_base_ui()
+    /// has not run yet. Always keep the returned index rather than assuming a
+    /// fixed number.
     int add_content_page(QWidget* page);
     /// Switch the content stack to a page returned by add_content_page().
     void show_content_page(int index);
@@ -140,6 +159,13 @@ class EconPanelBase : public QWidget {
     enum class StatusKind { Empty, Loading, Error };
     StatusKind status_kind_ = StatusKind::Empty;
     QString status_msg_; // raw message last passed to show_empty/loading/error
+
+    // Chart-first state (opt-in through display_time_series()).
+    QWidget* view_bar_ = nullptr;
+    QPushButton* chart_view_btn_ = nullptr;
+    QPushButton* raw_view_btn_ = nullptr;
+    ui::TimeSeriesChartView* chart_view_ = nullptr;
+    int chart_page_ = -1;
 
     QJsonArray all_rows_;
     QStringList columns_;

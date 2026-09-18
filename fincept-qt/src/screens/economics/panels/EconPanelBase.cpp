@@ -1,6 +1,7 @@
 // src/screens/economics/panels/EconPanelBase.cpp
 #include "screens/economics/panels/EconPanelBase.h"
 
+#include "ui/charts/TimeSeriesChartView.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
@@ -31,65 +32,71 @@ QString EconPanelBase::panel_style() const {
     int g = QColor(color_).green();
     int b = QColor(color_).blue();
     return QString(
-                   // Toolbar control labels ("DATASET", "COUNTRY", …). Every one
-                   // of the 31 panels currently does
-                   //     lbl->setStyleSheet(ctrl_label_style());
-                   // which is a full CSS parse per label per panel. This rule
-                   // lets a panel just do setObjectName("econCtrlLabel") and
-                   // inherit the same look for free — the container stylesheet
-                   // is parsed once either way. Migrate panels to it as they are
-                   // touched; ctrl_label_style() stays for the ones not yet moved.
-                   // %9 is TEXT_TERTIARY (same token ctrl_label_style() uses and
-                   // the same one #econStatLabel uses). NOT %12 — that is a
-                   // BACKGROUND colour here (alternate-background-color /
-                   // #econTitleBar), so using it would render the label
-                   // invisible against its own panel.
-                   "QLabel#econCtrlLabel { color:%9; font-size:9px; font-weight:700;"
-                   "  background:transparent; }"
-                   "#econToolbar { background:%5; border-bottom:1px solid %6; }"
-                   "#econFetchBtn { background:%1; color:%7; border:none;"
-                   "  font-size:10px; font-weight:700; padding:4px 14px; }"
-                   "#econFetchBtn:hover { background:rgba(%2,%3,%4,0.75); }"
-                   "#econFetchBtn:disabled { background:%6; color:%8; }"
-                   "#econCsvBtn { background:transparent; color:%9; border:1px solid %6;"
-                   "  font-size:10px; font-weight:700; padding:4px 10px; }"
-                   "#econCsvBtn:hover { color:%10; background:%11; }"
-                   "QComboBox, QSpinBox, QDateEdit, QLineEdit {"
-                   "  background:%7; color:%10; border:1px solid %6;"
-                   "  font-size:11px; padding:2px 6px; }"
-                   "QComboBox::drop-down, QDateEdit::drop-down { border:none; }"
-                   "QComboBox QAbstractItemView { background:%5; color:%10;"
-                   "  border:1px solid %6; }"
-                   "QTableWidget { background:%7; color:%10; border:none;"
-                   "  gridline-color:%6; font-size:11px; alternate-background-color:%12; }"
-                   "QTableWidget::item { padding:5px 8px; border-bottom:1px solid %6; }"
-                   "QTableWidget::item:selected { background:rgba(%2,%3,%4,0.1); color:%1; }"
-                   "QHeaderView::section { background:%5; color:%9; border:none;"
-                   "  border-bottom:2px solid %6; border-right:1px solid %6;"
-                   "  padding:5px 8px; font-size:10px; font-weight:700; letter-spacing:0.5px; }"
-                   "#econCardsRow  { background:%7; border-bottom:1px solid %6; }"
-                   "#econTitleBar  { background:%12; border-bottom:1px solid %6; }"
-                   "#econStatCard { background:%12; border:1px solid %6; }"
-                   "#econStatCard:hover { border-color:%13; }"
-                   "#econStatLabel { color:%9; font-size:8px; font-weight:700;"
-                   "  letter-spacing:1px; background:transparent; }"
-                   "#econStatVal  { color:%1;  font-size:15px; font-weight:700; background:transparent; }"
-                   "#econStatPos  { color:%16; font-size:15px; font-weight:700; background:transparent; }"
-                   "#econStatNeg  { color:%15; font-size:15px; font-weight:700; background:transparent; }"
-                   "#econStatSub  { color:%14; font-size:9px;  background:transparent; }"
-                   "#econEmptyPage { background:%7; }"
-                   "#econEmptyMsg   { color:%9;  font-size:13px; background:transparent; }"
-                   "#econLoadingMsg { color:%1;  font-size:13px; background:transparent; }"
-                   "#econErrMsg     { color:%15; font-size:12px; background:transparent; }"
-                   "#econTitleLbl { color:%10; font-size:11px; font-weight:700;"
-                   "  background:transparent; }"
-                   "#econRowCount { color:%14; font-size:9px; background:transparent; }"
-                   "QScrollBar:vertical { background:%7; width:5px; }"
-                   "QScrollBar::handle:vertical { background:%6; min-height:20px; }"
-                   "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
-                   "QScrollBar:horizontal { background:%7; height:5px; }"
-                   "QScrollBar::handle:horizontal { background:%6; min-width:20px; }"
-                   "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }")
+               // Toolbar control labels ("DATASET", "COUNTRY", …). Every one
+               // of the 31 panels currently does
+               //     lbl->setStyleSheet(ctrl_label_style());
+               // which is a full CSS parse per label per panel. This rule
+               // lets a panel just do setObjectName("econCtrlLabel") and
+               // inherit the same look for free — the container stylesheet
+               // is parsed once either way. Migrate panels to it as they are
+               // touched; ctrl_label_style() stays for the ones not yet moved.
+               // %9 is TEXT_TERTIARY (same token ctrl_label_style() uses and
+               // the same one #econStatLabel uses). NOT %12 — that is a
+               // BACKGROUND colour here (alternate-background-color /
+               // #econTitleBar), so using it would render the label
+               // invisible against its own panel.
+               "QLabel#econCtrlLabel { color:%9; font-size:9px; font-weight:700;"
+               "  background:transparent; }"
+               "#econToolbar { background:%5; border-bottom:1px solid %6; }"
+               "#econFetchBtn { background:%1; color:%7; border:none;"
+               "  font-size:10px; font-weight:700; padding:4px 14px; }"
+               "#econFetchBtn:hover { background:rgba(%2,%3,%4,0.75); }"
+               "#econFetchBtn:disabled { background:%6; color:%8; }"
+               "#econCsvBtn { background:transparent; color:%9; border:1px solid %6;"
+               "  font-size:10px; font-weight:700; padding:4px 10px; }"
+               "#econCsvBtn:hover { color:%10; background:%11; }"
+               "QComboBox, QSpinBox, QDateEdit, QLineEdit {"
+               "  background:%7; color:%10; border:1px solid %6;"
+               "  font-size:11px; padding:2px 6px; }"
+               "QComboBox::drop-down, QDateEdit::drop-down { border:none; }"
+               "QComboBox QAbstractItemView { background:%5; color:%10;"
+               "  border:1px solid %6; }"
+               "QTableWidget { background:%7; color:%10; border:none;"
+               "  gridline-color:%6; font-size:11px; alternate-background-color:%12; }"
+               "QTableWidget::item { padding:5px 8px; border-bottom:1px solid %6; }"
+               "QTableWidget::item:selected { background:rgba(%2,%3,%4,0.1); color:%1; }"
+               "QHeaderView::section { background:%5; color:%9; border:none;"
+               "  border-bottom:2px solid %6; border-right:1px solid %6;"
+               "  padding:5px 8px; font-size:10px; font-weight:700; letter-spacing:0.5px; }"
+               "#econCardsRow  { background:%7; border-bottom:1px solid %6; }"
+               "#econTitleBar  { background:%12; border-bottom:1px solid %6; }"
+               "#econStatCard { background:%12; border:1px solid %6; }"
+               "#econStatCard:hover { border-color:%13; }"
+               "#econStatLabel { color:%9; font-size:8px; font-weight:700;"
+               "  letter-spacing:1px; background:transparent; }"
+               "#econStatVal  { color:%1;  font-size:15px; font-weight:700; background:transparent; }"
+               "#econStatPos  { color:%16; font-size:15px; font-weight:700; background:transparent; }"
+               "#econStatNeg  { color:%15; font-size:15px; font-weight:700; background:transparent; }"
+               "#econStatSub  { color:%14; font-size:9px;  background:transparent; }"
+               "#econEmptyPage { background:%7; }"
+               "#econEmptyMsg   { color:%9;  font-size:13px; background:transparent; }"
+               "#econLoadingMsg { color:%1;  font-size:13px; background:transparent; }"
+               "#econErrMsg     { color:%15; font-size:12px; background:transparent; }"
+               "#econTitleLbl { color:%10; font-size:11px; font-weight:700;"
+               "  background:transparent; }"
+               "#econRowCount { color:%14; font-size:9px; background:transparent; }"
+               "#econViewBar  { background:%7; border-bottom:1px solid %6; }"
+               "#econViewTab  { background:transparent; color:%9; border:1px solid %6;"
+               "  font-size:10px; font-weight:700; padding:3px 10px; }"
+               "#econViewTab:hover { color:%10; background:%11; }"
+               "#econViewTab:checked { background:%1; color:%7; border-color:%1; }"
+               "#econViewTab:disabled { color:%8; }"
+               "QScrollBar:vertical { background:%7; width:5px; }"
+               "QScrollBar::handle:vertical { background:%6; min-height:20px; }"
+               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+               "QScrollBar:horizontal { background:%7; height:5px; }"
+               "QScrollBar::handle:horizontal { background:%6; min-width:20px; }"
+               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }")
         .arg(color_) // %1: source accent
         .arg(r)
         .arg(g)
@@ -268,6 +275,30 @@ void EconPanelBase::build_base_ui(QWidget* container) {
     tbhl->addWidget(row_count_);
     root->addWidget(title_bar_);
 
+    // Chart | Raw Data switcher — hidden until a time-series result opts in.
+    view_bar_ = new QWidget(this);
+    view_bar_->setObjectName("econViewBar");
+    auto* vhl = new QHBoxLayout(view_bar_);
+    vhl->setContentsMargins(10, 4, 10, 4);
+    vhl->setSpacing(4);
+    chart_view_btn_ = new QPushButton(tr("Chart"));
+    raw_view_btn_ = new QPushButton(tr("Raw Data"));
+    for (auto* button : {chart_view_btn_, raw_view_btn_}) {
+        button->setObjectName("econViewTab");
+        button->setCheckable(true);
+        button->setAutoExclusive(true);
+        button->setCursor(Qt::PointingHandCursor);
+        vhl->addWidget(button);
+    }
+    vhl->addStretch(1);
+    connect(chart_view_btn_, &QPushButton::clicked, this, [this]() {
+        if (chart_page_ >= 0)
+            show_content_page(chart_page_);
+    });
+    connect(raw_view_btn_, &QPushButton::clicked, this, [this]() { show_content_page(1); });
+    view_bar_->hide();
+    root->addWidget(view_bar_);
+
     // Content stack
     stack_ = new QStackedWidget;
 
@@ -304,6 +335,8 @@ void EconPanelBase::build_base_ui(QWidget* container) {
 
     stack_->addWidget(table_page); // index 1
 
+    // The chart page is created on first use (display_time_series) so panels
+    // that never chart a series do not carry a widget or pay its theme churn.
     root->addWidget(stack_, 1);
 
     // Apply token-based inline styles for non-QSS-covered widgets
@@ -315,6 +348,8 @@ void EconPanelBase::build_base_ui(QWidget* container) {
 void EconPanelBase::refresh_panel_theme() {
     if (container_)
         container_->setStyleSheet(panel_style());
+    if (chart_view_)
+        chart_view_->refresh_theme();
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -322,6 +357,8 @@ void EconPanelBase::refresh_panel_theme() {
 void EconPanelBase::show_loading(const QString& msg) {
     if (!empty_lbl_)
         return;
+    if (view_bar_)
+        view_bar_->hide();
     status_kind_ = StatusKind::Loading;
     status_msg_ = msg.isEmpty() ? tr("Fetching data…") : msg;
     empty_lbl_->setObjectName("econLoadingMsg");
@@ -336,6 +373,8 @@ void EconPanelBase::show_loading(const QString& msg) {
 void EconPanelBase::show_error(const QString& msg) {
     if (!empty_lbl_)
         return;
+    if (view_bar_)
+        view_bar_->hide();
     status_kind_ = StatusKind::Error;
     status_msg_ = msg;
     empty_lbl_->setObjectName("econErrMsg");
@@ -359,6 +398,8 @@ void EconPanelBase::mark_source_unavailable(const QString& reason) {
 void EconPanelBase::show_empty(const QString& msg) {
     if (!empty_lbl_)
         return;
+    if (view_bar_)
+        view_bar_->hide();
     status_kind_ = StatusKind::Empty;
     status_msg_ = msg.isEmpty() ? tr("Select parameters and click FETCH") : msg;
     empty_lbl_->setObjectName("econEmptyMsg");
@@ -398,6 +439,12 @@ void EconPanelBase::set_stats_visible(bool visible) {
 // ── Display ───────────────────────────────────────────────────────────────────
 
 void EconPanelBase::display(const QJsonArray& rows, const QString& title) {
+    // A plain (non time-series) result cannot offer the chart view; make sure a
+    // previous chart-first result does not leave the switcher pointing at a
+    // stale chart page.
+    if (view_bar_)
+        view_bar_->hide();
+
     if (rows.isEmpty()) {
         show_empty(tr("No data returned for this selection"));
         return;
@@ -445,6 +492,83 @@ void EconPanelBase::display(const QJsonArray& rows, const QString& title) {
                                 : tr("%1 records · as of %2").arg(rows.size()).arg(latest_date_));
 
     show_table();
+}
+
+void EconPanelBase::display_time_series(const QJsonArray& rows, const QString& title, const QString& date_key,
+                                        const QString& value_key, const ui::TimeSeriesMeta& meta) {
+    // Parse explicitly against the provider's own field names. Any row that is
+    // not a complete date/value observation disqualifies the chart path rather
+    // than being silently dropped from a chart that still claims to represent
+    // the raw table.
+    QVector<ui::TimeSeriesPoint> points;
+    points.reserve(rows.size());
+    bool complete = !rows.isEmpty();
+    for (const auto& value : rows) {
+        const QJsonObject obj = value.toObject();
+        const QJsonValue raw_value = obj.value(value_key);
+        bool numeric = false;
+        double number = 0.0;
+        if (raw_value.isDouble()) {
+            number = raw_value.toDouble();
+            numeric = true;
+        } else if (raw_value.isString()) {
+            number = raw_value.toString().toDouble(&numeric);
+        }
+        const QString date_text = obj.value(date_key).toString();
+        const QDate date = ui::parse_time_series_date(date_text);
+        if (!numeric || !date.isValid()) {
+            complete = false;
+            break;
+        }
+        points << ui::TimeSeriesPoint{date, date_text, number};
+    }
+
+    if (!complete || points.isEmpty()) {
+        if (chart_view_)
+            chart_view_->clear_series();
+        display(rows, title);
+        return;
+    }
+
+    ui::TimeSeries series;
+    series.points = ui::sorted_time_series(points);
+    series.meta = meta;
+    if (series.meta.title.isEmpty())
+        series.meta.title = title;
+
+    // Raw table/CSV keep the same observations, newest first. The stat cards
+    // read all_rows_ and re-sort chronologically internally, so LATEST/CHANGE
+    // stay derived from exactly what Raw Data shows.
+    QVector<QJsonValue> ordered;
+    ordered.reserve(rows.size());
+    for (const auto& value : rows)
+        ordered << value;
+    std::stable_sort(ordered.begin(), ordered.end(), [&date_key](const QJsonValue& a, const QJsonValue& b) {
+        const QDate da = ui::parse_time_series_date(a.toObject().value(date_key).toString());
+        const QDate db = ui::parse_time_series_date(b.toObject().value(date_key).toString());
+        return da > db;
+    });
+    QJsonArray ordered_rows;
+    for (const auto& value : std::as_const(ordered))
+        ordered_rows.append(value);
+
+    if (!chart_view_) {
+        chart_view_ = new ui::TimeSeriesChartView(this);
+        chart_page_ = stack_->addWidget(chart_view_);
+    }
+
+    display(ordered_rows, series.meta.title);
+
+    if (chart_view_) {
+        chart_view_->set_accent_color(QColor(color_));
+        chart_view_->set_series(series);
+    }
+    if (chart_view_btn_)
+        chart_view_btn_->setChecked(true);
+    if (view_bar_)
+        view_bar_->show();
+    if (chart_page_ >= 0)
+        show_content_page(chart_page_);
 }
 
 void EconPanelBase::render_page() {
@@ -709,6 +833,12 @@ void EconPanelBase::retranslateUi() {
         row_count_->setText(latest_date_.isEmpty()
                                 ? tr("%1 records").arg(all_rows_.size())
                                 : tr("%1 records · as of %2").arg(all_rows_.size()).arg(latest_date_));
+
+    // Chart-first view switcher
+    if (chart_view_btn_)
+        chart_view_btn_->setText(tr("Chart"));
+    if (raw_view_btn_)
+        raw_view_btn_->setText(tr("Raw Data"));
 
     // Current status message. The empty default re-translates; loading/error
     // messages keep the message that was last shown (data-derived prefixes are

@@ -228,4 +228,12 @@ target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 fincept_add_test(tst_news_date_parse
     tst_news_date_parse.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse")
+# MarketLab: the shared historical time-series rules behind the chart-first
+# economics path — date parsing, chronological ordering, range windows anchored
+# at the latest returned observation, and gap splitting that breaks the line
+# only when an expected observation is missing. Header-only over Qt Core; no
+# app sources.
+fincept_add_test(tst_time_series_data
+    tst_time_series_data.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data")
