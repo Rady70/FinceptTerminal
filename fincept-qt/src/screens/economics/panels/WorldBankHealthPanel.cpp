@@ -11,6 +11,7 @@
 
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -73,12 +74,20 @@ QJsonArray WorldBankHealthPanel::flatten_wb(const QJsonObject& response) {
     QJsonArray rows;
     for (const auto& rv : records) {
         const QJsonObject r = rv.toObject();
-        if (r["value"].isNull() || r["value"].isUndefined())
+        // The provider's absent-observation marker is a JSON null. Only a real
+        // number — or a numeric string, the same rule the shared series path
+        // uses — is an observation: null and other text must never become 0.0
+        // in the raw table or the chart.
+        const QJsonValue raw_value = r["value"];
+        bool numeric = raw_value.isDouble();
+        double value = numeric ? raw_value.toDouble() : 0.0;
+        if (!numeric && raw_value.isString())
+            value = raw_value.toString().toDouble(&numeric);
+        if (!numeric)
             continue;
-        const double val = r["value"].toDouble();
         QJsonObject row;
         row["date"] = r["date"].toString();
-        row["value"] = val;
+        row["value"] = value;
         rows.append(row);
     }
 
@@ -139,8 +148,9 @@ void WorldBankHealthPanel::on_fetch() {
     show_loading(
         tr("Fetching WB Health: %1 — %2…").arg(indicator_combo_->currentText(), country_combo_->currentText()));
 
+    pending_request_ = "wbhealth_" + command + "_" + country;
     services::EconomicsService::instance().execute(kWorldBankHealthSourceId, kWorldBankHealthScript, command, {country},
-                                                   "wbhealth_" + command + "_" + country);
+                                                   pending_request_);
 }
 
 void WorldBankHealthPanel::on_result(const QString& request_id, const services::EconomicsResult& result) {
@@ -148,6 +158,12 @@ void WorldBankHealthPanel::on_result(const QString& request_id, const services::
         return;
     if (!request_id.startsWith("wbhealth_"))
         return;
+
+    // A newer fetch supersedes an older response that arrives late — including
+    // a stale failure, which must not overwrite a newer success.
+    if (request_id != pending_request_)
+        return;
+
     if (!result.success) {
         show_error(result.error);
         return;
@@ -163,13 +179,38 @@ void WorldBankHealthPanel::on_result(const QString& request_id, const services::
         return;
     }
 
-    const int idx = indicator_combo_->currentIndex();
-    const QString unit =
-        (idx >= 0 && idx < kWbHealthIndicators.size()) ? " (" + kWbHealthIndicators[idx].unit + ")" : "";
-    const QString title =
-        "WB Health: " + indicator_combo_->currentText() + unit + " — " + country_combo_->currentText();
+    // Resolve the request from its id, not the live combo selection, so an
+    // async result is never labelled with a later user choice. The indicator
+    // command is everything before the final "_<country>".
+    const QString payload = request_id.mid(QStringLiteral("wbhealth_").size());
+    const int separator = payload.lastIndexOf(QLatin1Char('_'));
+    const QString command = separator > 0 ? payload.left(separator) : payload;
+    const QString country_code = separator > 0 ? payload.mid(separator + 1) : QString();
 
-    display(rows, title);
+    const WbHealthIndicator* indicator = nullptr;
+    for (const auto& ind : kWbHealthIndicators) {
+        if (ind.command == command) {
+            indicator = &ind;
+            break;
+        }
+    }
+    QString country_name = country_code;
+    for (const auto& c : kWbHealthCountries) {
+        if (c.second == country_code) {
+            country_name = c.first;
+            break;
+        }
+    }
+    const QString label = indicator ? indicator->label : command;
+    const QString title = "WB Health: " + label + " — " + country_name;
+
+    ui::TimeSeriesMeta meta;
+    meta.source = QStringLiteral("World Bank");
+    meta.unit = indicator ? indicator->unit : QString();
+    // The World Development Indicators the panel requests are annual; the
+    // provider's date field is a year.
+    meta.frequency = QStringLiteral("Annual");
+    display_time_series(rows, title, QStringLiteral("date"), QStringLiteral("value"), meta);
     LOG_INFO("WorldBankHealthPanel", QString("Displayed %1 records: %2").arg(rows.size()).arg(title));
 }
 

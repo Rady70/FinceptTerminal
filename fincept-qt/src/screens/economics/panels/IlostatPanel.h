@@ -30,6 +30,14 @@ class IlostatPanel : public EconPanelBase {
     QLineEdit* start_edit_ = nullptr;
     QLineEdit* end_edit_ = nullptr;
 
+    /// Request id of the in-flight fetch; a late response (success or failure)
+    /// for an older request must not overwrite the current one. The descriptor
+    /// below matches that id so the result is labelled from the request, not
+    /// from a later user selection.
+    QString pending_request_;
+    int pending_series_index_ = -1;
+    QString pending_country_;
+
     // Cached for retranslateUi
     QLabel* series_lbl_ = nullptr;
     QLabel* country_lbl_ = nullptr;
