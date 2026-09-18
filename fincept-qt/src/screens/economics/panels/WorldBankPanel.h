@@ -42,6 +42,7 @@ class WorldBankPanel : public EconPanelBase {
 
     QString selected_country_ = "US";
     QString selected_indicator_;
+    QString pending_data_request_; // request id of the in-flight indicator fetch
     bool countries_loaded_ = false;
 };
 

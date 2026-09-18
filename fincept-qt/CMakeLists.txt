@@ -1412,6 +1412,7 @@ set(UI_SOURCES
     # no includer is never compiled and can rot unnoticed.
     src/ui/tables/LiveTableSelftest.cpp
     src/ui/charts/ChartFactory.cpp
+    src/ui/charts/TimeSeriesChartView.cpp
     src/ui/charts/ChartIndicators.cpp
     src/ui/charts/OverlayLayer.cpp
     src/ui/charts/SeriesLayer.cpp

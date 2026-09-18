@@ -150,11 +150,14 @@ def get_money_supply(aggregate: str = "M3") -> Any:
 def get_interest_rates(rate_type: str = "MRO") -> Any:
     """Get ECB key interest rates.
     rate_type: MRO (main refinancing), DFR (deposit facility), MLF (marginal lending).
+
+    The FM dataflow reports these at daily frequency; the previous "F." key
+    prefix returned HTTP 404 for every rate type, so the command never worked.
     """
     rate_map = {
-        "MRO": "F.U2.EUR.4F.KR.MRR_FR.LEV",
-        "DFR": "F.U2.EUR.4F.KR.DFR.LEV",
-        "MLF": "F.U2.EUR.4F.KR.MLFR.LEV",
+        "MRO": "D.U2.EUR.4F.KR.MRR_FR.LEV",
+        "DFR": "D.U2.EUR.4F.KR.DFR.LEV",
+        "MLF": "D.U2.EUR.4F.KR.MLFR.LEV",
     }
     series_key = rate_map.get(rate_type.upper(), rate_map["MRO"])
     params = {"format": "jsondata", "detail": "dataonly", "lastNObservations": 200}

@@ -27,6 +27,7 @@ class EcbPanel : public EconPanelBase {
 
     QComboBox* series_combo_ = nullptr;
     QComboBox* country_combo_ = nullptr; // for exchange_rates currency
+    QString pending_request_;            // request id of the in-flight fetch
 
     // Cached for retranslateUi
     QLabel* series_lbl_ = nullptr;

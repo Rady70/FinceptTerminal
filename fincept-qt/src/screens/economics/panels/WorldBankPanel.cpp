@@ -3,6 +3,7 @@
 
 #include "core/logging/Logger.h"
 #include "services/economics/EconomicsService.h"
+#include "ui/charts/TimeSeriesData.h"
 
 #include <QDate>
 #include <QHBoxLayout>
@@ -160,9 +161,10 @@ void WorldBankPanel::on_fetch() {
     QString range = QString::number(end_year - years) + ":" + QString::number(end_year);
 
     show_loading(tr("Fetching World Bank data…"));
+    pending_data_request_ = "wb_data_" + selected_country_ + "_" + selected_indicator_;
     services::EconomicsService::instance().execute(kWorldBankSourceId, kWorldBankScript, "indicators",
                                                    {selected_country_, selected_indicator_, range},
-                                                   "wb_data_" + selected_country_ + "_" + selected_indicator_);
+                                                   pending_data_request_);
 }
 
 // ── Result ────────────────────────────────────────────────────────────────────
@@ -171,6 +173,9 @@ void WorldBankPanel::on_result(const QString& request_id, const services::Econom
     if (result.source_id != kWorldBankSourceId)
         return;
     if (!result.success) {
+        // A stale indicator failure must not overwrite a newer fetch's result.
+        if (request_id.startsWith("wb_data_") && request_id != pending_data_request_)
+            return;
         show_error(result.error);
         return;
     }
@@ -201,17 +206,47 @@ void WorldBankPanel::on_result(const QString& request_id, const services::Econom
     }
 
     if (request_id.startsWith("wb_data_")) {
-        // Reverse to chronological order, skip null values
-        QJsonArray clean;
+        // A newer fetch supersedes an older response that arrives late.
+        if (request_id != pending_data_request_)
+            return;
+
+        // Keep only real observations. The API marks a missing year with a JSON
+        // null, which is dropped here — never turned into zero and never
+        // carried into the chart as a fabricated point.
         const QJsonArray raw = result.data["data"].toArray();
-        for (int i = raw.size() - 1; i >= 0; --i) {
-            const auto obj = raw[i].toObject();
+        QJsonArray observations;
+        for (const auto& value : raw) {
+            const auto obj = value.toObject();
             if (!obj["value"].isNull())
-                clean.append(obj);
+                observations.append(obj);
         }
-        auto* ind = indicator_list_->currentItem();
-        display(clean, (ind ? ind->text() : selected_indicator_) + " — " + selected_country_);
-        LOG_INFO("WorldBankPanel", QString("Displayed %1 data points").arg(clean.size()));
+
+        // Bind the title to the request, not the live combo selection, so an
+        // async result cannot be labelled with a later user choice.
+        const QString requested = request_id.mid(QStringLiteral("wb_data_").size());
+        const int separator = requested.indexOf(QLatin1Char('_'));
+        const QString country = separator > 0 ? requested.left(separator) : selected_country_;
+        const QString indicator = separator > 0 ? requested.mid(separator + 1) : selected_indicator_;
+        QString indicator_label = indicator;
+        for (const auto& pair : kWbIndicators) {
+            if (pair.second == indicator) {
+                indicator_label = pair.first;
+                break;
+            }
+        }
+
+        const QJsonObject metadata = result.data["metadata"].toObject();
+        ui::TimeSeriesMeta meta;
+        meta.source = metadata["source"].toString();
+        if (meta.source.isEmpty())
+            meta.source = QStringLiteral("World Bank");
+        meta.last_updated = metadata["last_updated"].toString();
+        if (!observations.isEmpty())
+            meta.unit = observations.first().toObject()["unit"].toString();
+
+        display_time_series(observations, indicator_label + " — " + country, QStringLiteral("date"),
+                            QStringLiteral("value"), meta);
+        LOG_INFO("WorldBankPanel", QString("Displayed %1 data points").arg(observations.size()));
     }
 }
 
