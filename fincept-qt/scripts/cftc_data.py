@@ -4,6 +4,7 @@
 
 import sys
 import json
+import math
 import requests
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union
@@ -239,6 +240,37 @@ class CFTCDataWrapper:
         return None
 
     @staticmethod
+    def _pick_number(record: Dict[str, Any], names: tuple) -> Optional[float]:
+        """First present, numeric alias in `names` -> float, else None.
+
+        Concentration cells are decimals ("12.5"), so the integer coercion
+        used for position counts would truncate them. A non-numeric or absent
+        cell stays None; it never becomes 0."""
+        for name in names:
+            if name not in record or record[name] is None:
+                continue
+            value = record[name]
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                parsed = float(value)
+                if math.isfinite(parsed):
+                    return parsed
+                continue
+            if isinstance(value, str):
+                text = value.strip().replace(',', '')
+                if not text:
+                    continue
+                try:
+                    parsed = float(text)
+                except ValueError:
+                    continue
+                if not math.isfinite(parsed):
+                    continue
+                return parsed
+        return None
+
+    @staticmethod
     def _report_family(report_type: Optional[str]) -> str:
         """Normalise the CLI/report label to the CFTC report family name."""
         key = (report_type or "legacy").lower()
@@ -302,10 +334,11 @@ class CFTCDataWrapper:
     # Full participant map per report family, used by the R3 workspace history
     # command. Each entry is (key, long aliases, short aliases); the keys are
     # stable analytical identifiers, NOT the provider's field names, and the
-    # C++ CftcWorkspaceData.h mapping uses the same keys. Names come from the
-    # real Socrata resources (verified 2026-09): the disaggregated swap-dealer
-    # SHORT field really is "swap__positions_short_all" (double underscore),
-    # while the long side is "swap_positions_long_all".
+    # C++ services/economics/CftcMetricModel.h mapping uses the same keys.
+    # Names come from the real Socrata resources (verified 2026-09): the
+    # disaggregated swap-dealer SHORT field really is
+    # "swap__positions_short_all" (double underscore), while the long side is
+    # "swap_positions_long_all".
     _PARTICIPANT_FIELDS = {
         "legacy": (
             ("commercial", ("comm_positions_long_all",), ("comm_positions_short_all",)),
@@ -340,6 +373,30 @@ class CFTCDataWrapper:
         "commodity",
         "contract_units",
         "futonly_or_combined",
+    )
+
+    # Provider trader-count fields the workspace history retains. All three
+    # authoritative report families (legacy, disaggregated and financial/TFF)
+    # publish these exact columns (verified against the live Socrata resources
+    # 2026-09). They are counts of reportable traders, not derived values.
+    _TRADER_CONTEXT_FIELDS = (
+        ("traders_total", ("traders_tot_all",)),
+        ("traders_reportable_long", ("traders_tot_rept_long_all",)),
+        ("traders_reportable_short", ("traders_tot_rept_short_all",)),
+    )
+
+    # Provider 4-/8-trader concentration percentages (gross and net, per
+    # side), published by all three families under the same column names.
+    # These are decimals, so they use _pick_number rather than _pick.
+    _CONCENTRATION_FIELDS = (
+        ("concentration_gross_4_long", ("conc_gross_le_4_tdr_long",)),
+        ("concentration_gross_4_short", ("conc_gross_le_4_tdr_short",)),
+        ("concentration_gross_8_long", ("conc_gross_le_8_tdr_long",)),
+        ("concentration_gross_8_short", ("conc_gross_le_8_tdr_short",)),
+        ("concentration_net_4_long", ("conc_net_le_4_tdr_long_all",)),
+        ("concentration_net_4_short", ("conc_net_le_4_tdr_short_all",)),
+        ("concentration_net_8_long", ("conc_net_le_8_tdr_long_all",)),
+        ("concentration_net_8_short", ("conc_net_le_8_tdr_short_all",)),
     )
 
     def _build_search_query(self, identifier: str) -> str:
@@ -520,11 +577,13 @@ class CFTCDataWrapper:
           by report date ascending (and the unique row id, so paging cannot
           skip or repeat a row); the returned rows are ascending;
         * only the provider fields the workspace needs are returned - open
-          interest, the family's participant long/short fields, and the
-          contract metadata - so a 40-year history stays a few hundred KB
-          instead of a multi-MB raw dump;
+          interest, the family's participant long/short fields, the provider's
+          reportable-trader counts and 4-/8-trader concentration percentages,
+          and the contract metadata - so a 40-year history stays a few hundred
+          KB instead of a multi-MB raw dump;
         * participant keys are the analytical identifiers used by
-          CftcWorkspaceData.h; a missing cell stays None (JSON null), never 0;
+          services/economics/CftcMetricModel.h; a missing cell stays None
+          (JSON null), never 0;
         * hitting the acquisition cap is an error, not a silently truncated
           "success" - the caller must not plot a partial history as complete.
         """
@@ -614,6 +673,10 @@ class CFTCDataWrapper:
                 for key, long_aliases, short_aliases in participants:
                     row[f"{key}_long"] = self._pick(record, long_aliases)
                     row[f"{key}_short"] = self._pick(record, short_aliases)
+                for key, aliases in self._TRADER_CONTEXT_FIELDS:
+                    row[key] = self._pick(record, aliases)
+                for key, aliases in self._CONCENTRATION_FIELDS:
+                    row[key] = self._pick_number(record, aliases)
                 history.append(row)
 
             history.sort(key=lambda item: item.get("report_date_as_yyyy_mm_dd") or "")

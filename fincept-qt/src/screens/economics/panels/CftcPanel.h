@@ -23,8 +23,8 @@
 // section deferred until a supported free strip source exists.
 #pragma once
 
-#include "screens/economics/panels/CftcWorkspaceData.h"
 #include "screens/economics/panels/EconPanelBase.h"
+#include "services/economics/CftcMetricModel.h"
 
 #include <QComboBox>
 #include <QJsonObject>
@@ -94,7 +94,7 @@ class CftcPanel : public EconPanelBase {
     void build_participant_controls();
     void show_analysis_tab();
     void show_raw_tab();
-    void apply_range(CftcRange range);
+    void apply_range(services::CftcRange range);
     void rebuild_workspace();
     void update_header();
     void update_snapshot();
@@ -114,7 +114,7 @@ class CftcPanel : public EconPanelBase {
     // ── helpers ─────────────────────────────────────────────────────────────
     QDate latest_report_date() const;
     QJsonArray build_raw_rows() const;
-    QVector<CftcDatedValue> participant_metric_series(int participant_index, CftcChartMetric metric) const;
+    QVector<services::CftcDatedValue> participant_metric_series(int participant_index, CftcChartMetric metric) const;
     QString workspace_style() const;
     static void set_plain_cell(QTableWidget* table, int row, int column, const QString& text,
                                int alignment = Qt::AlignRight | Qt::AlignVCenter);
@@ -143,7 +143,7 @@ class CftcPanel : public EconPanelBase {
     QLabel* range_lbl_ = nullptr;
     QLabel* range_info_lbl_ = nullptr;
     QVector<QPushButton*> range_btns_;
-    QVector<CftcRange> range_values_;
+    QVector<services::CftcRange> range_values_;
     bool narrow_layout_ = false;
 
     // ── sections ────────────────────────────────────────────────────────────
@@ -188,15 +188,15 @@ class CftcPanel : public EconPanelBase {
     CftcHeatmap* heatmap_ = nullptr;
 
     // ── data state ──────────────────────────────────────────────────────────
-    CftcHistory history_;
-    QVector<CftcObservation> window_; // history_ filtered to the active range
-    CftcFamily family_ = CftcFamily::Legacy;
-    QVector<CftcParticipant> participants_;
+    services::CftcHistory history_;
+    QVector<services::CftcObservation> window_; // history_ filtered to the active range
+    services::CftcFamily family_ = services::CftcFamily::Legacy;
+    QVector<services::CftcParticipant> participants_;
     int speculative_index_ = -1;
     QString market_key_;
     QString market_label_;
     bool futures_only_ = false;
-    CftcRange range_ = CftcRange::TwoYears;
+    services::CftcRange range_ = services::CftcRange::TwoYears;
     QJsonObject result_params_;
     QString dataset_;
 
@@ -206,7 +206,7 @@ class CftcPanel : public EconPanelBase {
     bool price_spot_index_ = false;
     QString price_market_key_;
     QString price_topic_; // DataHub market:history:<sym>:<period>:<interval> subscription
-    QVector<CftcPricePoint> price_;
+    QVector<services::CftcPricePoint> price_;
     int price_token_ = 0;
 
     QString pending_request_;

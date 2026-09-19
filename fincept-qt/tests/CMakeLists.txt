@@ -243,12 +243,21 @@ fincept_add_test(tst_time_series_data
 fincept_add_test(tst_ilostat_series_shape
     tst_ilostat_series_shape.cpp)
 
-# MarketLab: the R3 CFTC workspace's data model and analytics — report-family
-# participant semantics, null-preserving parsing, range windows anchored at the
-# latest returned report, explicit window-statistic formulas with degenerate-
-# case handling, weekly-neighbour changes, heatmap trailing statistics and
-# price alignment. Header-only over Qt Core; no app sources.
+# MarketLab: the R3 CFTC workspace's data model and descriptive analytics —
+# report-family participant semantics, null-preserving parsing, range windows
+# anchored at the latest returned report, explicit window-statistic formulas
+# with degenerate-case handling, weekly-neighbour changes, heatmap trailing
+# statistics and price alignment. Header-only over Qt Core; no app sources.
 fincept_add_test(tst_cftc_workspace
     tst_cftc_workspace.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace")
+# MarketLab: Batch 1 of the CFTC research engine — the pure COT metric core
+# (services/economics/CftcMetricModel.h): position/%OI normalization, dated
+# 1W/4W/13W/26W anchors, gross long/short changes, momentum, strictly trailing
+# signal-reference normalization (the current report is excluded from its own
+# distribution), extreme-state primitives and price/OI direction combination.
+# Header-only over Qt Core; no app sources.
+fincept_add_test(tst_cftc_metrics
+    tst_cftc_metrics.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics")

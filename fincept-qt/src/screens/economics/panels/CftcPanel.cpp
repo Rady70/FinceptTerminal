@@ -12,6 +12,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "screens/economics/panels/CftcHeatmap.h"
+#include "screens/economics/panels/CftcNetFormat.h"
 #include "screens/economics/panels/CftcPositioningChart.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/charts/TimeSeriesData.h"
@@ -44,6 +45,46 @@
 #include <utility>
 
 namespace fincept::screens {
+
+// The COT metric core lives in fincept::services. Name the specific types and
+// functions this translation unit uses instead of importing the whole
+// namespace, so a future same-name addition elsewhere stays a clear error.
+using services::cftc_change_since_days;
+using services::cftc_direction;
+using services::cftc_directions_aligned;
+using services::cftc_family_code;
+using services::cftc_family_from_code;
+using services::cftc_family_participants;
+using services::cftc_filter_range;
+using services::cftc_heatmap_series;
+using services::cftc_metric_series;
+using services::cftc_net_extreme_dates;
+using services::cftc_open_interest_series;
+using services::cftc_parse_history;
+using services::cftc_position_metrics;
+using services::cftc_price_change_since_days;
+using services::cftc_price_on_or_before;
+using services::cftc_range_available;
+using services::cftc_range_label;
+using services::cftc_report_dates;
+using services::cftc_speculative_index;
+using services::cftc_weekly_change;
+using services::cftc_window_stats;
+using services::CftcChange;
+using services::CftcDatedValue;
+using services::CftcDirection;
+using services::CftcFamily;
+using services::CftcHeatmapPoint;
+using services::CftcHistory;
+using services::CftcMetricKind;
+using services::CftcObservation;
+using services::CftcPositionMetrics;
+using services::CftcPricePoint;
+using services::CftcRange;
+using services::CftcWindowStats;
+using services::kCftcHeatmapMinObservations;
+using services::kCftcWeeklyGapDays;
+
 namespace {
 
 static constexpr const char* kCftcScript = "cftc_data.py";
@@ -206,19 +247,30 @@ CftcChartMetric cftc_chart_metric_from_code(const QString& code) {
     return CftcChartMetric::Net;
 }
 
-QVector<CftcDatedValue> metric_series(const QVector<CftcObservation>& observations, int index, CftcChartMetric metric) {
-    QVector<CftcDatedValue> out;
-    out.reserve(observations.size());
-    for (const auto& obs : observations) {
-        std::optional<double> value;
-        if (metric == CftcChartMetric::Net) {
-            value = cftc_participant_net(obs, index);
-        } else if (index >= 0 && index < obs.longs.size() && index < obs.shorts.size()) {
-            value = metric == CftcChartMetric::Long ? obs.longs[index] : obs.shorts[index];
-        }
-        if (value)
-            out.append({obs.date, obs.date_label, *value});
+CftcMetricKind metric_kind(CftcChartMetric metric) {
+    switch (metric) {
+        case CftcChartMetric::Long:
+            return CftcMetricKind::Long;
+        case CftcChartMetric::Short:
+            return CftcMetricKind::Short;
+        case CftcChartMetric::Net:
+            break;
     }
+    return CftcMetricKind::Net;
+}
+
+QVector<CftcDatedValue> metric_series(const QVector<CftcObservation>& observations, int index, CftcChartMetric metric) {
+    return cftc_metric_series(observations, index, metric_kind(metric));
+}
+
+/// UI-side adapter from the core's dated series to the shared chart point
+/// type, so the specialist chart reuses the tested gap/format rules without
+/// the analytical core depending on the chart types.
+QVector<ui::TimeSeriesPoint> cftc_to_time_series(const QVector<CftcDatedValue>& series) {
+    QVector<ui::TimeSeriesPoint> out;
+    out.reserve(series.size());
+    for (const auto& point : series)
+        out.append({point.date, point.date_label, point.value});
     return out;
 }
 
@@ -1328,24 +1380,23 @@ void CftcPanel::update_positioning() {
     for (int col = 1; col < columns; ++col)
         positioning_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
 
-    const bool has_oi = latest.open_interest && *latest.open_interest > 0.0;
     for (int p = 0; p < participants_.size(); ++p) {
         set_plain_cell(positioning_table_, p, 0, participants_[p].label, Qt::AlignLeft | Qt::AlignVCenter);
 
-        const std::optional<double> long_leg = p < latest.longs.size() ? latest.longs[p] : std::nullopt;
-        const std::optional<double> short_leg = p < latest.shorts.size() ? latest.shorts[p] : std::nullopt;
-        set_plain_cell(positioning_table_, p, 1, long_leg ? position_text(*long_leg) : QStringLiteral("—"));
-        set_plain_cell(positioning_table_, p, 2, short_leg ? position_text(*short_leg) : QStringLiteral("—"));
-        set_signed_cell(positioning_table_, p, 3, cftc_participant_net(latest, p));
+        const CftcPositionMetrics metrics = cftc_position_metrics(latest, p);
+        set_plain_cell(positioning_table_, p, 1,
+                       metrics.has_long ? position_text(metrics.long_leg) : QStringLiteral("—"));
+        set_plain_cell(positioning_table_, p, 2,
+                       metrics.has_short ? position_text(metrics.short_leg) : QStringLiteral("—"));
+        set_signed_cell(positioning_table_, p, 3,
+                        metrics.has_net ? std::optional<double>(metrics.net_position) : std::nullopt);
 
-        if (has_oi && long_leg)
-            set_plain_cell(positioning_table_, p, 4,
-                           QString::number(*long_leg / *latest.open_interest * 100.0, 'f', 1) + QLatin1Char('%'));
+        if (metrics.has_long_pct_oi)
+            set_plain_cell(positioning_table_, p, 4, QString::number(metrics.long_pct_oi, 'f', 1) + QLatin1Char('%'));
         else
             set_plain_cell(positioning_table_, p, 4, QStringLiteral("—"));
-        if (has_oi && short_leg)
-            set_plain_cell(positioning_table_, p, 5,
-                           QString::number(*short_leg / *latest.open_interest * 100.0, 'f', 1) + QLatin1Char('%'));
+        if (metrics.has_short_pct_oi)
+            set_plain_cell(positioning_table_, p, 5, QString::number(metrics.short_pct_oi, 'f', 1) + QLatin1Char('%'));
         else
             set_plain_cell(positioning_table_, p, 5, QStringLiteral("—"));
 
