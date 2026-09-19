@@ -1117,7 +1117,7 @@ void TstCftcMetrics::price_change_respects_the_report_as_of() {
     QVERIFY(!cftc_price_change_since_days(prices, 14, QDate(2026, 8, 1)).has_value());
 
     // A report date after the last close simply uses that last close.
-    QVERIFY(cftc_price_change_since_days(prices, 7, QDate(2026, 10, 6)).has_value);
+    QVERIFY(cftc_price_change_since_days(prices, 7, QDate(2026, 10, 6)).has_value());
 }
 
 // ── Provider parsing ────────────────────────────────────────────────────────
