@@ -419,6 +419,55 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertIsNone(point["commercial_short"], "a missing leg must stay null, never 0")
         self.assertEqual(point["commercial_long"], 300)
 
+    def test_cot_history_retains_trader_counts_and_concentration(self):
+        # Field names verified against all six authoritative Socrata resources
+        # (legacy/disaggregated/TFF, combined and futures-only). Counts are
+        # whole traders; concentration cells are decimals and must not be
+        # truncated to ints.
+        row = raw_legacy_row()
+        row["traders_tot_all"] = "208"
+        row["traders_tot_rept_long_all"] = "65"
+        row["traders_tot_rept_short_all"] = 70
+        row["conc_gross_le_4_tdr_long"] = "12.5"
+        row["conc_gross_le_4_tdr_short"] = "19.3"
+        row["conc_gross_le_8_tdr_long"] = 23.1
+        row["conc_gross_le_8_tdr_short"] = "30.3"
+        row["conc_net_le_4_tdr_long_all"] = "12.5"
+        row["conc_net_le_4_tdr_short_all"] = 18.6
+        row["conc_net_le_8_tdr_long_all"] = "21.7"
+        row["conc_net_le_8_tdr_short_all"] = 27.1
+        self._serve([row])
+
+        point = self.wrapper.get_cot_history("gold", "legacy")["data"][0]
+        self.assertEqual(point["traders_total"], 208)
+        self.assertIsInstance(point["traders_total"], int)
+        self.assertEqual(point["traders_reportable_long"], 65)
+        self.assertEqual(point["traders_reportable_short"], 70)
+        self.assertEqual(point["concentration_gross_4_long"], 12.5)
+        self.assertIsInstance(point["concentration_gross_4_long"], float)
+        self.assertEqual(point["concentration_gross_4_short"], 19.3)
+        self.assertEqual(point["concentration_gross_8_long"], 23.1)
+        self.assertEqual(point["concentration_gross_8_short"], 30.3)
+        self.assertEqual(point["concentration_net_4_short"], 18.6)
+        self.assertEqual(point["concentration_net_8_long"], 21.7)
+        self.assertEqual(point["concentration_net_8_short"], 27.1)
+
+    def test_cot_history_trader_context_missing_or_junk_stays_null(self):
+        row = raw_legacy_row()
+        row["traders_tot_all"] = None
+        row["conc_gross_le_4_tdr_long"] = "not-a-number"
+        row["conc_gross_le_4_tdr_short"] = "nan"
+        row["conc_gross_le_8_tdr_long"] = float("inf")
+        self._serve([row])
+        point = self.wrapper.get_cot_history("gold", "legacy")["data"][0]
+
+        self.assertIsNone(point["traders_total"], "a null count is not zero")
+        self.assertIsNone(point["concentration_gross_4_long"], "junk stays absent")
+        self.assertIsNone(point["concentration_gross_4_short"], "nan is not a measurement")
+        self.assertIsNone(point["concentration_gross_8_long"], "infinity is not a measurement")
+        self.assertIsNone(point["concentration_gross_8_short"], "an absent cell stays null")
+        self.assertIsNone(point["concentration_net_4_long"])
+
     def test_cot_history_sorts_ascending_and_paginates_offsets(self):
         rows = [raw_legacy_row(report_date="2026-09-01"),
                 raw_legacy_row(report_date="2026-08-25"),

@@ -1,16 +1,17 @@
 // tests/tst_cftc_workspace.cpp
 //
-// The R3 CFTC workspace's data model and analytics: report-family participant
-// semantic mapping, null-preserving parsing, range windows anchored at the
-// latest returned report, window statistics with explicit formulas and
-// degenerate-case handling, weekly-neighbour changes, heatmap trailing
-// statistics and price alignment. Header-only over Qt Core; no app sources
-// (tests/ HARD RULE).
-#include "screens/economics/panels/CftcWorkspaceData.h"
+// The R3 CFTC workspace's data model and descriptive analytics: report-family
+// participant semantic mapping, null-preserving parsing, range windows
+// anchored at the latest returned report, window statistics with explicit
+// formulas and degenerate-case handling, weekly-neighbour changes, heatmap
+// trailing statistics and price alignment. The analytical core lives in
+// services/economics/CftcMetricModel.h (extracted from the R3 workspace);
+// header-only over Qt Core; no app sources (tests/ HARD RULE).
+#include "services/economics/CftcMetricModel.h"
 
 #include <QtTest>
 
-using namespace fincept::screens;
+using namespace fincept::services;
 
 namespace {
 
