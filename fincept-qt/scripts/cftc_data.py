@@ -299,6 +299,49 @@ class CFTCDataWrapper:
         },
     }
 
+    # Full participant map per report family, used by the R3 workspace history
+    # command. Each entry is (key, long aliases, short aliases); the keys are
+    # stable analytical identifiers, NOT the provider's field names, and the
+    # C++ CftcWorkspaceData.h mapping uses the same keys. Names come from the
+    # real Socrata resources (verified 2026-09): the disaggregated swap-dealer
+    # SHORT field really is "swap__positions_short_all" (double underscore),
+    # while the long side is "swap_positions_long_all".
+    _PARTICIPANT_FIELDS = {
+        "legacy": (
+            ("commercial", ("comm_positions_long_all",), ("comm_positions_short_all",)),
+            ("non_commercial", ("noncomm_positions_long_all",), ("noncomm_positions_short_all",)),
+            ("non_reportable", ("nonrept_positions_long_all",), ("nonrept_positions_short_all",)),
+        ),
+        "disaggregated": (
+            ("producer_merchant",
+             ("prod_merc_positions_long", "prod_merc_positions_long_all"),
+             ("prod_merc_positions_short", "prod_merc_positions_short_all")),
+            ("swap_dealer",
+             ("swap_positions_long_all",),
+             ("swap__positions_short_all", "swap_positions_short_all")),
+            ("managed_money", ("m_money_positions_long_all",), ("m_money_positions_short_all",)),
+            ("other_reportable", ("other_rept_positions_long",), ("other_rept_positions_short",)),
+            ("non_reportable", ("nonrept_positions_long_all",), ("nonrept_positions_short_all",)),
+        ),
+        "tff": (
+            ("dealer", ("dealer_positions_long_all",), ("dealer_positions_short_all",)),
+            ("asset_manager", ("asset_mgr_positions_long",), ("asset_mgr_positions_short",)),
+            ("leveraged_funds", ("lev_money_positions_long",), ("lev_money_positions_short",)),
+            ("other_reportable", ("other_rept_positions_long",), ("other_rept_positions_short",)),
+            ("non_reportable", ("nonrept_positions_long_all",), ("nonrept_positions_short_all",)),
+        ),
+    }
+
+    # Identifier/metadata columns the workspace history keeps verbatim.
+    _HISTORY_METADATA_KEYS = (
+        "market_and_exchange_names",
+        "contract_market_name",
+        "cftc_contract_market_code",
+        "commodity",
+        "contract_units",
+        "futonly_or_combined",
+    )
+
     def _build_search_query(self, identifier: str) -> str:
         """Build the `$where` fragment that selects one contract/market.
 
@@ -462,6 +505,138 @@ class CFTCDataWrapper:
 
         except Exception as e:
             return {"error": CFTCError("cot_data", str(e)).to_dict()}
+
+    def get_cot_history(self, identifier: str, report_type: str = "legacy",
+                        futures_only: bool = False, max_rows: int = 20000,
+                        page_size: int = 5000) -> Dict[str, Any]:
+        """Full official weekly history for one contract and report family.
+
+        This is the R3 workspace acquisition path. It is deliberately separate
+        from get_cot_data (which keeps its bounded recent window for the older
+        table/sentiment commands):
+
+        * the whole authoritative Socrata resource for the requested family and
+          futures-only/combined variant is read with offset pagination ordered
+          by report date ascending (and the unique row id, so paging cannot
+          skip or repeat a row); the returned rows are ascending;
+        * only the provider fields the workspace needs are returned - open
+          interest, the family's participant long/short fields, and the
+          contract metadata - so a 40-year history stays a few hundred KB
+          instead of a multi-MB raw dump;
+        * participant keys are the analytical identifiers used by
+          CftcWorkspaceData.h; a missing cell stays None (JSON null), never 0;
+        * hitting the acquisition cap is an error, not a silently truncated
+          "success" - the caller must not plot a partial history as complete.
+        """
+        try:
+            family = self._report_family(report_type)
+            participants = self._PARTICIPANT_FIELDS.get(family)
+            if participants is None:
+                return {"error": CFTCError(
+                    "cot_history",
+                    f"Full history is not defined for the '{report_type}' report family. "
+                    "Supported families are legacy, disaggregated and financial (TFF)."
+                ).to_dict()}
+
+            report_type_key = (report_type or "legacy").lower()
+            if report_type_key == "financial":
+                report_type_key = "tff"
+            if report_type_key == "supplemental":
+                return {"error": CFTCError(
+                    "cot_history", "The supplemental report is not part of the R3 workspace.").to_dict()}
+            suffix = "_futures_only" if futures_only else "_combined"
+            resource_id = self.reports_dict.get(report_type_key + suffix)
+            if not resource_id:
+                return {"error": CFTCError(
+                    "cot_history", f"Invalid report type: {report_type} (futures_only={futures_only})").to_dict()}
+
+            search_query = self._build_search_query(identifier)
+            if not search_query:
+                return {"error": CFTCError(
+                    "cot_history",
+                    "A single contract is required; a sweep over every market is not a workspace history."
+                ).to_dict()}
+
+            if page_size < 1 or max_rows < 1:
+                return {"error": CFTCError("cot_history", "max_rows and page_size must be positive").to_dict()}
+
+            import urllib.parse
+
+            records: List[Dict[str, Any]] = []
+            offset = 0
+            cap_hit = False
+            where_clause = urllib.parse.quote(search_query)
+            while len(records) < max_rows:
+                limit = min(page_size, max_rows - len(records))
+                page_url = (
+                    f"{self.base_url}/resource/{resource_id}.json?"
+                    f"$limit={limit}&$offset={offset}&$where={where_clause}"
+                    f"&$order=report_date_as_yyyy_mm_dd,id%20ASC"
+                )
+                page = self._make_request(page_url)
+                if page is None:
+                    # A 200 whose body is not a JSON array is a provider
+                    # failure; it must not terminate the walk as if the
+                    # resource had simply ended.
+                    return {"error": CFTCError(
+                        "cot_history",
+                        "The provider returned an unreadable page while reading the history."
+                    ).to_dict()}
+                if not page:
+                    break
+                records.extend(page)
+                if len(page) < limit:
+                    break
+                offset += len(page)
+                if offset >= max_rows:
+                    cap_hit = True
+                    break
+            if cap_hit or len(records) >= max_rows:
+                return {"error": CFTCError(
+                    "cot_history",
+                    f"History for this contract reached the acquisition cap of {max_rows} rows; "
+                    "refusing to return a possibly truncated history."
+                ).to_dict()}
+            if not records:
+                return {"error": CFTCError(
+                    "cot_history", f"No COT history found for identifier: {identifier}").to_dict()}
+
+            history: List[Dict[str, Any]] = []
+            for record in records:
+                row: Dict[str, Any] = {}
+                date_value = record.get("report_date_as_yyyy_mm_dd")
+                if isinstance(date_value, str) and "T" in date_value:
+                    date_value = date_value.split("T")[0]
+                row["report_date_as_yyyy_mm_dd"] = date_value
+                for key in self._HISTORY_METADATA_KEYS:
+                    row[key] = record.get(key)
+                row["open_interest_all"] = self._pick(record, ("open_interest_all",))
+                for key, long_aliases, short_aliases in participants:
+                    row[f"{key}_long"] = self._pick(record, long_aliases)
+                    row[f"{key}_short"] = self._pick(record, short_aliases)
+                history.append(row)
+
+            history.sort(key=lambda item: item.get("report_date_as_yyyy_mm_dd") or "")
+
+            return {
+                "success": True,
+                "data": history,
+                "parameters": {
+                    "identifier": identifier,
+                    "report_type": report_type,
+                    "report_family": family,
+                    "futures_only": futures_only,
+                    "source": self.base_url,
+                    "dataset": resource_id,
+                    "count": len(history),
+                    "first_report_date": history[0].get("report_date_as_yyyy_mm_dd"),
+                    "last_report_date": history[-1].get("report_date_as_yyyy_mm_dd"),
+                    "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                }
+            }
+
+        except Exception as e:
+            return {"error": CFTCError("cot_history", str(e)).to_dict()}
 
     def search_cot_markets(self, query: str) -> Dict[str, Any]:
         """Search for available COT markets"""
@@ -920,6 +1095,7 @@ def main(args=None):
             "error": "Usage: python cftc_data.py <command> [args...]",
             "commands": [
                 "cot_data [identifier] [report_type] [futures_only] [start_date] [end_date] [limit]",
+                "cot_history [identifier] [report_type] [futures_only] [max_rows]",
                 "search_cot_markets [query]",
                 "available_report_types",
                 "market_sentiment [identifier] [report_type]",
@@ -944,6 +1120,13 @@ def main(args=None):
             end_date = sys.argv[6] if len(args) + 1 > 6 else None
             limit = int(sys.argv[7]) if len(args) + 1 > 7 else 1000
             result = wrapper.get_cot_data(identifier, report_type, futures_only, start_date, end_date, limit)
+
+        elif command == "cot_history":
+            identifier = args[1] if len(args) + 1 > 2 else None
+            report_type = args[2] if len(args) + 1 > 3 else "legacy"
+            futures_only = args[3].lower() == "true" if len(args) + 1 > 4 else False
+            max_rows = int(args[4]) if len(args) + 1 > 5 else 20000
+            result = wrapper.get_cot_history(identifier, report_type, futures_only, max_rows)
 
         elif command == "search_cot_markets":
             query = args[1] if len(args) + 1 > 2 else None
