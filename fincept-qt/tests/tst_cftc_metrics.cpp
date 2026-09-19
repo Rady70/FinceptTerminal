@@ -101,6 +101,8 @@ class TstCftcMetrics : public QObject {
     void horizon_change_tolerance_boundaries();
     void horizon_change_stale_series_is_unavailable();
     void participant_changes_keep_gross_long_and_short_separate();
+    void position_changes_default_as_of_uses_official_latest();
+    void position_changes_share_one_official_anchor();
     void open_interest_change_uses_the_same_anchor_rule();
 
     // Momentum
@@ -117,7 +119,7 @@ class TstCftcMetrics : public QObject {
     void trailing_stats_minimum_reference_gate();
     void trailing_stats_percentile_ties();
     void trailing_stats_insufficient_history_is_unavailable();
-    void trailing_stats_zero_variance_keeps_descriptives_only();
+    void trailing_stats_zero_variance_keeps_percentile_and_descriptives();
     void trailing_stats_stale_or_short_reference();
     void trailing_window_codes_and_starts();
 
@@ -130,8 +132,10 @@ class TstCftcMetrics : public QObject {
     // Price / OI primitives
     void price_oi_directions_never_substitute_zero();
     void price_and_positioning_change_combination();
+    void price_change_respects_the_report_as_of();
 
-    // Provider trader context
+    // Provider parsing
+    void parse_accepts_cftc_report_date_forms();
     void trader_context_fields_parse_and_missing_stays_absent();
 };
 
@@ -456,6 +460,89 @@ void TstCftcMetrics::participant_changes_keep_gross_long_and_short_separate() {
     QVERIFY(stale.net_pct_oi.stale);
 }
 
+void TstCftcMetrics::position_changes_default_as_of_uses_official_latest() {
+    QVector<CftcObservation> observations;
+    observations.append(observation(QStringLiteral("2026-09-01"), 1000.0, {10.0, 1.0, 0.0}, {1.0, 1.0, 0.0}));
+    observations.append(observation(QStringLiteral("2026-09-08"), 1100.0, {20.0, 2.0, 0.0}, {2.0, 1.0, 0.0}));
+    // The newest official report carries the short leg but not the long leg,
+    // the net, or open interest.
+    observations.append(
+        observation(QStringLiteral("2026-09-15"), std::nullopt, {std::nullopt, 3.0, 0.0}, {3.0, 1.0, 0.0}));
+
+    // Without an explicit as_of the wrapper must still use the official latest
+    // report (2026-09-15), so the missing legs are stale rather than an older
+    // 1W change silently presented as current.
+    const CftcPositionChanges changes = cftc_position_changes(observations, 0, CftcHorizon::OneReport);
+    QVERIFY(changes.long_leg.has_anchor);
+    QCOMPARE(changes.long_leg.anchor_date, QDate(2026, 9, 8));
+    QVERIFY2(changes.long_leg.stale, "the metric series ends before the official latest report");
+    QVERIFY(!changes.long_leg.has_value);
+    QVERIFY(changes.net.stale);
+    QVERIFY(!changes.net.has_value);
+    QVERIFY(changes.net_pct_oi.stale);
+    QVERIFY2(changes.short_leg.has_value, "a leg present on the latest report still computes");
+    QCOMPARE(changes.short_leg.value, 1.0);
+    QCOMPARE(changes.short_leg.gap_days, 7);
+
+    const CftcHorizonChange oi = cftc_open_interest_change(observations, CftcHorizon::OneReport);
+    QVERIFY(oi.stale);
+    QVERIFY(!oi.has_value);
+
+    // Replay of a sliced history that ends on a report which did carry the
+    // legs computes normally.
+    const CftcPositionChanges replayed =
+        cftc_position_changes(QVector<CftcObservation>{observations[0], observations[1]}, 0, CftcHorizon::OneReport);
+    QVERIFY(replayed.long_leg.has_value);
+    QCOMPARE(replayed.long_leg.value, 10.0);
+}
+
+void TstCftcMetrics::position_changes_share_one_official_anchor() {
+    // Six official reports; the nominal 4W report (2026-09-01) carries the
+    // short leg but not the long leg. Every metric must still be measured
+    // against that one shared anchor: Long is unavailable (not silently
+    // re-anchored to the 35-day-old 2026-08-25 report), while Short keeps the
+    // 28-day span.
+    struct Row {
+        const char* date;
+        std::optional<double> long_leg;
+        std::optional<double> short_leg;
+        std::optional<double> other_long;
+        std::optional<double> other_short;
+    };
+    const Row rows[] = {
+        {"2026-08-25", 5.0, 1.0, 7.0, 1.0},   {"2026-09-01", std::nullopt, 2.0, 8.0, 1.0},
+        {"2026-09-08", 30.0, 3.0, 9.0, 1.0},  {"2026-09-15", 35.0, 4.0, 10.0, 1.0},
+        {"2026-09-22", 40.0, 5.0, 11.0, 1.0}, {"2026-09-29", 50.0, 6.0, 12.0, 1.0},
+    };
+    QVector<CftcObservation> observations;
+    for (const Row& row : rows) {
+        observations.append(observation(QString::fromLatin1(row.date), 1000.0, {row.long_leg, row.other_long, 0.0},
+                                        {row.short_leg, row.other_short, 0.0}));
+    }
+
+    const CftcPositionChanges mixed = cftc_position_changes(observations, 0, CftcHorizon::FourWeeks);
+    QVERIFY(mixed.long_leg.has_anchor);
+    QCOMPARE(mixed.long_leg.anchor_date, QDate(2026, 9, 1));
+    QVERIFY2(!mixed.long_leg.has_value, "the long leg is absent at the shared anchor");
+    QVERIFY(mixed.short_leg.has_value);
+    QCOMPARE(mixed.short_leg.gap_days, 28);
+    QCOMPARE(mixed.short_leg.value, 4.0);
+    QVERIFY(mixed.net.has_anchor);
+    QVERIFY2(!mixed.net.has_value, "the net is absent at the shared anchor");
+    QCOMPARE(mixed.net.anchor_date, QDate(2026, 9, 1));
+
+    // When every leg is present, the gross legs and the net are measured over
+    // the same pair, so ΔLong − ΔShort == ΔNet exactly.
+    const CftcPositionChanges consistent = cftc_position_changes(observations, 1, CftcHorizon::FourWeeks);
+    QVERIFY(consistent.long_leg.has_value);
+    QVERIFY(consistent.short_leg.has_value);
+    QVERIFY(consistent.net.has_value);
+    QCOMPARE(consistent.long_leg.gap_days, 28);
+    QCOMPARE(consistent.short_leg.gap_days, 28);
+    QCOMPARE(consistent.net.gap_days, 28);
+    QCOMPARE(consistent.net.value, consistent.long_leg.value - consistent.short_leg.value);
+}
+
 void TstCftcMetrics::open_interest_change_uses_the_same_anchor_rule() {
     QVector<CftcObservation> observations;
     const QVector<double> oi = {1000, 1100, 1200, 1300, 1400};
@@ -522,12 +609,25 @@ void TstCftcMetrics::moving_average_marks_internal_report_gaps() {
     QVERIFY2(average.gapped, "the window spans a missing report");
     QCOMPARE(average.count, 4);
     QCOMPARE(average.value, 35.0);
+
+    // The derived readings must carry that gap state instead of collapsing to
+    // an apparently ordinary scalar.
+    const CftcMetricReading minus_average = cftc_net_minus_moving_average(series, 4);
+    QVERIFY(minus_average.has_value);
+    QVERIFY(minus_average.gapped);
+    QCOMPARE(minus_average.value, 15.0);
+
+    const CftcMetricReading slope = cftc_moving_average_slope(series, 4);
+    QVERIFY(slope.has_value);
+    QVERIFY2(slope.gapped, "the slope's previous window spans the missing report");
+    QCOMPARE(slope.value, 10.0);
 }
 
 void TstCftcMetrics::net_minus_moving_average() {
     const auto series = weekly_values({10, 20, 30, 40, 50}, QDate(2026, 9, 1));
     const CftcMetricReading reading = cftc_net_minus_moving_average(series, 4);
     QVERIFY(reading.has_value);
+    QVERIFY2(!reading.gapped, "a complete weekly window is not gapped");
     QCOMPARE(reading.value, 15.0);
     QCOMPARE(reading.reference_date, QDate(2026, 9, 29));
 
@@ -539,6 +639,7 @@ void TstCftcMetrics::moving_average_slope_uses_one_prior_report() {
     const auto series = weekly_values({10, 20, 30, 40, 50}, QDate(2026, 9, 1));
     const CftcMetricReading slope = cftc_moving_average_slope(series, 4);
     QVERIFY(slope.has_value);
+    QVERIFY(!slope.gapped);
     // Current 4-report mean (20+30+40+50)/4 = 35; one report earlier
     // (10+20+30+40)/4 = 25.
     QCOMPARE(slope.value, 10.0);
@@ -763,18 +864,33 @@ void TstCftcMetrics::trailing_stats_insufficient_history_is_unavailable() {
     QVERIFY(!sparse.has_zscore);
 }
 
-void TstCftcMetrics::trailing_stats_zero_variance_keeps_descriptives_only() {
+void TstCftcMetrics::trailing_stats_zero_variance_keeps_percentile_and_descriptives() {
     const auto series = weekly_values(QVector<double>(27, 5.0), QDate(2026, 3, 31));
     const CftcTrailingStats stats = cftc_trailing_stats(series, CftcTrailingWindow::Weeks26);
     QVERIFY(stats.zero_variance);
     QCOMPARE(stats.min_value, 5.0);
     QCOMPARE(stats.max_value, 5.0);
     QCOMPARE(stats.avg, 5.0);
-    QVERIFY(!stats.has_cot_index);
-    QVERIFY(!stats.has_percentile);
-    QVERIFY(!stats.has_zscore);
+    QVERIFY2(!stats.has_cot_index, "the COT Index divides by the reference range");
+    QVERIFY2(!stats.has_zscore, "the z-score divides by the standard deviation");
+    // Percentile divides by the reference count, not the range, so it stays
+    // defined for a flat reference: every reference ties with the current
+    // value at or above the flat level, giving 100%.
+    QVERIFY(stats.has_percentile);
+    QCOMPARE(stats.percentile, 100.0);
     QCOMPARE(stats.distance_high, 0.0);
     QCOMPARE(stats.distance_low, 0.0);
+
+    // A current value below the flat reference reads 0%.
+    QVector<double> below = QVector<double>(27, 5.0);
+    below.last() = 4.0;
+    const CftcTrailingStats lower =
+        cftc_trailing_stats(weekly_values(below, QDate(2026, 3, 31)), CftcTrailingWindow::Weeks26);
+    QVERIFY(lower.zero_variance);
+    QVERIFY(lower.has_percentile);
+    QCOMPARE(lower.percentile, 0.0);
+    QVERIFY(!lower.has_cot_index);
+    QVERIFY(!lower.has_zscore);
 }
 
 void TstCftcMetrics::trailing_stats_stale_or_short_reference() {
@@ -968,6 +1084,76 @@ void TstCftcMetrics::price_and_positioning_change_combination() {
     QVERIFY2(cftc_changes_opposed(price_4w, net_4w), "price fell while positioning rose over 4W");
     QVERIFY(!cftc_changes_opposed(price_13w, net_13w));
     QVERIFY(!cftc_changes_same_direction(price_13w, net_13w));
+}
+
+void TstCftcMetrics::price_change_respects_the_report_as_of() {
+    // A full history that continues past the CFTC report date. The historical
+    // calculation must align its "latest" close to the report, so later rows
+    // can never leak into it.
+    QVector<CftcPricePoint> prices;
+    prices.append({QDate(2026, 8, 28), 100.0});
+    prices.append({QDate(2026, 9, 1), 110.0});
+    prices.append({QDate(2026, 9, 8), 120.0});
+    prices.append({QDate(2026, 9, 15), 130.0});
+    prices.append({QDate(2026, 9, 18), 140.0});
+    prices.append({QDate(2026, 9, 24), 160.0});
+    prices.append({QDate(2026, 10, 1), 180.0});
+
+    const QDate report_date(2026, 9, 15);
+    const std::optional<double> aligned = cftc_price_change_since_days(prices, 14, report_date);
+    QVERIFY(aligned.has_value());
+    // Latest close on or before 9/15 is 130; 14 days earlier is 9/1 at 110.
+    QCOMPARE(*aligned, 20.0);
+
+    // Without the as_of constraint the helper anchors at the series end:
+    // 180 − 130 = 50. The two must differ, proving the historical path is
+    // report-aligned rather than accidentally safe.
+    const std::optional<double> unconstrained = cftc_price_change_since_days(prices, 14);
+    QVERIFY(unconstrained.has_value());
+    QCOMPARE(*unconstrained, 50.0);
+
+    // No close at or before the report date: unavailable, never the first
+    // later close.
+    QVERIFY(!cftc_price_change_since_days(prices, 14, QDate(2026, 8, 1)).has_value());
+
+    // A report date after the last close simply uses that last close.
+    QVERIFY(cftc_price_change_since_days(prices, 7, QDate(2026, 10, 6)).has_value);
+}
+
+// ── Provider parsing ────────────────────────────────────────────────────────
+
+void TstCftcMetrics::parse_accepts_cftc_report_date_forms() {
+    auto parse_single = [](const QString& date_text) {
+        QJsonObject row;
+        row[QStringLiteral("report_date_as_yyyy_mm_dd")] = date_text;
+        QJsonArray rows;
+        rows.append(row);
+        return cftc_parse_history(rows, CftcFamily::Legacy);
+    };
+
+    // Socrata's ISO timestamp is accepted and reduced to its date.
+    const CftcHistory timestamped = parse_single(QStringLiteral("2026-09-01T00:00:00.000"));
+    QVERIFY2(timestamped.error.isEmpty(), qPrintable(timestamped.error));
+    QCOMPARE(timestamped.observations.first().date, QDate(2026, 9, 1));
+
+    const CftcHistory plain = parse_single(QStringLiteral("2026-09-08"));
+    QVERIFY(plain.error.isEmpty());
+    QCOMPARE(plain.observations.first().date, QDate(2026, 9, 8));
+
+    // The shared chart contract's coarser forms stay accepted so the core's
+    // own parser is a behaviour-preserving replacement.
+    const CftcHistory month = parse_single(QStringLiteral("2026-09"));
+    QVERIFY(month.error.isEmpty());
+    QCOMPARE(month.observations.first().date, QDate(2026, 9, 1));
+    const CftcHistory year = parse_single(QStringLiteral("2026"));
+    QVERIFY(year.error.isEmpty());
+    QCOMPARE(year.observations.first().date, QDate(2026, 1, 1));
+
+    const CftcHistory junk = parse_single(QStringLiteral("not-a-date"));
+    QVERIFY(!junk.error.isEmpty());
+    QVERIFY(junk.observations.isEmpty());
+    const CftcHistory empty = parse_single(QString());
+    QVERIFY(!empty.error.isEmpty());
 }
 
 // ── Provider trader context ─────────────────────────────────────────────────

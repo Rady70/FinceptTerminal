@@ -47,8 +47,6 @@
 //     remain distinct from CFTC observations.
 #pragma once
 
-#include "ui/charts/TimeSeriesData.h" // ui::parse_time_series_date (Qt-Core-only leaf)
-
 #include <QCoreApplication>
 #include <QDate>
 #include <QJsonArray>
@@ -171,6 +169,34 @@ struct CftcObservation {
     std::optional<double> concentration_net_8_short;
 };
 
+/// Parse the CFTC report-date text into a QDate. The provider sends
+/// `YYYY-MM-DD` and Socrata sometimes appends `T00:00:00.000`; a trailing time
+/// part is ignored. `YYYY-MM` and `YYYY` are accepted the same way the shared
+/// chart date contract accepts them, so the core stays dependency-free of the
+/// UI layer without changing the accepted input. Anything else is invalid.
+inline QDate cftc_parse_report_date(const QString& text) {
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    int cut = trimmed.indexOf(QLatin1Char('T'));
+    const int space = trimmed.indexOf(QLatin1Char(' '));
+    if (space >= 0 && (cut < 0 || space < cut))
+        cut = space;
+    const QString date_part = cut > 0 ? trimmed.left(cut) : trimmed;
+    const QStringList parts = date_part.split(QLatin1Char('-'), Qt::SkipEmptyParts);
+    if (parts.size() == 3)
+        return QDate(parts[0].toInt(), parts[1].toInt(), parts[2].toInt());
+    if (parts.size() == 2)
+        return QDate(parts[0].toInt(), parts[1].toInt(), 1);
+    if (parts.size() == 1) {
+        bool ok = false;
+        const int year = parts[0].toInt(&ok);
+        if (ok && year > 0)
+            return QDate(year, 1, 1);
+    }
+    return {};
+}
+
 /// Parse a JSON numeric cell, or a numeric string (Socrata returns some
 /// position columns as strings). Anything else — null, absent, junk text — is
 /// absent, never zero.
@@ -207,7 +233,7 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         const QJsonObject row = value.toObject();
         CftcObservation obs;
         obs.date_label = row.value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString().trimmed();
-        obs.date = ui::parse_time_series_date(obs.date_label);
+        obs.date = cftc_parse_report_date(obs.date_label);
         if (!obs.date.isValid()) {
             out.error = QCoreApplication::translate("CftcPanel", "A report row has no usable report date.");
             out.observations.clear();
@@ -592,10 +618,101 @@ inline CftcHorizonChange cftc_horizon_change(const QVector<CftcDatedValue>& seri
     return cftc_change_at_days(series, cftc_horizon_days(horizon), as_of);
 }
 
+/// The official report-date axis of a history, as a value-free dated series.
+/// Used only to select one shared anchor pair from the actual CFTC report
+/// dates, independently of whether any participant carried a value.
+inline QVector<CftcDatedValue> cftc_report_axis(const QVector<CftcObservation>& observations) {
+    QVector<CftcDatedValue> out;
+    out.reserve(observations.size());
+    for (const auto& obs : observations)
+        out.append({obs.date, obs.date_label, 0.0});
+    return out;
+}
+
+/// The as-of report of an observation history: the explicit `as_of` when the
+/// caller names one, otherwise the newest official report the history actually
+/// carried. Wrappers that receive the full observations use this so a metric
+/// series that ends before the latest official report is detected as stale
+/// instead of silently treating an older report as current.
+inline QDate cftc_official_as_of(const QVector<CftcObservation>& observations, const QDate& as_of) {
+    if (as_of.isValid())
+        return as_of;
+    return observations.isEmpty() ? QDate() : observations.last().date;
+}
+
+/// One report-anchored horizon pair selected from the official report dates.
+/// `latest_date` is the report the change ends on; `anchor_date` the report it
+/// starts from. All metrics of a change set are evaluated against these same
+/// two reports.
+struct CftcHorizonAnchor {
+    bool has_anchor = false;
+    bool has_value = false;
+    bool stale = false;
+    bool adjacent = false;
+    int days = 0;
+    int gap_days = 0;
+    QDate latest_date;
+    QDate anchor_date;
+};
+
+inline CftcHorizonAnchor cftc_horizon_anchor(const QVector<CftcObservation>& observations, CftcHorizon horizon,
+                                             const QDate& as_of = {}) {
+    CftcHorizonAnchor out;
+    out.days = cftc_horizon_days(horizon);
+    if (observations.isEmpty())
+        return out;
+    out.latest_date = observations.last().date;
+    const QDate effective = cftc_official_as_of(observations, as_of);
+    const CftcHorizonChange change = cftc_horizon_change(cftc_report_axis(observations), horizon, effective);
+    out.has_anchor = change.has_anchor;
+    out.has_value = change.has_value;
+    out.stale = change.stale;
+    out.adjacent = change.adjacent;
+    out.gap_days = change.gap_days;
+    out.anchor_date = change.anchor_date;
+    return out;
+}
+
+/// Change of a metric series between the shared anchor report and the current
+/// official report. The pair comes from the official report axis, so every
+/// metric in a change set spans the same dates; a metric missing at either
+/// endpoint is unavailable instead of silently re-anchoring to another report.
+inline CftcHorizonChange cftc_anchored_change(const QVector<CftcDatedValue>& series, const CftcHorizonAnchor& anchor) {
+    CftcHorizonChange out;
+    out.days = anchor.days;
+    out.adjacent = anchor.adjacent;
+    out.stale = anchor.stale;
+    out.has_anchor = anchor.has_anchor;
+    out.gap_days = anchor.gap_days;
+    out.anchor_date = anchor.anchor_date;
+    if (!anchor.has_value)
+        return out;
+    const CftcDatedValue* latest = nullptr;
+    const CftcDatedValue* start = nullptr;
+    for (const auto& point : series) {
+        if (point.date == anchor.latest_date)
+            latest = &point;
+        if (point.date == anchor.anchor_date)
+            start = &point;
+    }
+    if (!latest) {
+        // The metric does not reach the current official report.
+        out.stale = true;
+        return out;
+    }
+    if (!start)
+        return out; // the metric is absent at the shared anchor report
+    out.has_value = true;
+    out.value = latest->value - start->value;
+    return out;
+}
+
 /// A participant's change set at one horizon. The gross legs stay separate so
 /// the caller can distinguish new longs from short covering (and new shorts
 /// from long liquidation) using only what the report establishes; this layer
-/// attaches no aggregate interpretation.
+/// attaches no aggregate interpretation. Every metric is measured between the
+/// same two official reports, so an available ΔLong, ΔShort and ΔNet are
+/// internally consistent (ΔLong − ΔShort == ΔNet).
 struct CftcPositionChanges {
     CftcHorizon horizon = CftcHorizon::OneReport;
     CftcHorizonChange long_leg;
@@ -608,20 +725,21 @@ inline CftcPositionChanges cftc_position_changes(const QVector<CftcObservation>&
                                                  CftcHorizon horizon, const QDate& as_of = {}) {
     CftcPositionChanges out;
     out.horizon = horizon;
+    const CftcHorizonAnchor anchor = cftc_horizon_anchor(observations, horizon, as_of);
     out.long_leg =
-        cftc_horizon_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Long), horizon, as_of);
+        cftc_anchored_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Long), anchor);
     out.short_leg =
-        cftc_horizon_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Short), horizon, as_of);
-    out.net =
-        cftc_horizon_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Net), horizon, as_of);
-    out.net_pct_oi = cftc_horizon_change(cftc_metric_series(observations, participant_index, CftcMetricKind::NetPctOi),
-                                         horizon, as_of);
+        cftc_anchored_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Short), anchor);
+    out.net = cftc_anchored_change(cftc_metric_series(observations, participant_index, CftcMetricKind::Net), anchor);
+    out.net_pct_oi =
+        cftc_anchored_change(cftc_metric_series(observations, participant_index, CftcMetricKind::NetPctOi), anchor);
     return out;
 }
 
 inline CftcHorizonChange cftc_open_interest_change(const QVector<CftcObservation>& observations, CftcHorizon horizon,
                                                    const QDate& as_of = {}) {
-    return cftc_horizon_change(cftc_open_interest_series(observations), horizon, as_of);
+    const CftcHorizonAnchor anchor = cftc_horizon_anchor(observations, horizon, as_of);
+    return cftc_anchored_change(cftc_open_interest_series(observations), anchor);
 }
 
 // ── Directions ──────────────────────────────────────────────────────────────
@@ -708,15 +826,19 @@ inline CftcMovingAverage cftc_moving_average(const QVector<CftcDatedValue>& seri
     return out;
 }
 
-/// One scalar reading tied to the report date it describes.
+/// One scalar reading tied to the report date it describes, carrying the
+/// underlying window's gap state so a derived momentum value can never look
+/// like an ordinary scalar when its moving-average window spans a missing
+/// report.
 struct CftcMetricReading {
     bool has_value = false;
+    bool gapped = false;
     double value = 0.0;
     QDate reference_date;
 };
 
 /// Latest Net minus its causal trailing moving average. Unavailable when the
-/// average is unavailable.
+/// average is unavailable; `gapped` mirrors the underlying window.
 inline CftcMetricReading cftc_net_minus_moving_average(const QVector<CftcDatedValue>& series, int observations,
                                                        const QDate& as_of = {}) {
     CftcMetricReading out;
@@ -725,6 +847,7 @@ inline CftcMetricReading cftc_net_minus_moving_average(const QVector<CftcDatedVa
         return out;
     out.value = series.last().value - average.value;
     out.reference_date = series.last().date;
+    out.gapped = average.gapped;
     out.has_value = true;
     return out;
 }
@@ -732,7 +855,9 @@ inline CftcMetricReading cftc_net_minus_moving_average(const QVector<CftcDatedVa
 /// Moving-average slope: the current trailing mean minus the trailing mean of
 /// the same length one report earlier (the last report is dropped from the
 /// previous mean). Only causal data is used; fewer than `observations` + 1
-/// reports makes the reading unavailable.
+/// reports makes the reading unavailable. `gapped` is set when either of the
+/// two windows spans a missing report, so the slope is never mistaken for an
+/// ordinary measurement.
 inline CftcMetricReading cftc_moving_average_slope(const QVector<CftcDatedValue>& series, int observations,
                                                    const QDate& as_of = {}) {
     CftcMetricReading out;
@@ -746,6 +871,7 @@ inline CftcMetricReading cftc_moving_average_slope(const QVector<CftcDatedValue>
         return out;
     out.value = current.value - previous.value;
     out.reference_date = current.last_date;
+    out.gapped = current.gapped || previous.gapped;
     out.has_value = true;
     return out;
 }
@@ -852,8 +978,9 @@ inline constexpr int kCftcTrailingMinObservations = 8;
 /// `minimum_reference` observations (default kCftcTrailingMinObservations,
 /// below which a percentile is noise rather than evidence). Otherwise every
 /// reference measure stays unavailable. `zero_variance` records a flat
-/// reference window where index/percentile/z-score are undefined;
-/// min/max/average still describe the real observations.
+/// reference window where COT Index and z-score are undefined; percentile
+/// follows its own tie rule (count of references at or below the current
+/// value) and min/max/average still describe the real observations.
 struct CftcTrailingStats {
     CftcTrailingWindow window = CftcTrailingWindow::Weeks26;
     QDate latest_report;
@@ -932,14 +1059,18 @@ inline CftcTrailingStats cftc_trailing_stats(const QVector<CftcDatedValue>& seri
     if (range > 0.0) {
         out.has_cot_index = true;
         out.cot_index = (out.current - min_value) / range * 100.0;
-        int at_or_below = 0;
-        for (const auto& point : reference) {
-            if (point.value <= out.current)
-                ++at_or_below;
-        }
-        out.has_percentile = true;
-        out.percentile = 100.0 * static_cast<double>(at_or_below) / static_cast<double>(out.reference_count);
     }
+    // Percentile = share of the reference at or below the current value. It
+    // divides by the reference count, not by the range, so it stays defined
+    // for a flat reference window (all references tie with a current value at
+    // or above the flat level; a current value below it reads 0%).
+    int at_or_below = 0;
+    for (const auto& point : reference) {
+        if (point.value <= out.current)
+            ++at_or_below;
+    }
+    out.has_percentile = true;
+    out.percentile = 100.0 * static_cast<double>(at_or_below) / static_cast<double>(out.reference_count);
     double sum_sq = 0.0;
     for (const auto& point : reference) {
         const double deviation = point.value - out.avg;
@@ -1281,25 +1412,41 @@ inline std::optional<double> cftc_price_on_or_before(const QVector<CftcPricePoin
 }
 
 /// Price change between the latest close and the close on or before
-/// (latest date − days). Absent when the history does not reach back that far
-/// or when the anchor is far enough before the target that the span no longer
-/// matches the comparison it is paired with (same bound as the positioning
-/// change).
-inline std::optional<double> cftc_price_change_since_days(const QVector<CftcPricePoint>& prices, int days) {
+/// (latest date − days). When `as_of` is a valid report date, the "latest"
+/// close is the most recent session on or before that date, so a full price
+/// history extending past the report cannot leak future closes into a
+/// historical calculation. Absent when no close exists at or before `as_of`,
+/// when the history does not reach back that far, or when the anchor is far
+/// enough before the target that the span no longer matches the comparison it
+/// is paired with (same bound as the positioning change).
+inline std::optional<double> cftc_price_change_since_days(const QVector<CftcPricePoint>& prices, int days,
+                                                          const QDate& as_of = {}) {
     if (prices.size() < 2)
         return std::nullopt;
-    const QDate latest = prices.last().date;
+    int last_index = prices.size() - 1;
+    if (as_of.isValid()) {
+        last_index = -1;
+        for (int i = 0; i < prices.size(); ++i) {
+            if (prices[i].date <= as_of)
+                last_index = i;
+            else
+                break;
+        }
+        if (last_index < 1)
+            return std::nullopt;
+    }
+    const QDate latest = prices[last_index].date;
     const QDate floor = latest.addDays(-(days + kCftcWeeklyGapDays));
     const CftcPricePoint* anchor = nullptr;
-    for (const auto& point : prices) {
-        if (point.date <= latest.addDays(-days))
-            anchor = &point;
+    for (int i = 0; i <= last_index; ++i) {
+        if (prices[i].date <= latest.addDays(-days))
+            anchor = &prices[i];
         else
             break;
     }
     if (!anchor || anchor->date < floor)
         return std::nullopt;
-    return prices.last().close - anchor->close;
+    return prices[last_index].close - anchor->close;
 }
 
 /// Extreme reads of a positioning window keyed by the report dates that
