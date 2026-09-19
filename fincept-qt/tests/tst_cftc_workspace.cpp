@@ -100,6 +100,9 @@ class TstCftcWorkspace : public QObject {
     void change_since_days_uses_the_last_report_at_or_before_the_target();
     void window_stats_known_series();
     void window_stats_degenerate_cases();
+    void window_stats_anchor_to_the_latest_report();
+    void weekly_change_requires_the_latest_report();
+    void heatmap_axis_keeps_reports_missing_a_class();
     void heatmap_series_gates_short_prefixes();
     void price_helpers_align_to_report_dates();
     void direction_alignment_rules();
@@ -370,6 +373,78 @@ void TstCftcWorkspace::window_stats_degenerate_cases() {
     QVERIFY(!flat.has_zscore);
     QCOMPARE(flat.distance_high, 0.0);
     QCOMPARE(flat.distance_low, 0.0);
+}
+
+void TstCftcWorkspace::window_stats_anchor_to_the_latest_report() {
+    const auto window = weekly_values({10, 20, 30, 40, 50}, QDate(2026, 9, 1));
+    const QDate as_of = QDate(2026, 9, 29);
+
+    const CftcWindowStats current = cftc_window_stats(window, as_of);
+    QVERIFY(current.at_latest_report);
+    QVERIFY(current.has_latest);
+    QCOMPARE(current.latest, 50.0);
+    QVERIFY(current.has_cot_index);
+
+    // The latest official report did not carry this class: the series ends a
+    // week earlier. Current-dependent measures must be unavailable — never an
+    // older reading presented as current — while the historical window
+    // statistics keep describing real observations.
+    auto stale = window;
+    stale.removeLast();
+    const CftcWindowStats mishandled = cftc_window_stats(stale, as_of);
+    QVERIFY(!mishandled.at_latest_report);
+    QVERIFY(!mishandled.has_latest);
+    QVERIFY(!mishandled.has_cot_index);
+    QVERIFY(!mishandled.has_percentile);
+    QVERIFY(!mishandled.has_zscore);
+    QVERIFY(!mishandled.has_distance_high);
+    QVERIFY(!mishandled.has_distance_low);
+    QVERIFY(!mishandled.has_change_4w);
+    QVERIFY(!mishandled.has_change_13w);
+    QCOMPARE(mishandled.count, 4);
+    QCOMPARE(mishandled.min_value, 10.0);
+    QCOMPARE(mishandled.max_value, 40.0);
+    QCOMPARE(mishandled.avg, 25.0);
+}
+
+void TstCftcWorkspace::weekly_change_requires_the_latest_report() {
+    const auto series = weekly_values({10, 20, 30}, QDate(2026, 9, 1));
+
+    const CftcChange current = cftc_weekly_change(series, QDate(2026, 9, 15));
+    QVERIFY(!current.stale);
+    QVERIFY(current.has_value);
+    QCOMPARE(current.value, 10.0);
+
+    // A payload whose newest observation for this class is a week behind the
+    // actual latest report is stale for a weekly comparison.
+    const CftcChange stale = cftc_weekly_change(series, QDate(2026, 9, 22));
+    QVERIFY(stale.stale);
+    QVERIFY(!stale.has_pair);
+    QVERIFY(!stale.has_value);
+
+    // The dated 4W/13W change follows the same anchor.
+    QVERIFY(!cftc_change_since_days(series, 14, QDate(2026, 9, 22)).has_value());
+    QCOMPARE(*cftc_change_since_days(series, 14, QDate(2026, 9, 15)), 20.0);
+}
+
+void TstCftcWorkspace::heatmap_axis_keeps_reports_missing_a_class() {
+    QVector<CftcObservation> window;
+    window.append(observation(QStringLiteral("2026-09-01"), 1000, {300, 400, 200}, {100, 150, 250}));
+    window.append(observation(QStringLiteral("2026-09-08"), 1100, {std::nullopt, 430, 210}, {std::nullopt, 160, 240}));
+
+    // The official report axis is independent of any participant's data: the
+    // 2026-09-08 report is a column even though the commercial class has no
+    // value on it.
+    const QVector<QDate> dates = cftc_report_dates(window, 52);
+    QCOMPARE(dates.size(), 2);
+    QCOMPARE(dates.last(), QDate(2026, 9, 8));
+    QVERIFY(!cftc_participant_net(window.last(), 0).has_value());
+    QVERIFY(cftc_participant_net(window.last(), 1).has_value());
+
+    const QVector<QDate> last_only = cftc_report_dates(window, 1);
+    QCOMPARE(last_only.size(), 1);
+    QCOMPARE(last_only.first(), QDate(2026, 9, 8));
+    QVERIFY(cftc_report_dates({}, 52).isEmpty());
 }
 
 void TstCftcWorkspace::heatmap_series_gates_short_prefixes() {

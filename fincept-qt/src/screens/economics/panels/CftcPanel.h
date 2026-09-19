@@ -112,6 +112,7 @@ class CftcPanel : public EconPanelBase {
     QString price_source_text() const;
 
     // ── helpers ─────────────────────────────────────────────────────────────
+    QDate latest_report_date() const;
     QJsonArray build_raw_rows() const;
     QVector<CftcDatedValue> participant_metric_series(int participant_index, CftcChartMetric metric) const;
     QString workspace_style() const;
@@ -148,7 +149,8 @@ class CftcPanel : public EconPanelBase {
     // ── sections ────────────────────────────────────────────────────────────
     QGridLayout* snapshot_grid_ = nullptr;
     QVector<SnapshotCard> snapshot_cards_;
-    QGridLayout* pair_layout_ = nullptr;
+    QGridLayout* pair_layout_ = nullptr;       // positioning | weekly changes
+    QGridLayout* stats_pair_layout_ = nullptr; // statistics | divergence
     QWidget* positioning_frame_ = nullptr;
     QWidget* weekly_frame_ = nullptr;
     QWidget* stats_frame_ = nullptr;
@@ -203,6 +205,7 @@ class CftcPanel : public EconPanelBase {
     QString price_symbol_;
     bool price_spot_index_ = false;
     QString price_market_key_;
+    QString price_topic_; // DataHub market:history:<sym>:<period>:<interval> subscription
     QVector<CftcPricePoint> price_;
     int price_token_ = 0;
 

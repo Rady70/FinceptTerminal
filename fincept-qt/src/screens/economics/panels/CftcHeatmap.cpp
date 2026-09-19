@@ -206,7 +206,9 @@ void CftcHeatmap::rebuild() {
     // Date headers: sparse enough to stay readable at 52 columns.
     const int step = std::max(1, static_cast<int>(dates_.size()) / 5);
     for (int col = 0; col < dates_.size(); ++col) {
-        const bool labelled = col == 0 || col == dates_.size() - 1 || col % step == 0;
+        // The last column always carries the end-label; suppress a periodic
+        // label one column earlier so the two texts cannot overlap.
+        const bool labelled = col == 0 || col == dates_.size() - 1 || (col % step == 0 && dates_.size() - 1 - col >= 2);
         auto* label = new QLabel(labelled ? dates_[col].toString(QStringLiteral("MMM yy")) : QString(), this);
         label->setStyleSheet(header_style);
         label->setAlignment(Qt::AlignCenter);

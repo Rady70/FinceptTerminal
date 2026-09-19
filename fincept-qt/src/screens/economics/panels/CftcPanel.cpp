@@ -9,10 +9,11 @@
 #include "screens/economics/panels/CftcPanel.h"
 
 #include "core/logging/Logger.h"
+#include "datahub/DataHub.h"
+#include "datahub/DataHubMetaTypes.h"
 #include "screens/economics/panels/CftcHeatmap.h"
 #include "screens/economics/panels/CftcPositioningChart.h"
 #include "services/economics/EconomicsService.h"
-#include "services/markets/MarketDataService.h"
 #include "ui/charts/TimeSeriesData.h"
 #include "ui/theme/Theme.h"
 
@@ -25,6 +26,7 @@
 #include <QHash>
 #include <QHeaderView>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonValue>
 #include <QPointer>
 #include <QPushButton>
@@ -231,7 +233,10 @@ QString signed_decimal(double value, int decimals) {
     return value > 0.0 ? QStringLiteral("+") + text : text;
 }
 
-QString stat_unavailable_reason(const CftcWindowStats& stats) {
+QString stat_unavailable_reason(const CftcWindowStats& stats, const QDate& as_of) {
+    if (!stats.at_latest_report)
+        return QCoreApplication::translate("CftcPanel", "the latest report (%1) does not carry this class")
+            .arg(as_of.toString(Qt::ISODate));
     if (stats.count == 0)
         return QCoreApplication::translate("CftcPanel", "no observations in the selected window");
     if (stats.count < 2)
@@ -239,6 +244,36 @@ QString stat_unavailable_reason(const CftcWindowStats& stats) {
     if (stats.zero_variance)
         return QCoreApplication::translate("CftcPanel", "the window has no variance");
     return QCoreApplication::translate("CftcPanel", "not available");
+}
+
+/// A CFTC script failure may reach the panel as the raw typed error envelope
+/// ({"endpoint":..., "error":"message", ...}), depending on which layer
+/// classified it. Surface the human message, never the internal JSON.
+QString cftc_error_text(const QString& raw) {
+    const QString trimmed = raw.trimmed();
+    if (trimmed.startsWith(QLatin1Char('{'))) {
+        const QJsonDocument doc = QJsonDocument::fromJson(trimmed.toUtf8());
+        if (doc.isObject()) {
+            const QJsonValue error = doc.object().value(QStringLiteral("error"));
+            if (error.isString() && !error.toString().trimmed().isEmpty())
+                return error.toString();
+            if (error.isObject()) {
+                const QString nested = error.toObject().value(QStringLiteral("error")).toString();
+                if (!nested.trimmed().isEmpty())
+                    return nested;
+            }
+        }
+    }
+    return raw;
+}
+
+QString weekly_unavailable_reason(const CftcChange& change, const QDate& as_of) {
+    if (change.stale)
+        return QCoreApplication::translate("CftcPanel", "the latest report (%1) does not carry this class")
+            .arg(as_of.toString(Qt::ISODate));
+    if (!change.has_pair)
+        return QCoreApplication::translate("CftcPanel", "no previous report in the returned history");
+    return QCoreApplication::translate("CftcPanel", "previous report is %1 days earlier").arg(change.gap_days);
 }
 
 enum class StatMetric { Latest, Max, Min, Avg, CotIndex, Percentile, ZScore, FromHigh, FromLow, Change4W, Change13W };
@@ -755,8 +790,13 @@ void CftcPanel::build_analysis_page() {
     divergence_extremes_lbl_->setWordWrap(true);
     divergence.body->addWidget(divergence_extremes_lbl_);
 
-    pair_layout_->addWidget(stats_frame_, 1, 0);
-    pair_layout_->addWidget(divergence_frame_, 1, 1);
+    // Statistics/extremes and divergence follow the principal chart, sharing a
+    // row when width allows.
+    stats_pair_layout_ = new QGridLayout;
+    stats_pair_layout_->setSpacing(10);
+    stats_pair_layout_->addWidget(stats_frame_, 0, 0);
+    stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
+    content_layout->addLayout(stats_pair_layout_);
 
     // 8. Positioning heatmap.
     auto heatmap = make_section(tr("POSITIONING HEATMAP"));
@@ -794,7 +834,7 @@ void CftcPanel::build_analysis_page() {
 }
 
 void CftcPanel::apply_responsive_layout() {
-    if (!snapshot_grid_ || !pair_layout_)
+    if (!snapshot_grid_ || !pair_layout_ || !stats_pair_layout_)
         return;
 
     const int snapshot_columns = narrow_layout_ ? 2 : 4;
@@ -805,15 +845,24 @@ void CftcPanel::apply_responsive_layout() {
     for (int col = 0; col < 4; ++col)
         snapshot_grid_->setColumnStretch(col, col < snapshot_columns ? 1 : 0);
 
-    const QVector<QWidget*> frames = {positioning_frame_, weekly_frame_, stats_frame_, divergence_frame_};
-    for (auto* frame : frames) {
+    const QVector<QWidget*> first_row = {positioning_frame_, weekly_frame_};
+    const QVector<QWidget*> second_row = {stats_frame_, divergence_frame_};
+    for (auto* frame : first_row) {
         if (frame)
             pair_layout_->removeWidget(frame);
     }
+    for (auto* frame : second_row) {
+        if (frame)
+            stats_pair_layout_->removeWidget(frame);
+    }
     if (narrow_layout_) {
-        for (int i = 0; i < frames.size(); ++i) {
-            if (frames[i])
-                pair_layout_->addWidget(frames[i], i, 0, 1, 2);
+        for (int i = 0; i < first_row.size(); ++i) {
+            if (first_row[i])
+                pair_layout_->addWidget(first_row[i], i, 0, 1, 2);
+        }
+        for (int i = 0; i < second_row.size(); ++i) {
+            if (second_row[i])
+                stats_pair_layout_->addWidget(second_row[i], i, 0, 1, 2);
         }
     } else {
         if (positioning_frame_)
@@ -821,12 +870,14 @@ void CftcPanel::apply_responsive_layout() {
         if (weekly_frame_)
             pair_layout_->addWidget(weekly_frame_, 0, 1);
         if (stats_frame_)
-            pair_layout_->addWidget(stats_frame_, 1, 0);
+            stats_pair_layout_->addWidget(stats_frame_, 0, 0);
         if (divergence_frame_)
-            pair_layout_->addWidget(divergence_frame_, 1, 1);
+            stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
     }
     pair_layout_->setColumnStretch(0, 1);
     pair_layout_->setColumnStretch(1, 1);
+    stats_pair_layout_->setColumnStretch(0, 1);
+    stats_pair_layout_->setColumnStretch(1, 1);
 }
 
 void CftcPanel::resizeEvent(QResizeEvent* event) {
@@ -874,7 +925,7 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
 
     if (!result.success) {
         clear_workspace();
-        show_error(result.error);
+        show_error(cftc_error_text(result.error));
         return;
     }
 
@@ -899,10 +950,14 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
     // Raw Data is the same observations, newest first, through the shared
     // table + CSV path. Analysis is shown by default with Raw Data one click
     // away.
-    const QString title =
+    QString title =
         tr("CFTC: %1 — %2 · %3")
             .arg(history_.observations.last().market.isEmpty() ? market_label_ : history_.observations.last().market,
                  family_label(family_), futures_only_ ? tr("Futures Only") : tr("Combined"));
+    // The shared result title is visible on both tabs, so it carries the
+    // contract identifier too — Raw Data keeps at least that source context.
+    if (!history_.observations.last().contract_code.isEmpty())
+        title += QStringLiteral(" · ") + history_.observations.last().contract_code;
     display(build_raw_rows(), title);
     build_participant_controls();
     rebuild_workspace();
@@ -918,7 +973,17 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
 // ── Workspace state ─────────────────────────────────────────────────────────
 
 void CftcPanel::clear_workspace() {
-    ++price_token_; // invalidate any in-flight price callback
+    // Invalidate every in-flight response bound to this workspace state: an
+    // older CFTC request must not repopulate a reset/ reactivated panel, and
+    // an older price delivery must not attach to a newer market.
+    pending_request_.clear();
+    ++price_token_;
+    if (!price_topic_.isEmpty()) {
+        auto& hub = datahub::DataHub::instance();
+        hub.unsubscribe(this, price_topic_);
+        hub.unsubscribe_errors(this, price_topic_);
+        price_topic_.clear();
+    }
     price_state_ = PriceState::None;
     price_reason_.clear();
     price_symbol_.clear();
@@ -1049,6 +1114,10 @@ QVector<CftcDatedValue> CftcPanel::participant_metric_series(int participant_ind
     return metric_series(window_, participant_index, metric);
 }
 
+QDate CftcPanel::latest_report_date() const {
+    return history_.observations.isEmpty() ? QDate() : history_.observations.last().date;
+}
+
 QJsonArray CftcPanel::build_raw_rows() const {
     QJsonArray rows;
     for (int i = history_.observations.size() - 1; i >= 0; --i) {
@@ -1083,7 +1152,7 @@ void CftcPanel::update_header() {
     meta << (futures_only_ ? tr("Futures Only") : tr("Combined (futures + options)"));
     if (!latest.contract_code.isEmpty()) {
         meta << (latest.units.isEmpty() ? tr("CFTC contract %1").arg(latest.contract_code)
-                                        : tr("CFTC contract %1 (%2)").arg(latest.contract_code, latest.units));
+                                        : tr("CFTC contract %1 — %2").arg(latest.contract_code, latest.units));
     }
     QString source = tr("Source: CFTC Commitments of Traders — publicreporting.cftc.gov");
     if (!dataset_.isEmpty())
@@ -1107,8 +1176,9 @@ void CftcPanel::update_snapshot() {
         return;
     const QString range_label = cftc_range_label(range_);
     const QString spec_short = participant_short_label(participants_[speculative_index_].key);
+    const QDate as_of_date = latest_report_date();
     const auto spec_series = participant_metric_series(speculative_index_, CftcChartMetric::Net);
-    const CftcWindowStats stats = cftc_window_stats(spec_series);
+    const CftcWindowStats stats = cftc_window_stats(spec_series, as_of_date);
     const CftcObservation& latest = history_.observations.last();
 
     auto set_card = [&](int index, const QString& caption, const QString& value, int sign, const QString& sub,
@@ -1121,28 +1191,24 @@ void CftcPanel::update_snapshot() {
         card.frame->setToolTip(tooltip);
     };
 
-    // NET. The "as of" date is the newest report that actually carries this
-    // class' legs; the newest report of the payload may not (and then the
-    // snapshot must not present an older reading as current).
+    // NET. Anchored at the actual latest official report: if that report does
+    // not carry this class' legs, the current reading is unavailable — an
+    // older value is never presented as current.
     if (stats.has_latest) {
-        const QString as_of = spec_series.last().date_label;
-        QString sub = tr("as of %1").arg(as_of);
-        if (as_of != latest.date_label)
-            sub += tr(" · latest report %1 lacks this class").arg(latest.date_label);
         set_card(0, tr("NET (%1)").arg(spec_short), cftc_signed_net(stats.latest),
                  stats.latest > 0   ? 1
                  : stats.latest < 0 ? -1
                                     : 0,
-                 sub,
-                 tr("Latest net position of %1 (%2 − %3) available in the window.")
+                 tr("as of %1").arg(as_of_date.toString(Qt::ISODate)),
+                 tr("Latest net position of %1 (%2 − %3) as of the newest CFTC report.")
                      .arg(participants_[speculative_index_].label, tr("long"), tr("short")));
     } else {
-        set_card(0, tr("NET (%1)").arg(spec_short), QStringLiteral("—"), 0,
-                 tr("the latest report does not carry both legs"), QString());
+        set_card(0, tr("NET (%1)").arg(spec_short), QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
+                 QString());
     }
 
     // WEEKLY CHANGE
-    const CftcChange weekly = cftc_weekly_change(spec_series);
+    const CftcChange weekly = cftc_weekly_change(spec_series, as_of_date);
     if (weekly.has_value) {
         set_card(1, tr("WEEKLY CHANGE (%1)").arg(spec_short), cftc_signed_net(weekly.value),
                  weekly.value > 0   ? 1
@@ -1153,9 +1219,9 @@ void CftcPanel::update_snapshot() {
                      .arg(kCftcWeeklyGapDays));
     } else {
         set_card(1, tr("WEEKLY CHANGE (%1)").arg(spec_short), QStringLiteral("—"), 0,
-                 weekly.has_pair ? tr("previous report is %1 days earlier").arg(weekly.gap_days)
-                                 : tr("no previous report in the returned history"),
-                 tr("A weekly change requires a previous report within %1 days.").arg(kCftcWeeklyGapDays));
+                 weekly_unavailable_reason(weekly, as_of_date),
+                 tr("A weekly change requires the latest report and a previous report within %1 days.")
+                     .arg(kCftcWeeklyGapDays));
     }
 
     // OPEN INTEREST
@@ -1170,7 +1236,7 @@ void CftcPanel::update_snapshot() {
 
     // OI WEEKLY CHANGE
     const auto oi_series = cftc_open_interest_series(history_.observations);
-    const CftcChange oi_weekly = cftc_weekly_change(oi_series);
+    const CftcChange oi_weekly = cftc_weekly_change(oi_series, as_of_date);
     if (oi_weekly.has_value) {
         set_card(3, tr("OPEN INTEREST Δ WEEK"), cftc_signed_net(oi_weekly.value),
                  oi_weekly.value > 0   ? 1
@@ -1180,9 +1246,7 @@ void CftcPanel::update_snapshot() {
                  tr("Open interest change between the two newest reports."));
     } else {
         set_card(3, tr("OPEN INTEREST Δ WEEK"), QStringLiteral("—"), 0,
-                 oi_weekly.has_pair ? tr("previous report is %1 days earlier").arg(oi_weekly.gap_days)
-                                    : tr("no previous report in the returned history"),
-                 QString());
+                 weekly_unavailable_reason(oi_weekly, as_of_date), QString());
     }
 
     // COT INDEX / Z-SCORE / PERCENTILE (window-dependent labels)
@@ -1192,7 +1256,7 @@ void CftcPanel::update_snapshot() {
                  tr("window %1 → %2").arg(cftc_signed_net(stats.min_value), cftc_signed_net(stats.max_value)),
                  stat_metric_tooltip(StatMetric::CotIndex));
     } else {
-        set_card(4, cot_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats),
+        set_card(4, cot_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  stat_metric_tooltip(StatMetric::CotIndex));
     }
 
@@ -1201,7 +1265,7 @@ void CftcPanel::update_snapshot() {
         set_card(5, z_caption, QString::number(stats.zscore, 'f', 2), 0, tr("vs window mean / σ"),
                  stat_metric_tooltip(StatMetric::ZScore));
     } else {
-        set_card(5, z_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats),
+        set_card(5, z_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  stat_metric_tooltip(StatMetric::ZScore));
     }
 
@@ -1210,7 +1274,7 @@ void CftcPanel::update_snapshot() {
         set_card(6, pct_caption, QString::number(stats.percentile, 'f', 1) + QLatin1Char('%'), 0,
                  percentile_state(stats.percentile), stat_metric_tooltip(StatMetric::Percentile));
     } else {
-        set_card(6, pct_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats),
+        set_card(6, pct_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  stat_metric_tooltip(StatMetric::Percentile));
     }
 }
@@ -1285,18 +1349,19 @@ void CftcPanel::update_positioning() {
         else
             set_plain_cell(positioning_table_, p, 5, QStringLiteral("—"));
 
-        const CftcWindowStats stats = cftc_window_stats(participant_metric_series(p, CftcChartMetric::Net));
+        const QDate as_of_date = latest_report_date();
+        const CftcWindowStats stats = cftc_window_stats(participant_metric_series(p, CftcChartMetric::Net), as_of_date);
         if (stats.has_cot_index)
             set_plain_cell(positioning_table_, p, 6, QString::number(stats.cot_index, 'f', 1));
         else {
             set_plain_cell(positioning_table_, p, 6, QStringLiteral("—"));
-            positioning_table_->item(p, 6)->setToolTip(stat_unavailable_reason(stats));
+            positioning_table_->item(p, 6)->setToolTip(stat_unavailable_reason(stats, as_of_date));
         }
         if (stats.has_percentile)
             set_plain_cell(positioning_table_, p, 7, QString::number(stats.percentile, 'f', 1) + QLatin1Char('%'));
         else {
             set_plain_cell(positioning_table_, p, 7, QStringLiteral("—"));
-            positioning_table_->item(p, 7)->setToolTip(stat_unavailable_reason(stats));
+            positioning_table_->item(p, 7)->setToolTip(stat_unavailable_reason(stats, as_of_date));
         }
     }
     fit_table_height(positioning_table_);
@@ -1313,8 +1378,9 @@ void CftcPanel::update_weekly() {
     for (int col = 1; col < columns; ++col)
         weekly_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
 
+    const QDate as_of_date = latest_report_date();
     const auto oi_series = cftc_open_interest_series(history_.observations);
-    const CftcChange oi_change = cftc_weekly_change(oi_series);
+    const CftcChange oi_change = cftc_weekly_change(oi_series, as_of_date);
     if (weekly_oi_caption_)
         weekly_oi_caption_->setText(tr("OPEN INTEREST Δ"));
     if (weekly_oi_lbl_) {
@@ -1325,27 +1391,25 @@ void CftcPanel::update_weekly() {
         } else {
             weekly_oi_lbl_->setText(QStringLiteral("—"));
             apply_value_state(weekly_oi_lbl_, 0);
-            weekly_oi_lbl_->setToolTip(oi_change.has_pair
-                                           ? tr("previous report is %1 days earlier").arg(oi_change.gap_days)
-                                           : tr("no previous report in the returned history"));
+            weekly_oi_lbl_->setToolTip(weekly_unavailable_reason(oi_change, as_of_date));
         }
     }
 
     for (int p = 0; p < participants_.size(); ++p) {
         set_plain_cell(weekly_table_, p, 0, participants_[p].label, Qt::AlignLeft | Qt::AlignVCenter);
         const CftcChange long_change =
-            cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Long));
+            cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Long), as_of_date);
         const CftcChange short_change =
-            cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Short));
-        const CftcChange net_change = cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Net));
+            cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Short), as_of_date);
+        const CftcChange net_change =
+            cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Net), as_of_date);
         for (int col = 0; col < 3; ++col) {
             const CftcChange& change = col == 0 ? long_change : col == 1 ? short_change : net_change;
             set_signed_cell(weekly_table_, p, col + 1,
                             change.has_value ? std::optional<double>(change.value) : std::nullopt);
             if (!change.has_value) {
                 if (auto* item = weekly_table_->item(p, col + 1))
-                    item->setToolTip(change.has_pair ? tr("previous report is %1 days earlier").arg(change.gap_days)
-                                                     : tr("no previous report in the returned history"));
+                    item->setToolTip(weekly_unavailable_reason(change, as_of_date));
             }
         }
     }
@@ -1388,10 +1452,11 @@ void CftcPanel::update_statistics() {
     stats_table_->verticalHeader()->setVisible(true);
     stats_table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
 
+    const QDate as_of_date = latest_report_date();
     QVector<CftcWindowStats> stats;
     stats.reserve(participants_.size());
     for (int p = 0; p < participants_.size(); ++p)
-        stats.append(cftc_window_stats(participant_metric_series(p, CftcChartMetric::Net)));
+        stats.append(cftc_window_stats(participant_metric_series(p, CftcChartMetric::Net), as_of_date));
 
     for (int row = 0; row < kStatMetricCount; ++row) {
         const StatMetric metric = stat_metric_at(row);
@@ -1407,7 +1472,7 @@ void CftcPanel::update_statistics() {
                 set_plain_cell(stats_table_, row, p, text);
             else {
                 set_plain_cell(stats_table_, row, p, QStringLiteral("—"));
-                stats_table_->item(row, p)->setToolTip(stat_unavailable_reason(stats[p]));
+                stats_table_->item(row, p)->setToolTip(stat_unavailable_reason(stats[p], as_of_date));
             }
         }
     }
@@ -1416,10 +1481,11 @@ void CftcPanel::update_statistics() {
     if (stats_meta_lbl_) {
         stats_meta_lbl_->setText(
             tr("Window %1 · %2 reports · %3 → %4 — statistical summaries of real observations; an extreme "
-               "reading is not a prediction.")
+               "reading is not a prediction. Latest-window measures are anchored at the %5 report.")
                 .arg(cftc_range_label(range_))
                 .arg(window_.size())
-                .arg(window_.first().date_label, window_.last().date_label));
+                .arg(window_.first().date_label, window_.last().date_label)
+                .arg(as_of_date.toString(Qt::ISODate)));
         stats_meta_lbl_->setToolTip(stat_metric_tooltip(StatMetric::CotIndex));
     }
 }
@@ -1431,6 +1497,13 @@ void CftcPanel::request_price(const QString& market_key) {
     price_symbol_.clear();
     price_spot_index_ = false;
     const int token = ++price_token_;
+
+    auto& hub = datahub::DataHub::instance();
+    if (!price_topic_.isEmpty()) {
+        hub.unsubscribe(this, price_topic_);
+        hub.unsubscribe_errors(this, price_topic_);
+        price_topic_.clear();
+    }
 
     const auto it = price_specs().constFind(market_key);
     if (it == price_specs().constEnd()) {
@@ -1444,20 +1517,33 @@ void CftcPanel::request_price(const QString& market_key) {
     price_state_ = PriceState::Pending;
     update_divergence();
 
-    const QPointer<CftcPanel> guard(this);
-    services::MarketDataService::instance().fetch_history(
-        price_symbol_, QStringLiteral("max"), QStringLiteral("1d"),
-        [guard, token](bool ok, QVector<services::HistoryPoint> points) {
-            if (!guard || token != guard->price_token_)
-                return; // panel gone, or superseded by a newer fetch / cleared workspace
-            if (!ok || points.isEmpty()) {
-                guard->price_state_ = PriceState::Unavailable;
-                guard->price_reason_ = tr("the Yahoo Finance history request failed or returned no observations");
-                guard->update_divergence();
+    // Price context comes from the retained free public path through its
+    // DataHub producer/topic (market:history:*), not a direct service call;
+    // see the D4 rule in the lint workflow. The subscription is owned by this
+    // panel (auto-cancelled on destruction) and re-pointed on every fetch.
+    price_topic_ = QStringLiteral("market:history:%1:max:1d").arg(price_symbol_);
+    hub.subscribe<QVector<services::HistoryPoint>>(
+        this, price_topic_, [this, token](const QVector<services::HistoryPoint>& points) {
+            if (token != price_token_)
+                return; // superseded by a newer fetch or a cleared workspace
+            if (points.isEmpty()) {
+                price_state_ = PriceState::Unavailable;
+                price_reason_ = tr("the price provider returned no observations for this symbol");
+                update_divergence();
                 return;
             }
-            guard->update_price_points(points);
+            update_price_points(points);
         });
+    hub.subscribe_errors(this, price_topic_, [this, token](const QString& error) {
+        if (token != price_token_)
+            return;
+        price_state_ = PriceState::Unavailable;
+        price_reason_ = error.trimmed().isEmpty()
+                            ? tr("the Yahoo Finance history request failed")
+                            : tr("the Yahoo Finance history request failed: %1").arg(error.trimmed());
+        update_divergence();
+    });
+    hub.request(price_topic_, /*force=*/true);
 }
 
 void CftcPanel::update_price_points(const QVector<services::HistoryPoint>& points) {
@@ -1552,9 +1638,21 @@ void CftcPanel::update_divergence() {
         divergence_extremes_lbl_->clear();
         return;
     }
+    // The positioning series must reach the same latest official report the
+    // price series is truncated to; otherwise a comparison would silently pair
+    // this report's price with an older positioning snapshot.
+    if (net_series.last().date != report_date) {
+        divergence_source_lbl_->setText(
+            tr("Price analysis unavailable: the latest report (%1) does not carry %2 positions.")
+                .arg(report_date.toString(Qt::ISODate), spec_label));
+        divergence_table_->setRowCount(0);
+        divergence_table_->setColumnCount(0);
+        divergence_extremes_lbl_->clear();
+        return;
+    }
 
-    const std::optional<double> net_4w = cftc_change_since_days(net_series, 28);
-    const std::optional<double> net_13w = cftc_change_since_days(net_series, 91);
+    const std::optional<double> net_4w = cftc_change_since_days(net_series, 28, report_date);
+    const std::optional<double> net_13w = cftc_change_since_days(net_series, 91, report_date);
     const std::optional<double> price_4w = cftc_price_change_since_days(aligned, 28);
     const std::optional<double> price_13w = cftc_price_change_since_days(aligned, 91);
 
@@ -1649,12 +1747,10 @@ void CftcPanel::update_heatmap() {
     const QString metric_code =
         heatmap_metric_combo_ ? heatmap_metric_combo_->currentData().toString() : QStringLiteral("cot_index");
 
-    const auto spec_series = participant_metric_series(speculative_index_, CftcChartMetric::Net);
-    const auto spec_points = cftc_heatmap_series(spec_series, kCftcHeatmapColumns);
-    QVector<QDate> dates;
-    dates.reserve(spec_points.size());
-    for (const auto& point : spec_points)
-        dates.append(point.date);
+    // The horizontal axis is the official report dates of the window, not one
+    // participant's valid observations: a report stays a column even when a
+    // class is missing on it (that row's cell is blank).
+    const QVector<QDate> dates = cftc_report_dates(window_, kCftcHeatmapColumns);
 
     CftcHeatmap::Scale scale = CftcHeatmap::Scale::Sequential;
     if (metric_code == QLatin1String("zscore"))

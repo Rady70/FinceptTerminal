@@ -297,18 +297,26 @@ inline constexpr int kCftcWeeklyGapDays = 10;
 struct CftcChange {
     bool has_pair = false;  // at least two observations exist
     bool has_value = false; // the pair is an actual weekly neighbour
+    bool stale = false;     // the series ends before the requested as-of report
     int gap_days = 0;       // calendar days between the two observations
     double value = 0.0;     // latest − previous
     QDate previous_date;
 };
 
-/// Change between the latest observation and the immediately preceding one.
-inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series) {
+/// Change between the latest observation and the immediately preceding one,
+/// anchored at `as_of` (the actual latest official report date) when given.
+/// A series that ends before `as_of` is stale for a current comparison and
+/// reports `stale` instead of presenting an older pair as this week's change.
+inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series, const QDate& as_of = {}) {
     CftcChange out;
     if (series.size() < 2)
         return out;
-    out.has_pair = true;
     const CftcDatedValue& latest = series.last();
+    if (as_of.isValid() && latest.date != as_of) {
+        out.stale = true;
+        return out;
+    }
+    out.has_pair = true;
     const CftcDatedValue& previous = series.at(series.size() - 2);
     out.gap_days = static_cast<int>(previous.date.daysTo(latest.date));
     out.previous_date = previous.date;
@@ -321,13 +329,17 @@ inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series) {
 
 /// Change against the most recent observation that is at least `days` old
 /// (e.g. 28 days for a 4-week change). Absent when the series does not reach
-/// back that far, and also when the anchor is so much older than the target
-/// that the span would no longer truthfully be a 4-week/13-week comparison:
-/// the anchor must fall within `[latest - (days + kCftcWeeklyGapDays), latest - days]`.
-inline std::optional<double> cftc_change_since_days(const QVector<CftcDatedValue>& series, int days) {
+/// back that far, when the anchor is so much older than the target that the
+/// span would no longer truthfully be a 4-week/13-week comparison (the anchor
+/// must fall within `[latest - (days + kCftcWeeklyGapDays), latest - days]`),
+/// or when `as_of` is given and the series does not reach that report.
+inline std::optional<double> cftc_change_since_days(const QVector<CftcDatedValue>& series, int days,
+                                                    const QDate& as_of = {}) {
     if (series.size() < 2)
         return std::nullopt;
     const QDate latest = series.last().date;
+    if (as_of.isValid() && latest != as_of)
+        return std::nullopt;
     const QDate target = latest.addDays(-days);
     const QDate floor = latest.addDays(-(days + kCftcWeeklyGapDays));
     const CftcDatedValue* anchor = nullptr;
@@ -348,17 +360,24 @@ inline std::optional<double> cftc_change_since_days(const QVector<CftcDatedValue
 /// presence flag; a formula that would divide by zero (or by a window with no
 /// variance) is unavailable, not a number.
 ///
-/// Formulas (for a window of n observations):
-///   LATEST        = value of the newest observation
-///   MIN / MAX/AVG = extremes/mean of the window values
-///   COT INDEX     = 100 × (latest − MIN) / (MAX − MIN)   [n ≥ 2, MAX > MIN]
-///   PERCENTILE    = 100 × count(value ≤ latest) / n      [n ≥ 2, MAX > MIN]
+/// Formulas (for a window of n observations, latest = the value at the actual
+/// latest official report when `as_of` names it):
+///   LATEST        = value at the latest official report          [series reaches as_of]
+///   MIN / MAX/AVG = extremes/mean of every valid window value    [historical, always kept]
+///   COT INDEX     = 100 × (latest − MIN) / (MAX − MIN)   [n ≥ 2, MAX > MIN, latest present]
+///   PERCENTILE    = 100 × count(value ≤ latest) / n      [n ≥ 2, MAX > MIN, latest present]
 ///   Z-SCORE       = (latest − AVG) / SD, SD = sample standard deviation (n−1)
-///                                                        [n ≥ 2, SD > 0]
-///   FROM HIGH/LOW = latest − MAX / latest − MIN          [same units as value]
-///   4W / 13W      = latest − value at least 28 / 91 days older
+///                                                        [n ≥ 2, SD > 0, latest present]
+///   FROM HIGH/LOW = latest − MAX / latest − MIN          [latest present]
+///   4W / 13W      = latest − value at least 28 / 91 days older [latest present]
+///
+/// When `as_of` is valid and the series ends before it — e.g. the latest CFTC
+/// report did not carry this participant's legs — the current-dependent
+/// measures are unavailable rather than silently showing an older reading as
+/// current. MIN/MAX/AVG keep describing the historical window.
 struct CftcWindowStats {
-    int count = 0; // observations with a real value in the window
+    int count = 0;                 // observations with a real value in the window
+    bool at_latest_report = false; // the series reaches the requested as-of report
     bool has_latest = false;
     double latest = 0.0;
     bool has_min = false;
@@ -384,14 +403,17 @@ struct CftcWindowStats {
     bool zero_variance = false; // n ≥ 2 and every value is identical
 };
 
-inline CftcWindowStats cftc_window_stats(const QVector<CftcDatedValue>& window) {
+inline CftcWindowStats cftc_window_stats(const QVector<CftcDatedValue>& window, const QDate& as_of = {}) {
     CftcWindowStats stats;
     stats.count = window.size();
     if (window.isEmpty())
         return stats;
 
-    stats.has_latest = true;
-    stats.latest = window.last().value;
+    stats.at_latest_report = !as_of.isValid() || window.last().date == as_of;
+    if (stats.at_latest_report) {
+        stats.has_latest = true;
+        stats.latest = window.last().value;
+    }
 
     double min_value = window.first().value;
     double max_value = window.first().value;
@@ -409,7 +431,7 @@ inline CftcWindowStats cftc_window_stats(const QVector<CftcDatedValue>& window) 
 
     const double range = max_value - min_value;
     stats.zero_variance = window.size() >= 2 && range == 0.0;
-    if (window.size() >= 2 && range > 0.0) {
+    if (stats.has_latest && window.size() >= 2 && range > 0.0) {
         stats.has_cot_index = true;
         stats.cot_index = (stats.latest - min_value) / range * 100.0;
         int at_or_below = 0;
@@ -420,7 +442,7 @@ inline CftcWindowStats cftc_window_stats(const QVector<CftcDatedValue>& window) 
         stats.has_percentile = true;
         stats.percentile = 100.0 * static_cast<double>(at_or_below) / static_cast<double>(window.size());
     }
-    if (window.size() >= 2) {
+    if (stats.has_latest && window.size() >= 2) {
         double sum_sq = 0.0;
         for (const auto& point : window) {
             const double deviation = point.value - stats.avg;
@@ -433,20 +455,22 @@ inline CftcWindowStats cftc_window_stats(const QVector<CftcDatedValue>& window) 
         }
     }
 
-    stats.has_distance_high = true;
-    stats.distance_high = stats.latest - max_value;
-    stats.has_distance_low = true;
-    stats.distance_low = stats.latest - min_value;
+    if (stats.has_latest) {
+        stats.has_distance_high = true;
+        stats.distance_high = stats.latest - max_value;
+        stats.has_distance_low = true;
+        stats.distance_low = stats.latest - min_value;
 
-    const auto change_4w = cftc_change_since_days(window, 28);
-    if (change_4w) {
-        stats.has_change_4w = true;
-        stats.change_4w = *change_4w;
-    }
-    const auto change_13w = cftc_change_since_days(window, 91);
-    if (change_13w) {
-        stats.has_change_13w = true;
-        stats.change_13w = *change_13w;
+        const auto change_4w = cftc_change_since_days(window, 28, as_of);
+        if (change_4w) {
+            stats.has_change_4w = true;
+            stats.change_4w = *change_4w;
+        }
+        const auto change_13w = cftc_change_since_days(window, 91, as_of);
+        if (change_13w) {
+            stats.has_change_13w = true;
+            stats.change_13w = *change_13w;
+        }
     }
     return stats;
 }
@@ -470,6 +494,21 @@ struct CftcHeatmapPoint {
     bool has_change = false;
     double change = 0.0; // week-over-week change, weekly-neighbour rule applied
 };
+
+/// The last `columns` official CFTC report dates of a window, independent of
+/// any participant's missing observations. The heatmap's horizontal axis is
+/// built from these, so a report remains a column even when one participant
+/// class has no value on it (that row's cell stays blank).
+inline QVector<QDate> cftc_report_dates(const QVector<CftcObservation>& window, int columns) {
+    QVector<QDate> out;
+    if (window.isEmpty() || columns < 1)
+        return out;
+    const int first = std::max(0, static_cast<int>(window.size()) - columns);
+    out.reserve(window.size() - first);
+    for (int i = first; i < window.size(); ++i)
+        out.append(window[i].date);
+    return out;
+}
 
 /// The last `columns` observations of a window, each with trailing statistics
 /// computed from the window observations up to and including that report (no
