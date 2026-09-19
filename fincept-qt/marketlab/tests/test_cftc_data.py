@@ -95,6 +95,33 @@ def raw_disaggregated_row(report_date="2026-09-01", oi="2000", prod_long="500", 
     }
 
 
+def raw_tff_row(report_date="2026-09-01", oi="5000", dealer_long="1000", dealer_short="900",
+                asset_long="1200", asset_short="300", lev_long="800", lev_short="1400",
+                other_long="250", other_short="150", nonrept_long="400", nonrept_short="900",
+                market="EURO FX - CHICAGO MERCANTILE EXCHANGE", code="099741"):
+    """A raw Socrata Traders-in-Financial-Futures row with string numerics."""
+    return {
+        "report_date_as_yyyy_mm_dd": report_date,
+        "market_and_exchange_names": market,
+        "contract_market_name": market,
+        "cftc_contract_market_code": code,
+        "commodity": "EURO FX",
+        "contract_units": "EURO (125,000 EURO)",
+        "futonly_or_combined": "FutOnly",
+        "open_interest_all": oi,
+        "dealer_positions_long_all": dealer_long,
+        "dealer_positions_short_all": dealer_short,
+        "asset_mgr_positions_long": asset_long,
+        "asset_mgr_positions_short": asset_short,
+        "lev_money_positions_long": lev_long,
+        "lev_money_positions_short": lev_short,
+        "other_rept_positions_long": other_long,
+        "other_rept_positions_short": other_short,
+        "nonrept_positions_long_all": nonrept_long,
+        "nonrept_positions_short_all": nonrept_short,
+    }
+
+
 class CftcFixtureTest(unittest.TestCase):
     def setUp(self):
         self.wrapper = cftc_data.CFTCDataWrapper()
@@ -302,6 +329,142 @@ class CftcFixtureTest(unittest.TestCase):
         clean = result["data"][0]
         self.assertEqual(clean["open_interest_all"], "not-a-number")
         self.assertEqual(clean["comm_positions_long_all"], "300x")
+
+    # ── R3 workspace history (cot_history) ────────────────────────────────────
+
+    def test_cot_history_selects_combined_dataset_and_has_no_date_bound(self):
+        self._serve([raw_legacy_row()])
+        result = self.wrapper.get_cot_history("gold", "legacy", futures_only=False)
+
+        self.assertTrue(result.get("success"), result)
+        url = urllib.parse.unquote(self.captured_urls[-1])
+        self.assertIn("/resource/jun7-fc8e.json", url)
+        self.assertIn("cftc_contract_market_code = '088691'", url)
+        self.assertNotIn("between", url.lower(), "full history must not carry a date bound")
+        self.assertIn("$order=report_date_as_yyyy_mm_dd,id", url)
+        params = result["parameters"]
+        self.assertEqual(params["report_family"], "legacy")
+        self.assertEqual(params["dataset"], "jun7-fc8e")
+        self.assertEqual(params["count"], 1)
+        self.assertEqual(params["first_report_date"], "2026-09-01")
+        self.assertEqual(params["last_report_date"], "2026-09-01")
+
+    def test_cot_history_futures_only_selects_futures_only_dataset(self):
+        self._serve([raw_legacy_row()])
+        result = self.wrapper.get_cot_history("gold", "legacy", futures_only=True)
+
+        self.assertTrue(result.get("success"), result)
+        self.assertIn("/resource/6dca-aqww.json", urllib.parse.unquote(self.captured_urls[-1]))
+        self.assertTrue(result["parameters"]["futures_only"])
+
+    def test_cot_history_emits_exact_participant_fields_and_metadata(self):
+        self._serve([raw_legacy_row()])
+        row = self.wrapper.get_cot_history("gold", "legacy")["data"][0]
+
+        self.assertEqual(row["commercial_long"], 300)
+        self.assertEqual(row["commercial_short"], 100)
+        self.assertEqual(row["non_commercial_long"], 400)
+        self.assertEqual(row["non_commercial_short"], 150)
+        self.assertEqual(row["non_reportable_long"], 200)
+        self.assertEqual(row["non_reportable_short"], 250)
+        self.assertEqual(row["open_interest_all"], 1000)
+        self.assertIsInstance(row["commercial_long"], int)
+        self.assertEqual(row["cftc_contract_market_code"], "088691")
+        self.assertEqual(row["market_and_exchange_names"], "GOLD - COMMODITY EXCHANGE INC.")
+        # The raw provider field names must not leak into the normalized keys.
+        self.assertNotIn("comm_positions_long_all", row)
+
+    def test_cot_history_disaggregated_reads_the_double_underscore_swap_short(self):
+        row = raw_disaggregated_row()
+        row["swap_positions_long_all"] = "111"
+        row["swap__positions_short_all"] = "222"
+        row["other_rept_positions_long"] = "333"
+        row["other_rept_positions_short"] = "444"
+        self._serve([row])
+
+        result = self.wrapper.get_cot_history("gold", "disaggregated")
+        self.assertTrue(result.get("success"), result)
+        point = result["data"][0]
+        self.assertEqual(point["producer_merchant_long"], 500)
+        self.assertEqual(point["swap_dealer_long"], 111)
+        self.assertEqual(point["swap_dealer_short"], 222,
+                         "the real provider field is swap__positions_short_all")
+        self.assertEqual(point["managed_money_long"], 700)
+        self.assertEqual(point["other_reportable_long"], 333)
+        self.assertEqual(point["non_reportable_short"], 450)
+
+    def test_cot_history_tff_uses_financial_trader_classes(self):
+        self._serve([raw_tff_row()])
+        result = self.wrapper.get_cot_history("euro", "financial", futures_only=True)
+
+        self.assertTrue(result.get("success"), result)
+        self.assertIn("/resource/gpe5-46if.json", urllib.parse.unquote(self.captured_urls[-1]))
+        point = result["data"][0]
+        self.assertEqual(point["dealer_long"], 1000)
+        self.assertEqual(point["dealer_short"], 900)
+        self.assertEqual(point["asset_manager_long"], 1200)
+        self.assertEqual(point["leveraged_funds_short"], 1400)
+        self.assertEqual(point["other_reportable_long"], 250)
+        self.assertEqual(point["non_reportable_short"], 900)
+        # TFF must never be relabelled as legacy commercial/non-commercial.
+        self.assertNotIn("commercial_long", point)
+        self.assertNotIn("managed_money_long", point)
+
+    def test_cot_history_missing_cell_stays_null(self):
+        row = raw_legacy_row()
+        del row["comm_positions_short_all"]
+        self._serve([row])
+        point = self.wrapper.get_cot_history("gold", "legacy")["data"][0]
+
+        self.assertIsNone(point["commercial_short"], "a missing leg must stay null, never 0")
+        self.assertEqual(point["commercial_long"], 300)
+
+    def test_cot_history_sorts_ascending_and_paginates_offsets(self):
+        rows = [raw_legacy_row(report_date="2026-09-01"),
+                raw_legacy_row(report_date="2026-08-25"),
+                raw_legacy_row(report_date="2026-09-08")]
+        pages = []
+
+        def fake_make_request(url):
+            parsed = urllib.parse.urlparse(url)
+            query = urllib.parse.parse_qs(parsed.query)
+            limit = int(query["$limit"][0])
+            offset = int(query["$offset"][0])
+            pages.append((offset, limit))
+            return copy.deepcopy(rows[offset:offset + limit])
+
+        self.wrapper._make_request = fake_make_request
+        result = self.wrapper.get_cot_history("gold", "legacy", page_size=1)
+
+        self.assertTrue(result.get("success"), result)
+        self.assertEqual([p["report_date_as_yyyy_mm_dd"] for p in result["data"]],
+                         ["2026-08-25", "2026-09-01", "2026-09-08"])
+        self.assertEqual(pages[0], (0, 1))
+        self.assertEqual(pages[1], (1, 1))
+        self.assertEqual(pages[2], (2, 1))
+
+    def test_cot_history_cap_is_an_error_not_a_truncated_success(self):
+        self._serve([raw_legacy_row(report_date="2026-08-25"),
+                     raw_legacy_row(report_date="2026-09-01")])
+        result = self.wrapper.get_cot_history("gold", "legacy", max_rows=1)
+
+        self.assertNotIn("success", result)
+        self.assertIn("cap", result["error"]["error"])
+
+    def test_cot_history_empty_response_is_an_error(self):
+        self._serve([])
+        result = self.wrapper.get_cot_history("gold", "legacy")
+
+        self.assertNotIn("success", result)
+        self.assertIn("No COT history found", result["error"]["error"])
+
+    def test_cot_history_rejects_invalid_family_and_market_sweep(self):
+        self._serve([raw_legacy_row()])
+        bad_family = self.wrapper.get_cot_history("gold", "supplemental")
+        sweep = self.wrapper.get_cot_history("all", "legacy")
+        for result in (bad_family, sweep):
+            self.assertNotIn("success", result)
+            self.assertIn("error", result)
 
 
 if __name__ == "__main__":

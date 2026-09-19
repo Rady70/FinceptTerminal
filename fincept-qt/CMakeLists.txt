@@ -1793,6 +1793,8 @@ set(SCREEN_SOURCES
     src/screens/economics/panels/BisPanel.cpp
     src/screens/economics/panels/AdbPanel.cpp
     src/screens/economics/panels/CftcPanel.cpp
+    src/screens/economics/panels/CftcPositioningChart.cpp
+    src/screens/economics/panels/CftcHeatmap.cpp
     src/screens/economics/panels/EiaPanel.cpp
     src/screens/economics/panels/WtoPanel.cpp
     src/screens/economics/panels/UnescoPanel.cpp

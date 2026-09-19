@@ -243,4 +243,12 @@ fincept_add_test(tst_time_series_data
 fincept_add_test(tst_ilostat_series_shape
     tst_ilostat_series_shape.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape")
+# MarketLab: the R3 CFTC workspace's data model and analytics — report-family
+# participant semantics, null-preserving parsing, range windows anchored at the
+# latest returned report, explicit window-statistic formulas with degenerate-
+# case handling, weekly-neighbour changes, heatmap trailing statistics and
+# price alignment. Header-only over Qt Core; no app sources.
+fincept_add_test(tst_cftc_workspace
+    tst_cftc_workspace.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace")
