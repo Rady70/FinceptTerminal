@@ -18,18 +18,26 @@
 //     their own confirmation.
 //   * A 26W regime reading is exposed as context and never votes.
 //   * Historical context (2Y/5Y trailing normalization) classifies crowding and
-//     can only become directional when a recent 4W reversal exists. A crowded
-//     position that is still strengthening is not a contrarian signal.
+//     can only become directional when a recent 4W reversal exists, and even
+//     then it never satisfies the independence requirement because it derives
+//     from the same positioning series. A crowded position that is still
+//     strengthening is not a contrarian signal. Disagreeing percentile / COT
+//     Index / z-score views become a Mixed context, never a code-order pick.
 //   * BUY or SELL requires agreement from at least two independent evidence
 //     families, at least one of which is a directional-core horizon (4W/13W).
 //   * Percentile, COT Index and z-score are one historical-context family, not
 //     three votes. ΔNet and ΔNet %OI are one positioning-change signal per
-//     horizon, not two votes.
+//     horizon, not two votes. A moving-average reading whose window spans a
+//     missing report is marked gapped and cannot vote as an ordinary
+//     continuous-window signal.
 //   * Unavailable evidence is omitted, never scored as zero or neutral. A stale
 //     speculative series is not replaced by the prior report.
 //   * Confidence is a coverage/agreement measure under the v0 rules, not a
 //     probability. Missing families, core disagreement and visible conflicts
-//     lower it.
+//     lower it, and a conflict is penalized once per family so several
+//     correlated items cannot multiply the penalty. Participant context-only
+//     classes (commercial, producer/merchant, swap dealers, dealers) do not
+//     count as participant confirmation coverage.
 //
 // Trader-count and concentration fields are retained by Batch 1 but are exposed
 // here only as secondary context: their interpretation is not established
@@ -145,7 +153,7 @@ inline QString cftc_tactical_state_code(CftcTacticalState state) {
     return QStringLiteral("unavailable");
 }
 
-enum class CftcHistoricalContext { Unavailable, Neutral, CrowdedLong, CrowdedShort };
+enum class CftcHistoricalContext { Unavailable, Neutral, CrowdedLong, CrowdedShort, Mixed };
 
 inline QString cftc_historical_context_code(CftcHistoricalContext context) {
     switch (context) {
@@ -155,6 +163,8 @@ inline QString cftc_historical_context_code(CftcHistoricalContext context) {
             return QStringLiteral("crowded_long");
         case CftcHistoricalContext::CrowdedShort:
             return QStringLiteral("crowded_short");
+        case CftcHistoricalContext::Mixed:
+            return QStringLiteral("mixed");
         case CftcHistoricalContext::Unavailable:
             break;
     }
@@ -198,8 +208,8 @@ inline QString cftc_research_confidence_code(CftcResearchConfidence confidence) 
 /// provisional hypotheses for Batch 3, not optimized parameters.
 struct CftcResearchRule {
     QString id;
-    QString family;          // stable family code
-    QString horizon;         // "1W", "4W", "13W", "26W", "2Y", "current"
+    QString family;  // stable family code
+    QString horizon; // "1W", "4W", "13W", "26W", "2Y", "current"
     QString required_inputs;
     QString condition;
     QString interpretation;
@@ -235,8 +245,10 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
          QStringLiteral("a single noisy week cannot carry the tactical state")},
         {QStringLiteral("R4W-EXTREME"), QStringLiteral("tactical_4w"), QStringLiteral("2Y+4W"),
          QStringLiteral("2Y trailing min/max thresholds; extreme state; ΔNet(4W)"),
-         QStringLiteral("previous report outside the 2Y range and current back inside while ΔNet opposes the extreme side"),
-         QStringLiteral("return-from-extreme combined with recent positioning behavior; an extreme alone is not a trade")},
+         QStringLiteral(
+             "previous report outside the 2Y range and current back inside while ΔNet opposes the extreme side"),
+         QStringLiteral(
+             "return-from-extreme combined with recent positioning behavior; an extreme alone is not a trade")},
 
         {QStringLiteral("R13W-NET-CHANGE"), QStringLiteral("swing_13w"), QStringLiteral("13W"),
          QStringLiteral("ΔNet(13W), ΔNet %OI(13W), ΔLong(13W), ΔShort(13W)"),
@@ -252,7 +264,8 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
          QStringLiteral("distinguishes sustained accumulation/distribution from a shorter tactical run")},
         {QStringLiteral("R13W-EXTREME"), QStringLiteral("swing_13w"), QStringLiteral("2Y+13W"),
          QStringLiteral("2Y trailing min/max thresholds; extreme state; ΔNet(13W)"),
-         QStringLiteral("previous report outside the 2Y range and current back inside while ΔNet opposes the extreme side"),
+         QStringLiteral(
+             "previous report outside the 2Y range and current back inside while ΔNet opposes the extreme side"),
          QStringLiteral("return-from-extreme at the swing horizon; requires recent behavior")},
 
         {QStringLiteral("R26W-NET-CHANGE"), QStringLiteral("regime_26w"), QStringLiteral("26W"),
@@ -287,8 +300,7 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
          QStringLiteral("same direction confirms; opposite direction conflicts"),
          QStringLiteral("corroboration from the legacy family's other non-hedging class")},
         {QStringLiteral("RPART-LEG-COMMERCIAL"), QStringLiteral("participant"), QStringLiteral("13W"),
-         QStringLiteral("legacy Commercial 13W Net change"),
-         QStringLiteral("context only"),
+         QStringLiteral("legacy Commercial 13W Net change"), QStringLiteral("context only"),
          QStringLiteral("a hedging class is exposed separately and is never directional in v0")},
 
         {QStringLiteral("RPART-DIS-OTHER-REPORTABLE"), QStringLiteral("participant"), QStringLiteral("13W"),
@@ -313,12 +325,10 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
          QStringLiteral("same direction confirms; opposite direction conflicts"),
          QStringLiteral("separate corroboration from the other named non-dealer class")},
         {QStringLiteral("RPART-TFF-DEALER"), QStringLiteral("participant"), QStringLiteral("13W"),
-         QStringLiteral("TFF Dealer/Intermediary 13W Net change"),
-         QStringLiteral("context only"),
+         QStringLiteral("TFF Dealer/Intermediary 13W Net change"), QStringLiteral("context only"),
          QStringLiteral("TFF has no Commercial/Speculator split and none is invented")},
         {QStringLiteral("RPART-TFF-NON-REPORTABLE"), QStringLiteral("participant"), QStringLiteral("13W"),
-         QStringLiteral("TFF Non-Reportable 13W Net change"),
-         QStringLiteral("context only"),
+         QStringLiteral("TFF Non-Reportable 13W Net change"), QStringLiteral("context only"),
          QStringLiteral("small-trader class exposed separately, never directional in v0")},
 
         {QStringLiteral("RHIST-CROWDING"), QStringLiteral("historical_context"), QStringLiteral("2Y/5Y"),
@@ -338,11 +348,37 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
         {QStringLiteral("RHIST-CROWDED-CONTINUATION"), QStringLiteral("historical_context"), QStringLiteral("2Y+4W"),
          QStringLiteral("crowding classification; 4W tactical state"),
          QStringLiteral("crowded positioning whose recent 4W move is not a reversal"),
-         QStringLiteral("a historically crowded position that is still strengthening is not a SELL (or BUY) by itself")},
-        {QStringLiteral("RHIST-EXTREME-EXIT-NO-REVERSAL"), QStringLiteral("historical_context"), QStringLiteral("2Y+4W"),
-         QStringLiteral("extreme state exit next to the current report; 4W tactical state"),
+         QStringLiteral(
+             "a historically crowded position that is still strengthening is not a SELL (or BUY) by itself")},
+        {QStringLiteral("RHIST-EXTREME-EXIT-NO-REVERSAL"), QStringLiteral("historical_context"),
+         QStringLiteral("2Y+4W"), QStringLiteral("extreme state exit next to the current report; 4W tactical state"),
          QStringLiteral("an adjacent extreme exit without a matching 4W reversal"),
          QStringLiteral("the exit is exposed as context, not converted into direction")},
+
+        // Aggregation and confidence rules. These do not emit evidence items;
+        // they are versioned metadata so Batch 3 replay can bind the final
+        // state and confidence to the exact rules that produced them.
+        {QStringLiteral("RSTATE-HORIZON-AGGREGATION"), QStringLiteral("aggregation"), QStringLiteral("4W/13W/26W"),
+         QStringLiteral("one family's position-change, trend, persistence and extreme-return signals"),
+         QStringLiteral("score = sum of signed signal weights (position-change ±2/±1, trend ±2/±1, persistence ±1, "
+                        "extreme-return ±2); Bullish iff score >= 2 and no opposing sub-signal; Bearish symmetric; "
+                        "otherwise Neutral; strength weak/moderate/strong at |score| 2/3/5"),
+         QStringLiteral("one coherent direction per horizon family; correlated sub-metrics are combined, not voted "
+                        "separately")},
+        {QStringLiteral("RSTATE-INDEPENDENCE-GATE"), QStringLiteral("aggregation"), QStringLiteral("4W+13W"),
+         QStringLiteral("available independent family directions; core opposition state"),
+         QStringLiteral("BUY/SELL iff the 4W/13W core is not opposed, at least two independent families agree, and "
+                        "at least one of them is a core horizon; otherwise HOLD"),
+         QStringLiteral("prevents one family or several correlated metrics from carrying a directional state; "
+                        "historical context and the 26W regime never satisfy this gate")},
+        {QStringLiteral("RSTATE-CONFIDENCE"), QStringLiteral("confidence"), QStringLiteral("result"),
+         QStringLiteral("family coverage, core agreement, family-level conflicts and core opposition"),
+         QStringLiteral("score = coverage (five independent families + historical availability) + 1 coherent core "
+                        "- 2 core opposition - 1 per conflicted or opposing family; High iff score >= 7 and zero "
+                        "conflicts; Medium iff score >= 3; Low otherwise or when data is unavailable or a directional "
+                        "tendency failed the independence gate"),
+         QStringLiteral("coverage/agreement measure under v0, not a probability; correlated items inside one family "
+                        "cost one penalty")},
     };
     return rules;
 }
@@ -490,6 +526,7 @@ struct CftcSignal {
     int weight = 0;
     bool available = false;
     bool conflicted = false;
+    bool gapped = false; // a contributing reading's window spans a missing report
 
     int sign() const {
         if (direction == CftcEvidenceDirection::Bullish)
@@ -540,8 +577,14 @@ inline CftcSignal cftc_combine_change_pair(const CftcHorizonChange& net, const C
 
 inline CftcSignal cftc_combine_reading_pair(const CftcMetricReading& position_vs_mean, const CftcMetricReading& slope) {
     CftcSignal out;
-    const bool has_position = position_vs_mean.has_value;
-    const bool has_slope = slope.has_value;
+    // A reading whose window spans a missing report is not an ordinary
+    // continuous-window reading: it is excluded from the vote. If both readings
+    // are gapped, the trend signal itself is unavailable rather than neutral.
+    const bool position_gapped = position_vs_mean.has_value && position_vs_mean.gapped;
+    const bool slope_gapped = slope.has_value && slope.gapped;
+    out.gapped = position_gapped || slope_gapped;
+    const bool has_position = position_vs_mean.has_value && !position_gapped;
+    const bool has_slope = slope.has_value && !slope_gapped;
     if (!has_position && !has_slope)
         return out;
     out.available = true;
@@ -662,10 +705,9 @@ inline CftcHorizonAssessment cftc_assess_horizon(const CftcSignal& position, con
         return out;
     out.score = position.sign() * position.weight + trend.sign() * trend.weight +
                 persistence.sign() * persistence.weight + extreme.sign() * extreme.weight;
-    const bool no_opposition = position.sign() >= 0 && trend.sign() >= 0 && persistence.sign() >= 0 &&
-                               extreme.sign() >= 0;
-    const bool no_bullish = position.sign() <= 0 && trend.sign() <= 0 && persistence.sign() <= 0 &&
-                            extreme.sign() <= 0;
+    const bool no_opposition =
+        position.sign() >= 0 && trend.sign() >= 0 && persistence.sign() >= 0 && extreme.sign() >= 0;
+    const bool no_bullish = position.sign() <= 0 && trend.sign() <= 0 && persistence.sign() <= 0 && extreme.sign() <= 0;
     if (out.score >= 2 && no_opposition) {
         out.state = CftcTacticalState::Bullish;
     } else if (out.score <= -2 && no_bullish) {
@@ -720,14 +762,6 @@ inline QString cftc_change_direction_word(const CftcHorizonChange& change) {
     return QStringLiteral("was unchanged");
 }
 
-inline QString cftc_change_unavailable_reason(const CftcHorizonChange& change) {
-    if (change.stale)
-        return QStringLiteral("the Net series does not end at the requested as-of report");
-    if (change.has_anchor && !change.has_value)
-        return QStringLiteral("the nearest report anchor falls outside the horizon tolerance");
-    return QStringLiteral("the history does not reach back to the horizon anchor");
-}
-
 inline CftcEvidenceStrength cftc_signal_strength(const CftcSignal& signal) {
     if (!signal.available || signal.weight == 0)
         return CftcEvidenceStrength::None;
@@ -738,8 +772,8 @@ inline CftcEvidenceStrength cftc_signal_strength(const CftcSignal& signal) {
 
 inline CftcEvidenceItem cftc_position_change_item(const QString& rule_id, CftcEvidenceFamily family,
                                                   const QString& horizon, const CftcSignal& signal,
-                                                  const CftcPositionChanges& changes,
-                                                  const QString& participant_label) {
+                                                  const CftcPositionChanges& changes, const QString& participant_label,
+                                                  bool metric_at_report, bool metric_at_anchor) {
     CftcEvidenceItem item;
     item.rule_id = rule_id;
     item.family = family;
@@ -749,30 +783,40 @@ inline CftcEvidenceItem cftc_position_change_item(const QString& rule_id, CftcEv
     item.strength = cftc_signal_strength(signal);
     item.conflicted = signal.conflicted;
     item.metrics = {
-        cftc_evidence_metric(QStringLiteral("net_change"), changes.net.has_value ? std::optional<double>(changes.net.value) : std::nullopt),
-        cftc_evidence_metric(QStringLiteral("net_pct_oi_change"),
-                             changes.net_pct_oi.has_value ? std::optional<double>(changes.net_pct_oi.value) : std::nullopt),
-        cftc_evidence_metric(QStringLiteral("long_change"), changes.long_leg.has_value ? std::optional<double>(changes.long_leg.value) : std::nullopt),
-        cftc_evidence_metric(QStringLiteral("short_change"),
-                             changes.short_leg.has_value ? std::optional<double>(changes.short_leg.value) : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("net_change"),
+                             changes.net.has_value ? std::optional<double>(changes.net.value) : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("net_pct_oi_change"), changes.net_pct_oi.has_value
+                                                                      ? std::optional<double>(changes.net_pct_oi.value)
+                                                                      : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("long_change"),
+                             changes.long_leg.has_value ? std::optional<double>(changes.long_leg.value) : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("short_change"), changes.short_leg.has_value
+                                                                 ? std::optional<double>(changes.short_leg.value)
+                                                                 : std::nullopt),
     };
     if (!signal.available) {
-        item.explanation = QStringLiteral("%1 %2 Net change unavailable: %3.")
-                               .arg(horizon, participant_label, cftc_change_unavailable_reason(changes.net));
+        QString reason;
+        if (changes.net.stale)
+            reason = QStringLiteral("the Net series does not end at the requested as-of report");
+        else if (!metric_at_report)
+            reason = QStringLiteral("the Net value is missing at the official as-of report");
+        else if (changes.net.has_anchor && !metric_at_anchor)
+            reason = QStringLiteral("the Net value is missing at the shared horizon anchor report");
+        else if (changes.net.has_anchor && !changes.net.has_value)
+            reason = QStringLiteral("the nearest report anchor falls outside the horizon tolerance");
+        else
+            reason = QStringLiteral("the history does not reach back to the horizon anchor");
+        item.explanation = QStringLiteral("%1 %2 Net change unavailable: %3.").arg(horizon, participant_label, reason);
         return item;
     }
-    const QString net_text = changes.net.has_value
-                                 ? cftc_format_evidence_count(changes.net.value)
-                                 : QStringLiteral("unavailable");
-    const QString pct_text = changes.net_pct_oi.has_value
-                                 ? cftc_format_evidence_value(changes.net_pct_oi.value)
-                                 : QStringLiteral("unavailable");
-    const QString long_text = changes.long_leg.has_value
-                                  ? cftc_format_evidence_count(changes.long_leg.value)
-                                  : QStringLiteral("unavailable");
-    const QString short_text = changes.short_leg.has_value
-                                   ? cftc_format_evidence_count(changes.short_leg.value)
-                                   : QStringLiteral("unavailable");
+    const QString net_text =
+        changes.net.has_value ? cftc_format_evidence_count(changes.net.value) : QStringLiteral("unavailable");
+    const QString pct_text = changes.net_pct_oi.has_value ? cftc_format_evidence_value(changes.net_pct_oi.value)
+                                                          : QStringLiteral("unavailable");
+    const QString long_text =
+        changes.long_leg.has_value ? cftc_format_evidence_count(changes.long_leg.value) : QStringLiteral("unavailable");
+    const QString short_text = changes.short_leg.has_value ? cftc_format_evidence_count(changes.short_leg.value)
+                                                           : QStringLiteral("unavailable");
     QString headline;
     if (signal.conflicted) {
         headline = QStringLiteral("ambiguous");
@@ -814,26 +858,35 @@ inline CftcEvidenceItem cftc_trend_item(const QString& rule_id, CftcEvidenceFami
     item.metrics = {
         cftc_evidence_metric(QStringLiteral("net_minus_mean"),
                              position_vs_mean.has_value ? std::optional<double>(position_vs_mean.value) : std::nullopt),
-        cftc_evidence_metric(QStringLiteral("mean_slope"), slope.has_value ? std::optional<double>(slope.value) : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("mean_slope"),
+                             slope.has_value ? std::optional<double>(slope.value) : std::nullopt),
+        cftc_evidence_metric(QStringLiteral("window_gapped"), signal.gapped, signal.gapped ? 1.0 : 0.0),
     };
     if (!signal.available) {
-        item.explanation = series_reaches_report
-                               ? QStringLiteral("%1 Net versus the %2-report causal mean and mean slope unavailable "
-                                                "(insufficient history at the official report).")
-                                     .arg(horizon)
-                                     .arg(window_reports)
-                               : QStringLiteral("%1 Net versus the %2-report causal mean and mean slope unavailable: "
-                                                "the Net series does not reach the official as-of report.")
-                                     .arg(horizon)
-                                     .arg(window_reports);
+        if (signal.gapped) {
+            item.explanation =
+                QStringLiteral("%1 Net versus the %2-report causal mean and mean slope unavailable: the window spans "
+                               "a missing report, so the readings are not ordinary continuous-window signals.")
+                    .arg(horizon)
+                    .arg(window_reports);
+        } else {
+            item.explanation = series_reaches_report
+                                   ? QStringLiteral("%1 Net versus the %2-report causal mean and mean slope "
+                                                    "unavailable (insufficient history at the official report).")
+                                         .arg(horizon)
+                                         .arg(window_reports)
+                                   : QStringLiteral("%1 Net versus the %2-report causal mean and mean slope "
+                                                    "unavailable: the Net series does not reach the official as-of "
+                                                    "report.")
+                                         .arg(horizon)
+                                         .arg(window_reports);
+        }
         return item;
     }
-    const QString position_text = position_vs_mean.has_value
-                                      ? cftc_format_evidence_count(position_vs_mean.value)
-                                      : QStringLiteral("unavailable");
+    const QString position_text =
+        position_vs_mean.has_value ? cftc_format_evidence_count(position_vs_mean.value) : QStringLiteral("unavailable");
     const QString slope_text =
         slope.has_value ? cftc_format_evidence_count(slope.value) : QStringLiteral("unavailable");
-    const bool gapped = position_vs_mean.gapped || slope.gapped;
     QString headline;
     if (signal.conflicted)
         headline = QStringLiteral("conflicting");
@@ -847,8 +900,9 @@ inline CftcEvidenceItem cftc_trend_item(const QString& rule_id, CftcEvidenceFami
                            .arg(horizon)
                            .arg(window_reports)
                            .arg(position_text, slope_text, headline);
-    if (gapped)
-        item.explanation += QStringLiteral(" The window spans a missing report, so the reading is marked gapped.");
+    if (signal.gapped)
+        item.explanation += QStringLiteral(" A window spans a missing report, so only the complete-window readings "
+                                           "contributed to this signal.");
     return item;
 }
 
@@ -891,14 +945,13 @@ inline CftcEvidenceItem cftc_persistence_item(const QString& rule_id, CftcEviden
                                                "sustained accumulation/distribution.");
         return item;
     }
-    item.explanation = QStringLiteral("%1 weekly Net run is %2 consecutive %3 steps since %4 — %5.")
-                           .arg(horizon)
-                           .arg(persistence.changes)
-                           .arg(persistence.direction == CftcDirection::Up ? QStringLiteral("up")
-                                                                           : QStringLiteral("down"),
-                                persistence.since_date.toString(Qt::ISODate),
-                                sustained ? QStringLiteral("sustained across the swing window")
-                                          : QStringLiteral("a tactical run"));
+    item.explanation =
+        QStringLiteral("%1 weekly Net run is %2 consecutive %3 steps since %4 — %5.")
+            .arg(horizon)
+            .arg(persistence.changes)
+            .arg(persistence.direction == CftcDirection::Up ? QStringLiteral("up") : QStringLiteral("down"),
+                 persistence.since_date.toString(Qt::ISODate),
+                 sustained ? QStringLiteral("sustained across the swing window") : QStringLiteral("a tactical run"));
     return item;
 }
 
@@ -926,10 +979,8 @@ inline CftcEvidenceItem cftc_extreme_item(const QString& rule_id, CftcEvidenceFa
         cftc_evidence_metric(QStringLiteral("at_lower"), extreme.has_value, extreme.at_lower ? 1.0 : 0.0),
         cftc_evidence_metric(QStringLiteral("left_upper"), extreme.has_value, extreme.left_upper ? 1.0 : 0.0),
         cftc_evidence_metric(QStringLiteral("left_lower"), extreme.has_value, extreme.left_lower ? 1.0 : 0.0),
-        cftc_evidence_metric(QStringLiteral("away_from_upper"), extreme.has_value,
-                             extreme.away_from_upper ? 1.0 : 0.0),
-        cftc_evidence_metric(QStringLiteral("away_from_lower"), extreme.has_value,
-                             extreme.away_from_lower ? 1.0 : 0.0),
+        cftc_evidence_metric(QStringLiteral("away_from_upper"), extreme.has_value, extreme.away_from_upper ? 1.0 : 0.0),
+        cftc_evidence_metric(QStringLiteral("away_from_lower"), extreme.has_value, extreme.away_from_lower ? 1.0 : 0.0),
     };
     if (!item.available) {
         item.explanation =
@@ -950,9 +1001,8 @@ inline CftcEvidenceItem cftc_extreme_item(const QString& rule_id, CftcEvidenceFa
                                     horizon, cftc_change_direction_word(net_change),
                                     net_change.has_value ? cftc_format_evidence_count(qAbs(net_change.value))
                                                          : QStringLiteral("unavailable"),
-                                    net_change.anchor_date.isValid()
-                                        ? net_change.anchor_date.toString(Qt::ISODate)
-                                        : QStringLiteral("unknown"));
+                                    net_change.anchor_date.isValid() ? net_change.anchor_date.toString(Qt::ISODate)
+                                                                     : QStringLiteral("unknown"));
         return item;
     }
     if (extreme.at_upper || extreme.at_lower) {
@@ -1077,18 +1127,25 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         spec_index >= 0 ? cftc_metric_series(input.observations, spec_index, CftcMetricKind::Net)
                         : QVector<CftcDatedValue>{};
     const QVector<CftcDatedValue> oi_series = cftc_open_interest_series(input.observations);
-    result.data_available =
-        report_date.isValid() && !net_series.isEmpty() && net_series.last().date == report_date;
+    const auto series_has_date = [](const QVector<CftcDatedValue>& series, const QDate& date) {
+        if (!date.isValid())
+            return false;
+        for (const auto& point : series) {
+            if (point.date == date)
+                return true;
+        }
+        return false;
+    };
+    result.data_available = report_date.isValid() && !net_series.isEmpty() && net_series.last().date == report_date;
     result.data_stale = report_date.isValid() && !result.data_available && !net_series.isEmpty() &&
                         net_series.last().date < report_date;
-    result.report_predates_history = report_date.isValid() && !input.observations.isEmpty() &&
-                                     input.observations.last().date > report_date;
+    result.report_predates_history =
+        report_date.isValid() && !input.observations.isEmpty() && input.observations.last().date > report_date;
     result.readings.data_available = result.data_available;
     result.readings.data_stale = result.data_stale;
 
     CftcStateReadings& readings = result.readings;
-    readings.changes_4w =
-        cftc_position_changes(input.observations, spec_index, CftcHorizon::FourWeeks, report_date);
+    readings.changes_4w = cftc_position_changes(input.observations, spec_index, CftcHorizon::FourWeeks, report_date);
     readings.changes_13w =
         cftc_position_changes(input.observations, spec_index, CftcHorizon::ThirteenWeeks, report_date);
     readings.changes_26w =
@@ -1100,20 +1157,20 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     readings.net_minus_ma_26w = cftc_net_minus_moving_average(net_series, 26, report_date);
     readings.ma_slope_26w = cftc_moving_average_slope(net_series, 26, report_date);
     readings.persistence = cftc_positioning_persistence(net_series, report_date);
-    readings.stats_26w = cftc_trailing_stats(net_series, CftcTrailingWindow::Weeks26, report_date,
-                                             input.trailing_min_reference);
-    readings.stats_52w = cftc_trailing_stats(net_series, CftcTrailingWindow::Weeks52, report_date,
-                                             input.trailing_min_reference);
-    readings.stats_2y = cftc_trailing_stats(net_series, CftcTrailingWindow::Years2, report_date,
-                                            input.trailing_min_reference);
-    readings.stats_5y = cftc_trailing_stats(net_series, CftcTrailingWindow::Years5, report_date,
-                                            input.trailing_min_reference);
+    readings.stats_26w =
+        cftc_trailing_stats(net_series, CftcTrailingWindow::Weeks26, report_date, input.trailing_min_reference);
+    readings.stats_52w =
+        cftc_trailing_stats(net_series, CftcTrailingWindow::Weeks52, report_date, input.trailing_min_reference);
+    readings.stats_2y =
+        cftc_trailing_stats(net_series, CftcTrailingWindow::Years2, report_date, input.trailing_min_reference);
+    readings.stats_5y =
+        cftc_trailing_stats(net_series, CftcTrailingWindow::Years5, report_date, input.trailing_min_reference);
     const bool extreme_available =
         readings.stats_2y.has_min && readings.stats_2y.has_max && !readings.stats_2y.zero_variance;
     readings.extreme_thresholds_available = extreme_available;
     if (extreme_available) {
-        readings.extreme = cftc_extreme_state(net_series, readings.stats_2y.max_value, readings.stats_2y.min_value,
-                                              report_date);
+        readings.extreme =
+            cftc_extreme_state(net_series, readings.stats_2y.max_value, readings.stats_2y.min_value, report_date);
     }
     readings.open_interest_change_4w =
         cftc_open_interest_change(input.observations, CftcHorizon::FourWeeks, report_date);
@@ -1130,9 +1187,9 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         else
             break;
     }
-    readings.price_series_fresh = report_date.isValid() && readings.latest_price_date.isValid() &&
-                                  static_cast<int>(readings.latest_price_date.daysTo(report_date)) <=
-                                      kCftcWeeklyGapDays;
+    readings.price_series_fresh =
+        report_date.isValid() && readings.latest_price_date.isValid() &&
+        static_cast<int>(readings.latest_price_date.daysTo(report_date)) <= kCftcWeeklyGapDays;
     if (readings.price_series_fresh) {
         if (const auto change = cftc_price_change_since_days(input.prices, 28, report_date)) {
             readings.price_change_4w_available = true;
@@ -1151,8 +1208,7 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     const CftcSignal persistence_4w = cftc_weekly_persistence_signal(readings.persistence, 2);
     const CftcSignal extreme_4w =
         extreme_available ? cftc_extreme_return_signal(readings.extreme, readings.changes_4w.net) : CftcSignal{};
-    const CftcHorizonAssessment horizon_4w =
-        cftc_assess_horizon(position_4w, trend_4w, persistence_4w, extreme_4w);
+    const CftcHorizonAssessment horizon_4w = cftc_assess_horizon(position_4w, trend_4w, persistence_4w, extreme_4w);
 
     const CftcSignal position_13w = cftc_combine_change_pair(readings.changes_13w.net, readings.changes_13w.net_pct_oi);
     const CftcSignal trend_13w = cftc_combine_reading_pair(readings.net_minus_ma_13w, readings.ma_slope_13w);
@@ -1170,8 +1226,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     // 26W regime: context only, never counted toward direction or independence.
     const CftcSignal position_26w = cftc_combine_change_pair(readings.changes_26w.net, readings.changes_26w.net_pct_oi);
     const CftcSignal trend_26w = cftc_combine_reading_pair(readings.net_minus_ma_26w, readings.ma_slope_26w);
-    const CftcSignal persistence_26w;                                                  // not used at 26W
-    const CftcSignal extreme_26w;                                                      // not used at 26W
+    const CftcSignal persistence_26w; // not used at 26W
+    const CftcSignal extreme_26w;     // not used at 26W
     const CftcHorizonAssessment horizon_26w =
         cftc_assess_horizon(position_26w, trend_26w, persistence_26w, extreme_26w);
     result.regime_26w = horizon_26w.state;
@@ -1181,7 +1237,9 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     tactical_4w.family = CftcEvidenceFamily::Tactical4W;
     tactical_4w.items = {
         cftc_position_change_item(QStringLiteral("R4W-NET-CHANGE"), CftcEvidenceFamily::Tactical4W,
-                                  QStringLiteral("4W"), position_4w, readings.changes_4w, spec_label),
+                                  QStringLiteral("4W"), position_4w, readings.changes_4w, spec_label,
+                                  result.data_available,
+                                  series_has_date(net_series, readings.changes_4w.net.anchor_date)),
         cftc_trend_item(QStringLiteral("R4W-TREND"), CftcEvidenceFamily::Tactical4W, QStringLiteral("4W"), trend_4w,
                         readings.net_minus_ma_4w, readings.ma_slope_4w, 4, result.data_available),
         cftc_persistence_item(QStringLiteral("R4W-PERSISTENCE"), CftcEvidenceFamily::Tactical4W, QStringLiteral("4W"),
@@ -1198,7 +1256,9 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     swing_13w.family = CftcEvidenceFamily::Swing13W;
     swing_13w.items = {
         cftc_position_change_item(QStringLiteral("R13W-NET-CHANGE"), CftcEvidenceFamily::Swing13W,
-                                  QStringLiteral("13W"), position_13w, readings.changes_13w, spec_label),
+                                  QStringLiteral("13W"), position_13w, readings.changes_13w, spec_label,
+                                  result.data_available,
+                                  series_has_date(net_series, readings.changes_13w.net.anchor_date)),
         cftc_trend_item(QStringLiteral("R13W-TREND"), CftcEvidenceFamily::Swing13W, QStringLiteral("13W"), trend_13w,
                         readings.net_minus_ma_13w, readings.ma_slope_13w, 13, result.data_available),
         cftc_persistence_item(QStringLiteral("R13W-SUSTAINED-PERSISTENCE"), CftcEvidenceFamily::Swing13W,
@@ -1215,7 +1275,9 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     regime_26w.family = CftcEvidenceFamily::Regime26W;
     regime_26w.items = {
         cftc_position_change_item(QStringLiteral("R26W-NET-CHANGE"), CftcEvidenceFamily::Regime26W,
-                                  QStringLiteral("26W"), position_26w, readings.changes_26w, spec_label),
+                                  QStringLiteral("26W"), position_26w, readings.changes_26w, spec_label,
+                                  result.data_available,
+                                  series_has_date(net_series, readings.changes_26w.net.anchor_date)),
         cftc_trend_item(QStringLiteral("R26W-TREND"), CftcEvidenceFamily::Regime26W, QStringLiteral("26W"), trend_26w,
                         readings.net_minus_ma_26w, readings.ma_slope_26w, 26, result.data_available),
     };
@@ -1240,9 +1302,16 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             const bool crowded_short = (stats_2y.has_percentile && stats_2y.percentile <= 10.0) ||
                                        (stats_2y.has_cot_index && stats_2y.cot_index <= 10.0) ||
                                        (stats_2y.has_zscore && stats_2y.zscore <= -1.5);
-            context = crowded_long ? CftcHistoricalContext::CrowdedLong
-                                   : (crowded_short ? CftcHistoricalContext::CrowdedShort
-                                                    : CftcHistoricalContext::Neutral);
+            // Percentile, COT Index and z-score are related views of one
+            // distribution and can disagree on a skewed reference (for example
+            // a high percentile inside a wide range gives a low COT Index).
+            // The disagreement is exposed as a mixed context, never silently
+            // resolved in favor of whichever condition is tested first.
+            const bool crowding_mixed = crowded_long && crowded_short;
+            context = crowding_mixed ? CftcHistoricalContext::Mixed
+                                     : (crowded_long ? CftcHistoricalContext::CrowdedLong
+                                                     : (crowded_short ? CftcHistoricalContext::CrowdedShort
+                                                                      : CftcHistoricalContext::Neutral));
 
             CftcEvidenceItem crowding;
             crowding.rule_id = QStringLiteral("RHIST-CROWDING");
@@ -1250,6 +1319,7 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             crowding.horizon = QStringLiteral("2Y");
             crowding.direction = CftcEvidenceDirection::Neutral;
             crowding.available = true;
+            crowding.conflicted = crowding_mixed;
             crowding.metrics = {
                 cftc_evidence_metric(QStringLiteral("percentile_2y"), stats_2y.has_percentile, stats_2y.percentile),
                 cftc_evidence_metric(QStringLiteral("cot_index_2y"), stats_2y.has_cot_index, stats_2y.cot_index),
@@ -1258,16 +1328,26 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                                      readings.stats_5y.percentile),
             };
             crowding.explanation =
-                QStringLiteral("Strictly trailing 2Y positioning percentile %1, COT Index %2, z-score %3 — %4. "
-                               "Historical context modifies interpretation and confidence but does not set direction "
-                               "by itself.")
-                    .arg(stats_2y.has_percentile ? cftc_format_evidence_value(stats_2y.percentile)
-                                                 : QStringLiteral("unavailable"),
-                         stats_2y.has_cot_index ? cftc_format_evidence_value(stats_2y.cot_index)
-                                                : QStringLiteral("unavailable"),
-                         stats_2y.has_zscore ? cftc_format_evidence_value(stats_2y.zscore)
-                                             : QStringLiteral("unavailable"),
-                         cftc_historical_context_code(context));
+                crowding_mixed
+                    ? QStringLiteral("Strictly trailing 2Y normalization disagrees with itself: percentile %1, COT "
+                                     "Index %2, z-score %3 describe both a long and a short extreme at once, so no "
+                                     "crowding direction is applied.")
+                          .arg(stats_2y.has_percentile ? cftc_format_evidence_value(stats_2y.percentile)
+                                                       : QStringLiteral("unavailable"),
+                               stats_2y.has_cot_index ? cftc_format_evidence_value(stats_2y.cot_index)
+                                                      : QStringLiteral("unavailable"),
+                               stats_2y.has_zscore ? cftc_format_evidence_value(stats_2y.zscore)
+                                                   : QStringLiteral("unavailable"))
+                    : QStringLiteral("Strictly trailing 2Y positioning percentile %1, COT Index %2, z-score %3 — %4. "
+                                     "Historical context modifies interpretation and confidence but does not set "
+                                     "direction by itself.")
+                          .arg(stats_2y.has_percentile ? cftc_format_evidence_value(stats_2y.percentile)
+                                                       : QStringLiteral("unavailable"),
+                               stats_2y.has_cot_index ? cftc_format_evidence_value(stats_2y.cot_index)
+                                                      : QStringLiteral("unavailable"),
+                               stats_2y.has_zscore ? cftc_format_evidence_value(stats_2y.zscore)
+                                                   : QStringLiteral("unavailable"),
+                               cftc_historical_context_code(context));
             historical.items.append(crowding);
         } else {
             CftcEvidenceItem crowding;
@@ -1326,20 +1406,18 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         historical.items.append(extreme_context);
 
         if (context == CftcHistoricalContext::CrowdedLong || context == CftcHistoricalContext::CrowdedShort) {
-            const bool reversal = (context == CftcHistoricalContext::CrowdedLong &&
-                                   horizon_4w.state == CftcTacticalState::Bearish) ||
-                                  (context == CftcHistoricalContext::CrowdedShort &&
-                                   horizon_4w.state == CftcTacticalState::Bullish);
+            const bool reversal =
+                (context == CftcHistoricalContext::CrowdedLong && horizon_4w.state == CftcTacticalState::Bearish) ||
+                (context == CftcHistoricalContext::CrowdedShort && horizon_4w.state == CftcTacticalState::Bullish);
             if (reversal) {
                 CftcEvidenceItem item;
                 item.rule_id = QStringLiteral("RHIST-REVERSAL");
                 item.family = CftcEvidenceFamily::HistoricalContext;
                 item.horizon = QStringLiteral("2Y+4W");
                 item.direction = context == CftcHistoricalContext::CrowdedLong ? CftcEvidenceDirection::Bearish
-                                                                                : CftcEvidenceDirection::Bullish;
-                const bool exited = context == CftcHistoricalContext::CrowdedLong
-                                        ? readings.extreme.left_upper
-                                        : readings.extreme.left_lower;
+                                                                               : CftcEvidenceDirection::Bullish;
+                const bool exited = context == CftcHistoricalContext::CrowdedLong ? readings.extreme.left_upper
+                                                                                  : readings.extreme.left_lower;
                 item.strength = exited ? CftcEvidenceStrength::Strong : CftcEvidenceStrength::Moderate;
                 item.available = true;
                 item.metrics = {
@@ -1347,8 +1425,7 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                                          readings.changes_4w.net.has_value
                                              ? std::optional<double>(readings.changes_4w.net.value)
                                              : std::nullopt),
-                    cftc_evidence_metric(QStringLiteral("percentile_2y"), stats_2y.has_percentile,
-                                         stats_2y.percentile),
+                    cftc_evidence_metric(QStringLiteral("percentile_2y"), stats_2y.has_percentile, stats_2y.percentile),
                 };
                 item.explanation =
                     QStringLiteral("Historically %1 positioning met a genuine recent reversal: 4W Net %2 by %3 "
@@ -1372,8 +1449,7 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                 item.direction = CftcEvidenceDirection::Neutral;
                 item.available = true;
                 item.metrics = {
-                    cftc_evidence_metric(QStringLiteral("percentile_2y"), stats_2y.has_percentile,
-                                         stats_2y.percentile),
+                    cftc_evidence_metric(QStringLiteral("percentile_2y"), stats_2y.has_percentile, stats_2y.percentile),
                     cftc_evidence_metric(QStringLiteral("net_change_4w"),
                                          readings.changes_4w.net.has_value
                                              ? std::optional<double>(readings.changes_4w.net.value)
@@ -1385,7 +1461,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                         .arg(cftc_historical_context_code(context), cftc_tactical_state_code(horizon_4w.state));
                 historical.items.append(item);
             }
-        } else if ((readings.extreme.left_upper || readings.extreme.left_lower) && horizon_4w.state != CftcTacticalState::Unavailable) {
+        } else if ((readings.extreme.left_upper || readings.extreme.left_lower) &&
+                   horizon_4w.state != CftcTacticalState::Unavailable) {
             CftcEvidenceItem item;
             item.rule_id = QStringLiteral("RHIST-EXTREME-EXIT-NO-REVERSAL");
             item.family = CftcEvidenceFamily::HistoricalContext;
@@ -1424,21 +1501,21 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                 if (!readings.price_series_supplied) {
                     item.explanation =
                         QStringLiteral("Price/COT relationship unavailable over %1: no qualified price observation "
-                                       "was supplied. An absent price is not a flat price.").arg(horizon);
+                                       "was supplied. An absent price is not a flat price.")
+                            .arg(horizon);
                 } else if (!readings.latest_price_date.isValid()) {
                     item.explanation =
                         QStringLiteral("Price/COT relationship unavailable over %1: the supplied price series has "
                                        "no close at or before the %2 report.")
-                            .arg(horizon, report_date.isValid() ? report_date.toString(Qt::ISODate)
-                                                                : QStringLiteral("unknown"));
+                            .arg(horizon,
+                                 report_date.isValid() ? report_date.toString(Qt::ISODate) : QStringLiteral("unknown"));
                 } else if (!readings.price_series_fresh) {
                     item.explanation =
                         QStringLiteral("Price/COT relationship unavailable over %1: the supplied price series stops "
                                        "at %2, outside the weekly freshness tolerance before the %3 report. A stale "
                                        "price is not a current price.")
                             .arg(horizon, readings.latest_price_date.toString(Qt::ISODate),
-                                 report_date.isValid() ? report_date.toString(Qt::ISODate)
-                                                       : QStringLiteral("unknown"));
+                                 report_date.isValid() ? report_date.toString(Qt::ISODate) : QStringLiteral("unknown"));
                 } else {
                     item.explanation =
                         QStringLiteral("Price/COT relationship unavailable over %1: the supplied price series does "
@@ -1449,35 +1526,37 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             }
             if (!net_change.has_value) {
                 item.explanation = QStringLiteral("Price/COT relationship unavailable over %1: the %2 Net change is "
-                                                  "unavailable.").arg(horizon, spec_label);
+                                                  "unavailable.")
+                                       .arg(horizon, spec_label);
                 return item;
             }
             item.available = true;
             const CftcDirection price_dir = cftc_direction(price_change);
             const CftcDirection net_dir = cftc_direction(net_change.value);
             if (cftc_directions_aligned(price_dir, net_dir) && price_dir != CftcDirection::Flat) {
-                item.direction = price_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish
-                                                                : CftcEvidenceDirection::Bearish;
+                item.direction =
+                    price_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish : CftcEvidenceDirection::Bearish;
                 item.strength = CftcEvidenceStrength::Moderate;
-                item.explanation = QStringLiteral("Price %1 by %2 over %3 while %4 Net %5 by %6 — aligned "
-                                                  "confirmation.")
-                                       .arg(price_dir == CftcDirection::Up ? QStringLiteral("rose") : QStringLiteral("fell"),
-                                            cftc_format_evidence_value(qAbs(price_change)), horizon, spec_label,
-                                            cftc_change_direction_word(net_change),
-                                            cftc_format_evidence_count(qAbs(net_change.value)));
+                item.explanation =
+                    QStringLiteral("Price %1 by %2 over %3 while %4 Net %5 by %6 — aligned "
+                                   "confirmation.")
+                        .arg(price_dir == CftcDirection::Up ? QStringLiteral("rose") : QStringLiteral("fell"),
+                             cftc_format_evidence_value(qAbs(price_change)), horizon, spec_label,
+                             cftc_change_direction_word(net_change),
+                             cftc_format_evidence_count(qAbs(net_change.value)));
                 return item;
             }
             if (cftc_directions_opposed(price_dir, net_dir)) {
                 item.direction = CftcEvidenceDirection::Neutral;
                 item.conflicted = true;
-                item.explanation = QStringLiteral("Price %1 by %2 over %3 while %4 Net %5 by %6 — divergence. The v0 "
-                                                  "rule records the opposition and does not treat it as an automatic "
-                                                  "reversal.")
-                                       .arg(price_dir == CftcDirection::Up ? QStringLiteral("rose") : QStringLiteral("fell"),
-                                            cftc_format_evidence_value(qAbs(price_change)), horizon, spec_label,
-                                            net_dir == CftcDirection::Up ? QStringLiteral("rose")
-                                                                         : QStringLiteral("fell"),
-                                            cftc_format_evidence_count(qAbs(net_change.value)));
+                item.explanation =
+                    QStringLiteral("Price %1 by %2 over %3 while %4 Net %5 by %6 — divergence. The v0 "
+                                   "rule records the opposition and does not treat it as an automatic "
+                                   "reversal.")
+                        .arg(price_dir == CftcDirection::Up ? QStringLiteral("rose") : QStringLiteral("fell"),
+                             cftc_format_evidence_value(qAbs(price_change)), horizon, spec_label,
+                             net_dir == CftcDirection::Up ? QStringLiteral("rose") : QStringLiteral("fell"),
+                             cftc_format_evidence_count(qAbs(net_change.value)));
                 return item;
             }
             item.direction = CftcEvidenceDirection::Neutral;
@@ -1520,15 +1599,16 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             }
             if (!net_change.has_value) {
                 item.explanation = QStringLiteral("Open-interest relationship unavailable over %1: the %2 Net change "
-                                                  "is unavailable.").arg(horizon, spec_label);
+                                                  "is unavailable.")
+                                       .arg(horizon, spec_label);
                 return item;
             }
             item.available = true;
             const CftcDirection oi_dir = cftc_direction(oi_change.value);
             const CftcDirection net_dir = cftc_direction(net_change.value);
             if (oi_dir == CftcDirection::Up && net_dir != CftcDirection::Flat) {
-                item.direction = net_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish
-                                                              : CftcEvidenceDirection::Bearish;
+                item.direction =
+                    net_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish : CftcEvidenceDirection::Bearish;
                 item.strength = CftcEvidenceStrength::Weak;
                 item.explanation = QStringLiteral("Open interest expanded by %1 over %2 while %3 Net %4 by %5 — "
                                                   "participation confirmation.")
@@ -1554,12 +1634,10 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                                    .arg(cftc_format_evidence_count(oi_change.value), horizon);
             return item;
         };
-        open_interest.items.append(
-            relationship_item(QStringLiteral("ROI-4W-RELATIONSHIP"), QStringLiteral("4W"),
-                              readings.open_interest_change_4w, readings.changes_4w.net));
-        open_interest.items.append(
-            relationship_item(QStringLiteral("ROI-13W-RELATIONSHIP"), QStringLiteral("13W"),
-                              readings.open_interest_change_13w, readings.changes_13w.net));
+        open_interest.items.append(relationship_item(QStringLiteral("ROI-4W-RELATIONSHIP"), QStringLiteral("4W"),
+                                                     readings.open_interest_change_4w, readings.changes_4w.net));
+        open_interest.items.append(relationship_item(QStringLiteral("ROI-13W-RELATIONSHIP"), QStringLiteral("13W"),
+                                                     readings.open_interest_change_13w, readings.changes_13w.net));
     }
     cftc_finalize_group(open_interest, true);
 
@@ -1596,7 +1674,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             };
             if (!changes.net.has_value || !readings.changes_13w.net.has_value) {
                 item.explanation = QStringLiteral("%1 13W Net change unavailable; participant confirmation cannot be "
-                                                  "evaluated.").arg(key);
+                                                  "evaluated.")
+                                       .arg(key);
                 return item;
             }
             item.available = true;
@@ -1611,8 +1690,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
                 return item;
             }
             const bool same = class_dir == spec_dir;
-            item.direction = class_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish
-                                                            : CftcEvidenceDirection::Bearish;
+            item.direction =
+                class_dir == CftcDirection::Up ? CftcEvidenceDirection::Bullish : CftcEvidenceDirection::Bearish;
             item.strength = CftcEvidenceStrength::Weak;
             item.conflicted = !same;
             item.explanation = QStringLiteral("%1 13W Net change %2 vs %3 Net change %4 — %5.")
@@ -1643,33 +1722,39 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             return item;
         };
 
+        bool confirmation_available = false;
+        const auto append_directional = [&](const QString& rule_id, const QString& key) {
+            CftcEvidenceItem item = directional_item(rule_id, key);
+            confirmation_available = confirmation_available || item.available;
+            participant.items.append(item);
+        };
         switch (input.family) {
             case CftcFamily::Legacy:
-                participant.items.append(
-                    directional_item(QStringLiteral("RPART-LEG-NON-REPORTABLE"), QStringLiteral("non_reportable")));
+                append_directional(QStringLiteral("RPART-LEG-NON-REPORTABLE"), QStringLiteral("non_reportable"));
                 participant.items.append(
                     context_item(QStringLiteral("RPART-LEG-COMMERCIAL"), QStringLiteral("commercial")));
                 break;
             case CftcFamily::Disaggregated:
-                participant.items.append(directional_item(QStringLiteral("RPART-DIS-OTHER-REPORTABLE"),
-                                                          QStringLiteral("other_reportable")));
-                participant.items.append(context_item(QStringLiteral("RPART-DIS-PRODUCER-MERCHANT"),
-                                                      QStringLiteral("producer_merchant")));
+                append_directional(QStringLiteral("RPART-DIS-OTHER-REPORTABLE"), QStringLiteral("other_reportable"));
+                participant.items.append(
+                    context_item(QStringLiteral("RPART-DIS-PRODUCER-MERCHANT"), QStringLiteral("producer_merchant")));
                 participant.items.append(
                     context_item(QStringLiteral("RPART-DIS-SWAP-DEALER"), QStringLiteral("swap_dealer")));
                 break;
             case CftcFamily::Tff:
-                participant.items.append(
-                    directional_item(QStringLiteral("RPART-TFF-ASSET-MANAGER"), QStringLiteral("asset_manager")));
-                participant.items.append(directional_item(QStringLiteral("RPART-TFF-OTHER-REPORTABLE"),
-                                                          QStringLiteral("other_reportable")));
+                append_directional(QStringLiteral("RPART-TFF-ASSET-MANAGER"), QStringLiteral("asset_manager"));
+                append_directional(QStringLiteral("RPART-TFF-OTHER-REPORTABLE"), QStringLiteral("other_reportable"));
                 participant.items.append(context_item(QStringLiteral("RPART-TFF-DEALER"), QStringLiteral("dealer")));
                 participant.items.append(
                     context_item(QStringLiteral("RPART-TFF-NON-REPORTABLE"), QStringLiteral("non_reportable")));
                 break;
         }
+        cftc_finalize_group(participant, true);
+        // Context-only classes are inspectable but are not confirmation: the
+        // family counts toward confidence coverage only when at least one
+        // actual confirmation item was evaluated.
+        participant.counts_for_confidence = confirmation_available;
     }
-    cftc_finalize_group(participant, true);
 
     // ── Group: data quality / freshness ─────────────────────────────────────
     CftcEvidenceGroup data_quality;
@@ -1683,7 +1768,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         current.available = true;
         if (result.data_available) {
             current.explanation = QStringLiteral("The official %1 report is the current report; no prior report was "
-                                                 "substituted.").arg(report_date.toString(Qt::ISODate));
+                                                 "substituted.")
+                                      .arg(report_date.toString(Qt::ISODate));
         } else if (result.report_missing) {
             current.available = false;
             current.direction = CftcEvidenceDirection::Unavailable;
@@ -1692,17 +1778,17 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         } else if (result.report_predates_history) {
             current.available = false;
             current.direction = CftcEvidenceDirection::Unavailable;
-            current.explanation = QStringLiteral("The requested as-of report %1 predates the newest returned report "
-                                                 "%2; supply the history truncated at the as-of report.")
-                                      .arg(report_date.toString(Qt::ISODate),
-                                           result.latest_available_report_date.toString(Qt::ISODate));
+            current.explanation =
+                QStringLiteral("The requested as-of report %1 predates the newest returned report "
+                               "%2; supply the history truncated at the as-of report.")
+                    .arg(report_date.toString(Qt::ISODate), result.latest_available_report_date.toString(Qt::ISODate));
         } else if (result.data_stale) {
             current.available = false;
             current.direction = CftcEvidenceDirection::Unavailable;
-            current.explanation = QStringLiteral("The %1 series ends at %2 before the %3 as-of report; the prior "
-                                                 "report is not used as the current state.")
-                                      .arg(spec_label, net_series.last().date.toString(Qt::ISODate),
-                                           report_date.toString(Qt::ISODate));
+            current.explanation =
+                QStringLiteral("The %1 series ends at %2 before the %3 as-of report; the prior "
+                               "report is not used as the current state.")
+                    .arg(spec_label, net_series.last().date.toString(Qt::ISODate), report_date.toString(Qt::ISODate));
         } else {
             current.available = false;
             current.direction = CftcEvidenceDirection::Unavailable;
@@ -1742,12 +1828,12 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             if (obs.date == report_date)
                 latest_obs = &obs;
         }
-        if (latest_obs && (latest_obs->traders_total || latest_obs->traders_reportable_long ||
-                           latest_obs->traders_reportable_short || latest_obs->concentration_gross_4_long ||
-                           latest_obs->concentration_gross_4_short || latest_obs->concentration_gross_8_long ||
-                           latest_obs->concentration_gross_8_short || latest_obs->concentration_net_4_long ||
-                           latest_obs->concentration_net_4_short || latest_obs->concentration_net_8_long ||
-                           latest_obs->concentration_net_8_short)) {
+        if (latest_obs &&
+            (latest_obs->traders_total || latest_obs->traders_reportable_long || latest_obs->traders_reportable_short ||
+             latest_obs->concentration_gross_4_long || latest_obs->concentration_gross_4_short ||
+             latest_obs->concentration_gross_8_long || latest_obs->concentration_gross_8_short ||
+             latest_obs->concentration_net_4_long || latest_obs->concentration_net_4_short ||
+             latest_obs->concentration_net_8_long || latest_obs->concentration_net_8_short)) {
             CftcEvidenceItem concentration;
             concentration.rule_id = QStringLiteral("RDQ-CONCENTRATION-CONTEXT");
             concentration.family = CftcEvidenceFamily::DataQuality;
@@ -1776,8 +1862,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     }
     cftc_finalize_group(data_quality, false);
 
-    result.groups = {tactical_4w, swing_13w, regime_26w, historical, price_cot, open_interest, participant,
-                     data_quality};
+    result.groups = {tactical_4w, swing_13w,     regime_26w,  historical,
+                     price_cot,   open_interest, participant, data_quality};
 
     // ── Aggregation ─────────────────────────────────────────────────────────
     const CftcTacticalState tactical = horizon_4w.state;
@@ -1824,8 +1910,8 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
             }
             if (group.family == CftcEvidenceFamily::Regime26W)
                 continue;
-            const bool directional = item.direction == CftcEvidenceDirection::Bullish ||
-                                     item.direction == CftcEvidenceDirection::Bearish;
+            const bool directional =
+                item.direction == CftcEvidenceDirection::Bullish || item.direction == CftcEvidenceDirection::Bearish;
             // A conflicted item is evidence against the evaluation, never a
             // supporting item, even when its direction happens to match the
             // provisional tendency.
@@ -1851,8 +1937,11 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     // ── Confidence (coverage/agreement, distinct from direction) ────────────
     // Coverage counts evidence families whose availability is evidence quality:
     // the independent directional/confirmation families plus historical
-    // context. The 26W regime and data quality never change confidence. A
-    // directional tendency that failed the independence gate is Low confidence.
+    // context. The 26W regime and data quality never change confidence.
+    // Conflicts are counted at family level: several correlated items inside
+    // one family (for example both price horizons diverging) cost one penalty,
+    // not one per metric. A directional tendency that failed the independence
+    // gate is Low confidence.
     int coverage = 0;
     for (const auto& group : result.groups) {
         if (!group.counts_for_confidence)
@@ -1860,7 +1949,23 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
         if (group.available)
             ++coverage;
     }
-    int conflicts = result.conflicting.size();
+    int conflicts = 0;
+    for (const auto& group : result.groups) {
+        if (!group.counts_for_confidence || !group.available)
+            continue;
+        bool family_conflicted = false;
+        for (const auto& item : group.items) {
+            if (item.available && item.conflicted) {
+                family_conflicted = true;
+                break;
+            }
+        }
+        const bool family_opposes =
+            (tendency == CftcResearchState::Buy && group.direction == CftcEvidenceDirection::Bearish) ||
+            (tendency == CftcResearchState::Sell && group.direction == CftcEvidenceDirection::Bullish);
+        if (family_conflicted || family_opposes)
+            ++conflicts;
+    }
     if (core_opposed)
         ++conflicts;
     int score = coverage;

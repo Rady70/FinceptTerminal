@@ -27,8 +27,7 @@ QVector<std::optional<double>> legs(double net, double base = 100.0) {
 }
 
 CftcObservation observation(const QDate& date, const std::optional<double>& oi,
-                            const QVector<std::optional<double>>& longs,
-                            const QVector<std::optional<double>>& shorts) {
+                            const QVector<std::optional<double>>& longs, const QVector<std::optional<double>>& shorts) {
     CftcObservation obs;
     obs.date = date;
     obs.date_label = date.toString(Qt::ISODate);
@@ -85,14 +84,32 @@ QVector<CftcObservation> legacy_series(const QVector<double>& spec_nets, const s
     return out;
 }
 
+/// Reports at explicit day offsets from the latest report (oldest first), so a
+/// missing weekly report can be represented exactly.
+QVector<CftcObservation> legacy_series_at_offsets(const QVector<int>& offsets, const QVector<double>& values,
+                                                  const std::optional<double>& oi = 1000.0) {
+    QVector<CftcObservation> out;
+    for (int i = 0; i < offsets.size(); ++i)
+        out.append(legacy_observation(latest_report().addDays(-offsets[i]), values[i], oi));
+    return out;
+}
+
+void strip_participant_legs(QVector<CftcObservation>& observations, int index) {
+    for (auto& obs : observations) {
+        if (index >= 0 && index < obs.longs.size())
+            obs.longs[index] = std::nullopt;
+        if (index >= 0 && index < obs.shorts.size())
+            obs.shorts[index] = std::nullopt;
+    }
+}
+
 QVector<CftcObservation> disaggregated_series(const QVector<double>& managed_money_nets,
                                               const std::optional<double>& oi = 1000.0,
                                               const QVector<double>& other_reportable_nets = {}) {
     QVector<CftcObservation> out;
     const int count = managed_money_nets.size();
     for (int i = 0; i < count; ++i) {
-        out.append(disaggregated_observation(latest_report().addDays(-7LL * (count - 1 - i)),
-                                             managed_money_nets[i], oi,
+        out.append(disaggregated_observation(latest_report().addDays(-7LL * (count - 1 - i)), managed_money_nets[i], oi,
                                              i < other_reportable_nets.size() ? other_reportable_nets[i] : 0.0));
     }
     return out;
@@ -214,6 +231,7 @@ class TstCftcResearchState : public QObject {
     void neutral_recent_positioning();
     void four_week_bullish_with_13w_bearish_conflict();
     void four_week_bearish_with_13w_bullish_conflict();
+    void gapped_trend_readings_do_not_vote();
 
     // Historical context and return-from-extreme
     void crowded_long_with_continued_strengthening_is_not_sell();
@@ -223,6 +241,7 @@ class TstCftcResearchState : public QObject {
     void crowded_short_with_recent_reversal_is_bullish();
     void neutral_context_with_coherent_recent_direction();
     void zero_variance_reference_is_not_crowded();
+    void mixed_historical_normalization_is_exposed();
     void percentile_cot_index_zscore_do_not_triple_vote();
     void return_from_upper_extreme_is_bearish();
     void return_from_lower_extreme_is_bullish();
@@ -237,6 +256,7 @@ class TstCftcResearchState : public QObject {
     void missing_historical_reference_stays_unavailable();
     void stale_speculative_series_does_not_use_prior_report();
     void requested_as_of_before_history_end_reports_truthfully();
+    void anchor_missing_net_reports_truthfully();
     void unavailable_data_stays_unavailable();
 
     // Price / OI families
@@ -246,6 +266,7 @@ class TstCftcResearchState : public QObject {
     // Participant semantics
     void participant_confirmation_supports_direction();
     void participant_conflict_stays_visible();
+    void participant_context_only_does_not_count_as_confirmation();
     void legacy_participant_semantics();
     void disaggregated_participant_semantics();
     void tff_participant_semantics_without_commercial_signal();
@@ -253,6 +274,7 @@ class TstCftcResearchState : public QObject {
     // Context, confidence, structure
     void regime_26w_is_context_not_a_vote();
     void explanations_expose_values_and_horizons();
+    void confidence_penalizes_conflicts_once_per_family();
     void deterministic_repeatability();
     void exact_rule_set_version_and_rule_table();
     void publication_effective_date_handling();
@@ -371,6 +393,38 @@ void TstCftcResearchState::four_week_bearish_with_13w_bullish_conflict() {
     QCOMPARE(result.state, CftcResearchState::Hold);
 }
 
+void TstCftcResearchState::gapped_trend_readings_do_not_vote() {
+    // 4W: a missing report makes the 4-report mean windows gapped while the
+    // values after the gap jump 0 -> 100. If the gapped readings voted, the
+    // trend would be +2 and the tactical state Bullish; they must be excluded.
+    CftcResearchInput four_week;
+    four_week.observations = legacy_series_at_offsets({63, 56, 49, 42, 14, 7, 0}, {0, 0, 0, 0, 0, 100, 100});
+    const CftcResearchResult four = cftc_evaluate_research_state(four_week);
+    const CftcEvidenceItem* trend_4w = find_item(four, QStringLiteral("R4W-TREND"));
+    QVERIFY(trend_4w);
+    QVERIFY2(!trend_4w->available, "a gapped trend window must not be an ordinary voting reading");
+    QVERIFY(trend_4w->explanation.contains(QStringLiteral("spans a missing report")));
+    bool has_gapped_metric = false;
+    for (const auto& metric : trend_4w->metrics) {
+        if (metric.key == QStringLiteral("window_gapped"))
+            has_gapped_metric = metric.has_value && metric.value == 1.0;
+    }
+    QVERIFY(has_gapped_metric);
+    QCOMPARE(four.tactical_4w, CftcTacticalState::Unavailable);
+
+    // 13W: the same construction over the 13-report windows.
+    CftcResearchInput thirteen_week;
+    thirteen_week.observations =
+        legacy_series_at_offsets({126, 119, 112, 105, 84, 77, 70, 63, 56, 49, 42, 21, 14, 7, 0},
+                                 {0, 0, 0, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100});
+    const CftcResearchResult thirteen = cftc_evaluate_research_state(thirteen_week);
+    const CftcEvidenceItem* trend_13w = find_item(thirteen, QStringLiteral("R13W-TREND"));
+    QVERIFY(trend_13w);
+    QVERIFY2(!trend_13w->available, "a gapped swing trend window must not vote");
+    QVERIFY(trend_13w->explanation.contains(QStringLiteral("spans a missing report")));
+    QCOMPARE(thirteen.swing_13w, CftcTacticalState::Unavailable);
+}
+
 // ── Historical context and return-from-extreme ──────────────────────────────
 
 void TstCftcResearchState::crowded_long_with_continued_strengthening_is_not_sell() {
@@ -451,8 +505,7 @@ void TstCftcResearchState::crowded_short_with_continued_weakening_is_not_buy() {
     QCOMPARE(result.tactical_4w, CftcTacticalState::Bearish);
     QCOMPARE(result.swing_13w, CftcTacticalState::Bearish);
     QCOMPARE(result.state, CftcResearchState::Sell);
-    QVERIFY2(result.state != CftcResearchState::Buy,
-             "a crowded short that is still weakening must not become BUY");
+    QVERIFY2(result.state != CftcResearchState::Buy, "a crowded short that is still weakening must not become BUY");
     const CftcEvidenceGroup* historical = find_group(result, CftcEvidenceFamily::HistoricalContext);
     QVERIFY(historical);
     QVERIFY(!list_has_rule(historical->items, QStringLiteral("RHIST-REVERSAL")));
@@ -515,6 +568,34 @@ void TstCftcResearchState::zero_variance_reference_is_not_crowded() {
     QVERIFY(!extreme->available);
     QVERIFY2(extreme->explanation.contains(QStringLiteral("zero variance")),
              "a flat reference defines no extreme band and must say so");
+    QCOMPARE(result.state, CftcResearchState::Hold);
+}
+
+void TstCftcResearchState::mixed_historical_normalization_is_exposed() {
+    // A wide, skewed reference: the current value is at the 92nd percentile
+    // (long view) while sitting 8% into the min/max range (short view). The
+    // related statistics disagree, so the context must be Mixed rather than
+    // resolved in favor of whichever condition is tested first.
+    QVector<double> values = repeat(-10.0, 96);
+    values += repeat(110.0, 8);
+    values += repeat(-10.0, 5);
+    values.append(0.0);
+    CftcResearchInput input;
+    input.observations = legacy_series(values);
+    const CftcResearchResult result = cftc_evaluate_research_state(input);
+
+    QVERIFY(result.readings.stats_2y.has_percentile);
+    QVERIFY(result.readings.stats_2y.percentile >= 90.0);
+    QVERIFY(result.readings.stats_2y.has_cot_index);
+    QVERIFY(result.readings.stats_2y.cot_index <= 10.0);
+    QCOMPARE(result.historical_context, CftcHistoricalContext::Mixed);
+    const CftcEvidenceItem* crowding = find_item(result, QStringLiteral("RHIST-CROWDING"));
+    QVERIFY(crowding);
+    QVERIFY(crowding->available);
+    QVERIFY2(crowding->conflicted, "disagreeing historical normalization must be marked conflicted");
+    QVERIFY(crowding->explanation.contains(QStringLiteral("disagrees")));
+    QVERIFY2(find_item(result, QStringLiteral("RHIST-REVERSAL")) == nullptr,
+             "a mixed context must not produce a crowding reversal");
     QCOMPARE(result.state, CftcResearchState::Hold);
 }
 
@@ -668,8 +749,7 @@ void TstCftcResearchState::missing_price_is_unavailable_not_neutral() {
         QCOMPARE(item.direction, CftcEvidenceDirection::Unavailable);
     }
     QVERIFY(list_has_rule(result.unavailable, QStringLiteral("RPC-4W-RELATIONSHIP")));
-    QVERIFY2(result.confidence != CftcResearchConfidence::High,
-             "missing price evidence must cap confidence");
+    QVERIFY2(result.confidence != CftcResearchConfidence::High, "missing price evidence must cap confidence");
 }
 
 void TstCftcResearchState::stale_price_series_is_unavailable() {
@@ -716,6 +796,29 @@ void TstCftcResearchState::requested_as_of_before_history_end_reports_truthfully
     QVERIFY(freshness->explanation.contains(QStringLiteral("predates")));
 }
 
+void TstCftcResearchState::anchor_missing_net_reports_truthfully() {
+    // The shared 4W anchor report is valid but carries no speculative legs: the
+    // truthful reason is missing data at the anchor, not a horizon-tolerance
+    // failure.
+    QVector<CftcObservation> observations = legacy_series({0, 0, 0, 0, 0, 0, 100, 200, 300, 400});
+    QCOMPARE(observations.size(), 10);
+    observations[5].longs[1] = std::nullopt;
+    observations[5].shorts[1] = std::nullopt;
+    CftcResearchInput input;
+    input.observations = observations;
+    const CftcResearchResult result = cftc_evaluate_research_state(input);
+
+    QVERIFY(!result.readings.changes_4w.net.has_value);
+    QVERIFY(result.readings.changes_4w.net.has_anchor);
+    QVERIFY(!result.readings.changes_4w.net.stale);
+    const CftcEvidenceItem* position = find_item(result, QStringLiteral("R4W-NET-CHANGE"));
+    QVERIFY(position);
+    QVERIFY(!position->available);
+    QVERIFY2(position->explanation.contains(QStringLiteral("missing at the shared horizon anchor")),
+             "the reason must name the missing anchor value, not the tolerance");
+    QVERIFY(!position->explanation.contains(QStringLiteral("tolerance")));
+}
+
 void TstCftcResearchState::missing_open_interest_stays_unavailable() {
     CftcResearchInput input;
     input.observations = legacy_series(ramp(1.0, 110), std::nullopt);
@@ -745,8 +848,7 @@ void TstCftcResearchState::missing_historical_reference_stays_unavailable() {
     QVERIFY2(!historical->available, "insufficient history is unavailable, not normal positioning");
     QVERIFY(list_has_rule(result.unavailable, QStringLiteral("RHIST-CROWDING")));
     QCOMPARE(result.state, CftcResearchState::Buy);
-    QVERIFY2(result.confidence != CftcResearchConfidence::High,
-             "incomplete historical context must cap confidence");
+    QVERIFY2(result.confidence != CftcResearchConfidence::High, "incomplete historical context must cap confidence");
 }
 
 void TstCftcResearchState::stale_speculative_series_does_not_use_prior_report() {
@@ -865,6 +967,34 @@ void TstCftcResearchState::participant_conflict_stays_visible() {
     QVERIFY(conflict->explanation.contains(QStringLiteral("opposite direction")));
     QVERIFY(list_has_rule(result.conflicting, QStringLiteral("RPART-LEG-NON-REPORTABLE")));
     QCOMPARE(result.state, CftcResearchState::Buy);
+}
+
+void TstCftcResearchState::participant_context_only_does_not_count_as_confirmation() {
+    // Full coverage including an evaluated participant confirmation reaches High.
+    CftcResearchInput full;
+    full.observations = legacy_series(ramp(1.0, 110));
+    full.prices = price_series(ramp(1.0, 110));
+    const CftcResearchResult full_result = cftc_evaluate_research_state(full);
+    QCOMPARE(full_result.confidence, CftcResearchConfidence::High);
+
+    // With the confirmation class absent but the Commercial context present,
+    // the participant family must not count as covered: the same evidence minus
+    // participant confirmation cannot reach High.
+    CftcResearchInput context_only = full;
+    strip_participant_legs(context_only.observations, 2); // legacy non_reportable
+    const CftcResearchResult context_result = cftc_evaluate_research_state(context_only);
+    const CftcEvidenceItem* confirmation = find_item(context_result, QStringLiteral("RPART-LEG-NON-REPORTABLE"));
+    QVERIFY(confirmation);
+    QVERIFY2(!confirmation->available, "the confirmation class has no 13W change");
+    const CftcEvidenceItem* commercial = find_item(context_result, QStringLiteral("RPART-LEG-COMMERCIAL"));
+    QVERIFY(commercial);
+    QVERIFY(commercial->available);
+    const CftcEvidenceGroup* participant = find_group(context_result, CftcEvidenceFamily::Participant);
+    QVERIFY(participant);
+    QVERIFY2(!participant->counts_for_confidence,
+             "context-only participant classes must not satisfy confirmation coverage");
+    QCOMPARE(context_result.confidence, CftcResearchConfidence::Medium);
+    QCOMPARE(context_result.state, CftcResearchState::Buy);
 }
 
 void TstCftcResearchState::legacy_participant_semantics() {
@@ -990,6 +1120,24 @@ void TstCftcResearchState::explanations_expose_values_and_horizons() {
     }
 }
 
+void TstCftcResearchState::confidence_penalizes_conflicts_once_per_family() {
+    // Both price horizons diverge against the same positioning move. The price
+    // family is penalized once, not once per item: coverage 3 (4W, 13W, price)
+    // + core agreement 1 - one family conflict = 3 -> Medium. Item-level
+    // counting would subtract two and drop the result to Low.
+    CftcResearchInput input;
+    input.observations = legacy_series(ramp(1.0, 40), std::nullopt);
+    strip_participant_legs(input.observations, 2);
+    input.prices = price_series(ramp(200.0, 40, -1.0));
+    const CftcResearchResult result = cftc_evaluate_research_state(input);
+
+    QCOMPARE(result.state, CftcResearchState::Buy);
+    QCOMPARE(result.conflicting.size(), 2);
+    QVERIFY(list_has_rule(result.conflicting, QStringLiteral("RPC-4W-RELATIONSHIP")));
+    QVERIFY(list_has_rule(result.conflicting, QStringLiteral("RPC-13W-RELATIONSHIP")));
+    QCOMPARE(result.confidence, CftcResearchConfidence::Medium);
+}
+
 void TstCftcResearchState::deterministic_repeatability() {
     CftcResearchInput input;
     input.observations = legacy_series(crowded_long_reversal_values(), 1000.0, ramp(1.0, 110));
@@ -1039,6 +1187,11 @@ void TstCftcResearchState::exact_rule_set_version_and_rule_table() {
         QVERIFY2(!ids.contains(rule.id), "rule ids must be stable and unique");
         ids.insert(rule.id);
     }
+    // The final state and confidence are produced by versioned aggregation
+    // metadata too, so Batch 3 can replay the exact rules that emitted a state.
+    QVERIFY(ids.contains(QStringLiteral("RSTATE-HORIZON-AGGREGATION")));
+    QVERIFY(ids.contains(QStringLiteral("RSTATE-INDEPENDENCE-GATE")));
+    QVERIFY(ids.contains(QStringLiteral("RSTATE-CONFIDENCE")));
 
     CftcResearchInput input;
     input.observations = legacy_series(crowded_long_reversal_values(), 1000.0, ramp(1.0, 110));
