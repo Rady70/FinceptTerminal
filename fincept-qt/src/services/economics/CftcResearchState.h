@@ -374,9 +374,10 @@ inline const QVector<CftcResearchRule>& cftc_research_rules() {
         {QStringLiteral("RSTATE-CONFIDENCE"), QStringLiteral("confidence"), QStringLiteral("result"),
          QStringLiteral("family coverage, core agreement, family-level conflicts and core opposition"),
          QStringLiteral("score = coverage (five independent families + historical availability) + 1 coherent core "
-                        "- 2 core opposition - 1 per conflicted or opposing family; High iff score >= 7 and zero "
-                        "conflicts; Medium iff score >= 3; Low otherwise or when data is unavailable or a directional "
-                        "tendency failed the independence gate"),
+                        "- 2 core opposition - 1 per conflicted or opposing family - 1 more for core opposition "
+                        "(core opposition therefore removes 3 points in total and blocks High); High iff score >= 7 "
+                        "and zero conflicts; Medium iff score >= 3; Low otherwise or when data is unavailable or a "
+                        "directional tendency failed the independence gate"),
          QStringLiteral("coverage/agreement measure under v0, not a probability; correlated items inside one family "
                         "cost one penalty")},
     };
@@ -1940,8 +1941,9 @@ inline CftcResearchResult cftc_evaluate_research_state(const CftcResearchInput& 
     // context. The 26W regime and data quality never change confidence.
     // Conflicts are counted at family level: several correlated items inside
     // one family (for example both price horizons diverging) cost one penalty,
-    // not one per metric. A directional tendency that failed the independence
-    // gate is Low confidence.
+    // not one per metric. Core opposition subtracts 2 and also counts as one
+    // conflict, so it removes 3 points in total and blocks High. A directional
+    // tendency that failed the independence gate is Low confidence.
     int coverage = 0;
     for (const auto& group : result.groups) {
         if (!group.counts_for_confidence)

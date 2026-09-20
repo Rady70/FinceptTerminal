@@ -372,6 +372,8 @@ void TstCftcResearchState::four_week_bullish_with_13w_bearish_conflict() {
     QCOMPARE(result.tactical_4w, CftcTacticalState::Bullish);
     QCOMPARE(result.swing_13w, CftcTacticalState::Bearish);
     QCOMPARE(result.state, CftcResearchState::Hold);
+    // coverage 4 - core opposition 2 - its one conflict = 1 -> Low confidence.
+    QCOMPARE(result.confidence, CftcResearchConfidence::Low);
     bool has_bullish = false;
     bool has_bearish = false;
     for (const auto& item : result.conflicting) {
@@ -391,6 +393,8 @@ void TstCftcResearchState::four_week_bearish_with_13w_bullish_conflict() {
     QCOMPARE(result.tactical_4w, CftcTacticalState::Bearish);
     QCOMPARE(result.swing_13w, CftcTacticalState::Bullish);
     QCOMPARE(result.state, CftcResearchState::Hold);
+    // coverage 4 - core opposition 2 - its one conflict = 1 -> Low confidence.
+    QCOMPARE(result.confidence, CftcResearchConfidence::Low);
 }
 
 void TstCftcResearchState::gapped_trend_readings_do_not_vote() {
