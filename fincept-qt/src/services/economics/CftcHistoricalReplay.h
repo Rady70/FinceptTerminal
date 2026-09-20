@@ -227,8 +227,7 @@ struct CftcForwardOutcome {
 /// date. Missing or too-short price history yields an invalid outcome with a
 /// reason; it is never replaced by zero or a nearby stale price.
 inline CftcForwardOutcome cftc_replay_forward_outcome(const QVector<CftcPricePoint>& prices,
-                                                      const QDate& effective_date,
-                                                      int horizon_days,
+                                                      const QDate& effective_date, int horizon_days,
                                                       const CftcReplayOptions& options) {
     CftcForwardOutcome outcome;
     outcome.target_days = horizon_days;
@@ -265,8 +264,8 @@ inline CftcForwardOutcome cftc_replay_forward_outcome(const QVector<CftcPricePoi
         }
     }
     if (exit == nullptr) {
-        outcome.invalid_reason = QStringLiteral("Price history ends before the %1-day target can be observed.")
-                                     .arg(horizon_days);
+        outcome.invalid_reason =
+            QStringLiteral("Price history ends before the %1-day target can be observed.").arg(horizon_days);
         return outcome;
     }
     if (exit->date > target.addDays(options.outcome_tolerance_days)) {
@@ -346,8 +345,7 @@ inline QVector<CftcPricePoint> cftc_replay_price_slice(const QVector<CftcPricePo
 }
 
 /// Replay exactly one report date through the Batch 2 engine.
-inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
-                                            const QDate& report_date,
+inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market, const QDate& report_date,
                                             const CftcReplayOptions& options) {
     CftcReplayObservation observation;
     observation.report_date = report_date;
@@ -368,9 +366,8 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
         observation.publication_timestamp_known = true;
         observation.publication_date = created.value();
     }
-    observation.effective_date =
-        cftc_replay_effective_date(report_date, observation.publication_timestamp_known ? observation.publication_date
-                                                                                       : QDate());
+    observation.effective_date = cftc_replay_effective_date(
+        report_date, observation.publication_timestamp_known ? observation.publication_date : QDate());
 
     CftcResearchInput input;
     input.family = market.family;
@@ -412,8 +409,7 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
         observation.outcome_4w =
             cftc_replay_forward_outcome(market.prices, observation.effective_date, options.four_week_days, options);
         observation.outcome_13w =
-            cftc_replay_forward_outcome(market.prices, observation.effective_date, options.thirteen_week_days,
-                                        options);
+            cftc_replay_forward_outcome(market.prices, observation.effective_date, options.thirteen_week_days, options);
     }
     return observation;
 }
@@ -424,8 +420,7 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
 /// selected: their publication availability was explicitly declared
 /// unreconstructable, so the newest trustworthy earlier report remains the
 /// available state throughout the window.
-inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market,
-                                                 const QDate& decision_date,
+inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market, const QDate& decision_date,
                                                  const CftcReplayOptions& options) {
     if (!decision_date.isValid())
         return {};
@@ -458,9 +453,8 @@ inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market,
 /// Decision-time-gated replay. Returns no state before any report is available;
 /// otherwise returns the state of the newest available report, built exactly as
 /// `cftc_replay_at` builds it (same slicing, same engine, same timing).
-inline std::optional<CftcReplayObservation> cftc_replay_at_time(const CftcReplayMarket& market,
-                                                                const QDate& decision_date,
-                                                                const CftcReplayOptions& options) {
+inline std::optional<CftcReplayObservation>
+cftc_replay_at_time(const CftcReplayMarket& market, const QDate& decision_date, const CftcReplayOptions& options) {
     const QDate available = cftc_replay_latest_available_report(market, decision_date, options);
     if (!available.isValid())
         return std::nullopt;
@@ -470,7 +464,7 @@ inline std::optional<CftcReplayObservation> cftc_replay_at_time(const CftcReplay
 /// Replay every official report date of a market. The result is ordered by
 /// report date; ineligible observations are retained with their reason.
 inline QVector<CftcReplayObservation> cftc_replay_market(const CftcReplayMarket& market,
-                                                        const CftcReplayOptions& options) {
+                                                         const CftcReplayOptions& options) {
     QVector<CftcReplayObservation> replayed;
     replayed.reserve(market.observations.size());
     for (const auto& observation : market.observations) {
@@ -515,8 +509,7 @@ inline CftcReturnStats cftc_return_stats(QVector<double> values) {
     }
     stats.mean = sum / static_cast<double>(values.size());
     const int count = values.size();
-    stats.median = (count % 2 == 1) ? values[count / 2]
-                                    : (values[count / 2 - 1] + values[count / 2]) / 2.0;
+    stats.median = (count % 2 == 1) ? values[count / 2] : (values[count / 2 - 1] + values[count / 2]) / 2.0;
     stats.positive_rate = static_cast<double>(positive) / static_cast<double>(count);
     stats.negative_rate = static_cast<double>(negative) / static_cast<double>(count);
     return stats;
