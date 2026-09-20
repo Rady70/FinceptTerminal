@@ -125,7 +125,7 @@ class TstCftcReplayValidation : public QObject {
     void nominal_release_dates();
     void conservative_effective_dates_cover_documented_delays();
     void documented_publication_dates_are_covered();
-    void genuine_publication_metadata_rule();
+    void qualifying_publication_metadata_rule();
     void recorded_publication_wins_when_later();
     void timing_exclusion_windows_are_recorded();
     void development_and_holdout_assignment();
@@ -199,7 +199,7 @@ void TstCftcReplayValidation::documented_publication_dates_are_covered() {
     QVERIFY(cftc_replay_effective_date(QDate(2025, 1, 7), QDate(2025, 1, 13)) > QDate(2025, 1, 13));
 }
 
-void TstCftcReplayValidation::genuine_publication_metadata_rule() {
+void TstCftcReplayValidation::qualifying_publication_metadata_rule() {
     // Pre-PRE rows carry the 2022-09-13 bulk-migration timestamp, never a
     // publication time.
     QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(1986, 1, 15), QDate(2022, 9, 13)));
@@ -689,4 +689,5 @@ void TstCftcReplayValidation::return_statistics() {
 
 QTEST_GUILESS_MAIN(TstCftcReplayValidation)
 #include "tst_cftc_replay_validation.moc"
+
 
