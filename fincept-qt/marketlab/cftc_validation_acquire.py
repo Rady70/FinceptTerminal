@@ -142,6 +142,22 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _publication_is_genuine(report_date: str, created_at: str) -> bool:
+    """Mirror the replay's genuine-publication rule.
+
+    A Socrata `:created_at` is a publication timestamp only when it is at least
+    three processing days after the report date, at most 120 days after it, and
+    not part of the observed 2022-09-13 bulk migration (floor 2022-09-14).
+    """
+    try:
+        report = datetime.strptime(report_date[:10], "%Y-%m-%d").date()
+        created = datetime.strptime(created_at[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return False
+    lag = (created - report).days
+    return 3 <= lag <= 120 and created >= datetime.strptime(PRE_MIGRATION_CUTOFF, "%Y-%m-%d").date()
+
+
 def _slug(symbol: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", symbol).strip("_") or "symbol"
 
@@ -197,7 +213,13 @@ def _fetch_created_at(wrapper: CFTCDataWrapper, resource_id: str, search_query: 
 def acquire_cftc(wrapper, market, family, data_dir: Path, refresh: bool):
     out = data_dir / "cftc" / f"{market['key']}_{family}.json"
     if out.exists() and not refresh:
-        return {"status": "cached", "file": str(out)}
+        try:
+            cached = _read_json(out)
+        except Exception:
+            cached = None
+        if isinstance(cached, dict) and cached.get("success") is True and cached.get("data"):
+            return {"status": "cached", "file": str(out)}
+        # A cached failure or unreadable payload is re-acquired, never trusted.
 
     result = wrapper.get_cot_history(
         identifier=market["key"],
@@ -242,7 +264,7 @@ def acquire_cftc(wrapper, market, family, data_dir: Path, refresh: bool):
     genuine = sum(
         1
         for date_value, stamp in created.items()
-        if isinstance(stamp, str) and stamp[:10] >= PRE_MIGRATION_CUTOFF and date_value >= "2022-09-14"
+        if isinstance(stamp, str) and _publication_is_genuine(date_value, stamp)
     )
     result["publication"] = {
         "source": "Socrata :created_at row metadata",
@@ -276,7 +298,13 @@ def acquire_prices(market, data_dir: Path, refresh: bool):
     slug = _slug(market["symbol"])
     out = data_dir / "prices" / f"{slug}.json"
     if out.exists() and not refresh:
-        return {"status": "cached", "file": str(out), "price_file": out.name}
+        try:
+            cached = _read_json(out)
+        except Exception:
+            cached = None
+        if isinstance(cached, dict) and cached.get("success") is True and cached.get("points"):
+            return {"status": "cached", "file": str(out), "price_file": out.name}
+        # A cached failure or empty payload is re-acquired, never trusted.
     try:
         ticker = yf.Ticker(market["symbol"])
         history = ticker.history(period="max", interval="1d", auto_adjust=False, timeout=30)
@@ -358,7 +386,13 @@ def main() -> int:
             print(f"No known market matches {args.markets}", file=sys.stderr)
             return 2
 
-    import yfinance
+    yfinance_version = "unknown"
+    try:
+        from importlib.metadata import version as _package_version
+
+        yfinance_version = _package_version("yfinance")
+    except Exception:
+        pass
 
     manifest = {
         "purpose": "Batch 3 CFTC historical validation acquisition (network side)",
@@ -367,7 +401,7 @@ def main() -> int:
         "started_at": _utc_now(),
         "python": sys.executable,
         "python_version": platform.python_version(),
-        "yfinance": getattr(yfinance, "__version__", "unknown"),
+        "yfinance": yfinance_version,
         "futures_only": True,
         "families": list(args.families),
         "pairs": [],

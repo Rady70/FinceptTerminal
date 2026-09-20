@@ -53,8 +53,13 @@
 // observed migration date of the whole pre-PRE history).
 //
 // Known pre-PRE publication interruptions are excluded, not guessed:
-//   * report dates 1995-12-15 .. 1996-01-19 (1995-96 federal appropriations
-//     lapse; no retained publication announcement);
+//   * report dates 1995-12-15 .. 1996-01-30 (1995-96 federal appropriations
+//     lapse and the first post-lapse reports, whose catch-up timing is not
+//     retained);
+//   * report dates 2001-09-10 .. 2001-09-28 (the September 11, 2001
+//     interruption; the retained CFTC announcement establishes that the
+//     2001-09-10 reports were released 2001-09-21, after the conservative
+//     effective date, and the following releases' timing is not retained);
 //   * report dates 2013-09-27 .. 2013-11-01 (October 2013 federal
 //     appropriations lapse; retained announcements do not establish timing);
 //   * report dates 2018-12-21 .. 2019-03-01 (December 2018-January 2019 lapse;
@@ -167,7 +172,8 @@ inline QDate cftc_replay_effective_date(const QDate& report_date, const QDate& g
 /// from retained metadata and is therefore excluded rather than assumed.
 inline QVector<QPair<QDate, QDate>> cftc_replay_timing_exclusion_windows() {
     return {
-        {QDate(1995, 12, 15), QDate(1996, 1, 19)}, // 1995-96 federal appropriations lapse
+        {QDate(1995, 12, 15), QDate(1996, 1, 30)}, // 1995-96 lapse and first post-lapse reports
+        {QDate(2001, 9, 10), QDate(2001, 9, 28)},  // September 11, 2001 interruption
         {QDate(2013, 9, 27), QDate(2013, 11, 1)},  // October 2013 federal appropriations lapse
         {QDate(2018, 12, 21), QDate(2019, 3, 1)},  // Dec 2018-Jan 2019 lapse and its ambiguous catch-up
     };
@@ -429,6 +435,7 @@ struct CftcReturnStats {
     double mean = 0.0;
     double median = 0.0;
     double positive_rate = 0.0;
+    double negative_rate = 0.0;
 };
 
 /// Descriptive statistics over a set of percent returns. Median of an even
@@ -441,16 +448,20 @@ inline CftcReturnStats cftc_return_stats(QVector<double> values) {
     std::stable_sort(values.begin(), values.end());
     double sum = 0.0;
     int positive = 0;
+    int negative = 0;
     for (double value : values) {
         sum += value;
         if (value > 0.0)
             ++positive;
+        if (value < 0.0)
+            ++negative;
     }
     stats.mean = sum / static_cast<double>(values.size());
     const int count = values.size();
     stats.median = (count % 2 == 1) ? values[count / 2]
                                     : (values[count / 2 - 1] + values[count / 2]) / 2.0;
     stats.positive_rate = static_cast<double>(positive) / static_cast<double>(count);
+    stats.negative_rate = static_cast<double>(negative) / static_cast<double>(count);
     return stats;
 }
 

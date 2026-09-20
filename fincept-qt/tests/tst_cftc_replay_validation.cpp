@@ -80,16 +80,17 @@ CftcReplayMarket full_market() {
     return market;
 }
 
-QString state_signature(const CftcReplayObservation& observation) {
+QString result_signature(const QDate& report_date, const CftcResearchResult& result) {
     return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8")
-        .arg(observation.report_date.toString(Qt::ISODate),
-             cftc_research_state_code(observation.result.state),
-             cftc_research_confidence_code(observation.result.confidence),
-             cftc_tactical_state_code(observation.result.tactical_4w),
-             cftc_tactical_state_code(observation.result.swing_13w),
-             cftc_tactical_state_code(observation.result.regime_26w),
-             cftc_historical_context_code(observation.result.historical_context),
-             observation.result.data_available ? QStringLiteral("available") : QStringLiteral("unavailable"));
+        .arg(report_date.toString(Qt::ISODate), cftc_research_state_code(result.state),
+             cftc_research_confidence_code(result.confidence), cftc_tactical_state_code(result.tactical_4w),
+             cftc_tactical_state_code(result.swing_13w), cftc_tactical_state_code(result.regime_26w),
+             cftc_historical_context_code(result.historical_context),
+             result.data_available ? QStringLiteral("available") : QStringLiteral("unavailable"));
+}
+
+QString state_signature(const CftcReplayObservation& observation) {
+    return result_signature(observation.report_date, observation.result);
 }
 
 QString outcome_signature(const CftcForwardOutcome& outcome) {
@@ -123,20 +124,24 @@ class TstCftcReplayValidation : public QObject {
   private slots:
     void nominal_release_dates();
     void conservative_effective_dates_cover_documented_delays();
+    void documented_publication_dates_are_covered();
     void genuine_publication_metadata_rule();
     void recorded_publication_wins_when_later();
     void timing_exclusion_windows_are_recorded();
     void development_and_holdout_assignment();
+    void slices_contain_only_visible_history();
     void eligible_states_require_full_trailing_history();
     void replay_state_equals_direct_engine_call();
+    void full_replay_matches_direct_engine_for_every_report();
     void engine_as_of_contract_equivalence();
     void future_cftc_rows_do_not_change_past_state();
     void future_prices_do_not_change_past_state();
     void forward_outcomes_do_not_feed_back_into_state();
     void entry_and_exit_follow_the_predeclared_convention();
+    void catch_up_publication_pushes_entry_after_recorded_publication();
     void outcome_tolerance_and_entry_window();
-    void repeated_replay_is_deterministic();
     void return_statistics();
+    void repeated_replay_is_deterministic();
 };
 
 void TstCftcReplayValidation::nominal_release_dates() {
@@ -166,6 +171,29 @@ void TstCftcReplayValidation::conservative_effective_dates_cover_documented_dela
     const QDate effective = cftc_replay_effective_date(QDate(2025, 7, 1));
     QVERIFY(effective.dayOfWeek() <= 5);
     QVERIFY(effective > cftc_replay_nominal_release_date(QDate(2025, 7, 1)));
+}
+
+void TstCftcReplayValidation::documented_publication_dates_are_covered() {
+    // Retained CFTC announcements and schedules that must never be entered
+    // before the report was actually public.
+    // September 11, 2001 interruption: the 2001-09-10 report was released
+    // 2001-09-21 at the earliest, so the date is excluded rather than evaluated.
+    CftcReplayMarket market;
+    market.family = CftcFamily::Legacy;
+    market.observations.append(synthetic_observation(QDate(2001, 9, 10), 100.0, std::optional<double>(1000.0)));
+    const CftcReplayObservation excluded = cftc_replay_at(market, QDate(2001, 9, 10), CftcReplayOptions{});
+    QVERIFY(excluded.timing_excluded);
+    QVERIFY(!excluded.eligible);
+    QVERIFY(!excluded.outcome_4w.valid);
+    QVERIFY(!excluded.outcome_13w.valid);
+    // 2015-07-03 premature/incomplete release; complete report Monday 2015-07-06.
+    QVERIFY(cftc_replay_effective_date(QDate(2015, 6, 30)) > QDate(2015, 7, 6));
+    // 2008 holiday schedule: Monday 2008-12-29 release.
+    QVERIFY(cftc_replay_effective_date(QDate(2008, 12, 23)) > QDate(2008, 12, 29));
+    // 2025-01-09 National Day of Mourning: 2025-01-07 report published Monday
+    // 2025-01-13; the conservative allowance itself lands on 2025-01-15.
+    QCOMPARE(cftc_replay_effective_date(QDate(2025, 1, 7), QDate(2025, 1, 13)), QDate(2025, 1, 15));
+    QVERIFY(cftc_replay_effective_date(QDate(2025, 1, 7), QDate(2025, 1, 13)) > QDate(2025, 1, 13));
 }
 
 void TstCftcReplayValidation::genuine_publication_metadata_rule() {
@@ -208,6 +236,8 @@ void TstCftcReplayValidation::timing_exclusion_windows_are_recorded() {
         if (i < 3) {
             QVERIFY2(observation.timing_excluded, qPrintable(dates[i].toString(Qt::ISODate)));
             QVERIFY(!observation.eligible);
+            QVERIFY(!observation.outcome_4w.valid);
+            QVERIFY(!observation.outcome_13w.valid);
             QVERIFY(!observation.timing_exclusion_reason.isEmpty());
         } else {
             QVERIFY(!observation.timing_excluded);
@@ -225,6 +255,26 @@ void TstCftcReplayValidation::development_and_holdout_assignment() {
     QVERIFY(cftc_replay_at(market, QDate(2018, 12, 18), options).development);
     QVERIFY(cftc_replay_at(market, QDate(2018, 12, 26), options).development); // excluded but still development
     QVERIFY(!cftc_replay_at(market, QDate(2019, 3, 5), options).development);
+}
+
+void TstCftcReplayValidation::slices_contain_only_visible_history() {
+    const CftcReplayMarket market = full_market();
+    const QDate report = market.observations[100].date;
+    const auto observations = cftc_replay_observation_slice(market.observations, report);
+    const auto prices = cftc_replay_price_slice(market.prices, report);
+    QCOMPARE(observations.size(), 101); // the report and everything before it, nothing after
+    QCOMPARE(observations.last().date, report);
+    for (const auto& observation : observations)
+        QVERIFY(observation.date <= report);
+    QVERIFY(!prices.isEmpty());
+    for (const auto& point : prices)
+        QVERIFY(point.date <= report);
+    QVERIFY(prices.last().date <= report);
+    // The boundary is exact: a report one day after the cutoff is not visible.
+    const QDate next_day = report.addDays(1);
+    const auto next_observations = cftc_replay_observation_slice(market.observations, next_day);
+    QCOMPARE(next_observations.size(), 101); // no weekly report exists on next_day
+    QVERIFY(cftc_replay_observation_slice(market.observations, report.addDays(7)).size() == 102);
 }
 
 void TstCftcReplayValidation::eligible_states_require_full_trailing_history() {
@@ -287,6 +337,36 @@ void TstCftcReplayValidation::replay_state_equals_direct_engine_call() {
     QCOMPARE(eligible->result.readings.changes_4w.net.value, direct.readings.changes_4w.net.value);
     QCOMPARE(eligible->result.readings.stats_2y.percentile, direct.readings.stats_2y.percentile);
     QCOMPARE(eligible->result.effective_date, direct.effective_date);
+}
+
+void TstCftcReplayValidation::full_replay_matches_direct_engine_for_every_report() {
+    // Compare every replayed state against a direct engine call whose prefix is
+    // built independently in the test (not with the replay's slice helpers), so
+    // a defect inside those helpers cannot hide on both sides.
+    const CftcReplayMarket market = full_market();
+    const auto replayed = cftc_replay_market(market, CftcReplayOptions{});
+    QCOMPARE(replayed.size(), market.observations.size());
+    for (const auto& observation : replayed) {
+        CftcResearchInput input;
+        input.family = market.family;
+        for (const auto& source : market.observations) {
+            if (!(source.date > observation.report_date))
+                input.observations.append(source);
+        }
+        input.as_of = observation.report_date;
+        input.effective_date = observation.effective_date;
+        for (const auto& point : market.prices) {
+            if (!(point.date > observation.report_date))
+                input.prices.append(point);
+        }
+        input.price_source = market.price_source;
+        input.price_continuous_proxy = market.price_continuous_proxy;
+        input.price_spot_index = market.price_spot_index;
+        input.trailing_min_reference = kCftcTrailingMinObservations;
+        const CftcResearchResult direct = cftc_evaluate_research_state(input);
+        QCOMPARE(state_signature(observation), result_signature(observation.report_date, direct));
+        QVERIFY(!direct.report_predates_history);
+    }
 }
 
 void TstCftcReplayValidation::engine_as_of_contract_equivalence() {
@@ -442,6 +522,23 @@ void TstCftcReplayValidation::entry_and_exit_follow_the_predeclared_convention()
     QVERIFY(valid_outcomes > 0);
 }
 
+void TstCftcReplayValidation::catch_up_publication_pushes_entry_after_recorded_publication() {
+    const CftcReplayMarket market = full_market();
+    const auto replayed = cftc_replay_market(market, CftcReplayOptions{});
+    const CftcReplayObservation* catch_up = nullptr;
+    for (const auto& observation : replayed) {
+        if (observation.report_date == QDate(2025, 9, 30))
+            catch_up = &observation;
+    }
+    QVERIFY(catch_up != nullptr);
+    QVERIFY(catch_up->publication_timestamp_known);
+    QCOMPARE(catch_up->publication_date, QDate(2025, 11, 19));
+    QCOMPARE(catch_up->effective_date, QDate(2025, 11, 20));
+    QVERIFY(catch_up->outcome_4w.valid);
+    QVERIFY(catch_up->outcome_4w.entry_date > catch_up->publication_date);
+    QVERIFY(catch_up->outcome_13w.entry_date > catch_up->publication_date);
+}
+
 void TstCftcReplayValidation::outcome_tolerance_and_entry_window() {
     const CftcReplayOptions options;
     const QDate effective = QDate(2024, 1, 17);
@@ -478,6 +575,18 @@ void TstCftcReplayValidation::outcome_tolerance_and_entry_window() {
     const CftcForwardOutcome missing = cftc_replay_forward_outcome(no_entry, effective, 28, options);
     QVERIFY(!missing.valid);
     QVERIFY(missing.invalid_reason.contains(QStringLiteral("No price observation")));
+
+    // Exact boundaries: entry on the 10th day after the effective date is
+    // inside the window; the 11th day is not.
+    const QVector<CftcPricePoint> entry_day_10 = {{QDate(2024, 1, 27), 100.0}, {QDate(2024, 2, 24), 100.0}};
+    QVERIFY(cftc_replay_forward_outcome(entry_day_10, effective, 28, options).valid);
+    const QVector<CftcPricePoint> entry_day_11 = {{QDate(2024, 1, 28), 100.0}, {QDate(2024, 2, 25), 100.0}};
+    QVERIFY(!cftc_replay_forward_outcome(entry_day_11, effective, 28, options).valid);
+    // Exit exactly 7 days after the target is inside tolerance; 8 days is not.
+    const QVector<CftcPricePoint> exit_day_7 = {{QDate(2024, 1, 17), 100.0}, {QDate(2024, 2, 21), 100.0}};
+    QVERIFY(cftc_replay_forward_outcome(exit_day_7, effective, 28, options).valid);
+    const QVector<CftcPricePoint> exit_day_8 = {{QDate(2024, 1, 17), 100.0}, {QDate(2024, 2, 22), 100.0}};
+    QVERIFY(!cftc_replay_forward_outcome(exit_day_8, effective, 28, options).valid);
 }
 
 void TstCftcReplayValidation::repeated_replay_is_deterministic() {
@@ -496,14 +605,17 @@ void TstCftcReplayValidation::repeated_replay_is_deterministic() {
 void TstCftcReplayValidation::return_statistics() {
     const CftcReturnStats empty = cftc_return_stats({});
     QCOMPARE(empty.n, 0);
+    QCOMPARE(empty.negative_rate, 0.0);
     const CftcReturnStats odd = cftc_return_stats({1.0, -1.0, 2.0});
     QCOMPARE(odd.n, 3);
     QVERIFY(qAbs(odd.mean - 2.0 / 3.0) < 1e-12);
     QCOMPARE(odd.median, 1.0);
     QCOMPARE(odd.positive_rate, 2.0 / 3.0);
+    QCOMPARE(odd.negative_rate, 1.0 / 3.0);
     const CftcReturnStats even = cftc_return_stats({4.0, 1.0, 3.0, 2.0});
     QCOMPARE(even.median, 2.5);
     QCOMPARE(even.positive_rate, 1.0);
+    QCOMPARE(even.negative_rate, 0.0);
 }
 
 QTEST_GUILESS_MAIN(TstCftcReplayValidation)

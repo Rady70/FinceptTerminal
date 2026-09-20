@@ -89,6 +89,16 @@ struct StateRow {
     bool conflict_historical = false;
     QString status_4w;
     QString status_13w;
+    QDate entry_4w;
+    QDate exit_4w;
+    int elapsed_4w = 0;
+    double entry_price_4w = 0.0;
+    double exit_price_4w = 0.0;
+    QDate entry_13w;
+    QDate exit_13w;
+    int elapsed_13w = 0;
+    double entry_price_13w = 0.0;
+    double exit_price_13w = 0.0;
     double net_change_4w = 0.0;
     double net_change_13w = 0.0;
     double net_pct_oi_change_4w = 0.0;
@@ -102,38 +112,6 @@ struct StateRow {
     QSet<QString> available_families;
     QStringList supporting_families;
 };
-
-struct Dist {
-    int n = 0;
-    double mean = 0.0;
-    double median = 0.0;
-    double positive = 0.0;
-    double negative = 0.0;
-};
-
-Dist distribution(QVector<double> values) {
-    Dist dist;
-    dist.n = values.size();
-    if (values.isEmpty())
-        return dist;
-    std::stable_sort(values.begin(), values.end());
-    double sum = 0.0;
-    int positive = 0;
-    int negative = 0;
-    for (double value : values) {
-        sum += value;
-        if (value > 0.0)
-            ++positive;
-        if (value < 0.0)
-            ++negative;
-    }
-    dist.mean = sum / static_cast<double>(values.size());
-    const int count = values.size();
-    dist.median = (count % 2 == 1) ? values[count / 2] : (values[count / 2 - 1] + values[count / 2]) / 2.0;
-    dist.positive = static_cast<double>(positive) / static_cast<double>(count);
-    dist.negative = static_cast<double>(negative) / static_cast<double>(count);
-    return dist;
-}
 
 double median_of(QVector<double> values) {
     if (values.isEmpty())
@@ -390,8 +368,6 @@ int main(int argc, char* argv[]) {
                          [](const CftcPricePoint& left, const CftcPricePoint& right) { return left.date < right.date; });
         if (prices.market_key.isEmpty())
             prices.market_key = info.completeBaseName();
-        if (!prices.points.isEmpty())
-            prices.ok = true;
         prices_by_market.insert(prices.market_key, prices);
     }
 
@@ -527,9 +503,14 @@ int main(int argc, char* argv[]) {
             if (observation.report_date >= options.evaluation_start)
                 ++candidate;
             if (!observation.eligible) {
-                if (observation.timing_excluded)
-                    ++timing_excluded;
-                ++unavailable;
+                // Unavailable counts are restricted to candidate observations so
+                // that eligible + unavailable == candidate in every summary row.
+                // Pre-evaluation-start observations stay visible in exclusions.csv.
+                if (observation.report_date >= options.evaluation_start) {
+                    if (observation.timing_excluded)
+                        ++timing_excluded;
+                    ++unavailable;
+                }
                 if (!observation.ineligibility_reason.isEmpty())
                     ineligibility_reasons[observation.ineligibility_reason] += 1;
                 continue;
@@ -569,6 +550,16 @@ int main(int argc, char* argv[]) {
             row.return_13w = observation.outcome_13w.return_pct;
             row.status_4w = horizon_status(observation.outcome_4w);
             row.status_13w = horizon_status(observation.outcome_13w);
+            row.entry_4w = observation.outcome_4w.entry_date;
+            row.exit_4w = observation.outcome_4w.exit_date;
+            row.elapsed_4w = observation.outcome_4w.elapsed_days;
+            row.entry_price_4w = observation.outcome_4w.entry_price;
+            row.exit_price_4w = observation.outcome_4w.exit_price;
+            row.entry_13w = observation.outcome_13w.entry_date;
+            row.exit_13w = observation.outcome_13w.exit_date;
+            row.elapsed_13w = observation.outcome_13w.elapsed_days;
+            row.entry_price_13w = observation.outcome_13w.entry_price;
+            row.exit_price_13w = observation.outcome_13w.exit_price;
             const CftcStateReadings& readings = observation.result.readings;
             row.net_change_4w = readings.changes_4w.net.has_value ? readings.changes_4w.net.value : 0.0;
             row.net_change_13w = readings.changes_13w.net.has_value ? readings.changes_13w.net.value : 0.0;
@@ -639,9 +630,9 @@ int main(int argc, char* argv[]) {
         }
 
         const auto market_summary = [&](const QString& horizon, const Bucket& bucket) {
-            const Dist all = distribution(bucket.all);
-            const Dist buy = distribution(bucket.buy);
-            const Dist sell = distribution(bucket.sell);
+            const CftcReturnStats all = cftc_return_stats(bucket.all);
+            const CftcReturnStats buy = cftc_return_stats(bucket.buy);
+            const CftcReturnStats sell = cftc_return_stats(bucket.sell);
             market_rows.append({
                 market_key, family_code, asset_class, prices.proxy_type,
                 prices.proxy_type == QStringLiteral("spot_index") ? QStringLiteral("spot_index_reported_separately")
@@ -650,8 +641,8 @@ int main(int argc, char* argv[]) {
                 QString::number(unavailable), QString::number(eligible_market), QString::number(bucket.valid),
                 QString::number(bucket.buy_n), QString::number(bucket.hold_n), QString::number(bucket.sell_n),
                 QString::number(bucket.buy.size()), QString::number(bucket.hold.size()), QString::number(bucket.sell.size()),
-                number(all.mean), number(all.median), number(all.positive), number(buy.mean), number(buy.median),
-                number(buy.positive), number(sell.mean), number(sell.median), number(sell.negative),
+                number(all.mean), number(all.median), number(all.positive_rate), number(buy.mean), number(buy.median),
+                number(buy.positive_rate), number(sell.mean), number(sell.median), number(sell.negative_rate),
                 number(buy.mean - sell.mean), QString::number(transitions),
                 number(eligible_market > 1 ? static_cast<double>(transitions) / static_cast<double>(eligible_market - 1)
                                            : 0.0),
@@ -707,14 +698,18 @@ int main(int argc, char* argv[]) {
             if (row.state == QStringLiteral("SELL"))
                 sells.append(value);
         }
-        const Dist all = distribution(returns);
-        const Dist buy = distribution(buys);
-        const Dist sell = distribution(sells);
+        const CftcReturnStats all = cftc_return_stats(returns);
+        const CftcReturnStats buy = cftc_return_stats(buys);
+        const CftcReturnStats sell = cftc_return_stats(sells);
+        // The spread is only defined for mixed groups (all / family / asset
+        // class); for the pure BUY/HOLD/SELL groups one side is always empty.
+        const bool mixed_group = group != QStringLiteral("BUY") && group != QStringLiteral("HOLD") &&
+                                 group != QStringLiteral("SELL");
         aggregate_rows.append({phase_filter, scope, group, horizon_4w ? QStringLiteral("4W") : QStringLiteral("13W"),
-                               QString::number(all.n), number(all.mean), number(all.median), number(all.positive),
-                               QString::number(buy.n), number(buy.mean), number(buy.median), number(buy.positive),
-                               QString::number(sell.n), number(sell.mean), number(sell.median), number(sell.negative),
-                               number(buy.mean - sell.mean)});
+                               QString::number(all.n), number(all.mean), number(all.median), number(all.positive_rate),
+                               QString::number(buy.n), number(buy.mean), number(buy.median), number(buy.positive_rate),
+                               QString::number(sell.n), number(sell.mean), number(sell.median), number(sell.negative_rate),
+                               mixed_group ? number(buy.mean - sell.mean) : QString()});
     };
 
     const auto state_is = [](const QString& state) {
@@ -782,9 +777,9 @@ int main(int argc, char* argv[]) {
         for (int horizon = 0; horizon < 2; ++horizon) {
             const bool horizon_4w = horizon == 0;
             const QVector<double>& series = horizon_4w ? bucket.returns_4w : bucket.returns_13w;
-            const Dist dist = distribution(series);
+            const CftcReturnStats dist = cftc_return_stats(series);
             confidence_rows.append({parts.value(0), parts.value(1), horizon_4w ? QStringLiteral("4W") : QStringLiteral("13W"),
-                                    QString::number(dist.n), number(dist.mean), number(dist.median), number(dist.positive)});
+                                    QString::number(dist.n), number(dist.mean), number(dist.median), number(dist.positive_rate)});
         }
     }
     std::stable_sort(confidence_rows.begin(), confidence_rows.end(), [](const QStringList& left, const QStringList& right) {
@@ -798,10 +793,10 @@ int main(int argc, char* argv[]) {
         for (int horizon = 0; horizon < 2; ++horizon) {
             const bool horizon_4w = horizon == 0;
             const QVector<double>& series = horizon_4w ? bucket.returns_4w : bucket.returns_13w;
-            const Dist dist = distribution(series);
+            const CftcReturnStats dist = cftc_return_stats(series);
             context_rows.append({parts.value(0), parts.value(1), parts.value(2), parts.value(3), parts.value(4),
                                  horizon_4w ? QStringLiteral("4W") : QStringLiteral("13W"), QString::number(dist.n),
-                                 number(dist.mean), number(dist.median), number(dist.positive)});
+                                 number(dist.mean), number(dist.median), number(dist.positive_rate)});
         }
     }
     std::stable_sort(context_rows.begin(), context_rows.end(), [](const QStringList& left, const QStringList& right) {
@@ -815,10 +810,10 @@ int main(int argc, char* argv[]) {
         for (int horizon = 0; horizon < 2; ++horizon) {
             const bool horizon_4w = horizon == 0;
             const QVector<double>& series = horizon_4w ? bucket.returns_4w : bucket.returns_13w;
-            const Dist dist = distribution(series);
+            const CftcReturnStats dist = cftc_return_stats(series);
             conflict_rows.append({parts.value(0), parts.value(1), parts.value(2), parts.value(3),
                                   horizon_4w ? QStringLiteral("4W") : QStringLiteral("13W"), QString::number(dist.n),
-                                  number(dist.mean), number(dist.median), number(dist.positive)});
+                                  number(dist.mean), number(dist.median), number(dist.positive_rate)});
         }
     }
     std::stable_sort(conflict_rows.begin(), conflict_rows.end(), [](const QStringList& left, const QStringList& right) {
@@ -842,6 +837,16 @@ int main(int argc, char* argv[]) {
                << (row.conflict_historical ? QStringLiteral("yes") : QStringLiteral("no"));
         fields << number(row.net_change_4w) << number(row.net_change_13w) << number(row.net_pct_oi_change_4w)
                << number(row.price_change_4w) << number(row.price_change_13w) << number(row.open_interest_change_4w);
+        fields << (row.entry_4w.isValid() ? row.entry_4w.toString(Qt::ISODate) : QString())
+               << (row.exit_4w.isValid() ? row.exit_4w.toString(Qt::ISODate) : QString())
+               << (row.elapsed_4w > 0 ? QString::number(row.elapsed_4w) : QString())
+               << (row.entry_4w.isValid() ? number(row.entry_price_4w) : QString())
+               << (row.exit_4w.isValid() ? number(row.exit_price_4w) : QString())
+               << (row.entry_13w.isValid() ? row.entry_13w.toString(Qt::ISODate) : QString())
+               << (row.exit_13w.isValid() ? row.exit_13w.toString(Qt::ISODate) : QString())
+               << (row.elapsed_13w > 0 ? QString::number(row.elapsed_13w) : QString())
+               << (row.entry_13w.isValid() ? number(row.entry_price_13w) : QString())
+               << (row.exit_13w.isValid() ? number(row.exit_price_13w) : QString());
         QStringList families = QStringList(row.available_families.values());
         families.sort();
         fields << families.join(QLatin1Char('+'));
@@ -875,7 +880,11 @@ int main(int argc, char* argv[]) {
                QStringLiteral("historical_conflicted"), QStringLiteral("net_change_4w"),
                QStringLiteral("net_change_13w"), QStringLiteral("net_pct_oi_change_4w"), QStringLiteral("price_change_4w"),
                QStringLiteral("price_change_13w"), QStringLiteral("open_interest_change_4w"),
-               QStringLiteral("available_confidence_families"), QStringLiteral("supporting_families")},
+               QStringLiteral("entry_date_4w"), QStringLiteral("exit_date_4w"), QStringLiteral("elapsed_days_4w"),
+               QStringLiteral("entry_price_4w"), QStringLiteral("exit_price_4w"), QStringLiteral("entry_date_13w"),
+               QStringLiteral("exit_date_13w"), QStringLiteral("elapsed_days_13w"), QStringLiteral("entry_price_13w"),
+               QStringLiteral("exit_price_13w"), QStringLiteral("available_confidence_families"),
+               QStringLiteral("supporting_families")},
               state_rows);
     write_csv(prefix + QStringLiteral("summary_market.csv"),
               {QStringLiteral("market_key"), QStringLiteral("family"), QStringLiteral("asset_class"), QStringLiteral("proxy_type"),
@@ -928,3 +937,4 @@ int main(int argc, char* argv[]) {
                         << " of " << candidate_total << " candidate observations. Evidence -> " << out_dir << "\n";
     return 0;
 }
+
