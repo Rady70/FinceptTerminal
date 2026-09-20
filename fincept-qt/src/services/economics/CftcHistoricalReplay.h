@@ -420,14 +420,27 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
 
 /// The newest report whose state is publicly available at `decision_date` under
 /// the predeclared convention, or an invalid date when no report has reached
-/// its effective date yet. This is the decision-time availability seam: a state
-/// must never be handed out before its report's effective date.
-inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market, const QDate& decision_date) {
+/// its effective date yet. Reports inside a timing-exclusion window are never
+/// selected: their publication availability was explicitly declared
+/// unreconstructable, so the newest trustworthy earlier report remains the
+/// available state throughout the window.
+inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market,
+                                                 const QDate& decision_date,
+                                                 const CftcReplayOptions& options) {
     if (!decision_date.isValid())
         return {};
     QDate latest;
     for (const auto& observation : market.observations) {
         if (!observation.date.isValid())
+            continue;
+        bool excluded = false;
+        for (const auto& window : options.timing_exclusions) {
+            if (observation.date >= window.first && observation.date <= window.second) {
+                excluded = true;
+                break;
+            }
+        }
+        if (excluded)
             continue;
         QDate qualifying;
         const auto created = market.created_at_dates.constFind(observation.date);
@@ -448,7 +461,7 @@ inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market,
 inline std::optional<CftcReplayObservation> cftc_replay_at_time(const CftcReplayMarket& market,
                                                                 const QDate& decision_date,
                                                                 const CftcReplayOptions& options) {
-    const QDate available = cftc_replay_latest_available_report(market, decision_date);
+    const QDate available = cftc_replay_latest_available_report(market, decision_date, options);
     if (!available.isValid())
         return std::nullopt;
     return cftc_replay_at(market, available, options);

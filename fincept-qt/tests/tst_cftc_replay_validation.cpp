@@ -133,6 +133,7 @@ class TstCftcReplayValidation : public QObject {
     void state_is_unavailable_before_effective_date();
     void same_report_becomes_available_only_at_effective_date();
     void catch_up_availability_waits_for_recorded_row_creation();
+    void availability_skips_timing_excluded_reports();
     void eligible_states_require_full_trailing_history();
     void replay_state_equals_direct_engine_call();
     void full_replay_matches_direct_engine_for_every_report();
@@ -344,6 +345,31 @@ void TstCftcReplayValidation::catch_up_availability_waits_for_recorded_row_creat
     const auto at = cftc_replay_at_time(market, QDate(2025, 11, 20), options);
     QVERIFY(at.has_value());
     QCOMPARE(at->report_date, QDate(2025, 9, 30));
+}
+
+void TstCftcReplayValidation::availability_skips_timing_excluded_reports() {
+    // The 2001-09-10 report is inside the September 11, 2001 exclusion window:
+    // its normal conservative effective date exists, but availability timing is
+    // explicitly unreconstructable, so the decision-time seam must never select
+    // it. The previous trustworthy report stays the available state.
+    CftcReplayMarket market;
+    market.family = CftcFamily::Legacy;
+    market.market_key = QStringLiteral("synthetic");
+    market.observations = {synthetic_observation(QDate(2001, 9, 4), 100.0, std::optional<double>(1000.0)),
+                           synthetic_observation(QDate(2001, 9, 10), 110.0, std::optional<double>(1000.0))};
+    const CftcReplayOptions options;
+    QCOMPARE(cftc_replay_effective_date(QDate(2001, 9, 4)), QDate(2001, 9, 12));
+    QCOMPARE(cftc_replay_effective_date(QDate(2001, 9, 10)), QDate(2001, 9, 19));
+    QVERIFY(!cftc_replay_at_time(market, QDate(2001, 9, 11), options).has_value());
+    const auto first = cftc_replay_at_time(market, QDate(2001, 9, 12), options);
+    QVERIFY(first.has_value());
+    QCOMPARE(first->report_date, QDate(2001, 9, 4));
+    // Even after the excluded report's nominal effective date, it is not
+    // selected; the earlier report remains the newest available state.
+    const auto after_nominal = cftc_replay_at_time(market, QDate(2001, 9, 20), options);
+    QVERIFY(after_nominal.has_value());
+    QCOMPARE(after_nominal->report_date, QDate(2001, 9, 4));
+    QVERIFY(!after_nominal->timing_excluded);
 }
 
 void TstCftcReplayValidation::eligible_states_require_full_trailing_history() {
