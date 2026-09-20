@@ -10,7 +10,9 @@
 // concentration, price/positioning alignment and both divergence states,
 // missing-data truthfulness, family terminology applicability and the absence
 // of any BUY/HOLD/SELL, bullish/bearish, confidence or expected-return output.
-// Header-only over Qt Core; no app sources (tests/ HARD RULE).
+// The suite defines 53 test slots (QTest reports 55 passes including
+// initTestCase/cleanupTestCase). Header-only over Qt Core; no app sources
+// (tests/ HARD RULE).
 #include "services/economics/CftcInterpretationModel.h"
 
 #include <QRegularExpression>
