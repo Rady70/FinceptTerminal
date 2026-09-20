@@ -285,6 +285,18 @@ QString horizon_status(const CftcForwardOutcome& outcome) {
     return outcome.valid ? QStringLiteral("valid") : QStringLiteral("invalid: %1").arg(outcome.invalid_reason);
 }
 
+/// Forward direction of a valid outcome; empty when the outcome is invalid, so
+/// a missing observation is never exported as a flat zero-return observation.
+QString direction_word(bool valid, double value) {
+    if (!valid)
+        return QString();
+    if (value > 0.0)
+        return QStringLiteral("up");
+    if (value < 0.0)
+        return QStringLiteral("down");
+    return QStringLiteral("flat");
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -643,7 +655,10 @@ int main(int argc, char* argv[]) {
                 QString::number(bucket.buy.size()), QString::number(bucket.hold.size()), QString::number(bucket.sell.size()),
                 number(all.mean), number(all.median), number(all.positive_rate), number(buy.mean), number(buy.median),
                 number(buy.positive_rate), number(sell.mean), number(sell.median), number(sell.negative_rate),
-                number(buy.mean - sell.mean), QString::number(transitions),
+                // A market BUY-SELL spread is defined only when both sides have
+                // at least one valid outcome; a missing side must not become 0.
+                (bucket.buy.isEmpty() || bucket.sell.isEmpty()) ? QString() : number(buy.mean - sell.mean),
+                QString::number(transitions),
                 number(eligible_market > 1 ? static_cast<double>(transitions) / static_cast<double>(eligible_market - 1)
                                            : 0.0),
             });
@@ -702,9 +717,10 @@ int main(int argc, char* argv[]) {
         const CftcReturnStats buy = cftc_return_stats(buys);
         const CftcReturnStats sell = cftc_return_stats(sells);
         // The spread is only defined for mixed groups (all / family / asset
-        // class); for the pure BUY/HOLD/SELL groups one side is always empty.
+        // class) with valid outcomes on both sides; for the pure BUY/HOLD/SELL
+        // groups, or an empty side, it must stay unavailable rather than zero.
         const bool mixed_group = group != QStringLiteral("BUY") && group != QStringLiteral("HOLD") &&
-                                 group != QStringLiteral("SELL");
+                                 group != QStringLiteral("SELL") && buy.n > 0 && sell.n > 0;
         aggregate_rows.append({phase_filter, scope, group, horizon_4w ? QStringLiteral("4W") : QStringLiteral("13W"),
                                QString::number(all.n), number(all.mean), number(all.median), number(all.positive_rate),
                                QString::number(buy.n), number(buy.mean), number(buy.median), number(buy.positive_rate),
@@ -828,8 +844,10 @@ int main(int argc, char* argv[]) {
                << row.phase << row.report_date.toString(Qt::ISODate) << row.effective_date.toString(Qt::ISODate)
                << row.state << row.confidence << row.tactical << row.swing << row.regime << row.context
                << (row.price_used ? QStringLiteral("yes") : QStringLiteral("no"));
-        fields << (row.valid_4w ? number(row.return_4w) : QString()) << row.status_4w;
-        fields << (row.valid_13w ? number(row.return_13w) : QString()) << row.status_13w;
+        fields << (row.valid_4w ? number(row.return_4w) : QString()) << row.status_4w
+               << direction_word(row.valid_4w, row.return_4w);
+        fields << (row.valid_13w ? number(row.return_13w) : QString()) << row.status_13w
+               << direction_word(row.valid_13w, row.return_13w);
         fields << (row.core_opposed ? QStringLiteral("yes") : QStringLiteral("no"))
                << (row.conflict_price ? QStringLiteral("yes") : QStringLiteral("no"))
                << (row.conflict_oi ? QStringLiteral("yes") : QStringLiteral("no"))
@@ -874,8 +892,9 @@ int main(int argc, char* argv[]) {
                QStringLiteral("report_date"), QStringLiteral("effective_date"), QStringLiteral("state"),
                QStringLiteral("confidence"), QStringLiteral("tactical_4w"), QStringLiteral("swing_13w"),
                QStringLiteral("regime_26w"), QStringLiteral("historical_context"), QStringLiteral("price_used"),
-               QStringLiteral("return_4w_pct"), QStringLiteral("outcome_4w_status"), QStringLiteral("return_13w_pct"),
-               QStringLiteral("outcome_13w_status"), QStringLiteral("core_opposed"), QStringLiteral("price_conflicted"),
+               QStringLiteral("return_4w_pct"), QStringLiteral("outcome_4w_status"), QStringLiteral("direction_4w"),
+               QStringLiteral("return_13w_pct"), QStringLiteral("outcome_13w_status"), QStringLiteral("direction_13w"),
+               QStringLiteral("core_opposed"), QStringLiteral("price_conflicted"),
                QStringLiteral("oi_conflicted"), QStringLiteral("participant_conflicted"),
                QStringLiteral("historical_conflicted"), QStringLiteral("net_change_4w"),
                QStringLiteral("net_change_13w"), QStringLiteral("net_pct_oi_change_4w"), QStringLiteral("price_change_4w"),

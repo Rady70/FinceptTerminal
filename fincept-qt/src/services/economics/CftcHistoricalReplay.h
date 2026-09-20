@@ -25,32 +25,33 @@
 // The CFTC Release Schedule states the reports are released at 3:30 p.m.
 // Eastern time, "usually released on Friday", with "federal holidays may delay
 // release by one or two days". The CFTC also states there is no historical
-// release-date list. The retained public metadata (Socrata `:created_at`) only
-// records genuine weekly publication times from the report dated 2022-09-13
-// onward; every earlier row carries the 2022-09-13 bulk-migration timestamp.
+// release-date list. The retained Socrata `:created_at` field is row-creation
+// metadata, not an official CFTC publication field; it shows weekly ingestion
+// from the report dated 2022-09-13 onward and the 2022-09-13 bulk-migration
+// timestamp for everything earlier.
 //
 // Therefore, for a report dated D:
 //
 //   nominal_release(D) = the Friday of the reporting week (the next Friday
 //                        strictly after D);
 //   effective(D)       = max( nominal_release(D) + 5 calendar days,
-//                             first weekday strictly after a genuine recorded
-//                             publication date )
+//                             first weekday strictly after a qualifying
+//                             recorded row-creation date )
 //
 // The +5-day term is the documented "one or two days" holiday-delay allowance
 // expressed as weekdays (Friday +1 = Monday, +2 = Tuesday, first weekday
 // strictly after = Wednesday), so the state is treated as public before that
-// session opens even under the slowest documented normal schedule. A genuine
-// recorded publication later than that (catch-up releases) always wins. No
+// session opens even under the slowest documented normal schedule. A qualifying
+// row-creation date later than that (catch-up ingestion) always wins. No
 // federal holiday calendar is encoded; an unlisted holiday can only move the
 // effective date later, never earlier, because entry waits for the first
 // observed price at or after the effective date.
 //
-// A Socrata `:created_at` counts as a genuine publication timestamp only when
-// it is at least three processing days after the report date (the CFTC receives
-// data Wednesday for release Friday), at most 120 days after it (larger lags
-// are the historical bulk load, not a release), and not before 2022-09-14 (the
-// observed migration date of the whole pre-PRE history).
+// A Socrata `:created_at` date qualifies as conservative availability evidence
+// only when it is at least three processing days after the report date (the
+// CFTC receives data Wednesday for release Friday), at most 120 days after it
+// (larger lags are the historical bulk load, not weekly ingestion), and not
+// before 2022-09-14 (the observed migration date of the whole pre-PRE history).
 //
 // Known pre-PRE publication interruptions are excluded, not guessed:
 //   * report dates 1995-12-15 .. 1996-01-30 (1995-96 federal appropriations
@@ -66,8 +67,8 @@
 //     the CFTC documented that the backlog was republished in chronological
 //     order at two reports per week, but the exact recovered schedule per
 //     report is not retained).
-// The 2023 ION backlog and the 2025 lapse are not hand-excluded: genuine
-// `:created_at` metadata records their actual catch-up publication dates.
+// The 2023 ION backlog and the 2025 lapse are not hand-excluded: qualifying
+// `:created_at` row-creation dates record their actual catch-up ingestion.
 //
 // Price-entry and outcome convention
 // ----------------------------------
@@ -116,14 +117,21 @@ namespace fincept::services {
 
 // ── Publication / effective timing ──────────────────────────────────────────
 
-/// Lowest date at which Socrata `:created_at` is a genuine publication time:
-/// every earlier row carries the observed 2022-09-13 bulk-migration timestamp.
+/// Lowest date at which Socrata `:created_at` is treated as qualifying
+/// availability evidence: every earlier row carries the observed 2022-09-13
+/// bulk-migration timestamp.
 inline QDate cftc_replay_publication_metadata_floor() {
     return QDate(2022, 9, 14);
 }
 
-/// A created-at date is a publication timestamp only inside the genuine window.
-inline bool cftc_replay_publication_metadata_is_genuine(const QDate& report_date, const QDate& created_at_date) {
+/// Whether a Socrata `:created_at` date qualifies as conservative availability
+/// evidence for a report. Socrata defines `:created_at` as when the record was
+/// created, not as an official CFTC publication-time field; this rule therefore
+/// only accepts timestamps inside the observed weekly-ingestion window (3-120
+/// days after the report date, on/after the migration cutoff). Even when it
+/// qualifies, the timestamp is never allowed to move availability earlier than
+/// the conservative schedule convention in `cftc_replay_effective_date`.
+inline bool cftc_replay_publication_metadata_qualifies(const QDate& report_date, const QDate& created_at_date) {
     if (!report_date.isValid() || !created_at_date.isValid())
         return false;
     if (created_at_date < cftc_replay_publication_metadata_floor())
@@ -153,15 +161,15 @@ inline QDate cftc_replay_next_weekday(const QDate& date) {
 }
 
 /// The conservative effective date of a report. See the header comment for the
-/// derivation; `genuine_publication_date` is invalid when no genuine retained
-/// publication timestamp exists.
-inline QDate cftc_replay_effective_date(const QDate& report_date, const QDate& genuine_publication_date = {}) {
+/// derivation; `qualifying_publication_date` is invalid when no qualifying
+/// retained row-creation metadata exists.
+inline QDate cftc_replay_effective_date(const QDate& report_date, const QDate& qualifying_publication_date = {}) {
     if (!report_date.isValid())
         return {};
     const QDate nominal = cftc_replay_nominal_release_date(report_date);
     QDate effective = nominal.addDays(5);
-    if (genuine_publication_date.isValid()) {
-        const QDate recorded = cftc_replay_next_weekday(genuine_publication_date);
+    if (qualifying_publication_date.isValid()) {
+        const QDate recorded = cftc_replay_next_weekday(qualifying_publication_date);
         if (recorded > effective)
             effective = recorded;
     }
@@ -290,8 +298,8 @@ struct CftcReplayMarket {
     QString price_source;
     bool price_continuous_proxy = false;
     bool price_spot_index = false;
-    /// Genuine publication dates keyed by report date (Socrata `:created_at`),
-    /// raw; the genuine-window rule is applied by the replay layer.
+    /// Socrata `:created_at` row-creation dates keyed by report date, raw; the
+    /// qualifying-metadata rule is applied by the replay layer.
     QHash<QDate, QDate> created_at_dates;
 };
 
@@ -300,7 +308,7 @@ struct CftcReplayObservation {
     QDate nominal_release_date;
     QDate effective_date;
     bool publication_timestamp_known = false;
-    QDate publication_date; // recorded genuine publication date when known
+    QDate publication_date; // recorded row-creation date when it qualifies
     bool timing_excluded = false;
     QString timing_exclusion_reason;
     bool development = false;
@@ -356,7 +364,7 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
 
     const auto created = market.created_at_dates.constFind(report_date);
     if (created != market.created_at_dates.constEnd() &&
-        cftc_replay_publication_metadata_is_genuine(report_date, created.value())) {
+        cftc_replay_publication_metadata_qualifies(report_date, created.value())) {
         observation.publication_timestamp_known = true;
         observation.publication_date = created.value();
     }
@@ -408,6 +416,42 @@ inline CftcReplayObservation cftc_replay_at(const CftcReplayMarket& market,
                                         options);
     }
     return observation;
+}
+
+/// The newest report whose state is publicly available at `decision_date` under
+/// the predeclared convention, or an invalid date when no report has reached
+/// its effective date yet. This is the decision-time availability seam: a state
+/// must never be handed out before its report's effective date.
+inline QDate cftc_replay_latest_available_report(const CftcReplayMarket& market, const QDate& decision_date) {
+    if (!decision_date.isValid())
+        return {};
+    QDate latest;
+    for (const auto& observation : market.observations) {
+        if (!observation.date.isValid())
+            continue;
+        QDate qualifying;
+        const auto created = market.created_at_dates.constFind(observation.date);
+        if (created != market.created_at_dates.constEnd() &&
+            cftc_replay_publication_metadata_qualifies(observation.date, created.value())) {
+            qualifying = created.value();
+        }
+        const QDate effective = cftc_replay_effective_date(observation.date, qualifying);
+        if (effective.isValid() && effective <= decision_date)
+            latest = observation.date;
+    }
+    return latest;
+}
+
+/// Decision-time-gated replay. Returns no state before any report is available;
+/// otherwise returns the state of the newest available report, built exactly as
+/// `cftc_replay_at` builds it (same slicing, same engine, same timing).
+inline std::optional<CftcReplayObservation> cftc_replay_at_time(const CftcReplayMarket& market,
+                                                                const QDate& decision_date,
+                                                                const CftcReplayOptions& options) {
+    const QDate available = cftc_replay_latest_available_report(market, decision_date);
+    if (!available.isValid())
+        return std::nullopt;
+    return cftc_replay_at(market, available, options);
 }
 
 /// Replay every official report date of a market. The result is ordered by

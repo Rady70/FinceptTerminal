@@ -130,6 +130,9 @@ class TstCftcReplayValidation : public QObject {
     void timing_exclusion_windows_are_recorded();
     void development_and_holdout_assignment();
     void slices_contain_only_visible_history();
+    void state_is_unavailable_before_effective_date();
+    void same_report_becomes_available_only_at_effective_date();
+    void catch_up_availability_waits_for_recorded_row_creation();
     void eligible_states_require_full_trailing_history();
     void replay_state_equals_direct_engine_call();
     void full_replay_matches_direct_engine_for_every_report();
@@ -199,20 +202,20 @@ void TstCftcReplayValidation::documented_publication_dates_are_covered() {
 void TstCftcReplayValidation::genuine_publication_metadata_rule() {
     // Pre-PRE rows carry the 2022-09-13 bulk-migration timestamp, never a
     // publication time.
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(1986, 1, 15), QDate(2022, 9, 13)));
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(2022, 9, 6), QDate(2022, 9, 13)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(1986, 1, 15), QDate(2022, 9, 13)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(2022, 9, 6), QDate(2022, 9, 13)));
     // The first genuine PRE publication: report 2022-09-13, created 2022-09-16.
-    QVERIFY(cftc_replay_publication_metadata_is_genuine(QDate(2022, 9, 13), QDate(2022, 9, 16)));
+    QVERIFY(cftc_replay_publication_metadata_qualifies(QDate(2022, 9, 13), QDate(2022, 9, 16)));
     // Catch-up releases keep their actual timestamps.
-    QVERIFY(cftc_replay_publication_metadata_is_genuine(QDate(2023, 1, 31), QDate(2023, 3, 3)));
-    QVERIFY(cftc_replay_publication_metadata_is_genuine(QDate(2025, 9, 30), QDate(2025, 11, 19)));
+    QVERIFY(cftc_replay_publication_metadata_qualifies(QDate(2023, 1, 31), QDate(2023, 3, 3)));
+    QVERIFY(cftc_replay_publication_metadata_qualifies(QDate(2025, 9, 30), QDate(2025, 11, 19)));
     // A same-day or next-day stamp cannot be a publication (three processing days).
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(2026, 9, 15), QDate(2026, 9, 15)));
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(2026, 9, 15), QDate(2026, 9, 17)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(2026, 9, 15), QDate(2026, 9, 15)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(2026, 9, 15), QDate(2026, 9, 17)));
     // A very large lag is metadata noise, not a release.
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(2026, 1, 6), QDate(2026, 7, 6)));
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(), QDate(2025, 11, 19)));
-    QVERIFY(!cftc_replay_publication_metadata_is_genuine(QDate(2025, 9, 30), QDate()));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(2026, 1, 6), QDate(2026, 7, 6)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(), QDate(2025, 11, 19)));
+    QVERIFY(!cftc_replay_publication_metadata_qualifies(QDate(2025, 9, 30), QDate()));
 }
 
 void TstCftcReplayValidation::recorded_publication_wins_when_later() {
@@ -275,6 +278,72 @@ void TstCftcReplayValidation::slices_contain_only_visible_history() {
     const auto next_observations = cftc_replay_observation_slice(market.observations, next_day);
     QCOMPARE(next_observations.size(), 101); // no weekly report exists on next_day
     QVERIFY(cftc_replay_observation_slice(market.observations, report.addDays(7)).size() == 102);
+}
+
+void TstCftcReplayValidation::state_is_unavailable_before_effective_date() {
+    CftcReplayMarket market;
+    market.family = CftcFamily::Legacy;
+    market.market_key = QStringLiteral("synthetic");
+    market.observations = {synthetic_observation(QDate(2024, 1, 9), 100.0, std::optional<double>(1000.0))};
+    const CftcReplayOptions options;
+    QCOMPARE(cftc_replay_effective_date(QDate(2024, 1, 9)), QDate(2024, 1, 17));
+    QVERIFY(!cftc_replay_at_time(market, QDate(2024, 1, 9), options).has_value());
+    QVERIFY(!cftc_replay_at_time(market, QDate(2024, 1, 16), options).has_value());
+    const auto available = cftc_replay_at_time(market, QDate(2024, 1, 17), options);
+    QVERIFY(available.has_value());
+    QCOMPARE(available->report_date, QDate(2024, 1, 9));
+    const auto after = cftc_replay_at_time(market, QDate(2024, 1, 31), options);
+    QVERIFY(after.has_value());
+    QCOMPARE(after->report_date, QDate(2024, 1, 9)); // no newer report exists
+}
+
+void TstCftcReplayValidation::same_report_becomes_available_only_at_effective_date() {
+    CftcReplayMarket market;
+    market.family = CftcFamily::Legacy;
+    market.market_key = QStringLiteral("synthetic");
+    for (const auto& date : {QDate(2024, 1, 9), QDate(2024, 1, 16), QDate(2024, 1, 23)})
+        market.observations.append(synthetic_observation(date, 100.0, std::optional<double>(1000.0)));
+    const CftcReplayOptions options;
+    // Effective dates: 2024-01-09 -> 01-17, 2024-01-16 -> 01-24, 2024-01-23 -> 01-31.
+    QCOMPARE(cftc_replay_effective_date(QDate(2024, 1, 16)), QDate(2024, 1, 24));
+    QCOMPARE(cftc_replay_effective_date(QDate(2024, 1, 23)), QDate(2024, 1, 31));
+    for (QDate date = QDate(2024, 1, 9); date < QDate(2024, 1, 17); date = date.addDays(1)) {
+        const auto state = cftc_replay_at_time(market, date, options);
+        QVERIFY2(!state.has_value() || state->report_date != QDate(2024, 1, 9), qPrintable(date.toString(Qt::ISODate)));
+    }
+    const auto first = cftc_replay_at_time(market, QDate(2024, 1, 17), options);
+    QVERIFY(first.has_value());
+    QCOMPARE(first->report_date, QDate(2024, 1, 9));
+    const auto before_second = cftc_replay_at_time(market, QDate(2024, 1, 23), options);
+    QVERIFY(before_second.has_value());
+    QCOMPARE(before_second->report_date, QDate(2024, 1, 9));
+    const auto second = cftc_replay_at_time(market, QDate(2024, 1, 24), options);
+    QVERIFY(second.has_value());
+    QCOMPARE(second->report_date, QDate(2024, 1, 16));
+    // The gated state is exactly the ungated replay state for that report.
+    QCOMPARE(state_signature(*second), state_signature(cftc_replay_at(market, QDate(2024, 1, 16), options)));
+    const auto third = cftc_replay_at_time(market, QDate(2024, 1, 31), options);
+    QVERIFY(third.has_value());
+    QCOMPARE(third->report_date, QDate(2024, 1, 23));
+}
+
+void TstCftcReplayValidation::catch_up_availability_waits_for_recorded_row_creation() {
+    CftcReplayMarket market;
+    market.family = CftcFamily::Legacy;
+    market.market_key = QStringLiteral("synthetic");
+    market.observations = {synthetic_observation(QDate(2025, 9, 23), 100.0, std::optional<double>(1000.0)),
+                           synthetic_observation(QDate(2025, 9, 30), 110.0, std::optional<double>(1000.0))};
+    // Qualifying row-creation metadata for the second report: created 2025-11-19.
+    market.created_at_dates.insert(QDate(2025, 9, 30), QDate(2025, 11, 19));
+    const CftcReplayOptions options;
+    QCOMPARE(cftc_replay_effective_date(QDate(2025, 9, 23)), QDate(2025, 10, 1));
+    QCOMPARE(cftc_replay_effective_date(QDate(2025, 9, 30), QDate(2025, 11, 19)), QDate(2025, 11, 20));
+    const auto before = cftc_replay_at_time(market, QDate(2025, 11, 19), options);
+    QVERIFY(before.has_value());
+    QCOMPARE(before->report_date, QDate(2025, 9, 23));
+    const auto at = cftc_replay_at_time(market, QDate(2025, 11, 20), options);
+    QVERIFY(at.has_value());
+    QCOMPARE(at->report_date, QDate(2025, 9, 30));
 }
 
 void TstCftcReplayValidation::eligible_states_require_full_trailing_history() {
@@ -620,3 +689,4 @@ void TstCftcReplayValidation::return_statistics() {
 
 QTEST_GUILESS_MAIN(TstCftcReplayValidation)
 #include "tst_cftc_replay_validation.moc"
+
