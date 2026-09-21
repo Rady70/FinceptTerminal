@@ -20,6 +20,10 @@
 // experiment.
 //
 // Truthfulness rules carried over from the finalized metric foundation:
+//   * the input is fail-closed on provenance: the report basis must be named,
+//     the source family code must match the declared family, every observation
+//     must carry the family's participant slot count, and the market and
+//     contract identity must be uniform across the history;
 //   * missing is not zero and unavailable is not neutral;
 //   * a missing participant leg never becomes a fabricated net;
 //   * normalized flows require a present, positive prior Open Interest;
@@ -55,10 +59,18 @@ namespace fincept::services {
 
 // ── Rule-set identity and versioned configuration ───────────────────────────
 
-/// The versioned descriptive rule-set identity. Any change to a rule,
-/// threshold or reference window requires a new version string.
+/// The versioned descriptive rule-set identity for the default v1
+/// configuration. Any change to a rule, threshold or reference window requires
+/// a new version string; a caller-supplied configuration that differs from the
+/// v1 defaults is reported under the distinct custom identity below.
 inline QString cftc_interpretation_rule_set_version() {
     return QStringLiteral("cftc-descriptive-interpretation-v1");
+}
+
+/// The truthful identity for interpretations produced with a configuration
+/// that differs from the v1 defaults. It is never presented as plain v1.
+inline QString cftc_interpretation_custom_rule_set_version() {
+    return QStringLiteral("cftc-descriptive-interpretation-v1-custom");
 }
 
 /// The versioned heuristic configuration. Every numeric cutoff here is an
@@ -80,8 +92,10 @@ struct CftcInterpretationConfig {
     int persistent_extreme_reports = 3;           // PERSISTENT_EXTREME_REPORTS
     double material_move_percentile = 0.75;       // MATERIAL_MOVE_PERCENTILE
     double large_move_percentile = 0.90;          // LARGE_MOVE_PERCENTILE
-    /// The flow, Open Interest and price horizons. Sustained repositioning has
-    /// its own fixed 4- and 13-report taxonomy (plan section 8.4) and is always
+    /// The flow, Open Interest and price horizons. Only the plan's supported
+    /// report horizons (1, 4 and 13) are interpreted; other values are dropped
+    /// from the effective configuration. Sustained repositioning has its own
+    /// fixed 4- and 13-report taxonomy (plan section 8.4) and is always
     /// evaluated for those two horizons regardless of this list.
     QVector<int> horizons_reports = {1, 4, 13};
     /// The market concentration field the concentration states classify, as
@@ -90,6 +104,54 @@ struct CftcInterpretationConfig {
     /// participant category.
     QString primary_concentration_field = QStringLiteral("concentration_gross_4_long");
 };
+
+/// The exact v1 default configuration.
+inline CftcInterpretationConfig cftc_default_interpretation_config() {
+    return {};
+}
+
+/// Whether a configuration carries the immutable v1 defaults. A result
+/// produced under any other configuration is reported under
+/// cftc_interpretation_custom_rule_set_version(), never as plain v1.
+inline bool cftc_interpretation_config_is_v1(const CftcInterpretationConfig& config) {
+    const CftcInterpretationConfig defaults;
+    return config.history_window == defaults.history_window &&
+           config.extreme_percentile == defaults.extreme_percentile &&
+           config.low_extreme_percentile == defaults.low_extreme_percentile &&
+           config.severe_extreme_percentile == defaults.severe_extreme_percentile &&
+           config.low_severe_extreme_percentile == defaults.low_severe_extreme_percentile &&
+           config.unwind_reentry_percentile == defaults.unwind_reentry_percentile &&
+           config.low_unwind_reentry_percentile == defaults.low_unwind_reentry_percentile &&
+           config.persistent_extreme_reports == defaults.persistent_extreme_reports &&
+           config.material_move_percentile == defaults.material_move_percentile &&
+           config.large_move_percentile == defaults.large_move_percentile &&
+           config.horizons_reports == defaults.horizons_reports &&
+           config.primary_concentration_field == defaults.primary_concentration_field;
+}
+
+/// The rule-set identity that truthfully describes a configuration.
+inline QString cftc_interpretation_rule_set_version_for(const CftcInterpretationConfig& config) {
+    return cftc_interpretation_config_is_v1(config) ? cftc_interpretation_rule_set_version()
+                                                    : cftc_interpretation_custom_rule_set_version();
+}
+
+/// The only exact report horizons the descriptive taxonomy interprets.
+inline bool cftc_is_supported_interpretation_horizon(int horizon_reports) {
+    return horizon_reports == 1 || horizon_reports == 4 || horizon_reports == 13;
+}
+
+/// The effective v1 configuration: requested values with unsupported horizons
+/// dropped and duplicates removed.
+inline CftcInterpretationConfig cftc_effective_interpretation_config(const CftcInterpretationConfig& requested) {
+    CftcInterpretationConfig effective = requested;
+    QVector<int> horizons;
+    for (int horizon : requested.horizons_reports) {
+        if (cftc_is_supported_interpretation_horizon(horizon) && !horizons.contains(horizon))
+            horizons.append(horizon);
+    }
+    effective.horizons_reports = horizons;
+    return effective;
+}
 
 inline double cftc_unwind_low_reentry_percentile(const CftcInterpretationConfig& config) {
     return config.low_unwind_reentry_percentile;
@@ -180,6 +242,11 @@ enum class CftcUnavailableReason {
     PriceContextStale,
     PriceContextUnusable,
     MissingConcentrationField,
+    MixedMarketIdentity,
+    MixedContractIdentity,
+    ParticipantCountMismatch,
+    FamilyProvenanceMismatch,
+    ReportBasisUnspecified,
 };
 
 inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
@@ -212,6 +279,16 @@ inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
             return QStringLiteral("price_context_unusable");
         case CftcUnavailableReason::MissingConcentrationField:
             return QStringLiteral("missing_concentration_field");
+        case CftcUnavailableReason::MixedMarketIdentity:
+            return QStringLiteral("mixed_market_identity");
+        case CftcUnavailableReason::MixedContractIdentity:
+            return QStringLiteral("mixed_contract_identity");
+        case CftcUnavailableReason::ParticipantCountMismatch:
+            return QStringLiteral("participant_count_mismatch");
+        case CftcUnavailableReason::FamilyProvenanceMismatch:
+            return QStringLiteral("family_provenance_mismatch");
+        case CftcUnavailableReason::ReportBasisUnspecified:
+            return QStringLiteral("report_basis_unspecified");
     }
     return {};
 }
@@ -472,11 +549,21 @@ struct CftcConcentrationAssessment {
 
 struct CftcInterpretationInput {
     CftcFamily family = CftcFamily::Legacy;
+    /// The exact family code the observation rows were parsed with
+    /// ("legacy" | "disaggregated" | "tff"). Required: a mismatch with the
+    /// declared family, or an unknown/empty code, fails closed because
+    /// Disaggregated and TFF share the same five participant slots and cannot
+    /// be told apart from the vectors alone.
+    QString observations_family_code;
     QVector<CftcObservation> observations; // ascending official report order
-    bool futures_only = false;             // report basis: true = futures-only
-    QDate as_of;                           // optional explicit current report
-    QVector<CftcPricePoint> prices;        // ascending closes; empty = no price context
-    QString price_source;                  // explicit provider/proxy description
+    /// The official report basis the rows came from: "futures_only" or
+    /// "futures_and_options_combined". Required and validated; it has no
+    /// silent default because a mixed basis would change every normalized
+    /// metric.
+    QString report_basis_code;
+    QDate as_of;                    // optional explicit current report
+    QVector<CftcPricePoint> prices; // ascending closes; empty = no price context
+    QString price_source;           // explicit provider/proxy description
     bool price_continuous_proxy = false;
     bool price_spot_index = false;
     CftcInterpretationConfig config;
@@ -484,6 +571,7 @@ struct CftcInterpretationInput {
 
 struct CftcInterpretationResult {
     QString rule_set_version;
+    bool config_is_v1 = false;
     CftcFamily family = CftcFamily::Legacy;
     QString family_code;
     bool futures_only = false;
@@ -577,6 +665,52 @@ inline CftcTrailingPercentile cftc_trailing_percentile_at(const QVector<CftcDate
         reference = reference.mid(reference.size() - window);
     out.reference_count = reference.size();
     if (out.reference_count < window)
+        return out;
+    int below = 0;
+    int equal = 0;
+    for (double value : reference) {
+        if (value < current)
+            ++below;
+        else if (value == current)
+            ++equal;
+    }
+    out.available = true;
+    out.percentile =
+        (static_cast<double>(below) + 0.5 * static_cast<double>(equal)) / static_cast<double>(out.reference_count);
+    return out;
+}
+
+/// Percentile of a value against its complete strictly trailing reference,
+/// with the same midpoint-tie rule. This is the plan's "own full trailing
+/// reference" form used by the market concentration state: no history window
+/// truncates it. `minimum_reference` guards against a percentile computed from
+/// a single reading; unavailable below the Batch 1 trailing minimum.
+inline CftcTrailingPercentile cftc_full_trailing_percentile_at(const QVector<CftcDatedValue>& series,
+                                                               const QDate& current_date,
+                                                               int minimum_reference = kCftcTrailingMinObservations) {
+    CftcTrailingPercentile out;
+    if (!current_date.isValid() || minimum_reference < 1)
+        return out;
+    double current = 0.0;
+    bool found = false;
+    QVector<double> reference;
+    reference.reserve(series.size());
+    for (const auto& point : series) {
+        if (point.date < current_date) {
+            reference.append(point.value);
+        } else if (point.date == current_date) {
+            current = point.value;
+            found = true;
+            break;
+        } else {
+            break;
+        }
+    }
+    if (!found)
+        return out;
+    out.current_present = true;
+    out.reference_count = reference.size();
+    if (out.reference_count < minimum_reference)
         return out;
     int below = 0;
     int equal = 0;
@@ -865,9 +999,12 @@ struct CftcInterpretationRule {
     QString condition; // short formula, not UI prose
 };
 
-/// The versioned rule catalog. It records which part of the interpretation is
-/// a CFTC fact, an identity, a literature measure, a practitioner convention or
-/// a versioned engine heuristic.
+/// The versioned rule catalog for the v1 baseline. It records which part of
+/// the interpretation is a CFTC fact, an identity, a literature measure, a
+/// practitioner convention or a versioned engine heuristic. It describes the
+/// default v1 configuration; when a caller overrides CftcInterpretationConfig
+/// the result is reported under cftc_interpretation_custom_rule_set_version()
+/// and this catalog no longer describes the effective thresholds.
 inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
     return {
         {QStringLiteral("PARTICIPANT_POSITION_LEGS"), CftcInterpretationScope::AccountingFact,
@@ -1804,8 +1941,9 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
         assessment.has_current = current_value.has_value();
         if (current_value)
             assessment.current = *current_value;
-        const CftcTrailingPercentile percentile =
-            cftc_trailing_percentile_at(series, current_date, config.history_window);
+        // The plan's HIGH_MARKET_CONCENTRATION uses the field's own full
+        // trailing reference, not the Net %OI history window.
+        const CftcTrailingPercentile percentile = cftc_full_trailing_percentile_at(series, current_date);
         assessment.has_percentile = percentile.available;
         if (percentile.available) {
             assessment.percentile = percentile.percentile;
@@ -1960,24 +2098,53 @@ inline void cftc_append_report_unavailable(CftcInterpretationResult& result,
 
 /// The deterministic Batch 4A entry point. Pure function of its input: no
 /// clock, no randomness, no network, no widget state.
+/// Fail-closed provenance validation of the supplied history. Returns None
+/// only when the declared report basis, source family and participant identity
+/// are internally consistent with every observation. The engine never
+/// reinterprets one family's participant slots as another's, never mixes
+/// markets/contracts and never guesses a silent report basis.
+inline CftcUnavailableReason cftc_validate_provenance(const CftcInterpretationInput& input) {
+    const QString basis = input.report_basis_code.trimmed().toLower();
+    if (basis != QLatin1String("futures_only") && basis != QLatin1String("futures_and_options_combined"))
+        return CftcUnavailableReason::ReportBasisUnspecified;
+    const QString family_code = input.observations_family_code.trimmed().toLower();
+    const bool known_family = family_code == QLatin1String("legacy") || family_code == QLatin1String("disaggregated") ||
+                              family_code == QLatin1String("disagg") || family_code == QLatin1String("tff") ||
+                              family_code == QLatin1String("financial");
+    if (!known_family || cftc_family_from_code(family_code) != input.family)
+        return CftcUnavailableReason::FamilyProvenanceMismatch;
+    const int expected_slots = cftc_family_participants(input.family).size();
+    const QString market = input.observations.first().market;
+    const QString contract = input.observations.first().contract_code;
+    for (const auto& observation : input.observations) {
+        if (observation.longs.size() != expected_slots || observation.shorts.size() != expected_slots)
+            return CftcUnavailableReason::ParticipantCountMismatch;
+        if (observation.market != market)
+            return CftcUnavailableReason::MixedMarketIdentity;
+        if (observation.contract_code != contract)
+            return CftcUnavailableReason::MixedContractIdentity;
+    }
+    return CftcUnavailableReason::None;
+}
+
+/// The deterministic Batch 4A entry point. Pure function of its input: no
+/// clock, no randomness, no network, no widget state.
 inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& input) {
     CftcInterpretationResult result;
-    result.rule_set_version = cftc_interpretation_rule_set_version();
+    // Only the plan's supported report horizons and first-seen values run, and
+    // the result carries the truthful identity of the effective configuration.
+    const CftcInterpretationConfig effective = cftc_effective_interpretation_config(input.config);
+    result.config = effective;
+    result.config_is_v1 = cftc_interpretation_config_is_v1(effective);
+    result.rule_set_version = cftc_interpretation_rule_set_version_for(effective);
     result.family = input.family;
     result.family_code = cftc_family_code(input.family);
-    result.futures_only = input.futures_only;
-    result.report_basis =
-        input.futures_only ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined");
-    // Guard the configured horizons: only positive, first-seen values are
-    // interpreted, and the result echoes the effective configuration.
-    CftcInterpretationConfig effective = input.config;
-    QVector<int> horizons;
-    for (int horizon : effective.horizons_reports) {
-        if (horizon >= 1 && !horizons.contains(horizon))
-            horizons.append(horizon);
+    const QString requested_basis = input.report_basis_code.trimmed().toLower();
+    if (requested_basis == QLatin1String("futures_only") ||
+        requested_basis == QLatin1String("futures_and_options_combined")) {
+        result.report_basis = requested_basis;
+        result.futures_only = requested_basis == QLatin1String("futures_only");
     }
-    effective.horizons_reports = horizons;
-    result.config = effective;
     result.price_requested = !input.prices.isEmpty();
     result.price_source = input.price_source;
     result.price_continuous_proxy = input.price_continuous_proxy;
@@ -1989,6 +2156,13 @@ inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& in
     if (input.observations.isEmpty()) {
         result.report_date = input.as_of;
         cftc_append_report_unavailable(result, participants, CftcUnavailableReason::NoObservations);
+        return result;
+    }
+
+    const CftcUnavailableReason provenance = cftc_validate_provenance(input);
+    if (provenance != CftcUnavailableReason::None) {
+        result.report_date = input.as_of.isValid() ? input.as_of : input.observations.last().date;
+        cftc_append_report_unavailable(result, participants, provenance);
         return result;
     }
 

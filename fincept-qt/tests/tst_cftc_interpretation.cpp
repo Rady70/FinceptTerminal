@@ -10,7 +10,7 @@
 // concentration, price/positioning alignment and both divergence states,
 // missing-data truthfulness, family terminology applicability and the absence
 // of any BUY/HOLD/SELL, bullish/bearish, confidence or expected-return output.
-// The suite defines 53 test slots (QTest reports 55 passes including
+// The suite defines 61 test slots (QTest reports 63 passes including
 // initTestCase/cleanupTestCase). Header-only over Qt Core; no app sources
 // (tests/ HARD RULE).
 #include "services/economics/CftcInterpretationModel.h"
@@ -154,12 +154,25 @@ CftcInterpretationConfig small_window_config(int window = 4) {
     return config;
 }
 
-CftcInterpretationInput legacy_input(const QVector<CftcObservation>& observations, int window = 4) {
+CftcInterpretationInput family_input(CftcFamily family, const QVector<CftcObservation>& observations, int window = 4) {
     CftcInterpretationInput input;
-    input.family = CftcFamily::Legacy;
+    input.family = family;
+    input.observations_family_code = cftc_family_code(family);
     input.observations = observations;
+    input.report_basis_code = QStringLiteral("futures_and_options_combined");
     input.config = small_window_config(window);
     return input;
+}
+
+/// Declare the fail-closed provenance fields on a manually built input.
+void declare_family(CftcInterpretationInput& input, CftcFamily family) {
+    input.family = family;
+    input.observations_family_code = cftc_family_code(family);
+    input.report_basis_code = QStringLiteral("futures_and_options_combined");
+}
+
+CftcInterpretationInput legacy_input(const QVector<CftcObservation>& observations, int window = 4) {
+    return family_input(CftcFamily::Legacy, observations, window);
 }
 
 const CftcParticipantInterpretation* find_participant(const CftcInterpretationResult& result, const QString& key) {
@@ -225,6 +238,15 @@ const CftcStateMetric* find_metric(const QVector<CftcStateMetric>& metrics, cons
     for (const auto& metric : metrics) {
         if (metric.key == key)
             return &metric;
+    }
+    return nullptr;
+}
+
+const CftcConcentrationAssessment* find_concentration(const CftcInterpretationResult& result,
+                                                      const QString& field_key) {
+    for (const auto& assessment : result.concentration) {
+        if (assessment.field_key == field_key)
+            return &assessment;
     }
     return nullptr;
 }
@@ -347,7 +369,7 @@ CftcInterpretationResult rich_result() {
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
     input.price_source = QStringLiteral("TEST source");
     input.price_continuous_proxy = true;
-    input.futures_only = true;
+    input.report_basis_code = QStringLiteral("futures_only");
     return cftc_interpret(input);
 }
 
@@ -360,7 +382,16 @@ class TstCftcInterpretation : public QObject {
     void default_rule_set_configuration();
     void rule_catalog_covers_the_evidence_bases();
     void rule_catalog_covers_the_complete_state_taxonomy();
+    void custom_config_gets_distinct_rule_set_identity();
     void invalid_horizon_configuration_is_ignored();
+    void unsupported_positive_horizons_produce_no_states();
+
+    // Provenance
+    void provenance_mixed_market_is_unavailable();
+    void provenance_mixed_contract_is_unavailable();
+    void provenance_family_mismatch_is_unavailable();
+    void provenance_participant_slots_must_match_family();
+    void provenance_report_basis_is_required();
 
     // Exposure and historical relative position
     void exposure_states_net_long_short_flat();
@@ -400,6 +431,7 @@ class TstCftcInterpretation : public QObject {
     void concentration_states_are_market_level();
     void concentration_missing_field_stays_unavailable();
     void concentration_states_report_their_own_availability();
+    void high_concentration_uses_full_trailing_reference();
 
     // Price versus positioning
     void price_position_moving_together_up_and_down();
@@ -442,6 +474,27 @@ void TstCftcInterpretation::default_rule_set_configuration() {
     QCOMPARE(cftc_unwind_low_reentry_percentile(config), 0.25);
     QCOMPARE(cftc_low_extreme_percentile(config), 0.10);
     QCOMPARE(cftc_low_severe_percentile(config), 0.025);
+    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v1"));
+    QVERIFY(cftc_interpretation_custom_rule_set_version() != cftc_interpretation_rule_set_version());
+    QVERIFY(cftc_interpretation_config_is_v1(cftc_default_interpretation_config()));
+    QVERIFY(!cftc_interpretation_config_is_v1(small_window_config(4)));
+    CftcInterpretationConfig narrow_horizons;
+    narrow_horizons.horizons_reports = {1, 4};
+    QVERIFY(!cftc_interpretation_config_is_v1(narrow_horizons));
+    CftcInterpretationConfig narrow_concentration;
+    narrow_concentration.primary_concentration_field = QStringLiteral("concentration_net_4_short");
+    QVERIFY(!cftc_interpretation_config_is_v1(narrow_concentration));
+    QCOMPARE(cftc_interpretation_rule_set_version_for(cftc_default_interpretation_config()),
+             cftc_interpretation_rule_set_version());
+    QCOMPARE(cftc_interpretation_rule_set_version_for(small_window_config(4)),
+             cftc_interpretation_custom_rule_set_version());
+    QVERIFY(cftc_effective_interpretation_config(cftc_default_interpretation_config()).horizons_reports ==
+            QVector<int>({1, 4, 13}));
+    QVERIFY(cftc_is_supported_interpretation_horizon(1));
+    QVERIFY(cftc_is_supported_interpretation_horizon(4));
+    QVERIFY(cftc_is_supported_interpretation_horizon(13));
+    QVERIFY(!cftc_is_supported_interpretation_horizon(2));
+    QVERIFY(!cftc_is_supported_interpretation_horizon(0));
 }
 
 void TstCftcInterpretation::rule_catalog_covers_the_evidence_bases() {
@@ -508,24 +561,158 @@ void TstCftcInterpretation::invalid_horizon_configuration_is_ignored() {
     QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
     QVector<double> shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
-    input.config.horizons_reports = {0, 4, 4, -3};
+    input.config.horizons_reports = {0, 2, -3, 4, 4, 13};
     const CftcInterpretationResult result = cftc_interpret(input);
-    QCOMPARE(result.config.horizons_reports, QVector<int>({4}));
+    QCOMPARE(result.config.horizons_reports, QVector<int>({4, 13}));
+    QCOMPARE(result.rule_set_version, cftc_interpretation_custom_rule_set_version());
     for (const auto& participant : result.participants) {
         for (const auto& state : participant.states) {
-            if (state.has_horizon)
-                QCOMPARE(state.horizon_reports, 4);
+            if (state.has_horizon) {
+                QVERIFY2(state.horizon_reports == 4 || state.horizon_reports == 13,
+                         "only the supported 1/4/13 horizons may be interpreted");
+                QVERIFY(state.horizon_reports != 2);
+            }
         }
     }
-    for (const auto& assessment : result.price_context)
-        QCOMPARE(assessment.horizon_reports, 4);
+    for (const auto& assessment : result.price_context) {
+        QVERIFY(assessment.horizon_reports == 4 || assessment.horizon_reports == 13);
+    }
     for (const auto& record : result.unavailable) {
         if (!record.has_horizon)
             continue;
         // Sustained repositioning has its own fixed 4/13 taxonomy and is not
         // governed by the configured flow horizons.
-        QVERIFY(record.horizon_reports == 4 || record.state_family == QStringLiteral("SUSTAINED_REPOSITIONING"));
+        QVERIFY((record.horizon_reports == 4 || record.horizon_reports == 13) ||
+                record.state_family == QStringLiteral("SUSTAINED_REPOSITIONING"));
+        QVERIFY(record.horizon_reports != 2);
     }
+}
+
+void TstCftcInterpretation::custom_config_gets_distinct_rule_set_identity() {
+    QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
+    QVector<double> shorts(9, 400.0);
+    const CftcInterpretationResult v1 = cftc_interpret(legacy_input(legacy_series(longs, shorts), 156));
+    QCOMPARE(v1.rule_set_version, cftc_interpretation_rule_set_version());
+    QVERIFY(v1.config_is_v1);
+    const CftcInterpretationResult custom = cftc_interpret(legacy_input(legacy_series(longs, shorts), 4));
+    QCOMPARE(custom.rule_set_version, cftc_interpretation_custom_rule_set_version());
+    QVERIFY2(!custom.config_is_v1, "an overridden configuration must not claim the plain v1 identity");
+    QCOMPARE(custom.config.history_window, 4);
+}
+
+void TstCftcInterpretation::unsupported_positive_horizons_produce_no_states() {
+    QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
+    QVector<double> shorts(9, 400.0);
+    CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
+    input.config.horizons_reports = {2};
+    const CftcInterpretationResult result = cftc_interpret(input);
+    QVERIFY(result.config.horizons_reports.isEmpty());
+    QCOMPARE(result.rule_set_version, cftc_interpretation_custom_rule_set_version());
+    for (const auto& participant : result.participants) {
+        for (const auto& state : participant.states) {
+            if (!state.has_horizon)
+                continue;
+            // Sustained repositioning keeps its own fixed 4/13 taxonomy.
+            QVERIFY2(state.state_id.startsWith(QStringLiteral("SUSTAINED_")),
+                     "no configured horizon may produce a flow/price state");
+            QVERIFY(state.horizon_reports == 4 || state.horizon_reports == 13);
+        }
+    }
+    QVERIFY(result.price_context.isEmpty());
+    for (const auto& record : result.unavailable) {
+        if (record.has_horizon)
+            QVERIFY(record.state_family == QStringLiteral("SUSTAINED_REPOSITIONING"));
+    }
+}
+
+void TstCftcInterpretation::provenance_mixed_market_is_unavailable() {
+    QVector<CftcObservation> observations = legacy_series({500.0, 505.0}, {400.0, 400.0});
+    observations[1].market = QStringLiteral("OTHER - EXCHANGE");
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(observations));
+    const CftcUnavailableRecord* record =
+        find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::MixedMarketIdentity);
+    for (const auto& participant : result.participants)
+        QVERIFY(participant.states.isEmpty());
+    QVERIFY(result.market.isEmpty());
+}
+
+void TstCftcInterpretation::provenance_mixed_contract_is_unavailable() {
+    QVector<CftcObservation> observations = legacy_series({500.0, 505.0}, {400.0, 400.0});
+    observations[1].contract_code = QStringLiteral("999999");
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(observations));
+    const CftcUnavailableRecord* record =
+        find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::MixedContractIdentity);
+    for (const auto& participant : result.participants)
+        QVERIFY(participant.states.isEmpty());
+}
+
+void TstCftcInterpretation::provenance_family_mismatch_is_unavailable() {
+    const QVector<CftcObservation> observations = legacy_series({500.0}, {400.0});
+    for (const QString& code :
+         {QStringLiteral("tff"), QStringLiteral("disaggregated"), QStringLiteral("bogus"), QStringLiteral("")}) {
+        CftcInterpretationInput input = legacy_input(observations);
+        input.observations_family_code = code;
+        const CftcInterpretationResult result = cftc_interpret(input);
+        const CftcUnavailableRecord* record =
+            find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+        QVERIFY2(record, qPrintable(code));
+        QCOMPARE(record->reason, CftcUnavailableReason::FamilyProvenanceMismatch);
+        for (const auto& participant : result.participants)
+            QVERIFY(participant.states.isEmpty());
+    }
+}
+
+void TstCftcInterpretation::provenance_participant_slots_must_match_family() {
+    // Disaggregated rows carry five participant slots; declaring them as
+    // Legacy must fail closed instead of silently reading slot 0..2.
+    const QVector<CftcObservation> disaggregated =
+        make_series(CftcFamily::Disaggregated, 2, optional_values({500.0}), optional_values({400.0}));
+    QCOMPARE(disaggregated.first().longs.size(), 5);
+    CftcInterpretationInput input = family_input(CftcFamily::Disaggregated, disaggregated);
+    declare_family(input, CftcFamily::Legacy);
+    const CftcInterpretationResult result = cftc_interpret(input);
+    const CftcUnavailableRecord* record =
+        find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::ParticipantCountMismatch);
+
+    // The mirror case: legacy rows declared as a five-slot family.
+    CftcInterpretationInput reverse = legacy_input(legacy_series({500.0}, {400.0}));
+    declare_family(reverse, CftcFamily::Tff);
+    const CftcInterpretationResult reverse_result = cftc_interpret(reverse);
+    const CftcUnavailableRecord* reverse_record =
+        find_unavailable(reverse_result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(reverse_record);
+    QCOMPARE(reverse_record->reason, CftcUnavailableReason::ParticipantCountMismatch);
+}
+
+void TstCftcInterpretation::provenance_report_basis_is_required() {
+    const QVector<CftcObservation> observations = legacy_series({500.0}, {400.0});
+    for (const QString& code :
+         {QStringLiteral(""), QStringLiteral("combined"), QStringLiteral("options_and_futures")}) {
+        CftcInterpretationInput input = legacy_input(observations);
+        input.report_basis_code = code;
+        const CftcInterpretationResult result = cftc_interpret(input);
+        const CftcUnavailableRecord* record =
+            find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+        QVERIFY2(record, qPrintable(code));
+        QCOMPARE(record->reason, CftcUnavailableReason::ReportBasisUnspecified);
+        QVERIFY(result.report_basis.isEmpty());
+    }
+
+    // An explicit valid basis still interprets and is echoed truthfully.
+    CftcInterpretationInput futures_only = legacy_input(observations);
+    futures_only.report_basis_code = QStringLiteral("futures_only");
+    const CftcInterpretationResult result = cftc_interpret(futures_only);
+    QVERIFY(result.futures_only);
+    QCOMPARE(result.report_basis, QStringLiteral("futures_only"));
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QVERIFY(has_state(participant->states, QStringLiteral("NET_LONG")));
 }
 
 // ── Exposure and historical relative position ───────────────────────────────
@@ -632,7 +819,7 @@ void TstCftcInterpretation::historical_extreme_90_10_boundaries() {
     CftcInterpretationConfig config = small_window_config(10);
     auto run = [&](const QVector<double>& percents) {
         CftcInterpretationInput input;
-        input.family = CftcFamily::Legacy;
+        declare_family(input, CftcFamily::Legacy);
         input.observations = legacy_percent_series(percents);
         input.config = config;
         return cftc_interpret(input);
@@ -700,7 +887,7 @@ void TstCftcInterpretation::severe_extreme_975_25_boundaries() {
     CftcInterpretationConfig config = small_window_config(40);
     auto run = [&](const QVector<double>& percents) {
         CftcInterpretationInput input;
-        input.family = CftcFamily::Legacy;
+        declare_family(input, CftcFamily::Legacy);
         input.observations = legacy_percent_series(percents);
         input.config = config;
         return cftc_interpret(input);
@@ -763,7 +950,7 @@ void TstCftcInterpretation::crowded_states_require_permitted_terminology() {
     shorts.append(100.0);
 
     CftcInterpretationInput input;
-    input.family = CftcFamily::Legacy;
+    declare_family(input, CftcFamily::Legacy);
     input.observations = make_series(CftcFamily::Legacy, speculative, longs, shorts);
     input.config = small_window_config(10);
     const CftcInterpretationResult result = cftc_interpret(input);
@@ -799,7 +986,7 @@ void TstCftcInterpretation::crowded_states_require_permitted_terminology() {
     commercial_longs.append(500.0);
     commercial_shorts.append(100.0);
     CftcInterpretationInput commercial_input;
-    commercial_input.family = CftcFamily::Legacy;
+    declare_family(commercial_input, CftcFamily::Legacy);
     commercial_input.observations = make_series(CftcFamily::Legacy, commercial, commercial_longs, commercial_shorts);
     commercial_input.config = small_window_config(10);
     const CftcInterpretationResult commercial_result = cftc_interpret(commercial_input);
@@ -1434,7 +1621,7 @@ void TstCftcInterpretation::extreme_exit_boundaries() {
     at_band.append(100.0);
     at_band.append(50.0);
     CftcInterpretationInput at_band_input;
-    at_band_input.family = CftcFamily::Legacy;
+    declare_family(at_band_input, CftcFamily::Legacy);
     at_band_input.observations = legacy_percent_series(at_band);
     at_band_input.config = wide;
     CftcInterpretationResult at_band_result = cftc_interpret(at_band_input);
@@ -1447,7 +1634,7 @@ void TstCftcInterpretation::extreme_exit_boundaries() {
     QVector<double> fell = at_band;
     fell.last() = 9.5;
     CftcInterpretationInput fell_input;
-    fell_input.family = CftcFamily::Legacy;
+    declare_family(fell_input, CftcFamily::Legacy);
     fell_input.observations = legacy_percent_series(fell);
     fell_input.config = wide;
     CftcInterpretationResult fell_result = cftc_interpret(fell_input);
@@ -1474,7 +1661,7 @@ void TstCftcInterpretation::extreme_unwind_boundaries() {
     // The current percentile must re-enter at or below the unwind threshold.
     // With a 0.30 threshold the same 0.375 reading is not an unwind.
     CftcInterpretationInput strict_input;
-    strict_input.family = CftcFamily::Legacy;
+    declare_family(strict_input, CftcFamily::Legacy);
     strict_input.observations = legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 14});
     strict_input.config = small_window_config(4);
     strict_input.config.unwind_reentry_percentile = 0.30;
@@ -1498,7 +1685,7 @@ void TstCftcInterpretation::extreme_unwind_boundaries() {
         high_boundary.append(static_cast<double>(i));
     high_boundary.append(9.5);
     CftcInterpretationInput high_input;
-    high_input.family = CftcFamily::Legacy;
+    declare_family(high_input, CftcFamily::Legacy);
     high_input.observations = legacy_percent_series(high_boundary);
     high_input.config = small_window_config(8);
     const CftcInterpretationResult high_result = cftc_interpret(high_input);
@@ -1519,7 +1706,7 @@ void TstCftcInterpretation::extreme_unwind_boundaries() {
         low_boundary.append(20.0 - i);
     low_boundary.append(10.5);
     CftcInterpretationInput low_input;
-    low_input.family = CftcFamily::Legacy;
+    declare_family(low_input, CftcFamily::Legacy);
     low_input.observations = legacy_percent_series(low_boundary);
     low_input.config = small_window_config(8);
     const CftcInterpretationResult low_boundary_result = cftc_interpret(low_input);
@@ -1607,13 +1794,11 @@ void TstCftcInterpretation::net_share_raw_disagreement_requires_opposite_signs()
 
 void TstCftcInterpretation::concentration_states_are_market_level() {
     const int speculative = participant_index(CftcFamily::Legacy, QStringLiteral("non_commercial"));
-    QVector<std::optional<double>> longs(6, 500.0);
-    QVector<std::optional<double>> shorts(6, 400.0);
     QVector<CftcObservation> series;
-    const QVector<double> concentration = {10.0, 20.0, 30.0, 40.0, 50.0, 90.0};
-    for (int i = 0; i < 6; ++i) {
-        series.append(family_observation(CftcFamily::Legacy, kLatest.addDays(-7LL * (5 - i)), 1000.0, speculative,
-                                         longs[i], shorts[i], concentration[i]));
+    const QVector<double> concentration = {10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 90.0};
+    for (int i = 0; i < concentration.size(); ++i) {
+        series.append(family_observation(CftcFamily::Legacy, kLatest.addDays(-7LL * (concentration.size() - 1 - i)),
+                                         1000.0, speculative, 500.0, 400.0, concentration[i]));
     }
     const CftcInterpretationResult result = cftc_interpret(legacy_input(series));
     const CftcInterpretationState* high =
@@ -1622,6 +1807,7 @@ void TstCftcInterpretation::concentration_states_are_market_level() {
     QVERIFY2(high->participant_key.isEmpty(), "concentration is a market/report property");
     QCOMPARE(high->scope, CftcInterpretationScope::MarketStructure);
     QCOMPARE(high->percentile, 1.0);
+    QCOMPARE(high->percentile_reference_count, 9);
     const CftcInterpretationState* rising = find_state(result.market_context, QStringLiteral("CONCENTRATION_RISING"));
     QVERIFY(rising);
     QVERIFY(rising->participant_key.isEmpty());
@@ -1666,19 +1852,21 @@ void TstCftcInterpretation::concentration_missing_field_stays_unavailable() {
 void TstCftcInterpretation::concentration_states_report_their_own_availability() {
     const int speculative = participant_index(CftcFamily::Legacy, QStringLiteral("non_commercial"));
     // A percentile-qualified field whose change cannot be evaluated must not
-    // read as an unavailable concentration family at the same time.
+    // read as an unavailable concentration family at the same time. The full
+    // trailing reference needs at least the Batch 1 minimum of eight readings.
     QVector<CftcObservation> series;
-    const QVector<double> concentration = {10.0, 20.0, 30.0, 40.0, 0.0, 90.0};
-    for (int i = 0; i < 6; ++i) {
-        const std::optional<double> value = i == 4 ? std::nullopt : std::optional<double>(concentration[i]);
-        series.append(family_observation(CftcFamily::Legacy, kLatest.addDays(-7LL * (5 - i)), 1000.0, speculative,
-                                         500.0, 400.0, value));
+    const QVector<double> concentration = {10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 0.0, 90.0};
+    for (int i = 0; i < concentration.size(); ++i) {
+        const std::optional<double> value = i == 8 ? std::nullopt : std::optional<double>(concentration[i]);
+        series.append(family_observation(CftcFamily::Legacy, kLatest.addDays(-7LL * (concentration.size() - 1 - i)),
+                                         1000.0, speculative, 500.0, 400.0, value));
     }
     const CftcInterpretationResult result = cftc_interpret(legacy_input(series));
     const CftcInterpretationState* high =
         find_state(result.market_context, QStringLiteral("HIGH_MARKET_CONCENTRATION"));
     QVERIFY(high);
     QCOMPARE(high->percentile, 1.0);
+    QCOMPARE(high->percentile_reference_count, 8);
     QVERIFY(!has_state(result.market_context, QStringLiteral("CONCENTRATION_RISING")));
     const CftcUnavailableRecord* rising = find_unavailable(result.unavailable, QStringLiteral("CONCENTRATION"),
                                                            QString(), -1, QStringLiteral("CONCENTRATION_RISING"));
@@ -1687,6 +1875,49 @@ void TstCftcInterpretation::concentration_states_report_their_own_availability()
     QVERIFY2(find_unavailable(result.unavailable, QStringLiteral("CONCENTRATION"), QString(), -1,
                               QStringLiteral("HIGH_MARKET_CONCENTRATION")) == nullptr,
              "an emitted HIGH state must not also be reported unavailable");
+}
+
+void TstCftcInterpretation::high_concentration_uses_full_trailing_reference() {
+    const int speculative = participant_index(CftcFamily::Legacy, QStringLiteral("non_commercial"));
+    const QString field = QStringLiteral("concentration_gross_4_long");
+    auto build = [&](const QVector<double>& values) {
+        QVector<CftcObservation> series;
+        for (int i = 0; i < values.size(); ++i) {
+            series.append(family_observation(CftcFamily::Legacy, kLatest.addDays(-7LL * (values.size() - 1 - i)),
+                                             1000.0, speculative, 500.0, 400.0, values[i]));
+        }
+        return series;
+    };
+
+    // 200 prior readings: the most recent 156 are all below the current value,
+    // but the full reference (which includes 44 older highs) is not extreme.
+    // A 156-report window would wrongly report 1.0 and fire HIGH.
+    QVector<double> windowed_high;
+    for (int i = 0; i < 200; ++i)
+        windowed_high.append(i < 44 ? 1000.0 : 1.0);
+    windowed_high.append(500.0);
+    CftcInterpretationResult result = cftc_interpret(legacy_input(build(windowed_high), 156));
+    const CftcConcentrationAssessment* assessment = find_concentration(result, field);
+    QVERIFY(assessment);
+    QVERIFY(assessment->has_percentile);
+    QCOMPARE(assessment->percentile_reference_count, 200);
+    QCOMPARE(assessment->percentile, 0.78);
+    QVERIFY2(!has_state(result.market_context, QStringLiteral("HIGH_MARKET_CONCENTRATION")),
+             "the full trailing reference, not the 156-report window, classifies concentration");
+
+    // 200 prior readings where the full reference reaches 0.90 only because of
+    // 44 older lows outside the 156-report window (window: 136/156 = 0.872).
+    QVector<double> full_high;
+    for (int i = 0; i < 200; ++i)
+        full_high.append(i < 180 ? 1.0 : 1000.0);
+    full_high.append(500.0);
+    result = cftc_interpret(legacy_input(build(full_high), 156));
+    assessment = find_concentration(result, field);
+    QVERIFY(assessment);
+    QVERIFY(assessment->has_percentile);
+    QCOMPARE(assessment->percentile_reference_count, 200);
+    QCOMPARE(assessment->percentile, 0.90);
+    QVERIFY(has_state(result.market_context, QStringLiteral("HIGH_MARKET_CONCENTRATION")));
 }
 
 // ── Price versus positioning ────────────────────────────────────────────────
@@ -1943,7 +2174,7 @@ void TstCftcInterpretation::terminology_caveats_are_exposed() {
     QVERIFY(commercial->terminology_caveat_code.isEmpty());
 
     CftcInterpretationInput tff_input;
-    tff_input.family = CftcFamily::Tff;
+    declare_family(tff_input, CftcFamily::Tff);
     tff_input.observations = make_series(CftcFamily::Tff, 2, optional_values(longs), optional_values(shorts));
     tff_input.config = small_window_config(4);
     const CftcInterpretationResult tff = cftc_interpret(tff_input);
@@ -1962,7 +2193,7 @@ void TstCftcInterpretation::legacy_disaggregated_tff_applicability() {
     const QVector<CftcFamily> families = {CftcFamily::Legacy, CftcFamily::Disaggregated, CftcFamily::Tff};
     for (CftcFamily family : families) {
         CftcInterpretationInput input;
-        input.family = family;
+        declare_family(input, family);
         // Index 2 is a real member of every family (legacy non-reportable,
         // disaggregated managed money, TFF leveraged funds), so the state
         // identity assertions always exercise an existing participant.
@@ -1986,7 +2217,7 @@ void TstCftcInterpretation::prohibited_cross_family_terminology() {
     QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
     QVector<double> shorts(9, 400.0);
     CftcInterpretationInput input;
-    input.family = CftcFamily::Tff;
+    declare_family(input, CftcFamily::Tff);
     input.observations = make_series(CftcFamily::Tff, 2, optional_values(longs), optional_values(shorts));
     input.config = small_window_config(4);
     const CftcInterpretationResult result = cftc_interpret(input);
