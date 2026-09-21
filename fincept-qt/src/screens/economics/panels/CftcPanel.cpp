@@ -12,8 +12,11 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "screens/economics/panels/CftcHeatmap.h"
+#include "screens/economics/panels/CftcInterpretationPresentation.h"
 #include "screens/economics/panels/CftcNetFormat.h"
 #include "screens/economics/panels/CftcPositioningChart.h"
+#include "screens/economics/panels/CftcPricePositioningChart.h"
+#include "screens/economics/panels/CftcSyncChartData.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/charts/TimeSeriesData.h"
 #include "ui/theme/Theme.h"
@@ -49,20 +52,17 @@ namespace fincept::screens {
 // The COT metric core lives in fincept::services. Name the specific types and
 // functions this translation unit uses instead of importing the whole
 // namespace, so a future same-name addition elsewhere stays a clear error.
-using services::cftc_change_since_days;
-using services::cftc_direction;
-using services::cftc_directions_aligned;
 using services::cftc_family_code;
 using services::cftc_family_from_code;
 using services::cftc_family_participants;
 using services::cftc_filter_range;
 using services::cftc_heatmap_series;
+using services::cftc_interpret;
 using services::cftc_metric_series;
 using services::cftc_net_extreme_dates;
 using services::cftc_open_interest_series;
 using services::cftc_parse_history;
 using services::cftc_position_metrics;
-using services::cftc_price_change_since_days;
 using services::cftc_price_on_or_before;
 using services::cftc_range_available;
 using services::cftc_range_label;
@@ -72,10 +72,11 @@ using services::cftc_weekly_change;
 using services::cftc_window_stats;
 using services::CftcChange;
 using services::CftcDatedValue;
-using services::CftcDirection;
 using services::CftcFamily;
 using services::CftcHeatmapPoint;
 using services::CftcHistory;
+using services::CftcInterpretationInput;
+using services::CftcInterpretationResult;
 using services::CftcMetricKind;
 using services::CftcObservation;
 using services::CftcPositionMetrics;
@@ -737,7 +738,42 @@ void CftcPanel::build_analysis_page() {
     header_layout->addLayout(range_row);
     content_layout->addWidget(header);
 
-    // 2. Current snapshot.
+    // 2. COT interpretation: the deterministic conclusions are the primary
+    //    analytical output and lead the page. The wording is composed by
+    //    CftcInterpretationPresentation.h from the finalized Batch 4A states
+    //    and is evaluated from the full official history, never the visible
+    //    chart range.
+    auto interpretation = make_section(tr("COT INTERPRETATION"));
+    interpretation_title_ = interpretation.title;
+    interpretation_headline_ = new QLabel(interpretation.frame);
+    interpretation_headline_->setObjectName("cftcInterpretationHeadline");
+    interpretation_headline_->setWordWrap(true);
+    interpretation_headline_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    interpretation.body->addWidget(interpretation_headline_);
+    interpretation_body_ = new QLabel(interpretation.frame);
+    interpretation_body_->setObjectName("cftcInterpretationBody");
+    interpretation_body_->setWordWrap(true);
+    interpretation_body_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    interpretation.body->addWidget(interpretation_body_);
+    interpretation_evidence_ = make_table(interpretation.frame);
+    interpretation_evidence_->setWordWrap(true);
+    interpretation_evidence_->setColumnCount(2);
+    interpretation.body->addWidget(interpretation_evidence_);
+    interpretation_context_ = new QLabel(interpretation.frame);
+    interpretation_context_->setObjectName("cftcSectionMeta");
+    interpretation_context_->setWordWrap(true);
+    interpretation.body->addWidget(interpretation_context_);
+    content_layout->addWidget(interpretation.frame);
+
+    // 3. The large synchronized Price + Positioning chart: two semantically
+    //    separate panes on one report-date axis with a shared crosshair.
+    auto sync = make_section(tr("PRICE + POSITIONING — SYNCHRONIZED"));
+    sync_chart_title_ = sync.title;
+    sync_chart_ = new CftcPricePositioningChart(sync.frame);
+    sync.body->addWidget(sync_chart_);
+    content_layout->addWidget(sync.frame);
+
+    // 4. Current snapshot.
     auto snapshot = make_section(tr("CURRENT SNAPSHOT"));
     snapshot_title_ = snapshot.title;
     snapshot_grid_ = new QGridLayout;
@@ -749,7 +785,7 @@ void CftcPanel::build_analysis_page() {
     snapshot.body->addLayout(snapshot_grid_);
     content_layout->addWidget(snapshot.frame);
 
-    // 3 + 4. Positioning and weekly changes share a row when width allows.
+    // 5 + 6. Positioning and weekly changes share a row when width allows.
     pair_layout_ = new QGridLayout;
     pair_layout_->setSpacing(10);
 
@@ -779,7 +815,7 @@ void CftcPanel::build_analysis_page() {
     pair_layout_->addWidget(weekly_frame_, 0, 1);
     content_layout->addLayout(pair_layout_);
 
-    // 5. Historical positioning: the principal large chart.
+    // 7. Historical positioning: the principal multi-series chart.
     auto chart_section = make_section(tr("HISTORICAL POSITIONING"));
     chart_title_ = chart_section.title;
     auto* chart_controls = new QHBoxLayout;
@@ -814,7 +850,10 @@ void CftcPanel::build_analysis_page() {
     chart_section.body->addWidget(chart_);
     content_layout->addWidget(chart_section.frame);
 
-    // 6. Window statistics & extremes; 7. price + positioning divergence.
+    // 8. Window statistics & extremes; 9. price + positioning evidence. The
+    // evidence section carries the Batch 4A price/positioning assessments as
+    // raw numbers; the user-facing conclusion lives only in the interpretation
+    // section above.
     auto stats = make_section(tr("POSITIONING STATISTICS & EXTREMES"));
     stats_frame_ = stats.frame;
     stats_title_ = stats.title;
@@ -828,7 +867,7 @@ void CftcPanel::build_analysis_page() {
     stats_table_->verticalHeader()->setMinimumWidth(110);
     stats.body->addWidget(stats_table_);
 
-    auto divergence = make_section(tr("PRICE + POSITIONING / DIVERGENCE"));
+    auto divergence = make_section(tr("PRICE + POSITIONING — EVIDENCE"));
     divergence_frame_ = divergence.frame;
     divergence_title_ = divergence.title;
     divergence_source_lbl_ = new QLabel(divergence.frame);
@@ -850,7 +889,7 @@ void CftcPanel::build_analysis_page() {
     stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
     content_layout->addLayout(stats_pair_layout_);
 
-    // 8. Positioning heatmap.
+    // 10. Positioning heatmap.
     auto heatmap = make_section(tr("POSITIONING HEATMAP"));
     heatmap_title_ = heatmap.title;
     auto* heat_controls = new QHBoxLayout;
@@ -1012,6 +1051,10 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         title += QStringLiteral(" · ") + history_.observations.last().contract_code;
     display(build_raw_rows(), title);
     build_participant_controls();
+    // CFTC-only conclusions render immediately from the full validated
+    // history; the price context arrives asynchronously and only refreshes the
+    // price-dependent parts afterwards.
+    refresh_interpretation();
     rebuild_workspace();
     result_tabs_->show();
     show_analysis_tab();
@@ -1040,6 +1083,7 @@ void CftcPanel::clear_workspace() {
     price_reason_.clear();
     price_symbol_.clear();
     price_spot_index_ = false;
+    price_market_key_.clear();
     price_.clear();
     history_ = {};
     window_.clear();
@@ -1100,6 +1144,21 @@ void CftcPanel::clear_workspace() {
         heatmap_->clear();
     if (heatmap_meta_lbl_)
         heatmap_meta_lbl_->clear();
+
+    interpretation_ = {};
+    if (interpretation_headline_)
+        interpretation_headline_->setText(QStringLiteral("—"));
+    if (interpretation_body_)
+        interpretation_body_->clear();
+    if (interpretation_evidence_) {
+        interpretation_evidence_->clearContents();
+        interpretation_evidence_->setRowCount(0);
+        interpretation_evidence_->setColumnCount(0);
+    }
+    if (interpretation_context_)
+        interpretation_context_->clear();
+    if (sync_chart_)
+        sync_chart_->clear();
 }
 
 void CftcPanel::build_participant_controls() {
@@ -1141,6 +1200,8 @@ void CftcPanel::rebuild_workspace() {
     window_ = cftc_filter_range(history_.observations, range_);
     refresh_range_buttons();
     update_header();
+    render_interpretation();
+    update_sync_chart();
     update_snapshot();
     update_positioning();
     update_weekly();
@@ -1221,6 +1282,72 @@ void CftcPanel::update_header() {
         range_info_lbl_->setText(
             tr("%1 reports · %2 → %3").arg(window_.size()).arg(window_.first().date_label, window_.last().date_label));
     }
+}
+
+void CftcPanel::refresh_interpretation() {
+    if (history_.observations.isEmpty() || speculative_index_ < 0) {
+        interpretation_ = {};
+        render_interpretation();
+        return;
+    }
+    // The interpretation always evaluates the full validated official history.
+    // window_ (the visible chart range) is presentation-only and is never
+    // passed here: the strict 156-prior-report reference needs the complete
+    // history, and changing the visible range must not change any state.
+    const bool price_ready = price_state_ == PriceState::Ready && price_market_key_ == market_key_;
+    const QVector<CftcPricePoint> prices = price_ready ? price_ : QVector<CftcPricePoint>{};
+    const CftcInterpretationInput input = cftc_make_interpretation_input(
+        family_, history_.observations,
+        futures_only_ ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined"), prices,
+        price_ready ? concise_price_source_text() : QString(), price_ready && !price_spot_index_, price_spot_index_);
+    interpretation_ = cftc_interpret(input);
+    render_interpretation();
+}
+
+void CftcPanel::render_interpretation() {
+    if (!interpretation_headline_)
+        return;
+    const bool price_pending = price_state_ == PriceState::Pending;
+    const QString price_note = price_state_ == PriceState::Unavailable ? price_reason_ : QString();
+    const CftcInterpretationView view = cftc_compose_interpretation(interpretation_, price_pending, price_note);
+    interpretation_headline_->setText(view.headline);
+    interpretation_body_->setText(view.sentences.join(QStringLiteral(" ")));
+    interpretation_context_->setText(view.context_text);
+
+    interpretation_evidence_->setColumnCount(2);
+    interpretation_evidence_->setRowCount(view.evidence.size());
+    interpretation_evidence_->setHorizontalHeaderLabels({tr("EVIDENCE"), tr("VALUE")});
+    interpretation_evidence_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    interpretation_evidence_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    for (int row = 0; row < view.evidence.size(); ++row) {
+        const CftcEvidenceItem& item = view.evidence.at(row);
+        set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
+        set_plain_cell(interpretation_evidence_, row, 1, item.value, Qt::AlignRight | Qt::AlignVCenter);
+        if (!item.available)
+            interpretation_evidence_->item(row, 1)->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+        interpretation_evidence_->item(row, 0)->setToolTip(item.label);
+        interpretation_evidence_->item(row, 1)->setToolTip(item.value);
+    }
+    interpretation_evidence_->resizeRowsToContents();
+    int evidence_height = interpretation_evidence_->horizontalHeader()->height();
+    for (int row = 0; row < interpretation_evidence_->rowCount(); ++row)
+        evidence_height += interpretation_evidence_->rowHeight(row);
+    interpretation_evidence_->setFixedHeight(evidence_height + 10);
+}
+
+void CftcPanel::update_sync_chart() {
+    if (!sync_chart_)
+        return;
+    if (history_.observations.isEmpty() || speculative_index_ < 0) {
+        sync_chart_->clear();
+        return;
+    }
+    const bool price_ready = price_state_ == PriceState::Ready && price_market_key_ == market_key_;
+    const CftcSyncChartData data = cftc_build_sync_chart_data(
+        interpretation_, history_.observations, price_ready ? price_ : QVector<CftcPricePoint>{}, market_key_,
+        price_market_key_, range_, price_ready ? concise_price_source_text() : QString(),
+        price_ready && !price_spot_index_, price_spot_index_);
+    sync_chart_->set_data(data);
 }
 
 void CftcPanel::update_snapshot() {
@@ -1560,13 +1687,13 @@ void CftcPanel::request_price(const QString& market_key) {
     if (it == price_specs().constEnd()) {
         price_state_ = PriceState::Unavailable;
         price_reason_ = tr("no retained free price source is mapped for this market");
-        update_divergence();
+        update_price_views();
         return;
     }
     price_symbol_ = it->symbol;
     price_spot_index_ = it->spot_index;
     price_state_ = PriceState::Pending;
-    update_divergence();
+    update_price_views();
 
     // Price context comes from the retained free public path through its
     // DataHub producer/topic (market:history:*), not a direct service call;
@@ -1580,7 +1707,7 @@ void CftcPanel::request_price(const QString& market_key) {
             if (points.isEmpty()) {
                 price_state_ = PriceState::Unavailable;
                 price_reason_ = tr("the price provider returned no observations for this symbol");
-                update_divergence();
+                update_price_views();
                 return;
             }
             update_price_points(points);
@@ -1592,7 +1719,7 @@ void CftcPanel::request_price(const QString& market_key) {
         price_reason_ = error.trimmed().isEmpty()
                             ? tr("the Yahoo Finance history request failed")
                             : tr("the Yahoo Finance history request failed: %1").arg(error.trimmed());
-        update_divergence();
+        update_price_views();
     });
     hub.request(price_topic_, /*force=*/true);
 }
@@ -1625,7 +1752,24 @@ void CftcPanel::update_price_points(const QVector<services::HistoryPoint>& point
     } else {
         price_state_ = PriceState::Ready;
     }
+    update_price_views();
+}
+
+void CftcPanel::update_price_views() {
+    // The correct current-market price context updates only the price-dependent
+    // interpretation, the synchronized price pane and the price evidence; every
+    // CFTC-only conclusion comes from the same deterministic full-history result.
+    refresh_interpretation();
+    update_sync_chart();
     update_divergence();
+}
+
+QString CftcPanel::concise_price_source_text() const {
+    if (price_symbol_.isEmpty())
+        return {};
+    if (price_spot_index_)
+        return tr("Yahoo Finance — %1 spot index").arg(price_symbol_);
+    return tr("Yahoo Finance — %1 front-month continuous futures").arg(price_symbol_);
 }
 
 QString CftcPanel::price_source_text() const {
@@ -1633,12 +1777,13 @@ QString CftcPanel::price_source_text() const {
         return {};
     if (price_spot_index_) {
         return tr("Price: Yahoo Finance — %1 (spot index, not the CFTC-report futures contract). "
-                  "Separate from CFTC data. Alignment below is descriptive (same sign), not a trading signal.")
+                  "Separate from CFTC data. Relationship wording comes from the descriptive COT "
+                  "interpretation engine and describes a contemporaneous relationship only.")
             .arg(price_symbol_);
     }
     return tr("Price: Yahoo Finance — %1 front-month continuous futures (rolls between contracts; not an "
-              "individual deliverable contract). Separate from CFTC data. Alignment below is descriptive "
-              "(same sign), not a trading signal.")
+              "individual deliverable contract). Separate from CFTC data. Relationship wording comes from the "
+              "descriptive COT interpretation engine and describes a contemporaneous relationship only.")
         .arg(price_symbol_);
 }
 
@@ -1647,148 +1792,152 @@ void CftcPanel::update_divergence() {
         return;
     const QString spec_label = participants_[speculative_index_].label;
 
+    // This section is raw numeric evidence only. Any user-facing statement that
+    // price and positioning are aligned or diverging comes from the Batch 4A
+    // assessments rendered in the COT interpretation section above; no second
+    // algorithm computes an alignment verdict here.
     if (price_state_ == PriceState::Pending) {
         divergence_source_lbl_->setText(tr("Loading price context from Yahoo Finance…"));
-        divergence_table_->setRowCount(0);
-        divergence_table_->setColumnCount(0);
-        divergence_extremes_lbl_->clear();
-        return;
-    }
-    if (price_state_ != PriceState::Ready) {
-        divergence_source_lbl_->setText(tr("Price analysis unavailable: %1.").arg(price_reason_));
-        divergence_table_->setRowCount(0);
-        divergence_table_->setColumnCount(0);
-        divergence_extremes_lbl_->clear();
-        return;
-    }
-    divergence_source_lbl_->setText(price_source_text());
-
-    const QDate report_date = history_.observations.last().date;
-    QVector<CftcPricePoint> aligned;
-    for (const auto& point : std::as_const(price_)) {
-        if (point.date <= report_date)
-            aligned.append(point);
-        else
-            break;
-    }
-    if (aligned.isEmpty()) {
-        divergence_source_lbl_->setText(
-            tr("Price analysis unavailable: no price close on or before the latest report date."));
-        divergence_table_->setRowCount(0);
-        divergence_table_->setColumnCount(0);
-        divergence_extremes_lbl_->clear();
-        return;
+    } else if (price_state_ != PriceState::Ready) {
+        divergence_source_lbl_->setText(tr("Price evidence unavailable: %1.").arg(price_reason_));
+    } else {
+        divergence_source_lbl_->setText(price_source_text());
     }
 
     const auto net_series = participant_metric_series(speculative_index_, CftcChartMetric::Net);
-    if (net_series.size() < 2) {
-        divergence_source_lbl_->setText(
-            tr("Price analysis unavailable: fewer than two positioning observations in the window."));
-        divergence_table_->setRowCount(0);
-        divergence_table_->setColumnCount(0);
-        divergence_extremes_lbl_->clear();
-        return;
-    }
-    // The positioning series must reach the same latest official report the
-    // price series is truncated to; otherwise a comparison would silently pair
-    // this report's price with an older positioning snapshot.
-    if (net_series.last().date != report_date) {
-        divergence_source_lbl_->setText(
-            tr("Price analysis unavailable: the latest report (%1) does not carry %2 positions.")
-                .arg(report_date.toString(Qt::ISODate), spec_label));
-        divergence_table_->setRowCount(0);
-        divergence_table_->setColumnCount(0);
-        divergence_extremes_lbl_->clear();
-        return;
-    }
-
-    const std::optional<double> net_4w = cftc_change_since_days(net_series, 28, report_date);
-    const std::optional<double> net_13w = cftc_change_since_days(net_series, 91, report_date);
-    const std::optional<double> price_4w = cftc_price_change_since_days(aligned, 28);
-    const std::optional<double> price_13w = cftc_price_change_since_days(aligned, 91);
-
-    const double net_window = net_series.last().value - net_series.first().value;
-    const std::optional<double> price_start = cftc_price_on_or_before(aligned, net_series.first().date);
-    const std::optional<double> price_window =
-        price_start ? std::optional<double>(aligned.last().close - *price_start) : std::nullopt;
-
+    const QString spec_short = participant_short_label(participants_[speculative_index_].key);
     divergence_table_->setColumnCount(4);
     divergence_table_->setRowCount(3);
     divergence_table_->setHorizontalHeaderLabels(
-        {tr("MEASURE"), tr("PRICE"), tr("NET (%1)").arg(participant_short_label(participants_[speculative_index_].key)),
-         tr("ALIGNMENT")});
+        {tr("HORIZON"), tr("PRICE Δ"), tr("NET Δ (%1)").arg(spec_short), tr("RELATIONSHIP")});
     divergence_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    for (int col = 1; col < 4; ++col)
-        divergence_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
+    divergence_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    divergence_table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    divergence_table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 
-    struct Row {
-        QString label;
-        std::optional<double> price;
-        std::optional<double> net;
-    };
-    const Row rows[3] = {
-        {tr("Δ 4 WEEK"), price_4w, net_4w},
-        {tr("Δ 13 WEEK"), price_13w, net_13w},
-        {tr("WINDOW Δ"), price_window, std::optional<double>(net_window)},
-    };
-
-    for (int row = 0; row < 3; ++row) {
-        set_plain_cell(divergence_table_, row, 0, rows[row].label, Qt::AlignLeft | Qt::AlignVCenter);
-        if (rows[row].price) {
-            auto* item = divergence_table_->item(row, 1);
-            if (!item) {
-                item = new QTableWidgetItem;
-                divergence_table_->setItem(row, 1, item);
+    // While price is pending the Batch 4A price assessments carry no
+    // positioning move; the CFTC-only net move is still available from the
+    // emitted net-shift state, so the evidence stays visible without
+    // recomputing anything.
+    const QString primary_state_key = participants_[speculative_index_].key;
+    auto state_net_flow = [this, &primary_state_key](int horizon) -> std::optional<double> {
+        for (const auto& participant : interpretation_.participants) {
+            if (participant.participant_key != primary_state_key)
+                continue;
+            for (const auto& state : participant.states) {
+                if (!state.has_horizon || state.horizon_reports != horizon)
+                    continue;
+                if (state.state_id != QLatin1String("NET_LONGWARD_SHIFT") &&
+                    state.state_id != QLatin1String("NET_SHORTWARD_SHIFT"))
+                    continue;
+                for (const auto& metric : state.metrics) {
+                    if (metric.key == QLatin1String("net_flow") && metric.has_value)
+                        return metric.value;
+                }
             }
-            item->setText(signed_decimal(*rows[row].price, 2));
-            item->setForeground(QColor(*rows[row].price > 0.0   ? ui::colors::POSITIVE()
-                                       : *rows[row].price < 0.0 ? ui::colors::NEGATIVE()
-                                                                : ui::colors::TEXT_PRIMARY()));
-            item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        } else {
-            set_signed_cell(divergence_table_, row, 1, std::nullopt);
         }
-        set_signed_cell(divergence_table_, row, 2, rows[row].net);
+        return std::nullopt;
+    };
 
-        const CftcDirection price_direction = cftc_direction(rows[row].price);
-        const CftcDirection net_direction = cftc_direction(rows[row].net);
-        const bool comparison_unavailable =
-            price_direction == CftcDirection::Unavailable || net_direction == CftcDirection::Unavailable;
-        QString alignment;
-        if (comparison_unavailable)
-            alignment = QStringLiteral("—");
-        else if (!cftc_directions_aligned(price_direction, net_direction))
-            alignment = tr("Diverging");
-        else if (price_direction == CftcDirection::Up)
-            alignment = tr("Aligned up");
-        else if (price_direction == CftcDirection::Down)
-            alignment = tr("Aligned down");
+    int row = 0;
+    for (int horizon : {1, 4, 13}) {
+        set_plain_cell(divergence_table_, row, 0, horizon == 1 ? tr("1 REPORT") : tr("%1 REPORTS").arg(horizon),
+                       Qt::AlignLeft | Qt::AlignVCenter);
+        const services::CftcPricePositionAssessment* assessment = nullptr;
+        for (const auto& candidate : interpretation_.price_context) {
+            if (candidate.participant_key == participants_[speculative_index_].key &&
+                candidate.horizon_reports == horizon) {
+                assessment = &candidate;
+                break;
+            }
+        }
+
+        if (assessment && assessment->has_price_move) {
+            set_plain_cell(divergence_table_, row, 1, signed_decimal(assessment->price_move, 2));
+            if (auto* item = divergence_table_->item(row, 1))
+                item->setForeground(QColor(assessment->price_move > 0.0   ? ui::colors::POSITIVE()
+                                           : assessment->price_move < 0.0 ? ui::colors::NEGATIVE()
+                                                                          : ui::colors::TEXT_PRIMARY()));
+        } else {
+            set_plain_cell(divergence_table_, row, 1, QStringLiteral("—"));
+            if (auto* item = divergence_table_->item(row, 1)) {
+                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                if (price_state_ == PriceState::Pending)
+                    item->setToolTip(tr("price context is loading"));
+                else
+                    item->setToolTip(assessment ? cftc_unavailable_reason_wording(assessment->reason)
+                                                : tr("no price context was requested for this horizon"));
+            }
+        }
+
+        std::optional<double> net_move;
+        if (assessment && assessment->has_positioning_move)
+            net_move = assessment->positioning_move;
         else
-            alignment = tr("Both flat");
-        set_plain_cell(divergence_table_, row, 3, alignment);
-        if (comparison_unavailable)
-            divergence_table_->item(row, 3)->setToolTip(
-                tr("Price or positioning history does not reach far enough back for this comparison."));
+            net_move = state_net_flow(horizon);
+        if (net_move) {
+            set_signed_cell(divergence_table_, row, 2, net_move);
+        } else {
+            set_plain_cell(divergence_table_, row, 2, QStringLiteral("—"));
+            if (auto* item = divergence_table_->item(row, 2)) {
+                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                item->setToolTip(assessment && assessment->evaluated
+                                     ? tr("no material net move state at this horizon")
+                                     : (assessment ? cftc_unavailable_reason_wording(assessment->reason)
+                                                   : tr("the positioning horizon is unavailable")));
+            }
+        }
+
+        if (assessment && assessment->has_state) {
+            set_plain_cell(divergence_table_, row, 3, cftc_relationship_wording(assessment->state_id));
+        } else if (assessment && !assessment->evaluated) {
+            set_plain_cell(divergence_table_, row, 3, QStringLiteral("—"));
+            if (auto* item = divergence_table_->item(row, 3)) {
+                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                item->setToolTip(price_state_ == PriceState::Pending
+                                     ? tr("price context is loading")
+                                     : cftc_unavailable_reason_wording(assessment->reason));
+            }
+        } else {
+            set_plain_cell(divergence_table_, row, 3, tr("Not material"));
+            if (auto* item = divergence_table_->item(row, 3))
+                item->setToolTip(
+                    tr("Both price and net positioning changes were evaluated; at least one was not material "
+                       "enough for a relationship state."));
+        }
+        ++row;
     }
     fit_table_height(divergence_table_);
 
-    if (speculative_index_ >= 0) {
-        QDate high_date;
-        QDate low_date;
-        QStringList extremes;
-        if (cftc_net_extreme_dates(net_series, high_date, low_date)) {
-            const auto high_price = cftc_price_on_or_before(aligned, high_date);
-            const auto low_price = cftc_price_on_or_before(aligned, low_date);
-            extremes << tr("NET HIGH %1 at %2")
-                            .arg(high_date.toString(Qt::ISODate),
-                                 high_price ? QString::number(*high_price, 'f', 2) : tr("price unavailable"));
-            extremes << tr("NET LOW %1 at %2")
-                            .arg(low_date.toString(Qt::ISODate),
-                                 low_price ? QString::number(*low_price, 'f', 2) : tr("price unavailable"));
+    const QDate report_date = history_.observations.isEmpty() ? QDate() : history_.observations.last().date;
+    QVector<CftcPricePoint> aligned;
+    if (price_state_ == PriceState::Ready) {
+        for (const auto& point : std::as_const(price_)) {
+            if (point.date <= report_date)
+                aligned.append(point);
+            else
+                break;
         }
+    }
+    QDate high_date;
+    QDate low_date;
+    QStringList extremes;
+    if (net_series.size() >= 2 && cftc_net_extreme_dates(net_series, high_date, low_date)) {
+        const auto high_price = cftc_price_on_or_before(aligned, high_date);
+        const auto low_price = cftc_price_on_or_before(aligned, low_date);
+        extremes << tr("NET HIGH %1 at %2")
+                        .arg(high_date.toString(Qt::ISODate),
+                             high_price ? QString::number(*high_price, 'f', 2) : tr("price unavailable"));
+        extremes << tr("NET LOW %1 at %2")
+                        .arg(low_date.toString(Qt::ISODate),
+                             low_price ? QString::number(*low_price, 'f', 2) : tr("price unavailable"));
+    }
+    if (extremes.isEmpty()) {
+        divergence_extremes_lbl_->clear();
+    } else {
         divergence_extremes_lbl_->setText(
-            tr("Extremes (price is the most recent close on or before the report date): %1")
-                .arg(extremes.join(QStringLiteral("  ·  "))));
+            tr("Window extremes for %1 (price is the most recent close on or before the report date): %2")
+                .arg(spec_label, extremes.join(QStringLiteral("  ·  "))));
     }
 }
 
@@ -1897,6 +2046,9 @@ void CftcPanel::refresh_panel_theme() {
         chart_->refresh_theme();
     if (heatmap_)
         heatmap_->refresh_theme();
+    if (sync_chart_)
+        sync_chart_->refresh_theme();
+    render_interpretation();
     if (participant_check_layout_) {
         const auto palette = series_palette();
         for (int i = 0; i < participant_checks_.size(); ++i) {
@@ -1923,6 +2075,9 @@ QString CftcPanel::workspace_style() const {
                    "#cftcCardLabel { color:%3; font-size:8px; font-weight:700; letter-spacing:1px;"
                    " background:transparent; }"
                    "#cftcCardSub { color:%4; font-size:9px; background:transparent; }"
+                   "#cftcInterpretationHeadline { color:%5; font-size:14px; font-weight:700;"
+                   " background:transparent; }"
+                   "#cftcInterpretationBody { color:%5; font-size:11px; background:transparent; }"
                    "#cftcTable { background:transparent; color:%5; border:none; font-size:10px; }"
                    "#cftcTable QHeaderView::section { background:%9; color:%3; border:none;"
                    " border-bottom:1px solid %2; font-size:9px; font-weight:700; padding:3px; }"
@@ -1960,6 +2115,10 @@ void CftcPanel::retranslateUi() {
         raw_tab_->setText(tr("Raw Data"));
     if (snapshot_title_)
         snapshot_title_->setText(tr("CURRENT SNAPSHOT"));
+    if (interpretation_title_)
+        interpretation_title_->setText(tr("COT INTERPRETATION"));
+    if (sync_chart_title_)
+        sync_chart_title_->setText(tr("PRICE + POSITIONING — SYNCHRONIZED"));
     if (positioning_title_)
         positioning_title_->setText(tr("POSITIONING"));
     if (weekly_title_)
@@ -1969,7 +2128,7 @@ void CftcPanel::retranslateUi() {
     if (stats_title_)
         stats_title_->setText(tr("POSITIONING STATISTICS & EXTREMES"));
     if (divergence_title_)
-        divergence_title_->setText(tr("PRICE + POSITIONING / DIVERGENCE"));
+        divergence_title_->setText(tr("PRICE + POSITIONING — EVIDENCE"));
     if (heatmap_title_)
         heatmap_title_->setText(tr("POSITIONING HEATMAP"));
     if (range_lbl_)
