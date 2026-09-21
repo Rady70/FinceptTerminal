@@ -854,7 +854,8 @@ void TstCftcInterpretation::historical_extreme_90_10_boundaries() {
 
     // Exact 0.90 boundary: 9 of 10 references below, none equal.
     QVector<double> at_high = {1, 2, 3, 4, 5, 6, 7, 8, 9, 100, 10};
-    const CftcParticipantInterpretation* high = find_participant(run(at_high), key);
+    const CftcInterpretationResult at_high_result = run(at_high);
+    const CftcParticipantInterpretation* high = find_participant(at_high_result, key);
     QVERIFY(high);
     QVERIFY(high->historical_percentile_available);
     QCOMPARE(high->percentile, 0.90);
@@ -862,20 +863,23 @@ void TstCftcInterpretation::historical_extreme_90_10_boundaries() {
 
     // Just below 0.90: 8 below plus one tie.
     QVector<double> below_high = {1, 2, 3, 4, 5, 6, 7, 8, 9, 100, 9};
-    const CftcParticipantInterpretation* below = find_participant(run(below_high), key);
+    const CftcInterpretationResult below_high_result = run(below_high);
+    const CftcParticipantInterpretation* below = find_participant(below_high_result, key);
     QVERIFY(below);
     QCOMPARE(below->percentile, 0.85);
     QVERIFY(!has_state(below->states, QStringLiteral("HISTORICALLY_HIGH_NET")));
 
     // Exact 0.10 boundary and just above it.
     QVector<double> at_low = {1, 100, 101, 102, 103, 104, 105, 106, 107, 108, 2};
-    const CftcParticipantInterpretation* low_boundary = find_participant(run(at_low), key);
+    const CftcInterpretationResult at_low_result = run(at_low);
+    const CftcParticipantInterpretation* low_boundary = find_participant(at_low_result, key);
     QVERIFY(low_boundary);
     QCOMPARE(low_boundary->percentile, 0.10);
     QVERIFY(has_state(low_boundary->states, QStringLiteral("HISTORICALLY_LOW_NET")));
 
     QVector<double> below_all = {1, 2, 100, 101, 102, 103, 104, 105, 106, 107, 3};
-    const CftcParticipantInterpretation* low = find_participant(run(below_all), key);
+    const CftcInterpretationResult below_all_result = run(below_all);
+    const CftcParticipantInterpretation* low = find_participant(below_all_result, key);
     QVERIFY(low);
     QCOMPARE(low->percentile, 0.20);
     QVERIFY(!has_state(low->states, QStringLiteral("HISTORICALLY_LOW_NET")));
@@ -925,7 +929,8 @@ void TstCftcInterpretation::severe_extreme_975_25_boundaries() {
         severe_high.append(static_cast<double>(i));
     severe_high.append(1000.0);
     severe_high.append(500.0);
-    const CftcParticipantInterpretation* high = find_participant(run(severe_high), key);
+    const CftcInterpretationResult severe_high_result = run(severe_high);
+    const CftcParticipantInterpretation* high = find_participant(severe_high_result, key);
     QVERIFY(high);
     QCOMPARE(high->percentile, 0.975);
     QVERIFY(has_state(high->states, QStringLiteral("SEVERE_LONG_EXTREME")));
@@ -936,7 +941,8 @@ void TstCftcInterpretation::severe_extreme_975_25_boundaries() {
     below_severe.append(1000.0);
     below_severe.append(1001.0);
     below_severe.append(500.0);
-    const CftcParticipantInterpretation* not_severe = find_participant(run(below_severe), key);
+    const CftcInterpretationResult below_severe_result = run(below_severe);
+    const CftcParticipantInterpretation* not_severe = find_participant(below_severe_result, key);
     QVERIFY(not_severe);
     QVERIFY(not_severe->percentile < 0.975);
     QVERIFY(!has_state(not_severe->states, QStringLiteral("SEVERE_LONG_EXTREME")));
@@ -946,7 +952,8 @@ void TstCftcInterpretation::severe_extreme_975_25_boundaries() {
     for (int i = 0; i < 39; ++i)
         severe_low.append(-100.0 - i);
     severe_low.append(-500.0);
-    const CftcParticipantInterpretation* low = find_participant(run(severe_low), key);
+    const CftcInterpretationResult severe_low_result = run(severe_low);
+    const CftcParticipantInterpretation* low = find_participant(severe_low_result, key);
     QVERIFY(low);
     QCOMPARE(low->percentile, 0.025);
     QVERIFY(has_state(low->states, QStringLiteral("SEVERE_SHORT_EXTREME")));
@@ -957,7 +964,8 @@ void TstCftcInterpretation::severe_extreme_975_25_boundaries() {
     for (int i = 0; i < 38; ++i)
         above_severe_low.append(-100.0 - i);
     above_severe_low.append(-500.0);
-    const CftcParticipantInterpretation* not_severe_low = find_participant(run(above_severe_low), key);
+    const CftcInterpretationResult above_severe_low_result = run(above_severe_low);
+    const CftcParticipantInterpretation* not_severe_low = find_participant(above_severe_low_result, key);
     QVERIFY(not_severe_low);
     QVERIFY(not_severe_low->percentile > 0.025);
     QVERIFY(!has_state(not_severe_low->states, QStringLiteral("SEVERE_SHORT_EXTREME")));
