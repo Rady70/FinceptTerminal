@@ -22,8 +22,9 @@
 // Truthfulness rules carried over from the finalized metric foundation:
 //   * the input is fail-closed on provenance: the report basis must be named,
 //     the source family code must match the declared family, every observation
-//     must carry the family's participant slot count, and the market and
-//     contract identity must be uniform across the history;
+//     must carry the family's participant slot count, and the non-empty CFTC
+//     contract-market code must be uniform across the history (the display
+//     market name may legitimately change and stays descriptive metadata);
 //   * missing is not zero and unavailable is not neutral;
 //   * a missing participant leg never becomes a fabricated net;
 //   * normalized flows require a present, positive prior Open Interest;
@@ -242,7 +243,7 @@ enum class CftcUnavailableReason {
     PriceContextStale,
     PriceContextUnusable,
     MissingConcentrationField,
-    MixedMarketIdentity,
+    MissingContractIdentity,
     MixedContractIdentity,
     ParticipantCountMismatch,
     FamilyProvenanceMismatch,
@@ -279,8 +280,8 @@ inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
             return QStringLiteral("price_context_unusable");
         case CftcUnavailableReason::MissingConcentrationField:
             return QStringLiteral("missing_concentration_field");
-        case CftcUnavailableReason::MixedMarketIdentity:
-            return QStringLiteral("mixed_market_identity");
+        case CftcUnavailableReason::MissingContractIdentity:
+            return QStringLiteral("missing_contract_identity");
         case CftcUnavailableReason::MixedContractIdentity:
             return QStringLiteral("mixed_contract_identity");
         case CftcUnavailableReason::ParticipantCountMismatch:
@@ -1751,8 +1752,11 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
                      : point.percentile > cftc_low_extreme_percentile(config))
                 return false;
             // The step between offsets (offset-1) and offset is adjacent_at(offset-1).
-            if (k > 0 && !adjacent_at(offset - 1))
+            // A broken weekly sequence makes the run unevaluable, not false.
+            if (k > 0 && !adjacent_at(offset - 1)) {
+                missing_reason = CftcUnavailableReason::BrokenReportSequence;
                 return false;
+            }
         }
         return true;
     };
@@ -1821,46 +1825,64 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
                                                        CftcEvidenceBasis::EngineHeuristic, reason,
                                                        QStringLiteral("EXITED_LOW_EXTREME")));
         } else {
-            if (p1.percentile >= config.extreme_percentile && p0.percentile < config.extreme_percentile && net_fell)
-                out.states.append(extreme_state(QStringLiteral("EXITED_HIGH_EXTREME"), p0));
-            if (p1.percentile <= cftc_low_extreme_percentile(config) &&
-                p0.percentile > cftc_low_extreme_percentile(config) && net_rose)
-                out.states.append(extreme_state(QStringLiteral("EXITED_LOW_EXTREME"), p0));
-        }
-        if (p0.percentile <= config.unwind_reentry_percentile) {
-            if (!net_previous)
-                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
-                                                           0, CftcInterpretationScope::HistoricalRelativeState,
-                                                           CftcEvidenceBasis::EngineHeuristic, position_reason_at(1),
-                                                           QStringLiteral("UNWINDING_HIGH_EXTREME")));
-            else if (net_fell) {
-                CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
-                const bool prior_persistent_high = persistent_run(1, true, prior_missing);
-                if (prior_persistent_high)
-                    out.states.append(extreme_state(QStringLiteral("UNWINDING_HIGH_EXTREME"), p0));
-                else if (prior_missing != CftcUnavailableReason::None)
+            const double low_extreme = cftc_low_extreme_percentile(config);
+            const bool high_exit_band =
+                p1.percentile >= config.extreme_percentile && p0.percentile < config.extreme_percentile;
+            const bool low_exit_band = p1.percentile <= low_extreme && p0.percentile > low_extreme;
+            if (!adjacent_now) {
+                // A gap between the previous and the current report makes the
+                // transition unevaluable, not false.
+                if (high_exit_band)
                     unavailable.append(cftc_unavailable_record(
                         QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
                         CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
-                        prior_missing, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("EXITED_HIGH_EXTREME")));
+                if (low_exit_band)
+                    unavailable.append(cftc_unavailable_record(
+                        QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
+                        CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
+                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("EXITED_LOW_EXTREME")));
+            } else {
+                if (high_exit_band && net_fell)
+                    out.states.append(extreme_state(QStringLiteral("EXITED_HIGH_EXTREME"), p0));
+                if (low_exit_band && net_rose)
+                    out.states.append(extreme_state(QStringLiteral("EXITED_LOW_EXTREME"), p0));
+            }
+        }
+        if (p0.percentile <= config.unwind_reentry_percentile) {
+            CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
+            const bool prior_persistent_high = persistent_run(1, true, prior_missing);
+            if (prior_persistent_high) {
+                if (!adjacent_now)
+                    unavailable.append(cftc_unavailable_record(
+                        QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
+                        CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
+                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+                else if (net_fell)
+                    out.states.append(extreme_state(QStringLiteral("UNWINDING_HIGH_EXTREME"), p0));
+            } else if (prior_missing != CftcUnavailableReason::None) {
+                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
+                                                           0, CftcInterpretationScope::HistoricalRelativeState,
+                                                           CftcEvidenceBasis::EngineHeuristic, prior_missing,
+                                                           QStringLiteral("UNWINDING_HIGH_EXTREME")));
             }
         }
         if (p0.percentile >= cftc_unwind_low_reentry_percentile(config)) {
-            if (!net_previous)
-                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
-                                                           0, CftcInterpretationScope::HistoricalRelativeState,
-                                                           CftcEvidenceBasis::EngineHeuristic, position_reason_at(1),
-                                                           QStringLiteral("UNWINDING_LOW_EXTREME")));
-            else if (net_rose) {
-                CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
-                const bool prior_persistent_low = persistent_run(1, false, prior_missing);
-                if (prior_persistent_low)
-                    out.states.append(extreme_state(QStringLiteral("UNWINDING_LOW_EXTREME"), p0));
-                else if (prior_missing != CftcUnavailableReason::None)
+            CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
+            const bool prior_persistent_low = persistent_run(1, false, prior_missing);
+            if (prior_persistent_low) {
+                if (!adjacent_now)
                     unavailable.append(cftc_unavailable_record(
                         QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
                         CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
-                        prior_missing, QStringLiteral("UNWINDING_LOW_EXTREME")));
+                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("UNWINDING_LOW_EXTREME")));
+                else if (net_rose)
+                    out.states.append(extreme_state(QStringLiteral("UNWINDING_LOW_EXTREME"), p0));
+            } else if (prior_missing != CftcUnavailableReason::None) {
+                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
+                                                           0, CftcInterpretationScope::HistoricalRelativeState,
+                                                           CftcEvidenceBasis::EngineHeuristic, prior_missing,
+                                                           QStringLiteral("UNWINDING_LOW_EXTREME")));
             }
         }
     }
@@ -2102,7 +2124,10 @@ inline void cftc_append_report_unavailable(CftcInterpretationResult& result,
 /// only when the declared report basis, source family and participant identity
 /// are internally consistent with every observation. The engine never
 /// reinterprets one family's participant slots as another's, never mixes
-/// markets/contracts and never guesses a silent report basis.
+/// contracts and never guesses a silent report basis. The stable market
+/// identity is the CFTC contract-market code; the display market name is
+/// descriptive metadata and may legitimately change between reports (CFTC
+/// documents contract name changes while the code stays fixed).
 inline CftcUnavailableReason cftc_validate_provenance(const CftcInterpretationInput& input) {
     const QString basis = input.report_basis_code.trimmed().toLower();
     if (basis != QLatin1String("futures_only") && basis != QLatin1String("futures_and_options_combined"))
@@ -2114,14 +2139,14 @@ inline CftcUnavailableReason cftc_validate_provenance(const CftcInterpretationIn
     if (!known_family || cftc_family_from_code(family_code) != input.family)
         return CftcUnavailableReason::FamilyProvenanceMismatch;
     const int expected_slots = cftc_family_participants(input.family).size();
-    const QString market = input.observations.first().market;
-    const QString contract = input.observations.first().contract_code;
+    const QString contract = input.observations.first().contract_code.trimmed();
     for (const auto& observation : input.observations) {
         if (observation.longs.size() != expected_slots || observation.shorts.size() != expected_slots)
             return CftcUnavailableReason::ParticipantCountMismatch;
-        if (observation.market != market)
-            return CftcUnavailableReason::MixedMarketIdentity;
-        if (observation.contract_code != contract)
+        const QString row_contract = observation.contract_code.trimmed();
+        if (row_contract.isEmpty())
+            return CftcUnavailableReason::MissingContractIdentity;
+        if (row_contract != contract)
             return CftcUnavailableReason::MixedContractIdentity;
     }
     return CftcUnavailableReason::None;

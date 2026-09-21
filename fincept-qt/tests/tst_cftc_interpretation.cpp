@@ -10,7 +10,7 @@
 // concentration, price/positioning alignment and both divergence states,
 // missing-data truthfulness, family terminology applicability and the absence
 // of any BUY/HOLD/SELL, bullish/bearish, confidence or expected-return output.
-// The suite defines 61 test slots (QTest reports 63 passes including
+// The suite defines 62 test slots (QTest reports 64 passes including
 // initTestCase/cleanupTestCase). Header-only over Qt Core; no app sources
 // (tests/ HARD RULE).
 #include "services/economics/CftcInterpretationModel.h"
@@ -387,8 +387,9 @@ class TstCftcInterpretation : public QObject {
     void unsupported_positive_horizons_produce_no_states();
 
     // Provenance
-    void provenance_mixed_market_is_unavailable();
+    void provenance_market_name_change_is_allowed();
     void provenance_mixed_contract_is_unavailable();
+    void provenance_blank_contract_code_is_unavailable();
     void provenance_family_mismatch_is_unavailable();
     void provenance_participant_slots_must_match_family();
     void provenance_report_basis_is_required();
@@ -625,17 +626,21 @@ void TstCftcInterpretation::unsupported_positive_horizons_produce_no_states() {
     }
 }
 
-void TstCftcInterpretation::provenance_mixed_market_is_unavailable() {
+void TstCftcInterpretation::provenance_market_name_change_is_allowed() {
+    // The CFTC documents contract/market name changes while the
+    // contract-market code stays fixed, so the display name is descriptive
+    // metadata, not the stable identity.
     QVector<CftcObservation> observations = legacy_series({500.0, 505.0}, {400.0, 400.0});
-    observations[1].market = QStringLiteral("OTHER - EXCHANGE");
+    observations[1].market = QStringLiteral("RENAMED - EXCHANGE");
     const CftcInterpretationResult result = cftc_interpret(legacy_input(observations));
     const CftcUnavailableRecord* record =
         find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
-    QVERIFY(record);
-    QCOMPARE(record->reason, CftcUnavailableReason::MixedMarketIdentity);
-    for (const auto& participant : result.participants)
-        QVERIFY(participant.states.isEmpty());
-    QVERIFY(result.market.isEmpty());
+    QVERIFY2(record == nullptr, "a market-name change with a stable contract code is valid history");
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QVERIFY(has_state(participant->states, QStringLiteral("NET_LONG")));
+    QCOMPARE(result.market, QStringLiteral("RENAMED - EXCHANGE"));
+    QCOMPARE(result.contract_code, QStringLiteral("000000"));
 }
 
 void TstCftcInterpretation::provenance_mixed_contract_is_unavailable() {
@@ -648,6 +653,28 @@ void TstCftcInterpretation::provenance_mixed_contract_is_unavailable() {
     QCOMPARE(record->reason, CftcUnavailableReason::MixedContractIdentity);
     for (const auto& participant : result.participants)
         QVERIFY(participant.states.isEmpty());
+}
+
+void TstCftcInterpretation::provenance_blank_contract_code_is_unavailable() {
+    QVector<CftcObservation> observations = legacy_series({500.0, 505.0}, {400.0, 400.0});
+    observations[1].contract_code.clear();
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(observations));
+    const CftcUnavailableRecord* record =
+        find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::MissingContractIdentity);
+    for (const auto& participant : result.participants)
+        QVERIFY(participant.states.isEmpty());
+
+    // An entirely blank contract history is equally unspecified.
+    QVector<CftcObservation> blank = legacy_series({500.0, 505.0}, {400.0, 400.0});
+    for (auto& observation : blank)
+        observation.contract_code.clear();
+    const CftcInterpretationResult blank_result = cftc_interpret(legacy_input(blank));
+    const CftcUnavailableRecord* blank_record =
+        find_unavailable(blank_result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
+    QVERIFY(blank_record);
+    QCOMPARE(blank_record->reason, CftcUnavailableReason::MissingContractIdentity);
 }
 
 void TstCftcInterpretation::provenance_family_mismatch_is_unavailable() {
@@ -1539,7 +1566,6 @@ void TstCftcInterpretation::persistent_extreme_requires_three_consecutive() {
     QVERIFY(low_participant);
     QVERIFY(has_state(low_participant->states, QStringLiteral("PERSISTENT_LOW_EXTREME")));
 }
-
 void TstCftcInterpretation::extreme_transitions_require_weekly_adjacency() {
     const QString key = QStringLiteral("non_commercial");
     QVector<double> increasing;
@@ -1547,7 +1573,7 @@ void TstCftcInterpretation::extreme_transitions_require_weekly_adjacency() {
         increasing.append(static_cast<double>(i));
 
     // A missing report between the previous and the current report breaks the
-    // three-consecutive run.
+    // three-consecutive run: the transition is unevaluable, not false.
     const QVector<CftcObservation> gap_before_current = remove_report(legacy_percent_series(increasing), 7);
     QCOMPARE(gap_before_current.size(), 8);
     const CftcInterpretationResult gapped = cftc_interpret(legacy_input(gap_before_current));
@@ -1555,19 +1581,39 @@ void TstCftcInterpretation::extreme_transitions_require_weekly_adjacency() {
     QVERIFY(gapped_participant);
     QVERIFY2(!has_state(gapped_participant->states, QStringLiteral("PERSISTENT_HIGH_EXTREME")),
              "a gap before the current report must break the consecutive run");
+    const CftcUnavailableRecord* persistence = find_unavailable(
+        gapped.unavailable, QStringLiteral("EXTREME_TRANSITION"), key, -1, QStringLiteral("PERSISTENT_HIGH_EXTREME"));
+    QVERIFY2(persistence, "the broken run must be reported unavailable, not silently absent");
+    QCOMPARE(persistence->reason, CftcUnavailableReason::BrokenReportSequence);
 
-    // Exit is a weekly transition: the same fall across a 14-day step must not
-    // produce EXITED_HIGH_EXTREME.
-    const QVector<CftcObservation> exit_contiguous = legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 5});
-    const CftcParticipantInterpretation* contiguous_exit =
-        find_participant(cftc_interpret(legacy_input(exit_contiguous)), key);
-    QVERIFY(contiguous_exit);
-    QVERIFY(has_state(contiguous_exit->states, QStringLiteral("EXITED_HIGH_EXTREME")));
-    const CftcInterpretationResult gapped_exit_result = cftc_interpret(legacy_input(remove_report(exit_contiguous, 6)));
-    const CftcParticipantInterpretation* gapped_exit = find_participant(gapped_exit_result, key);
-    QVERIFY(gapped_exit);
-    QVERIFY2(!has_state(gapped_exit->states, QStringLiteral("EXITED_HIGH_EXTREME")),
+    // Exit and unwind are weekly transitions: the same fall across a 14-day
+    // step must not produce EXITED_HIGH_EXTREME or UNWINDING_HIGH_EXTREME; both
+    // must be reported unavailable with the broken-sequence reason.
+    const QVector<CftcObservation> transition_contiguous = legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 17, 5});
+    const CftcInterpretationResult contiguous_result = cftc_interpret(legacy_input(transition_contiguous));
+    const CftcParticipantInterpretation* contiguous_participant = find_participant(contiguous_result, key);
+    QVERIFY(contiguous_participant);
+    QVERIFY(has_state(contiguous_participant->states, QStringLiteral("EXITED_HIGH_EXTREME")));
+    QVERIFY(has_state(contiguous_participant->states, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+
+    const CftcInterpretationResult gapped_transition_result =
+        cftc_interpret(legacy_input(remove_report(transition_contiguous, 7)));
+    const CftcParticipantInterpretation* gapped_transition = find_participant(gapped_transition_result, key);
+    QVERIFY(gapped_transition);
+    QVERIFY2(!has_state(gapped_transition->states, QStringLiteral("EXITED_HIGH_EXTREME")),
              "an exit cannot span a report gap");
+    QVERIFY2(!has_state(gapped_transition->states, QStringLiteral("UNWINDING_HIGH_EXTREME")),
+             "an unwind cannot span a report gap");
+    const CftcUnavailableRecord* exit =
+        find_unavailable(gapped_transition_result.unavailable, QStringLiteral("EXTREME_TRANSITION"), key, -1,
+                         QStringLiteral("EXITED_HIGH_EXTREME"));
+    QVERIFY(exit);
+    QCOMPARE(exit->reason, CftcUnavailableReason::BrokenReportSequence);
+    const CftcUnavailableRecord* unwind =
+        find_unavailable(gapped_transition_result.unavailable, QStringLiteral("EXTREME_TRANSITION"), key, -1,
+                         QStringLiteral("UNWINDING_HIGH_EXTREME"));
+    QVERIFY(unwind);
+    QCOMPARE(unwind->reason, CftcUnavailableReason::BrokenReportSequence);
 
     // A gap one report before the run does not break the three consecutive
     // weekly reports themselves.
