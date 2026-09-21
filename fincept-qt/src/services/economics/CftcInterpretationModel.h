@@ -15,9 +15,11 @@
 // It deliberately produces no BUY/HOLD/SELL, no bullish/bearish score, no
 // predictive confidence, no expected return, no trading recommendation and no
 // AI/LLM output. It is plain deterministic software: no network, no broker
-// authority, no widgets, no dependency on the historical Batch 2
-// (CftcResearchState.h) or Batch 3 (CftcHistoricalReplay.h) directional
-// experiment.
+// authority, no widgets, and no dependency on the historical Batch 2/3
+// directional BUY/HOLD/SELL experiment. That experiment's executable
+// implementation was removed from current main by the Batch 2/3 cleanup batch
+// and remains preserved in Git history and the Rady70/Market_Lab control
+// evidence.
 //
 // Truthfulness rules carried over from the finalized metric foundation:
 //   * the input is fail-closed on provenance: the report basis must be named,

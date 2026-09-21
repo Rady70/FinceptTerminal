@@ -260,25 +260,11 @@ fincept_add_test(tst_cftc_workspace
 fincept_add_test(tst_cftc_metrics
     tst_cftc_metrics.cpp)
 
-# MarketLab: Batch 2 of the CFTC research engine — the bounded evidence
-# evaluator and provisional v0 COT Research State
-# (services/economics/CftcResearchState.h): 4W/13W directional core, 26W
-# context, strictly trailing historical crowding, price/COT and open-interest
-# confirmation, report-family participant semantics, independence protection
-# against correlated double counting, confidence and deterministic structured
-# output. Header-only over Qt Core; no app sources.
-fincept_add_test(tst_cftc_research_state
-    tst_cftc_research_state.cpp)
-
-# MarketLab: Batch 3 of the CFTC research engine — the historically causal
-# replay layer (services/economics/CftcHistoricalReplay.h): the predeclared
-# publication/effective convention, the genuine Socrata publication-metadata
-# rule, timing-exclusion windows, the minimum-history gate, the price-entry and
-# 4W/13W outcome conventions, and the no-lookahead guarantees. The replay calls
-# the Batch 2 engine (cftc_evaluate_research_state); it implements no research
-# rules of its own. Header-only over Qt Core; no app sources.
-fincept_add_test(tst_cftc_replay_validation
-    tst_cftc_replay_validation.cpp)
+# The superseded Batch 2/3 BUY/HOLD/SELL directional experiment, its
+# replay/validation tests and the historical-validation tooling were removed
+# from current main by the Batch 2/3 cleanup batch. Git history and the
+# Rady70/Market_Lab control evidence retain them; the production interpretation
+# engine below replaces them.
 
 # MarketLab: Batch 4A of the CFTC work — the UI-independent deterministic
 # descriptive interpretation engine
@@ -295,15 +281,4 @@ fincept_add_test(tst_cftc_replay_validation
 fincept_add_test(tst_cftc_interpretation
     tst_cftc_interpretation.cpp)
 
-# MarketLab: Batch 3 historical-validation harness (a research tool, not a
-# CTest test). Reads the locally acquired data directory produced by
-# marketlab/cftc_validation_acquire.py and writes the validation evidence CSVs.
-# Built only under FINCEPT_BUILD_TESTS=ON; no install rule.
-add_executable(cftc_validation_harness cftc_validation_harness.cpp)
-target_link_libraries(cftc_validation_harness PRIVATE Qt6::Core)
-target_include_directories(cftc_validation_harness PRIVATE "${PROJECT_SOURCE_DIR}/src")
-set_target_properties(cftc_validation_harness PROPERTIES
-    UNITY_BUILD OFF
-    FOLDER "tests")
-
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_research_state, tst_cftc_replay_validation, tst_cftc_interpretation (+ cftc_validation_harness tool)")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation")
