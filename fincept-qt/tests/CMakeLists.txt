@@ -280,6 +280,21 @@ fincept_add_test(tst_cftc_research_state
 fincept_add_test(tst_cftc_replay_validation
     tst_cftc_replay_validation.cpp)
 
+# MarketLab: Batch 4A of the CFTC work — the UI-independent deterministic
+# descriptive interpretation engine
+# (services/economics/CftcInterpretationModel.h): current exposure, strict
+# 156-prior-report Net %OI percentiles with midpoint ties, strictly trailing
+# move materiality, exact 1/4/13-report gross and net flows with prior-OI
+# denominators, sustained repositioning, extreme persistence/exit/unwind,
+# Open Interest context, raw-net versus Net-%OI disagreement, market-level
+# concentration, price/positioning alignment and both explicit divergence
+# states, participant terminology applicability and truthful missing-data
+# behavior. It deliberately contains no BUY/HOLD/SELL, bullish/bearish,
+# predictive confidence or expected-return output. Header-only over Qt Core;
+# no app sources.
+fincept_add_test(tst_cftc_interpretation
+    tst_cftc_interpretation.cpp)
+
 # MarketLab: Batch 3 historical-validation harness (a research tool, not a
 # CTest test). Reads the locally acquired data directory produced by
 # marketlab/cftc_validation_acquire.py and writes the validation evidence CSVs.
@@ -291,4 +306,4 @@ set_target_properties(cftc_validation_harness PROPERTIES
     UNITY_BUILD OFF
     FOLDER "tests")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_research_state, tst_cftc_replay_validation (+ cftc_validation_harness tool)")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_research_state, tst_cftc_replay_validation, tst_cftc_interpretation (+ cftc_validation_harness tool)")
