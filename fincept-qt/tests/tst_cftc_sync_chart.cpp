@@ -22,17 +22,33 @@ namespace {
 
 const QDate kLatest(2026, 9, 15);
 
+/// Hard-coded expected principal observation slot per family, matching the
+/// frozen Batch 1 participant tables (Legacy non_commercial = 1, Disaggregated
+/// managed_money = 2, TFF leveraged_funds = 2). Tests never derive expectations
+/// through the helper under test or through the generic speculative flag.
+int expected_principal_slot(CftcFamily family) {
+    switch (family) {
+        case CftcFamily::Disaggregated:
+            return 2;
+        case CftcFamily::Tff:
+            return 2;
+        case CftcFamily::Legacy:
+            break;
+    }
+    return 1;
+}
+
 CftcObservation family_observation(CftcFamily family, const QDate& date, double open_interest, double long_leg,
                                    double short_leg) {
     const QVector<CftcParticipant> participants = cftc_family_participants(family);
-    const int target = cftc_speculative_index(participants);
+    const int target = expected_principal_slot(family);
     QVector<std::optional<double>> longs;
     QVector<std::optional<double>> shorts;
     for (int i = 0; i < participants.size(); ++i) {
         longs.append(100.0);
         shorts.append(100.0);
     }
-    if (target >= 0) {
+    if (target >= 0 && target < participants.size()) {
         longs[target] = long_leg;
         shorts[target] = short_leg;
     }
@@ -91,14 +107,22 @@ CftcInterpretationResult make_result(CftcFamily family) {
     return result;
 }
 
-QString primary_key(CftcFamily family) {
-    const auto participants = cftc_family_participants(family);
-    const int index = cftc_speculative_index(participants);
-    return index >= 0 ? participants[index].key : QString();
+/// The expected principal participant per family, hard-coded rather than
+/// derived through the helper under test or the generic speculative flag.
+QString expected_principal_key(CftcFamily family) {
+    switch (family) {
+        case CftcFamily::Disaggregated:
+            return QStringLiteral("managed_money");
+        case CftcFamily::Tff:
+            return QStringLiteral("leveraged_funds");
+        case CftcFamily::Legacy:
+            break;
+    }
+    return QStringLiteral("non_commercial");
 }
 
 CftcParticipantInterpretation* primary_participant(CftcInterpretationResult& result) {
-    const QString key = primary_key(result.family);
+    const QString key = expected_principal_key(result.family);
     for (auto& participant : result.participants) {
         if (participant.participant_key == key)
             return &participant;
@@ -122,7 +146,17 @@ CftcSyncChartData build(const CftcInterpretationResult& interpretation, const QV
                         const QString& price_market, CftcRange range, const QString& source, bool continuous,
                         bool spot) {
     return cftc_build_sync_chart_data(interpretation, observations, prices, requested_market, price_market, range,
-                                      source, continuous, spot);
+                                      CftcPriceContextState::Ready, QString(), source, continuous, spot);
+}
+
+CftcSyncChartData build_with_price_state(const CftcInterpretationResult& interpretation,
+                                         const QVector<CftcObservation>& observations,
+                                         const QVector<CftcPricePoint>& prices, const QString& requested_market,
+                                         const QString& price_market, CftcRange range,
+                                         CftcPriceContextState price_state, const QString& price_reason,
+                                         const QString& source) {
+    return cftc_build_sync_chart_data(interpretation, observations, prices, requested_market, price_market, range,
+                                      price_state, price_reason, source, true, false);
 }
 
 int segment_count(const QVector<fincept::ui::TimeSeriesPoint>& points) {
@@ -139,10 +173,16 @@ class TstCftcSyncChart : public QObject {
     void stale_price_from_previous_market_is_rejected();
     void proxy_and_source_labels_are_truthful();
     void positioning_pane_uses_primary_participant_net();
+    void positioning_uses_terminology_principal_per_family();
+    void missing_principal_leaves_context_empty();
     void range_filters_only_the_visible_points();
     void horizon_context_exposes_interpretation_states();
     void price_unavailable_keeps_positioning_pane();
     void empty_price_source_is_unavailable();
+    void pending_price_reports_pending_not_unspecified();
+    void provider_failure_reason_is_carried_into_the_chart();
+    void no_mapped_source_reason_is_carried_into_the_chart();
+    void hover_values_share_the_snapped_report_date();
     void deterministic_repeatability();
 };
 
@@ -315,6 +355,107 @@ void TstCftcSyncChart::empty_price_source_is_unavailable() {
     QVERIFY(!data.price.available);
     QVERIFY(!data.price.unavailable_reason.isEmpty());
     QVERIFY(data.positioning.available);
+}
+
+void TstCftcSyncChart::positioning_uses_terminology_principal_per_family() {
+    const CftcFamily families[] = {CftcFamily::Legacy, CftcFamily::Disaggregated, CftcFamily::Tff};
+    const QStringList labels = {QStringLiteral("Non-Commercial"), QStringLiteral("Managed Money"),
+                                QStringLiteral("Leveraged Funds")};
+    for (int i = 0; i < 3; ++i) {
+        const CftcFamily family = families[i];
+        const QVector<CftcObservation> observations = make_series(family, 6, 600.0, 400.0);
+        CftcInterpretationResult interpretation = make_result(family);
+        const CftcSyncChartData data =
+            build(interpretation, observations, report_prices(observations), QStringLiteral("gold"),
+                  QStringLiteral("gold"), CftcRange::Max, QStringLiteral("TEST source"), true, false);
+        QCOMPARE(data.positioning_label, labels[i]);
+        QVERIFY(data.positioning.available);
+        QCOMPARE(data.positioning.points.size(), observations.size());
+        for (const auto& point : data.positioning.points)
+            QCOMPARE(point.value, 200.0); // the expected principal slot's 600 - 400
+        QCOMPARE(data.positioning_palette_index, expected_principal_slot(family));
+    }
+}
+
+void TstCftcSyncChart::missing_principal_leaves_context_empty() {
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    for (int i = interpretation.participants.size() - 1; i >= 0; --i) {
+        if (interpretation.participants[i].participant_key == QStringLiteral("non_commercial"))
+            interpretation.participants.removeAt(i);
+    }
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    const CftcSyncChartData data =
+        build(interpretation, observations, report_prices(observations), QStringLiteral("gold"), QStringLiteral("gold"),
+              CftcRange::Max, QStringLiteral("TEST source"), true, false);
+    QVERIFY(!data.positioning.available);
+    QVERIFY(!data.positioning.unavailable_reason.isEmpty());
+    // A participant that was never resolved must not produce "no material
+    // state" context lines.
+    QVERIFY(data.horizon_context.isEmpty());
+}
+
+void TstCftcSyncChart::pending_price_reports_pending_not_unspecified() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    const CftcSyncChartData data =
+        build_with_price_state(interpretation, observations, {}, QStringLiteral("gold"), QStringLiteral("gold"),
+                               CftcRange::Max, CftcPriceContextState::Pending, QString(), QString());
+    QVERIFY(!data.price.available);
+    QCOMPARE(data.price.unavailable_reason, QStringLiteral("price context is pending"));
+    QVERIFY(!data.price.unavailable_reason.contains(QStringLiteral("unspecified")));
+    QVERIFY(data.positioning.available);
+}
+
+void TstCftcSyncChart::provider_failure_reason_is_carried_into_the_chart() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    const CftcSyncChartData data = build_with_price_state(
+        interpretation, observations, {}, QStringLiteral("gold"), QStringLiteral("gold"), CftcRange::Max,
+        CftcPriceContextState::Unavailable, QStringLiteral("the Yahoo Finance history request failed"), QString());
+    QVERIFY(!data.price.available);
+    QCOMPARE(data.price.unavailable_reason, QStringLiteral("the Yahoo Finance history request failed"));
+    QVERIFY(!data.price.unavailable_reason.contains(QStringLiteral("unspecified")));
+    QVERIFY(data.positioning.available);
+}
+
+void TstCftcSyncChart::no_mapped_source_reason_is_carried_into_the_chart() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    const CftcSyncChartData data =
+        build_with_price_state(interpretation, observations, {}, QStringLiteral("gold"), QStringLiteral("gold"),
+                               CftcRange::Max, CftcPriceContextState::Unavailable,
+                               QStringLiteral("no retained free price source is mapped for this market"), QString());
+    QVERIFY(!data.price.available);
+    QCOMPARE(data.price.unavailable_reason, QStringLiteral("no retained free price source is mapped for this market"));
+    QVERIFY(data.positioning.available);
+}
+
+void TstCftcSyncChart::hover_values_share_the_snapped_report_date() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    // A gap: report 3 carries no qualifying price.
+    const CftcSyncChartData data =
+        build(interpretation, observations, report_prices(observations, {2, 3}), QStringLiteral("gold"),
+              QStringLiteral("gold"), CftcRange::Max, QStringLiteral("TEST source"), true, false);
+    QVERIFY(data.price.available);
+    QVERIFY(data.positioning.available);
+
+    const CftcSyncHoverValue both = cftc_sync_hover_values(data, observations[1].date);
+    QCOMPARE(both.date, observations[1].date);
+    QVERIFY(both.has_price);
+    QVERIFY(both.has_positioning);
+    QCOMPARE(both.positioning, 200.0);
+
+    const CftcSyncHoverValue gap = cftc_sync_hover_values(data, observations[3].date);
+    QVERIFY(!gap.has_price);
+    QVERIFY(gap.has_positioning);
+    QCOMPARE(gap.positioning, 200.0);
+
+    const CftcSyncHoverValue absent = cftc_sync_hover_values(data, observations[0].date.addDays(-1));
+    QVERIFY(!absent.has_price);
+    QVERIFY(!absent.has_positioning);
+    QCOMPARE(absent.price, 0.0);
+    QCOMPARE(absent.positioning, 0.0);
 }
 
 void TstCftcSyncChart::deterministic_repeatability() {

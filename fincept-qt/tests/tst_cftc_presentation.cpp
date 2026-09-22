@@ -83,14 +83,35 @@ CftcInterpretationResult make_result(CftcFamily family) {
     return result;
 }
 
-QString primary_key(CftcFamily family) {
-    const auto participants = cftc_family_participants(family);
-    const int index = cftc_speculative_index(participants);
-    return index >= 0 ? participants[index].key : QString();
+/// The expected principal participant per family, hard-coded here rather than
+/// derived through the helper under test or through the generic speculative
+/// flag. The expected key's Batch 4A terminology class is asserted separately.
+QString expected_principal_key(CftcFamily family) {
+    switch (family) {
+        case CftcFamily::Disaggregated:
+            return QStringLiteral("managed_money");
+        case CftcFamily::Tff:
+            return QStringLiteral("leveraged_funds");
+        case CftcFamily::Legacy:
+            break;
+    }
+    return QStringLiteral("non_commercial");
+}
+
+CftcTerminologyClass expected_principal_terminology(CftcFamily family) {
+    switch (family) {
+        case CftcFamily::Disaggregated:
+            return CftcTerminologyClass::ManagedMoney;
+        case CftcFamily::Tff:
+            return CftcTerminologyClass::LeveragedFunds;
+        case CftcFamily::Legacy:
+            break;
+    }
+    return CftcTerminologyClass::BroadNonCommercial;
 }
 
 CftcParticipantInterpretation* primary_participant(CftcInterpretationResult& result) {
-    const QString key = primary_key(result.family);
+    const QString key = expected_principal_key(result.family);
     for (auto& participant : result.participants) {
         if (participant.participant_key == key)
             return &participant;
@@ -245,6 +266,13 @@ class TstCftcPresentation : public QObject {
     void report_wide_failure_reason_is_reported();
     void participant_specific_reason_wins_over_report_wide_record();
     void net_share_disagreement_wording_is_exact();
+    void principal_mapping_follows_terminology_contract();
+    void missing_principal_participant_is_unavailable_not_fallback();
+    void evidence_flow_metrics_use_exact_units();
+    void evidence_distinguishes_no_material_state_from_unavailable();
+    void open_interest_evidence_uses_the_state_horizon();
+    void terminology_caveats_render_only_where_required();
+    void severe_extreme_is_not_downgraded_to_crowding();
     void insufficient_history_does_not_suppress_direct_states();
     void visible_range_does_not_change_interpretation();
     void deterministic_repeatability();
@@ -448,7 +476,17 @@ void TstCftcPresentation::tff_is_never_reconstructed_into_commercial_speculator(
     const CftcInterpretationView view = cftc_compose_interpretation(result);
     const QString text = conclusions_text(view) + QLatin1Char('\n') + view.context_text;
     QVERIFY(!text.contains(QStringLiteral("commercial"), Qt::CaseInsensitive));
-    QVERIFY(!text.contains(QStringLiteral("speculat"), Qt::CaseInsensitive));
+    // The mandated Leveraged Funds caveat uses the word "speculation"; what is
+    // forbidden is reconstructing a speculator category or a Commercial split.
+    // The caveat must be the only sentence carrying that stem.
+    QVERIFY(!text.contains(QStringLiteral("speculator"), Qt::CaseInsensitive));
+    int speculation_sentences = 0;
+    for (const QString& sentence : view.sentences) {
+        if (sentence.contains(QStringLiteral("speculat"), Qt::CaseInsensitive))
+            ++speculation_sentences;
+    }
+    QCOMPARE(speculation_sentences, 1);
+    QVERIFY(join_sentences(view).contains(QStringLiteral("outright speculation")));
     QVERIFY(text.contains(QStringLiteral("Leveraged Funds")));
 }
 
@@ -484,7 +522,7 @@ void TstCftcPresentation::both_divergence_directions_are_distinct() {
             relationship = &item;
     }
     QVERIFY(relationship != nullptr);
-    QVERIFY(relationship->available);
+    QCOMPARE(relationship->status, CftcEvidenceStatus::Available);
     QVERIFY(relationship->value.contains(QStringLiteral("Divergence")));
 }
 
@@ -546,10 +584,14 @@ void TstCftcPresentation::missing_price_preserves_cftc_only_conclusions() {
     QVERIFY(join_sentences(unavailable)
                 .contains(QStringLiteral("Price relationship unavailable: no price observations were supplied.")));
 
-    const CftcInterpretationView pending = cftc_compose_interpretation(result, /*price_pending=*/true);
+    const CftcInterpretationView pending = cftc_compose_interpretation(result, CftcPriceContextState::Pending);
     QVERIFY(pending.headline.contains(QStringLiteral("net long")));
     QVERIFY(join_sentences(pending).contains(QStringLiteral("Price context is still loading")));
     QVERIFY(!join_sentences(pending).contains(QStringLiteral("Price relationship unavailable")));
+    for (const auto& item : pending.evidence) {
+        if (item.label.startsWith(QStringLiteral("Price")))
+            QVERIFY(item.status == CftcEvidenceStatus::Pending);
+    }
 }
 
 void TstCftcPresentation::concrete_price_failure_reason_is_reported() {
@@ -559,17 +601,25 @@ void TstCftcPresentation::concrete_price_failure_reason_is_reported() {
     for (int horizon : {1, 4, 13})
         add_missing_price_assessment(result, primary->participant_key, horizon);
 
-    const CftcInterpretationView view =
-        cftc_compose_interpretation(result, false, QStringLiteral("the Yahoo Finance history request failed"));
+    const CftcInterpretationView view = cftc_compose_interpretation(
+        result, CftcPriceContextState::Unavailable, QStringLiteral("the Yahoo Finance history request failed"));
     QVERIFY(join_sentences(view).contains(
         QStringLiteral("Price relationship unavailable: the Yahoo Finance history request failed.")));
     QVERIFY(!join_sentences(view).contains(QStringLiteral("no price observations were supplied")));
     QVERIFY(view.headline.contains(QStringLiteral("net long")));
+    // The evidence rows carry the same concrete reason as the prose.
+    for (const auto& item : view.evidence) {
+        if (item.label.startsWith(QStringLiteral("Price"))) {
+            QVERIFY(item.status == CftcEvidenceStatus::Unavailable);
+            QVERIFY(item.value.contains(QStringLiteral("the Yahoo Finance history request failed")));
+            QVERIFY(!item.value.contains(QStringLiteral("no price observations were supplied")));
+        }
+    }
 }
 
 void TstCftcPresentation::participant_specific_failure_reason_is_reported() {
     CftcInterpretationResult result = make_result(CftcFamily::Legacy);
-    const QString key = primary_key(CftcFamily::Legacy);
+    const QString key = expected_principal_key(CftcFamily::Legacy);
     add_unavailable(result, QStringLiteral("NET_EXPOSURE"), key, CftcUnavailableReason::MissingParticipantLeg);
     add_unavailable(result, QStringLiteral("HISTORICAL_RELATIVE_STATE"), key,
                     CftcUnavailableReason::MissingParticipantLeg);
@@ -592,7 +642,7 @@ void TstCftcPresentation::report_wide_failure_reason_is_reported() {
 
 void TstCftcPresentation::participant_specific_reason_wins_over_report_wide_record() {
     CftcInterpretationResult result = make_result(CftcFamily::Legacy);
-    const QString key = primary_key(CftcFamily::Legacy);
+    const QString key = expected_principal_key(CftcFamily::Legacy);
     // A report-wide record must not shadow the primary participant's own
     // blocked reading, even when it appears first in the unavailable list.
     add_unavailable(result, QStringLiteral("NET_EXPOSURE"), QString(), CftcUnavailableReason::NoObservations);
@@ -622,6 +672,262 @@ void TstCftcPresentation::net_share_disagreement_wording_is_exact() {
     QVERIFY(!text.contains(QStringLiteral("%%")));
 }
 
+void TstCftcPresentation::principal_mapping_follows_terminology_contract() {
+    const CftcFamily families[] = {CftcFamily::Legacy, CftcFamily::Disaggregated, CftcFamily::Tff};
+    for (CftcFamily family : families) {
+        const QString key = cftc_principal_participant_key(family);
+        QCOMPARE(key, expected_principal_key(family));
+        QVERIFY(!key.isEmpty());
+        // The mapping is proven through the finalized Batch 4A terminology
+        // metadata, not through the generic speculative flag.
+        QCOMPARE(cftc_participant_terminology(family, key), expected_principal_terminology(family));
+    }
+    // A key from another family is never reassigned by the terminology table.
+    QCOMPARE(cftc_participant_terminology(CftcFamily::Tff, QStringLiteral("non_commercial")),
+             CftcTerminologyClass::Unknown);
+}
+
+void TstCftcPresentation::missing_principal_participant_is_unavailable_not_fallback() {
+    CftcInterpretationResult result = make_result(CftcFamily::Disaggregated);
+    for (int i = result.participants.size() - 1; i >= 0; --i) {
+        if (result.participants[i].participant_key == QStringLiteral("managed_money"))
+            result.participants.removeAt(i);
+    }
+    // Another participant still carries a state; the composer must not
+    // substitute it for the missing principal participant.
+    for (auto& participant : result.participants) {
+        if (participant.participant_key == QStringLiteral("producer_merchant"))
+            participant.states << make_state(QStringLiteral("NET_LONG"), participant.participant_key);
+    }
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    QVERIFY(!view.interpreted);
+    QVERIFY(view.headline.contains(QStringLiteral("interpretation unavailable")));
+    QVERIFY(join_sentences(view).contains(QStringLiteral("principal participant could not be resolved")));
+    QVERIFY(!conclusions_text(view).contains(QStringLiteral("Producer/Merchant")));
+}
+
+void TstCftcPresentation::evidence_flow_metrics_use_exact_units() {
+    CftcInterpretationResult result = make_result(CftcFamily::Disaggregated);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+
+    CftcInterpretationState long_state = make_state(QStringLiteral("LONG_ACCUMULATION"), primary->participant_key, 4);
+    add_metric(long_state, QStringLiteral("move_value"), 12.5);
+    primary->states << long_state;
+
+    CftcInterpretationState short_state = make_state(QStringLiteral("SHORT_COVERING"), primary->participant_key, 13);
+    add_metric(short_state, QStringLiteral("move_value"), -8.25);
+    primary->states << short_state;
+
+    CftcInterpretationState net_state = make_state(QStringLiteral("NET_LONGWARD_SHIFT"), primary->participant_key, 4);
+    add_metric(net_state, QStringLiteral("net_flow"), 3.5);
+    net_state.has_move_rank = true;
+    net_state.move_rank = 0.75;
+    net_state.move_rank_reference_count = 156;
+    primary->states << net_state;
+
+    CftcInterpretationState oi_state = make_state(QStringLiteral("OI_EXPANSION"), QString());
+    oi_state.has_horizon = true;
+    oi_state.horizon_reports = 4;
+    add_metric(oi_state, QStringLiteral("oi_change"), 7.5);
+    result.market_context << oi_state;
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    auto row = [&view](const QString& label, int horizon = -1) -> const CftcEvidenceItem* {
+        for (const auto& item : view.evidence) {
+            if (item.label != label)
+                continue;
+            if (horizon >= 0 && item.horizon_reports != horizon)
+                continue;
+            return &item;
+        }
+        return nullptr;
+    };
+
+    const CftcEvidenceItem* long_row = row(QStringLiteral("Long leg flow (% of prior OI)"), 4);
+    QVERIFY(long_row != nullptr);
+    QCOMPARE(long_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(long_row->value, QStringLiteral("12.50%"));
+    QCOMPARE(long_row->horizon_reports, 4);
+
+    const CftcEvidenceItem* short_row = row(QStringLiteral("Short leg flow (% of prior OI)"), 13);
+    QVERIFY(short_row != nullptr);
+    QCOMPARE(short_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(short_row->value, QStringLiteral("-8.25%"));
+    QCOMPARE(short_row->horizon_reports, 13);
+
+    const CftcEvidenceItem* net_row = row(QStringLiteral("Net flow (% of prior OI)"), 4);
+    QVERIFY(net_row != nullptr);
+    QCOMPARE(net_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(net_row->value, QStringLiteral("+3.50%"));
+
+    const CftcEvidenceItem* rank_row = row(QStringLiteral("Move materiality rank (% of prior moves)"), 4);
+    QVERIFY(rank_row != nullptr);
+    QCOMPARE(rank_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(rank_row->value, QStringLiteral("75.0% (n=156)"));
+
+    const CftcEvidenceItem* oi_row = row(QStringLiteral("Open Interest change (% change) (four reports)"));
+    QVERIFY(oi_row != nullptr);
+    QCOMPARE(oi_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(oi_row->value, QStringLiteral("+7.50%"));
+
+    const CftcEvidenceItem* net_pct_row = row(QStringLiteral("Net %OI (% of current OI)"));
+    QVERIFY(net_pct_row != nullptr);
+    QCOMPARE(net_pct_row->value, QStringLiteral("12.50%"));
+
+    // No evidence row relabels a normalized Batch 4A metric as contract counts.
+    for (const auto& item : view.evidence) {
+        QVERIFY(!item.label.contains(QStringLiteral("contracts"), Qt::CaseInsensitive));
+        QVERIFY(!item.value.contains(QStringLiteral("contracts"), Qt::CaseInsensitive));
+    }
+}
+
+void TstCftcPresentation::evidence_distinguishes_no_material_state_from_unavailable() {
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+
+    // A 4-report price assessment that was evaluated but produced no state.
+    CftcPricePositionAssessment assessed;
+    assessed.participant_key = primary->participant_key;
+    assessed.horizon_reports = 4;
+    assessed.evaluated = true;
+    assessed.has_price_move = true;
+    assessed.price_move = 5.0;
+    assessed.has_positioning_move = true;
+    assessed.positioning_move = 2.0;
+    result.price_context << assessed;
+
+    // The 13-report horizon is genuinely unevaluable.
+    add_unavailable(result, QStringLiteral("NET_SHIFT"), primary->participant_key,
+                    CftcUnavailableReason::BrokenReportSequence, 13);
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    auto row = [&view](const QString& label, int horizon = -1) -> const CftcEvidenceItem* {
+        for (const auto& item : view.evidence) {
+            if (item.label != label)
+                continue;
+            if (horizon >= 0 && item.horizon_reports != horizon)
+                continue;
+            return &item;
+        }
+        return nullptr;
+    };
+
+    const CftcEvidenceItem* long_4 = row(QStringLiteral("Long leg flow (% of prior OI)"), 4);
+    QVERIFY(long_4 != nullptr);
+    QCOMPARE(long_4->status, CftcEvidenceStatus::NoMaterialState);
+    QCOMPARE(long_4->value, QStringLiteral("no material state at this horizon"));
+
+    const CftcEvidenceItem* net_13 = row(QStringLiteral("Net flow (% of prior OI)"), 13);
+    QVERIFY(net_13 != nullptr);
+    QCOMPARE(net_13->status, CftcEvidenceStatus::Unavailable);
+    QVERIFY(net_13->value.contains(QStringLiteral("unavailable")));
+    QVERIFY(net_13->value.contains(QStringLiteral("weekly report sequence is broken")));
+
+    const CftcEvidenceItem* relationship = row(QStringLiteral("Price / positioning relationship"));
+    QVERIFY(relationship != nullptr);
+    QCOMPARE(relationship->status, CftcEvidenceStatus::NoMaterialState);
+    QCOMPARE(relationship->value, QStringLiteral("not material enough for a relationship state"));
+
+    const CftcEvidenceItem* price = row(QStringLiteral("Price change (quoted price units) (four reports)"));
+    QVERIFY(price != nullptr);
+    QCOMPARE(price->status, CftcEvidenceStatus::Available);
+    QCOMPARE(price->value, QStringLiteral("+5"));
+}
+
+void TstCftcPresentation::open_interest_evidence_uses_the_state_horizon() {
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+
+    CftcInterpretationState oi_state = make_state(QStringLiteral("OI_EXPANSION"), QString());
+    oi_state.has_horizon = true;
+    oi_state.horizon_reports = 4;
+    add_metric(oi_state, QStringLiteral("oi_change"), 7.5);
+    result.market_context << oi_state;
+    // An unavailable record at a different horizon must not relabel the value.
+    add_unavailable(result, QStringLiteral("OI_CONTEXT"), QString(), CftcUnavailableReason::InsufficientHistory, 13);
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    const CftcEvidenceItem* oi_row = nullptr;
+    for (const auto& item : view.evidence) {
+        if (item.label.startsWith(QStringLiteral("Open Interest change")))
+            oi_row = &item;
+    }
+    QVERIFY(oi_row != nullptr);
+    QCOMPARE(oi_row->status, CftcEvidenceStatus::Available);
+    QCOMPARE(oi_row->value, QStringLiteral("+7.50%"));
+    QVERIFY(oi_row->label.contains(QStringLiteral("four reports")));
+    QVERIFY(!oi_row->label.contains(QStringLiteral("thirteen reports")));
+}
+
+void TstCftcPresentation::terminology_caveats_render_only_where_required() {
+    CftcInterpretationResult legacy = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* legacy_primary = primary_participant(legacy);
+    legacy_primary->states << make_state(QStringLiteral("CROWDED_LONG"), legacy_primary->participant_key);
+    const CftcInterpretationView legacy_view = cftc_compose_interpretation(legacy);
+    QVERIFY(join_sentences(legacy_view).contains(QStringLiteral("broad non-commercial category")));
+    int caveat_count = 0;
+    for (const QString& sentence : legacy_view.sentences) {
+        if (sentence.contains(QStringLiteral("broad non-commercial category")))
+            ++caveat_count;
+    }
+    QCOMPARE(caveat_count, 1);
+
+    // The caveat is not repeated when no crowding wording is rendered.
+    CftcInterpretationResult neutral_legacy = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* neutral_primary = primary_participant(neutral_legacy);
+    neutral_primary->states << make_state(QStringLiteral("NET_LONG"), neutral_primary->participant_key);
+    QVERIFY(!join_sentences(cftc_compose_interpretation(neutral_legacy))
+                 .contains(QStringLiteral("broad non-commercial category")));
+
+    CftcInterpretationResult tff = make_result(CftcFamily::Tff);
+    CftcParticipantInterpretation* tff_primary = primary_participant(tff);
+    tff_primary->states << make_state(QStringLiteral("CROWDED_SHORT"), tff_primary->participant_key);
+    const CftcInterpretationView tff_view = cftc_compose_interpretation(tff);
+    QVERIFY(join_sentences(tff_view).contains(QStringLiteral("leveraged-funds category")));
+    QVERIFY(join_sentences(tff_view).contains(QStringLiteral("outright speculation")));
+
+    // Managed Money and the neutral classes carry no caveat code, so no caveat
+    // sentence is invented for them.
+    CftcInterpretationResult managed_money = make_result(CftcFamily::Disaggregated);
+    CftcParticipantInterpretation* mm_primary = primary_participant(managed_money);
+    mm_primary->states << make_state(QStringLiteral("CROWDED_LONG"), mm_primary->participant_key);
+    const QString mm_text = join_sentences(cftc_compose_interpretation(managed_money));
+    QVERIFY(!mm_text.contains(QStringLiteral("broad non-commercial category")));
+    QVERIFY(!mm_text.contains(QStringLiteral("leveraged-funds category")));
+
+    const CftcParticipantInterpretation* commercial = find_participant(legacy, QStringLiteral("commercial"));
+    QVERIFY(commercial != nullptr);
+    QVERIFY(commercial->terminology_caveat_code.isEmpty());
+    QVERIFY(cftc_terminology_caveat_sentence(*commercial).isEmpty());
+}
+
+void TstCftcPresentation::severe_extreme_is_not_downgraded_to_crowding() {
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("SEVERE_LONG_EXTREME"), primary->participant_key);
+    primary->states << make_state(QStringLiteral("HISTORICALLY_HIGH_NET"), primary->participant_key);
+    primary->states << make_state(QStringLiteral("CROWDED_LONG"), primary->participant_key);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    QVERIFY(view.headline.contains(QStringLiteral("historically severe net long")));
+    QVERIFY(!view.headline.contains(QStringLiteral("crowded")));
+    QVERIFY(join_sentences(view).contains(QStringLiteral("severe historical net-long extreme")));
+    QVERIFY(!join_sentences(view).contains(QStringLiteral("broad non-commercial category")));
+
+    CftcInterpretationResult short_result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* short_primary = primary_participant(short_result);
+    short_primary->states << make_state(QStringLiteral("SEVERE_SHORT_EXTREME"), short_primary->participant_key);
+    short_primary->states << make_state(QStringLiteral("CROWDED_SHORT"), short_primary->participant_key);
+    short_primary->states << make_state(QStringLiteral("NET_SHORT"), short_primary->participant_key);
+    const CftcInterpretationView short_view = cftc_compose_interpretation(short_result);
+    QVERIFY(short_view.headline.contains(QStringLiteral("historically severe net short")));
+    QVERIFY(!short_view.headline.contains(QStringLiteral("crowded")));
+}
+
 void TstCftcPresentation::insufficient_history_does_not_suppress_direct_states() {
     const QVector<CftcObservation> observations = make_legacy_series(10, 500.0, 900.0, 600.0, 400.0);
     CftcInterpretationInput input = legacy_input(observations);
@@ -635,7 +941,7 @@ void TstCftcPresentation::insufficient_history_does_not_suppress_direct_states()
 
     bool percentile_unavailable = false;
     for (const auto& item : view.evidence) {
-        if (item.label.contains(QStringLiteral("percentile")) && !item.available)
+        if (item.label.contains(QStringLiteral("percentile")) && item.status == CftcEvidenceStatus::Unavailable)
             percentile_unavailable = true;
     }
     QVERIFY(percentile_unavailable);
@@ -664,8 +970,9 @@ void TstCftcPresentation::visible_range_does_not_change_interpretation() {
 
     const CftcInterpretationView full_view = cftc_compose_interpretation(full_result);
     const CftcInterpretationView window_view = cftc_compose_interpretation(window_result);
-    QVERIFY(full_view.headline.contains(QStringLiteral("crowded long")));
-    QVERIFY(!window_view.headline.contains(QStringLiteral("crowded long")));
+    QVERIFY(full_view.headline.contains(QStringLiteral("historically severe net long")));
+    QVERIFY(!window_view.headline.contains(QStringLiteral("crowded")));
+    QVERIFY(!window_view.headline.contains(QStringLiteral("severe")));
     QVERIFY(full_view.headline != window_view.headline);
 
     // The panel builds the engine input from the full validated history: the
@@ -699,7 +1006,7 @@ void TstCftcPresentation::deterministic_repeatability() {
     for (int i = 0; i < first.evidence.size(); ++i) {
         QCOMPARE(first.evidence[i].label, second.evidence[i].label);
         QCOMPARE(first.evidence[i].value, second.evidence[i].value);
-        QCOMPARE(first.evidence[i].available, second.evidence[i].available);
+        QCOMPARE(first.evidence[i].status, second.evidence[i].status);
     }
 }
 

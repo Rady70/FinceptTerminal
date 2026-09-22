@@ -47,6 +47,8 @@ struct HistoryPoint;
 
 namespace fincept::screens {
 
+enum class CftcPriceContextState;
+
 class CftcHeatmap;
 class CftcPositioningChart;
 class CftcPricePositioningChart;
@@ -115,6 +117,8 @@ class CftcPanel : public EconPanelBase {
     void request_price(const QString& market_key);
     void update_price_points(const QVector<services::HistoryPoint>& points);
     void update_price_views();
+    CftcPriceContextState price_context_state() const;
+    QString price_unavailable_note() const;
     QString price_source_text() const;
     QString concise_price_source_text() const;
 
@@ -207,7 +211,8 @@ class CftcPanel : public EconPanelBase {
     services::CftcInterpretationResult interpretation_;
     services::CftcFamily family_ = services::CftcFamily::Legacy;
     QVector<services::CftcParticipant> participants_;
-    int speculative_index_ = -1;
+    int speculative_index_ = -1; // historical R3 numerical sections only
+    int principal_index_ = -1;   // Batch 4B semantic path: finalized terminology contract
     QString market_key_;
     QString market_label_;
     bool futures_only_ = false;

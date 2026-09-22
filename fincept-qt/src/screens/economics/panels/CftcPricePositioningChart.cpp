@@ -45,14 +45,12 @@ QString axis_date_format(qint64 span_days) {
     return QStringLiteral("yyyy");
 }
 
-/// Width of the widest value-axis label the axis itself would draw, so both
-/// stacked panes can reserve the same left inset and their plot areas align.
-/// The axis's own label font is measured; a few extra characters of headroom
-/// keep a label from being elided when the pane is narrow.
-int axis_label_width(const QValueAxis* axis) {
+/// Width of the widest value-axis label the axis itself would draw, measured
+/// with the chart's actual label font so both stacked panes can reserve the
+/// same left inset and neither pane's labels are elided.
+int axis_label_width(const QValueAxis* axis, const QFontMetrics& fm) {
     if (!axis)
         return 0;
-    const QFontMetrics fm(axis->labelsFont());
     const QByteArray format = axis->labelFormat().toUtf8();
     int width = 0;
     for (int i = 0; i <= 4; ++i) {
@@ -458,12 +456,15 @@ void CftcPricePositioningChart::rebuild() {
         return axes.isEmpty() ? nullptr : qobject_cast<QValueAxis*>(axes.first());
     };
     // ChartFactory::apply_theme resets the chart margins, so theme first and
-    // then reserve the shared left inset for the value-axis labels.
+    // then reserve the shared left inset for the value-axis labels. The inset
+    // is measured with the canvas font (the font the labels are actually drawn
+    // with) and floored generously so a long net-position label is never elided.
     ui::ChartFactory::apply_theme(price_chart);
     ui::ChartFactory::apply_theme(position_chart);
+    const QFontMetrics fm(font());
     const int label_width =
-        std::max(axis_label_width(vertical_axis(price_chart)), axis_label_width(vertical_axis(position_chart)));
-    const int left_margin = std::max(64, label_width + 16);
+        std::max(axis_label_width(vertical_axis(price_chart), fm), axis_label_width(vertical_axis(position_chart), fm));
+    const int left_margin = std::max(96, label_width + 20);
     price_chart->setMargins(QMargins(left_margin, 4, 4, 4));
     position_chart->setMargins(QMargins(left_margin, 4, 4, 4));
 
@@ -506,18 +507,11 @@ void CftcPricePositioningChart::handle_hover(const QDate& date, const QPoint& gl
 
     QStringList lines;
     lines << date.toString(Qt::ISODate);
-    for (const auto& point : std::as_const(data_.price.points)) {
-        if (point.date == date) {
-            lines << tr("%1  %2").arg(price_header_->text(), pane_value_text(point.value));
-            break;
-        }
-    }
-    for (const auto& point : std::as_const(data_.positioning.points)) {
-        if (point.date == date) {
-            lines << tr("%1  %2").arg(data_.positioning_label, pane_value_text(point.value));
-            break;
-        }
-    }
+    const CftcSyncHoverValue hover = cftc_sync_hover_values(data_, date);
+    if (hover.has_price)
+        lines << tr("%1  %2").arg(price_header_->text(), pane_value_text(hover.price));
+    if (hover.has_positioning)
+        lines << tr("%1  %2").arg(data_.positioning_label, pane_value_text(hover.positioning));
     tooltip_->setText(lines.join(QLatin1Char('\n')));
     tooltip_->adjustSize();
 
