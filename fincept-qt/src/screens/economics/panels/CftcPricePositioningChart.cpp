@@ -32,11 +32,11 @@ namespace fincept::screens {
 
 namespace {
 
-qreal point_x(const ui::TimeSeriesPoint& point) {
+qreal sync_point_x(const ui::TimeSeriesPoint& point) {
     return static_cast<qreal>(QDateTime(point.date, QTime(0, 0)).toMSecsSinceEpoch());
 }
 
-QString axis_date_format(qint64 span_days) {
+QString sync_axis_date_format(qint64 span_days) {
     if (span_days <= 2)
         return QStringLiteral("dd MMM");
     if (span_days <= 2200)
@@ -340,7 +340,7 @@ QChart* make_pane_chart(const QVector<ui::TimeSeriesPoint>& points, const QColor
         auto* line = new QLineSeries;
         line->setPen(QPen(color, 1.6));
         for (const auto& point : segment)
-            line->append(point_x(point), point.value);
+            line->append(sync_point_x(point), point.value);
         chart->addSeries(line);
         line->attachAxis(axis_x);
         line->attachAxis(axis_y);
@@ -353,7 +353,7 @@ QChart* make_pane_chart(const QVector<ui::TimeSeriesPoint>& points, const QColor
             markers->setColor(color);
             markers->setBorderColor(QColor(ui::colors::BG_SURFACE()));
             for (const auto& point : marker_points)
-                markers->append(point_x(point), point.value);
+                markers->append(sync_point_x(point), point.value);
             chart->addSeries(markers);
             markers->attachAxis(axis_x);
             markers->attachAxis(axis_y);
@@ -427,7 +427,7 @@ void CftcPricePositioningChart::rebuild() {
     extend_extent(data_.price.points);
     extend_extent(data_.positioning.points);
     const qint64 span_days = first_date.isValid() && last_date.isValid() ? first_date.daysTo(last_date) : 0;
-    const QString format = axis_date_format(span_days);
+    const QString format = sync_axis_date_format(span_days);
 
     QChart* price_chart =
         has_price ? make_pane_chart(data_.price.points, QColor(ui::colors::AMBER()), first_date, last_date, format)
