@@ -185,6 +185,8 @@ class TstCftcSyncChart : public QObject {
     void hover_values_share_the_snapped_report_date();
     void hover_snap_dates_are_shared_between_panes();
     void deterministic_repeatability();
+    void value_axis_format_avoids_ellipsis();
+    void selected_horizon_narrows_the_context_caption();
 };
 
 void TstCftcSyncChart::price_aligns_to_report_dates_without_future_observation() {
@@ -531,6 +533,55 @@ void TstCftcSyncChart::deterministic_repeatability() {
         QCOMPARE(first.price.points[i].date, second.price.points[i].date);
         QCOMPARE(first.price.points[i].value, second.price.points[i].value);
     }
+}
+
+void TstCftcSyncChart::value_axis_format_avoids_ellipsis() {
+    // Contract-count panes must render plain digits, never scientific notation
+    // that the axis strip could replace with "...".
+    QCOMPARE(cftc_sync_value_axis_format(-150000.0, 50000.0), QStringLiteral("%.0f"));
+    QCOMPARE(cftc_sync_value_axis_format(0.0, 7.0), QStringLiteral("%.0f"));
+    QCOMPARE(cftc_sync_value_axis_format(-0.25, 0.25), QStringLiteral("%.6g"));
+
+    const QByteArray integer_format = cftc_sync_value_axis_format(-150000.0, 50000.0).toUtf8();
+    const QString large_label = QString::asprintf(integer_format.constData(), 100000.0);
+    QCOMPARE(large_label, QStringLiteral("100000"));
+    QVERIFY(!large_label.contains(QStringLiteral("e+")));
+    QVERIFY(!large_label.contains(QStringLiteral("...")));
+    const QString negative_label = QString::asprintf(integer_format.constData(), -50000.0);
+    QCOMPARE(negative_label, QStringLiteral("-50000"));
+
+    const QByteArray fractional_format = cftc_sync_value_axis_format(-0.25, 0.25).toUtf8();
+    const QString fractional_label = QString::asprintf(fractional_format.constData(), 0.125);
+    QCOMPARE(fractional_label, QStringLiteral("0.125"));
+}
+
+void TstCftcSyncChart::selected_horizon_narrows_the_context_caption() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Tff, 12, 700.0, 300.0);
+    const QVector<CftcPricePoint> prices = report_prices(observations);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Tff);
+    CftcParticipantInterpretation* primary = primary_participant(interpretation);
+    primary->states << make_state(QStringLiteral("NET_LONGWARD_SHIFT"), primary->participant_key, 4);
+    primary->states << make_state(QStringLiteral("SUSTAINED_LONGWARD_REPOSITIONING_4R"), primary->participant_key, 4);
+    primary->states << make_state(QStringLiteral("NET_SHORTWARD_SHIFT"), primary->participant_key, 13);
+
+    const auto make_data = [&](int horizon) {
+        return cftc_build_sync_chart_data(interpretation, observations, prices, QStringLiteral("euro"),
+                                          QStringLiteral("euro"), CftcRange::Max, CftcPriceContextState::Ready,
+                                          QString(), QStringLiteral("TEST source"), true, false, horizon);
+    };
+
+    const CftcSyncChartData selected = make_data(4);
+    QCOMPARE(selected.horizon_reports, 4);
+    QCOMPARE(selected.horizon_context.size(), 1);
+    QVERIFY(selected.horizon_context.first().startsWith(QStringLiteral("four reports:")));
+    QVERIFY(!selected.horizon_context.first().contains(QStringLiteral("thirteen reports")));
+
+    const CftcSyncChartData combined = make_data(0);
+    QCOMPARE(combined.horizon_reports, 0);
+    QCOMPARE(combined.horizon_context.size(), 3);
+    QVERIFY(combined.horizon_context[0].startsWith(QStringLiteral("one report:")));
+    QVERIFY(combined.horizon_context[1].startsWith(QStringLiteral("four reports:")));
+    QVERIFY(combined.horizon_context[2].startsWith(QStringLiteral("thirteen reports:")));
 }
 
 QTEST_GUILESS_MAIN(TstCftcSyncChart)

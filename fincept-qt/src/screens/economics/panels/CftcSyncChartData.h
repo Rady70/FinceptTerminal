@@ -44,6 +44,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <cmath>
 
 namespace fincept::screens {
 
@@ -63,7 +64,21 @@ struct CftcSyncChartData {
     int positioning_palette_index = 0; // series-palette slot for the principal participant
     QStringList horizon_context;
     QDate report_date;
+    int horizon_reports = 0; // 0 = the full 1/4/13 context; else the selected horizon only
 };
+
+/// The value-axis label format for a positioning/price pane. Contract counts are
+/// integers, so a span that cannot need decimals uses plain digits instead of
+/// the default six-significant-digit scientific notation (which the axis strip
+/// could otherwise render as "..."). A genuinely fractional span keeps a short
+/// general format. A fractional-valued pane whose nice-number span reaches 2
+/// loses sub-unit axis labels; its exact values remain on the hover readout.
+inline QString cftc_sync_value_axis_format(double min_value, double max_value) {
+    const double span = max_value - min_value;
+    if (std::isfinite(span) && span >= 2.0)
+        return QStringLiteral("%.0f");
+    return QStringLiteral("%.6g");
+}
 
 /// The exact hover readout for one snapped report date, shared by the widget's
 /// crosshair tooltip and its unit tests. A pane without a point at the date
@@ -229,23 +244,70 @@ inline QStringList cftc_sync_horizon_context(const services::CftcInterpretationR
     return lines;
 }
 
+/// The current interpretation context line for one selected horizon (the same
+/// wording the panel's 1W | 4W | 13W selection uses). Returns an empty string
+/// for an unsupported horizon or a participant absent from the result.
+inline QString cftc_sync_horizon_context_line(const services::CftcInterpretationResult& interpretation,
+                                              const QString& participant_key, int horizon_reports) {
+    if (!cftc_is_interpretation_horizon(horizon_reports))
+        return {};
+    const services::CftcParticipantInterpretation* participant = nullptr;
+    for (const auto& candidate : interpretation.participants) {
+        if (candidate.participant_key == participant_key) {
+            participant = &candidate;
+            break;
+        }
+    }
+    if (!participant)
+        return {};
+    QStringList words;
+    QVector<const services::CftcInterpretationState*> states;
+    for (const auto& state : participant->states) {
+        if (state.has_horizon && state.horizon_reports == horizon_reports)
+            states.append(&state);
+    }
+    std::stable_sort(states.begin(), states.end(), [](const auto* a, const auto* b) {
+        const int pa = cftc_sync_state_priority(a->state_id);
+        const int pb = cftc_sync_state_priority(b->state_id);
+        if (pa != pb)
+            return pa < pb;
+        return a->state_id < b->state_id;
+    });
+    for (const auto* state : states) {
+        const QString wording = cftc_state_short_wording(state->state_id);
+        if (!wording.isEmpty())
+            words << wording;
+    }
+    if (!words.isEmpty())
+        return cftc_presentation_tr("%1: %2").arg(cftc_horizon_phrase(horizon_reports),
+                                                  words.join(QStringLiteral(", ")));
+    if (const services::CftcUnavailableRecord* record = cftc_presentation_unavailable(
+            interpretation.unavailable, QStringLiteral("NET_SHIFT"), participant_key, horizon_reports)) {
+        return cftc_presentation_tr("%1: unavailable — %2")
+            .arg(cftc_horizon_phrase(horizon_reports), cftc_unavailable_reason_wording(record->reason));
+    }
+    return cftc_presentation_tr("%1: no material state").arg(cftc_horizon_phrase(horizon_reports));
+}
+
 /// Build the complete synchronized chart contract. `requested_market_key` is the
 /// market the panel is displaying; `price_market_key` identifies the market the
 /// retained price points were fetched for. A mismatch yields an unavailable
 /// price pane rather than another market's series. `price_state` and
 /// `price_unavailable_reason` are the caller's actual price situation, so a
 /// pending or failed request is never described as an unspecified source.
-inline CftcSyncChartData
-cftc_build_sync_chart_data(const services::CftcInterpretationResult& interpretation,
-                           const QVector<services::CftcObservation>& full_history,
-                           const QVector<services::CftcPricePoint>& prices, const QString& requested_market_key,
-                           const QString& price_market_key, services::CftcRange range,
-                           CftcPriceContextState price_state, const QString& price_unavailable_reason,
-                           const QString& price_source, bool price_continuous_proxy, bool price_spot_index) {
+/// `horizon_reports` narrows the caption to the selected interpretation horizon
+/// (0 keeps the combined 1/4/13 lines).
+inline CftcSyncChartData cftc_build_sync_chart_data(
+    const services::CftcInterpretationResult& interpretation, const QVector<services::CftcObservation>& full_history,
+    const QVector<services::CftcPricePoint>& prices, const QString& requested_market_key,
+    const QString& price_market_key, services::CftcRange range, CftcPriceContextState price_state,
+    const QString& price_unavailable_reason, const QString& price_source, bool price_continuous_proxy,
+    bool price_spot_index, int horizon_reports = 0) {
     CftcSyncChartData data;
     data.price_source = price_source;
     data.price_continuous_proxy = price_continuous_proxy;
     data.price_spot_index = price_spot_index;
+    data.horizon_reports = cftc_is_interpretation_horizon(horizon_reports) ? horizon_reports : 0;
     data.price.available = false;
     data.positioning.available = false;
 
@@ -294,7 +356,13 @@ cftc_build_sync_chart_data(const services::CftcInterpretationResult& interpretat
                     cftc_presentation_tr("the principal participant's net position is not carried in this range");
         }
 
-        data.horizon_context = cftc_sync_horizon_context(interpretation, primary_key);
+        if (data.horizon_reports == 0) {
+            data.horizon_context = cftc_sync_horizon_context(interpretation, primary_key);
+        } else if (const QString line =
+                       cftc_sync_horizon_context_line(interpretation, primary_key, data.horizon_reports);
+                   !line.isEmpty()) {
+            data.horizon_context = {line};
+        }
     }
 
     if (price_state == CftcPriceContextState::Pending) {

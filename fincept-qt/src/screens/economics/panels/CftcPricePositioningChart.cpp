@@ -12,6 +12,7 @@
 #include <QMargins>
 #include <QMouseEvent>
 #include <QPen>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QTimeZone>
 #include <QTimer>
@@ -45,18 +46,28 @@ QString sync_axis_date_format(qint64 span_days) {
 }
 
 /// Width of the widest value-axis label the axis itself would draw, measured
-/// with the chart's actual label font so both stacked panes can reserve the
-/// same left inset and neither pane's labels are elided.
-int axis_label_width(const QValueAxis* axis, const QFontMetrics& fm) {
+/// with the axis's actual label font so both stacked panes can reserve the same
+/// left inset and neither pane's labels are elided. The axis format is chosen
+/// by cftc_sync_value_axis_format() so contract-count labels are plain digits
+/// rather than scientific notation.
+int axis_label_width(const QValueAxis* axis) {
     if (!axis)
         return 0;
     const QByteArray format = axis->labelFormat().toUtf8();
+    const QFontMetrics fm(axis->labelsFont());
+    const double min_value = axis->min();
+    const double max_value = axis->max();
     int width = 0;
-    for (int i = 0; i <= 4; ++i) {
-        const double value = axis->min() + (axis->max() - axis->min()) * static_cast<double>(i) / 4.0;
+    for (int i = 0; i <= 8; ++i) {
+        const double value = min_value + (max_value - min_value) * static_cast<double>(i) / 8.0;
         width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), value)));
     }
-    return width + fm.horizontalAdvance(QStringLiteral("-00"));
+    width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), min_value)));
+    width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), max_value)));
+    // A small pad only: the measured labels already include their sign and
+    // digits, so a large extra reserve would show as dead space beside the
+    // plot area.
+    return width + 8;
 }
 
 QString pane_value_text(double value) {
@@ -99,7 +110,7 @@ class CftcPricePositioningChart::Canvas : public QChartView {
             previous->deleteLater();
 
         crosshair_ = new QGraphicsLineItem(chart);
-        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1, Qt::DashLine));
+        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1, Qt::DashLine));
         crosshair_->setVisible(false);
         crosshair_->setZValue(10);
         snap_dates_.clear();
@@ -109,7 +120,7 @@ class CftcPricePositioningChart::Canvas : public QChartView {
 
     void refresh_crosshair_style() {
         if (crosshair_)
-            crosshair_->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1, Qt::DashLine));
+            crosshair_->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1, Qt::DashLine));
     }
 
     void set_crosshair(const QDate& date, bool visible) {
@@ -244,12 +255,13 @@ void CftcPricePositioningChart::clear() {
 void CftcPricePositioningChart::refresh_theme() {
     const QString label_style = QStringLiteral("background:transparent;");
     price_header_->setStyleSheet(QStringLiteral("color:%1; font-size:9px; font-weight:700; letter-spacing:1px; ")
-                                     .arg(ui::colors::TEXT_TERTIARY()) +
+                                     .arg(ui::colors::TEXT_SECONDARY()) +
                                  label_style);
     position_header_->setStyleSheet(QStringLiteral("color:%1; font-size:9px; font-weight:700; letter-spacing:1px; ")
-                                        .arg(ui::colors::TEXT_TERTIARY()) +
+                                        .arg(ui::colors::TEXT_SECONDARY()) +
                                     label_style);
-    const QString note_style = QStringLiteral("color:%1; font-size:9px; ").arg(ui::colors::TEXT_DIM()) + label_style;
+    const QString note_style =
+        QStringLiteral("color:%1; font-size:9px; ").arg(ui::colors::TEXT_SECONDARY()) + label_style;
     price_unavailable_lbl_->setStyleSheet(note_style);
     position_unavailable_lbl_->setStyleSheet(note_style);
     context_lbl_->setStyleSheet(note_style);
@@ -267,6 +279,14 @@ void CftcPricePositioningChart::changeEvent(QEvent* event) {
     if (event->type() == QEvent::LanguageChange)
         retranslateUi();
     QWidget::changeEvent(event);
+}
+
+void CftcPricePositioningChart::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    // The panes share one report-date axis; a resize can change how much label
+    // strip each chart actually receives, so re-align the plot areas after Qt
+    // has re-laid the charts out.
+    QTimer::singleShot(0, this, [this]() { align_plot_areas(); });
 }
 
 void CftcPricePositioningChart::retranslateUi() {
@@ -325,10 +345,14 @@ QChart* make_pane_chart(const QVector<ui::TimeSeriesPoint>& points, const QColor
 
     auto* axis_y = new QValueAxis;
     chart->addAxis(axis_y, Qt::AlignLeft);
-    axis_y->setLabelFormat(QStringLiteral("%.6g"));
     const PaneYRange y_range = pane_y_range(points);
     axis_y->setRange(y_range.min_value, y_range.max_value);
     axis_y->applyNiceNumbers();
+    axis_y->setLabelFormat(cftc_sync_value_axis_format(axis_y->min(), axis_y->max()));
+    // The panel reserves the label strip measured from this exact format. Qt
+    // Charts must never replace a numeric label with "..." when the reserved
+    // strip is narrower than expected.
+    axis_y->setTruncateLabels(false);
 
     const auto segments = ui::split_time_series_gaps(points, QStringLiteral("Weekly"));
     QVector<ui::TimeSeriesPoint> isolated;
@@ -403,7 +427,18 @@ void CftcPricePositioningChart::rebuild() {
         return;
     }
 
-    price_header_->setText(has_price ? tr("PRICE — %1").arg(data_.price_source) : tr("PRICE — unavailable"));
+    // The header always names the actual source and states the proxy nature of
+    // the series when the caller's source wording does not already carry it.
+    QString price_source_text = data_.price_source;
+    if (has_price && !price_source_text.trimmed().isEmpty()) {
+        if (data_.price_spot_index && !price_source_text.contains(QLatin1String("spot"), Qt::CaseInsensitive))
+            price_source_text += tr(" (spot index)");
+        else if (data_.price_continuous_proxy &&
+                 !price_source_text.contains(QLatin1String("continuous"), Qt::CaseInsensitive) &&
+                 !price_source_text.contains(QLatin1String("front-month"), Qt::CaseInsensitive))
+            price_source_text += tr(" (front-month continuous proxy)");
+    }
+    price_header_->setText(has_price ? tr("PRICE — %1").arg(price_source_text) : tr("PRICE — unavailable"));
     position_header_->setText(tr("NET POSITIONING — %1 · contracts").arg(data_.positioning_label));
     price_unavailable_lbl_->setText(tr("Price pane unavailable: %1.").arg(data_.price.unavailable_reason));
     position_unavailable_lbl_->setText(
@@ -443,14 +478,13 @@ void CftcPricePositioningChart::rebuild() {
     };
     // ChartFactory::apply_theme resets the chart margins, so theme first and
     // then reserve the shared left inset for the value-axis labels. The inset
-    // is measured with the canvas font (the font the labels are actually drawn
-    // with) and floored generously so a long net-position label is never elided.
+    // is measured from each axis's actual label font and current format and
+    // floored generously so a long net-position label is never elided.
     ui::ChartFactory::apply_theme(price_chart);
     ui::ChartFactory::apply_theme(position_chart);
-    const QFontMetrics fm(font());
     const int label_width =
-        std::max(axis_label_width(vertical_axis(price_chart), fm), axis_label_width(vertical_axis(position_chart), fm));
-    const int left_margin = std::max(96, label_width + 20);
+        std::max(axis_label_width(vertical_axis(price_chart)), axis_label_width(vertical_axis(position_chart)));
+    const int left_margin = std::max(56, label_width + 10);
     price_chart->setMargins(QMargins(left_margin, 4, 4, 4));
     position_chart->setMargins(QMargins(left_margin, 4, 4, 4));
 

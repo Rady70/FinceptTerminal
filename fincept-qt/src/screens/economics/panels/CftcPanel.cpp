@@ -17,6 +17,7 @@
 #include "screens/economics/panels/CftcPositioningChart.h"
 #include "screens/economics/panels/CftcPricePositioningChart.h"
 #include "screens/economics/panels/CftcSyncChartData.h"
+#include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/charts/TimeSeriesData.h"
 #include "ui/theme/Theme.h"
@@ -372,7 +373,7 @@ QString stat_metric_label(StatMetric metric) {
         case StatMetric::CotIndex:
             return QCoreApplication::translate("CftcPanel", "COT INDEX");
         case StatMetric::Percentile:
-            return QCoreApplication::translate("CftcPanel", "PERCENTILE");
+            return QCoreApplication::translate("CftcPanel", "WINDOW PERCENTILE");
         case StatMetric::ZScore:
             return QCoreApplication::translate("CftcPanel", "Z-SCORE");
         case StatMetric::FromHigh:
@@ -422,8 +423,7 @@ QString stat_metric_tooltip(StatMetric metric) {
                 "CftcPanel", "COT Index = 100 × (latest − window min) / (window max − window min).\n"
                              "0 = window low, 100 = window high. Undefined when the window has no variance.");
         case StatMetric::Percentile:
-            return QCoreApplication::translate("CftcPanel",
-                                               "Share of window observations at or below the latest reading (0–100%).");
+            return cftc_window_percentile_tooltip();
         case StatMetric::ZScore:
             return QCoreApplication::translate("CftcPanel",
                                                "Z-score = (latest − window mean) / sample standard deviation (n−1).");
@@ -558,7 +558,11 @@ void CftcPanel::activate() {
 void CftcPanel::build_controls(QHBoxLayout* thl) {
     auto make_lbl = [](const QString& text) {
         auto* label = new QLabel(text);
-        label->setStyleSheet(ctrl_label_style());
+        // The toolbar identity labels sit on the dark workspace background; the
+        // neutral secondary token keeps them readable without hardcoding a
+        // one-off color.
+        label->setStyleSheet(QStringLiteral("color:%1; font-size:10px; font-weight:700; letter-spacing:1px;")
+                                 .arg(ui::colors::TEXT_SECONDARY()));
         return label;
     };
 
@@ -694,8 +698,23 @@ void CftcPanel::build_analysis_page() {
     content_layout->setContentsMargins(12, 10, 12, 12);
     content_layout->setSpacing(10);
 
+    // The Analysis-page information hierarchy is governed by
+    // CftcWorkspaceContract.h; this construction order must stay in sync with
+    // cftc_workspace_section_order() (guarded below).
+    int last_section_index = -1;
+    const QVector<CftcWorkspaceSection> section_order = cftc_workspace_section_order();
+    const auto note_section = [&last_section_index, &section_order](CftcWorkspaceSection section) {
+        const int index = section_order.indexOf(section);
+        if (index < 0 || !cftc_section_order_stays_monotonic(last_section_index, index)) {
+            Q_ASSERT_X(false, "CftcPanel", "CFTC analysis section order violates the workspace contract");
+            LOG_ERROR("CftcPanel", QStringLiteral("CFTC analysis section order violates the workspace contract"));
+            return;
+        }
+        last_section_index = index;
+    };
+
     // 1. Header and controls: identity, report/source context and the
-    //    analytical history window.
+    //    analytical history-display range with an explicit purpose statement.
     auto* header = new QWidget(analysis_content_);
     header->setObjectName("cftcSection");
     auto* header_layout = new QVBoxLayout(header);
@@ -736,15 +755,64 @@ void CftcPanel::build_analysis_page() {
     range_info_lbl_->setObjectName("cftcSectionMeta");
     range_row->addWidget(range_info_lbl_);
     header_layout->addLayout(range_row);
+    range_hint_lbl_ = new QLabel(header);
+    range_hint_lbl_->setObjectName("cftcSectionMeta");
+    range_hint_lbl_->setWordWrap(true);
+    header_layout->addWidget(range_hint_lbl_);
     content_layout->addWidget(header);
+    note_section(CftcWorkspaceSection::Header);
 
-    // 2. COT interpretation: the deterministic conclusions are the primary
-    //    analytical output and lead the page. The wording is composed by
-    //    CftcInterpretationPresentation.h from the finalized Batch 4A states
-    //    and is evaluated from the full official history, never the visible
-    //    chart range.
+    // 2. Current snapshot: the latest official report at a glance, before any
+    //    graph or deeper table.
+    auto snapshot = make_section(tr("CURRENT SNAPSHOT"));
+    snapshot_title_ = snapshot.title;
+    snapshot_grid_ = new QGridLayout;
+    snapshot_grid_->setSpacing(8);
+    for (int i = 0; i < 7; ++i) {
+        snapshot_cards_.append(make_snapshot_card());
+        snapshot_grid_->addWidget(snapshot_cards_.last().frame, i / 4, i % 4);
+    }
+    snapshot.body->addLayout(snapshot_grid_);
+    content_layout->addWidget(snapshot.frame);
+    note_section(CftcWorkspaceSection::CurrentSnapshot);
+
+    // 3 + 4 + 5. The compact interpretation card and the participant detail
+    //    tables share the top row: the interpretation never spans the full
+    //    content width, and Positioning | Weekly Changes sit beside it instead
+    //    of below the charts.
+    top_row_layout_ = new QGridLayout;
+    top_row_layout_->setSpacing(10);
+
     auto interpretation = make_section(tr("COT INTERPRETATION"));
+    interpretation_frame_ = interpretation.frame;
     interpretation_title_ = interpretation.title;
+    auto* interpretation_controls = new QHBoxLayout;
+    interpretation_controls->setSpacing(4);
+    horizon_lbl_ = new QLabel(interpretation.frame);
+    horizon_lbl_->setObjectName("cftcSectionMeta");
+    interpretation_controls->addWidget(horizon_lbl_);
+    for (int horizon : cftc_interpretation_horizons()) {
+        auto* button = new QPushButton(interpretation.frame);
+        button->setObjectName("cftcHorizonBtn");
+        button->setCheckable(true);
+        button->setAutoExclusive(true);
+        button->setCursor(Qt::PointingHandCursor);
+        connect(button, &QPushButton::clicked, this, [this, horizon]() { set_interpretation_horizon(horizon); });
+        interpretation_controls->addWidget(button);
+        horizon_btns_ << button;
+        horizon_values_ << horizon;
+    }
+    interpretation_controls->addStretch(1);
+    interpretation_evidence_toggle_ = new QPushButton(interpretation.frame);
+    interpretation_evidence_toggle_->setObjectName("cftcEvidenceToggle");
+    interpretation_evidence_toggle_->setCheckable(true);
+    interpretation_evidence_toggle_->setCursor(Qt::PointingHandCursor);
+    connect(interpretation_evidence_toggle_, &QPushButton::toggled, this, [this](bool expanded) {
+        evidence_expanded_ = expanded;
+        update_evidence_visibility();
+    });
+    interpretation_controls->addWidget(interpretation_evidence_toggle_);
+    interpretation.body->addLayout(interpretation_controls);
     interpretation_headline_ = new QLabel(interpretation.frame);
     interpretation_headline_->setObjectName("cftcInterpretationHeadline");
     interpretation_headline_->setWordWrap(true);
@@ -763,37 +831,14 @@ void CftcPanel::build_analysis_page() {
     interpretation_context_->setObjectName("cftcSectionMeta");
     interpretation_context_->setWordWrap(true);
     interpretation.body->addWidget(interpretation_context_);
-    content_layout->addWidget(interpretation.frame);
-
-    // 3. The large synchronized Price + Positioning chart: two semantically
-    //    separate panes on one report-date axis with a shared crosshair.
-    auto sync = make_section(tr("PRICE + POSITIONING — SYNCHRONIZED"));
-    sync_chart_title_ = sync.title;
-    sync_chart_ = new CftcPricePositioningChart(sync.frame);
-    sync.body->addWidget(sync_chart_);
-    content_layout->addWidget(sync.frame);
-
-    // 4. Current snapshot.
-    auto snapshot = make_section(tr("CURRENT SNAPSHOT"));
-    snapshot_title_ = snapshot.title;
-    snapshot_grid_ = new QGridLayout;
-    snapshot_grid_->setSpacing(8);
-    for (int i = 0; i < 7; ++i) {
-        snapshot_cards_.append(make_snapshot_card());
-        snapshot_grid_->addWidget(snapshot_cards_.last().frame, i / 4, i % 4);
-    }
-    snapshot.body->addLayout(snapshot_grid_);
-    content_layout->addWidget(snapshot.frame);
-
-    // 5 + 6. Positioning and weekly changes share a row when width allows.
-    pair_layout_ = new QGridLayout;
-    pair_layout_->setSpacing(10);
+    note_section(CftcWorkspaceSection::Interpretation);
 
     auto positioning = make_section(tr("POSITIONING"));
     positioning_frame_ = positioning.frame;
     positioning_title_ = positioning.title;
     positioning_table_ = make_table(positioning.frame);
     positioning.body->addWidget(positioning_table_);
+    note_section(CftcWorkspaceSection::Positioning);
 
     auto weekly = make_section(tr("WEEKLY CHANGES"));
     weekly_frame_ = weekly.frame;
@@ -802,7 +847,7 @@ void CftcPanel::build_analysis_page() {
     weekly_oi_row->setSpacing(6);
     weekly_oi_caption_ = new QLabel(weekly.frame);
     weekly_oi_caption_->setObjectName("cftcSectionMeta");
-    weekly_oi_lbl_ = new QLabel(QStringLiteral("—"), weekly.frame);
+    weekly_oi_lbl_ = new QLabel(QStringLiteral("-"), weekly.frame);
     weekly_oi_lbl_->setObjectName("econStatVal");
     weekly_oi_row->addWidget(weekly_oi_caption_);
     weekly_oi_row->addWidget(weekly_oi_lbl_);
@@ -810,12 +855,62 @@ void CftcPanel::build_analysis_page() {
     weekly.body->addLayout(weekly_oi_row);
     weekly_table_ = make_table(weekly.frame);
     weekly.body->addWidget(weekly_table_);
+    note_section(CftcWorkspaceSection::WeeklyChanges);
 
-    pair_layout_->addWidget(positioning_frame_, 0, 0);
-    pair_layout_->addWidget(weekly_frame_, 0, 1);
-    content_layout->addLayout(pair_layout_);
+    top_row_layout_->addWidget(interpretation_frame_, 0, 0, 2, 1);
+    top_row_layout_->addWidget(positioning_frame_, 0, 1);
+    top_row_layout_->addWidget(weekly_frame_, 1, 1);
+    content_layout->addLayout(top_row_layout_);
 
-    // 7. Historical positioning: the principal multi-series chart.
+    // 6 + 7. Window statistics & extremes and the price + positioning evidence.
+    //    These detail cards sit before the large graphs; the evidence section
+    //    carries the Batch 4A price/positioning assessments as raw numbers and
+    //    the user-facing conclusion lives only in the interpretation above.
+    auto stats = make_section(tr("POSITIONING STATISTICS & EXTREMES"));
+    stats_frame_ = stats.frame;
+    stats_title_ = stats.title;
+    stats_meta_lbl_ = new QLabel(stats.frame);
+    stats_meta_lbl_->setObjectName("cftcSectionMeta");
+    stats_meta_lbl_->setWordWrap(true);
+    stats.body->addWidget(stats_meta_lbl_);
+    stats_table_ = make_table(stats.frame);
+    stats_table_->verticalHeader()->setVisible(true);
+    stats_table_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    stats_table_->verticalHeader()->setMinimumWidth(110);
+    stats.body->addWidget(stats_table_);
+    note_section(CftcWorkspaceSection::Statistics);
+
+    auto divergence = make_section(tr("PRICE + POSITIONING — EVIDENCE"));
+    divergence_frame_ = divergence.frame;
+    divergence_title_ = divergence.title;
+    divergence_source_lbl_ = new QLabel(divergence.frame);
+    divergence_source_lbl_->setObjectName("cftcSectionMeta");
+    divergence_source_lbl_->setWordWrap(true);
+    divergence.body->addWidget(divergence_source_lbl_);
+    divergence_table_ = make_table(divergence.frame);
+    divergence.body->addWidget(divergence_table_);
+    divergence_extremes_lbl_ = new QLabel(divergence.frame);
+    divergence_extremes_lbl_->setObjectName("cftcSectionMeta");
+    divergence_extremes_lbl_->setWordWrap(true);
+    divergence.body->addWidget(divergence_extremes_lbl_);
+    note_section(CftcWorkspaceSection::PricePositioningEvidence);
+
+    stats_pair_layout_ = new QGridLayout;
+    stats_pair_layout_->setSpacing(10);
+    stats_pair_layout_->addWidget(stats_frame_, 0, 0);
+    stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
+    content_layout->addLayout(stats_pair_layout_);
+
+    // 8. The large synchronized Price + Positioning chart: two semantically
+    //    separate panes on one report-date axis with a shared crosshair.
+    auto sync = make_section(tr("PRICE + POSITIONING — SYNCHRONIZED"));
+    sync_chart_title_ = sync.title;
+    sync_chart_ = new CftcPricePositioningChart(sync.frame);
+    sync.body->addWidget(sync_chart_);
+    content_layout->addWidget(sync.frame);
+    note_section(CftcWorkspaceSection::SyncChart);
+
+    // 9. Historical positioning: the principal multi-series chart.
     auto chart_section = make_section(tr("HISTORICAL POSITIONING"));
     chart_title_ = chart_section.title;
     auto* chart_controls = new QHBoxLayout;
@@ -849,45 +944,7 @@ void CftcPanel::build_analysis_page() {
     chart_ = new CftcPositioningChart(chart_section.frame);
     chart_section.body->addWidget(chart_);
     content_layout->addWidget(chart_section.frame);
-
-    // 8. Window statistics & extremes; 9. price + positioning evidence. The
-    // evidence section carries the Batch 4A price/positioning assessments as
-    // raw numbers; the user-facing conclusion lives only in the interpretation
-    // section above.
-    auto stats = make_section(tr("POSITIONING STATISTICS & EXTREMES"));
-    stats_frame_ = stats.frame;
-    stats_title_ = stats.title;
-    stats_meta_lbl_ = new QLabel(stats.frame);
-    stats_meta_lbl_->setObjectName("cftcSectionMeta");
-    stats_meta_lbl_->setWordWrap(true);
-    stats.body->addWidget(stats_meta_lbl_);
-    stats_table_ = make_table(stats.frame);
-    stats_table_->verticalHeader()->setVisible(true);
-    stats_table_->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    stats_table_->verticalHeader()->setMinimumWidth(110);
-    stats.body->addWidget(stats_table_);
-
-    auto divergence = make_section(tr("PRICE + POSITIONING — EVIDENCE"));
-    divergence_frame_ = divergence.frame;
-    divergence_title_ = divergence.title;
-    divergence_source_lbl_ = new QLabel(divergence.frame);
-    divergence_source_lbl_->setObjectName("cftcSectionMeta");
-    divergence_source_lbl_->setWordWrap(true);
-    divergence.body->addWidget(divergence_source_lbl_);
-    divergence_table_ = make_table(divergence.frame);
-    divergence.body->addWidget(divergence_table_);
-    divergence_extremes_lbl_ = new QLabel(divergence.frame);
-    divergence_extremes_lbl_->setObjectName("cftcSectionMeta");
-    divergence_extremes_lbl_->setWordWrap(true);
-    divergence.body->addWidget(divergence_extremes_lbl_);
-
-    // Statistics/extremes and divergence follow the principal chart, sharing a
-    // row when width allows.
-    stats_pair_layout_ = new QGridLayout;
-    stats_pair_layout_->setSpacing(10);
-    stats_pair_layout_->addWidget(stats_frame_, 0, 0);
-    stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
-    content_layout->addLayout(stats_pair_layout_);
+    note_section(CftcWorkspaceSection::HistoricalPositioning);
 
     // 10. Positioning heatmap.
     auto heatmap = make_section(tr("POSITIONING HEATMAP"));
@@ -913,11 +970,14 @@ void CftcPanel::build_analysis_page() {
     heatmap_ = new CftcHeatmap(heatmap.frame);
     heatmap.body->addWidget(heatmap_);
     content_layout->addWidget(heatmap.frame);
+    note_section(CftcWorkspaceSection::Heatmap);
 
     content_layout->addStretch(1);
     analysis_scroll_->setWidget(analysis_content_);
     analysis_page_ = add_content_page(analysis_scroll_);
     apply_responsive_layout();
+    refresh_horizon_buttons();
+    update_evidence_visibility();
     // build_base_ui() ran before this page existed, so its refresh_panel_theme()
     // could not style it; apply the workspace QSS now (theme changes re-apply
     // it through refresh_panel_theme()).
@@ -925,48 +985,58 @@ void CftcPanel::build_analysis_page() {
 }
 
 void CftcPanel::apply_responsive_layout() {
-    if (!snapshot_grid_ || !pair_layout_ || !stats_pair_layout_)
+    if (!snapshot_grid_ || !top_row_layout_ || !stats_pair_layout_)
         return;
 
-    const int snapshot_columns = narrow_layout_ ? 2 : 4;
+    const int snapshot_columns = narrow_layout_ ? 2 : 7;
     for (int i = 0; i < snapshot_cards_.size(); ++i) {
         snapshot_grid_->removeWidget(snapshot_cards_[i].frame);
         snapshot_grid_->addWidget(snapshot_cards_[i].frame, i / snapshot_columns, i % snapshot_columns);
     }
-    for (int col = 0; col < 4; ++col)
+    for (int col = 0; col < 8; ++col)
         snapshot_grid_->setColumnStretch(col, col < snapshot_columns ? 1 : 0);
 
-    const QVector<QWidget*> first_row = {positioning_frame_, weekly_frame_};
-    const QVector<QWidget*> second_row = {stats_frame_, divergence_frame_};
-    for (auto* frame : first_row) {
+    // Interpretation and the participant tables: side by side when width
+    // allows, stacked otherwise.
+    const QVector<QWidget*> top_frames = {interpretation_frame_, positioning_frame_, weekly_frame_};
+    for (auto* frame : top_frames) {
         if (frame)
-            pair_layout_->removeWidget(frame);
+            top_row_layout_->removeWidget(frame);
     }
+    if (narrow_layout_) {
+        for (int i = 0; i < top_frames.size(); ++i) {
+            if (top_frames[i])
+                top_row_layout_->addWidget(top_frames[i], i, 0, 1, 2);
+        }
+        top_row_layout_->setColumnStretch(0, 1);
+        top_row_layout_->setColumnStretch(1, 0);
+    } else {
+        if (interpretation_frame_)
+            top_row_layout_->addWidget(interpretation_frame_, 0, 0, 2, 1);
+        if (positioning_frame_)
+            top_row_layout_->addWidget(positioning_frame_, 0, 1);
+        if (weekly_frame_)
+            top_row_layout_->addWidget(weekly_frame_, 1, 1);
+        top_row_layout_->setColumnStretch(0, 3);
+        top_row_layout_->setColumnStretch(1, 2);
+    }
+
+    const QVector<QWidget*> second_row = {stats_frame_, divergence_frame_};
     for (auto* frame : second_row) {
         if (frame)
             stats_pair_layout_->removeWidget(frame);
     }
     if (narrow_layout_) {
-        for (int i = 0; i < first_row.size(); ++i) {
-            if (first_row[i])
-                pair_layout_->addWidget(first_row[i], i, 0, 1, 2);
-        }
         for (int i = 0; i < second_row.size(); ++i) {
             if (second_row[i])
                 stats_pair_layout_->addWidget(second_row[i], i, 0, 1, 2);
         }
     } else {
-        if (positioning_frame_)
-            pair_layout_->addWidget(positioning_frame_, 0, 0);
-        if (weekly_frame_)
-            pair_layout_->addWidget(weekly_frame_, 0, 1);
         if (stats_frame_)
             stats_pair_layout_->addWidget(stats_frame_, 0, 0);
         if (divergence_frame_)
             stats_pair_layout_->addWidget(divergence_frame_, 0, 1);
     }
-    pair_layout_->setColumnStretch(0, 1);
-    pair_layout_->setColumnStretch(1, 1);
     stats_pair_layout_->setColumnStretch(0, 1);
     stats_pair_layout_->setColumnStretch(1, 1);
 }
@@ -1169,6 +1239,10 @@ void CftcPanel::clear_workspace() {
     }
     if (interpretation_context_)
         interpretation_context_->clear();
+    evidence_expanded_ = false;
+    update_evidence_visibility();
+    if (interpretation_evidence_toggle_)
+        interpretation_evidence_toggle_->setVisible(false);
     if (sync_chart_)
         sync_chart_->clear();
 }
@@ -1186,11 +1260,13 @@ void CftcPanel::build_participant_controls() {
     const auto palette = series_palette();
     QWidget* parent = participant_check_layout_->parentWidget();
     for (int i = 0; i < participants_.size(); ++i) {
-        auto* check = new QCheckBox(participants_[i].label, parent);
+        const QString display =
+            cftc_metric_participant_display_name(family_, participants_[i].key, participants_[i].label);
+        auto* check = new QCheckBox(display, parent);
         check->setChecked(participants_[i].key != QLatin1String("non_reportable"));
         check->setStyleSheet(QStringLiteral("color:%1; font-size:10px; background:transparent;")
                                  .arg(palette[i % palette.size()].name()));
-        check->setToolTip(tr("Show %1 in the historical chart").arg(participants_[i].label));
+        check->setToolTip(tr("Show %1 in the historical chart").arg(display));
         connect(check, &QCheckBox::toggled, this, [this]() { update_chart(); });
         participant_check_layout_->addWidget(check);
         participant_checks_.append(check);
@@ -1201,26 +1277,58 @@ void CftcPanel::apply_range(CftcRange range) {
     if (history_.observations.isEmpty() || !cftc_range_available(history_.observations, range))
         return;
     range_ = range;
-    rebuild_workspace();
+    // The history-display range refreshes only the sections its contract marks
+    // as range-driven; the interpretation is never re-evaluated from a range.
+    rebuild_workspace(/*range_only=*/true);
 }
 
-void CftcPanel::rebuild_workspace() {
+void CftcPanel::rebuild_workspace(bool range_only) {
     if (history_.observations.isEmpty())
         return;
     if (!cftc_range_available(history_.observations, range_))
         range_ = CftcRange::Max;
     window_ = cftc_filter_range(history_.observations, range_);
     refresh_range_buttons();
-    update_header();
-    render_interpretation();
-    update_sync_chart();
-    update_snapshot();
-    update_positioning();
-    update_weekly();
-    update_chart();
-    update_statistics();
-    update_divergence();
-    update_heatmap();
+    // The refresh order follows the page hierarchy contract, and a range-only
+    // refresh skips the sections the visible range does not change.
+    for (CftcWorkspaceSection section : cftc_workspace_section_order()) {
+        if (range_only && !cftc_section_refreshed_by_visible_range(section))
+            continue;
+        switch (section) {
+            case CftcWorkspaceSection::Header:
+                update_header();
+                break;
+            case CftcWorkspaceSection::CurrentSnapshot:
+                update_snapshot();
+                break;
+            case CftcWorkspaceSection::Interpretation:
+                // Re-renders the stored Batch 4A result; it never re-evaluates a
+                // range-filtered history.
+                render_interpretation();
+                break;
+            case CftcWorkspaceSection::SyncChart:
+                update_sync_chart();
+                break;
+            case CftcWorkspaceSection::Positioning:
+                update_positioning();
+                break;
+            case CftcWorkspaceSection::WeeklyChanges:
+                update_weekly();
+                break;
+            case CftcWorkspaceSection::HistoricalPositioning:
+                update_chart();
+                break;
+            case CftcWorkspaceSection::Statistics:
+                update_statistics();
+                break;
+            case CftcWorkspaceSection::PricePositioningEvidence:
+                update_divergence();
+                break;
+            case CftcWorkspaceSection::Heatmap:
+                update_heatmap();
+                break;
+        }
+    }
 }
 
 void CftcPanel::refresh_range_buttons() {
@@ -1232,6 +1340,43 @@ void CftcPanel::refresh_range_buttons() {
             QSignalBlocker block(range_btns_[i]);
             range_btns_[i]->setChecked(true);
         }
+    }
+}
+
+void CftcPanel::set_interpretation_horizon(int horizon_reports) {
+    if (!cftc_is_interpretation_horizon(horizon_reports) || horizon_reports == horizon_reports_)
+        return;
+    horizon_reports_ = horizon_reports;
+    refresh_horizon_buttons();
+    // Only the horizon-scoped presentation changes. The stored Batch 4A result —
+    // including the strict 156-prior-report crowding/extreme state — is never
+    // re-evaluated, and the synchronized chart caption follows the selection.
+    render_interpretation();
+    update_sync_chart();
+}
+
+void CftcPanel::refresh_horizon_buttons() {
+    for (int i = 0; i < horizon_btns_.size() && i < horizon_values_.size(); ++i) {
+        QPushButton* button = horizon_btns_[i];
+        if (!button)
+            continue;
+        const int horizon = horizon_values_[i];
+        button->setText(cftc_horizon_button_label(horizon));
+        button->setToolTip(tr("Interpret the CFTC report over the last %1").arg(cftc_horizon_phrase(horizon)));
+        QSignalBlocker block(button);
+        button->setChecked(horizon == horizon_reports_);
+    }
+}
+
+void CftcPanel::update_evidence_visibility() {
+    if (!interpretation_evidence_)
+        return;
+    interpretation_evidence_->setVisible(evidence_expanded_);
+    if (interpretation_evidence_toggle_) {
+        QSignalBlocker block(interpretation_evidence_toggle_);
+        interpretation_evidence_toggle_->setChecked(evidence_expanded_);
+        interpretation_evidence_toggle_->setText(evidence_expanded_ ? tr("Hide numerical evidence")
+                                                                    : tr("Show numerical evidence"));
     }
 }
 
@@ -1324,63 +1469,118 @@ void CftcPanel::render_interpretation() {
     // concrete reason instead of the engine's generic missing-context wording.
     const CftcPriceContextState price_context = price_context_state();
     const QString price_note = price_unavailable_note();
-    const CftcInterpretationView view = cftc_compose_interpretation(interpretation_, price_context, price_note);
+    // The user's explicit 1W | 4W | 13W selection composes one horizon. The
+    // historical level, persistence and strict 156-prior-report crowding state
+    // come from the same stored full-history result at every selection.
+    const CftcInterpretationView view =
+        cftc_compose_horizon_interpretation(interpretation_, horizon_reports_, price_context, price_note);
     interpretation_headline_->setText(view.headline);
-    interpretation_body_->setText(view.sentences.join(QStringLiteral(" ")));
+    // One conclusion per bullet-ish line keeps the interpretation scannable at
+    // a glance instead of a dense paragraph.
+    QStringList conclusion_lines;
+    conclusion_lines.reserve(view.sentences.size());
+    for (const QString& sentence : view.sentences)
+        conclusion_lines << QStringLiteral("•  ") + sentence;
+    interpretation_body_->setText(conclusion_lines.join(QStringLiteral("\n")));
     interpretation_context_->setText(view.context_text);
 
-    interpretation_evidence_->clearSpans();
-    interpretation_evidence_->setColumnCount(3);
-    interpretation_evidence_->setRowCount(0);
-    interpretation_evidence_->setHorizontalHeaderLabels({tr("EVIDENCE"), tr("4 REPORTS"), tr("13 REPORTS")});
-    interpretation_evidence_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    interpretation_evidence_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    interpretation_evidence_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-
+    // Status colours stay within the theme token system: an available readout
+    // keeps its normal colour, an evaluated-not-material row is de-emphasised
+    // to the readable secondary tone, unavailable data uses the readable
+    // warning tone, and a pending request is secondary. The value text itself
+    // always states which of the three states applies.
     const auto apply_status = [](QTableWidgetItem* item, CftcEvidenceStatus status) {
-        if (item && status != CftcEvidenceStatus::Available)
-            item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
-    };
-    QHash<QString, int> horizon_rows;
-    for (const CftcEvidenceItem& item : std::as_const(view.evidence)) {
-        if (item.horizon_reports == 4 || item.horizon_reports == 13) {
-            int row = horizon_rows.value(item.label, -1);
-            if (row < 0) {
-                row = interpretation_evidence_->rowCount();
-                interpretation_evidence_->insertRow(row);
-                horizon_rows.insert(item.label, row);
-                set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
-                // A horizon that has not reported a value yet shows an explicit
-                // dash; a real gap must not look like a zero.
-                set_plain_cell(interpretation_evidence_, row, item.horizon_reports == 4 ? 2 : 1, QStringLiteral("—"));
-                for (int col : {1, 2}) {
-                    if (auto* cell = interpretation_evidence_->item(row, col))
-                        cell->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
-                }
-            }
-            const int column = item.horizon_reports == 4 ? 1 : 2;
-            set_plain_cell(interpretation_evidence_, row, column, item.value, Qt::AlignRight | Qt::AlignVCenter);
-            apply_status(interpretation_evidence_->item(row, column), item.status);
-            if (auto* cell = interpretation_evidence_->item(row, column))
-                cell->setToolTip(item.value);
-        } else {
-            const int row = interpretation_evidence_->rowCount();
-            interpretation_evidence_->insertRow(row);
-            set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
-            set_plain_cell(interpretation_evidence_, row, 1, item.value, Qt::AlignRight | Qt::AlignVCenter);
-            apply_status(interpretation_evidence_->item(row, 1), item.status);
-            interpretation_evidence_->setSpan(row, 1, 1, 2);
-            if (auto* cell = interpretation_evidence_->item(row, 0))
-                cell->setToolTip(item.label);
-            if (auto* cell = interpretation_evidence_->item(row, 1))
-                cell->setToolTip(item.value);
+        if (!item)
+            return;
+        switch (status) {
+            case CftcEvidenceStatus::Available:
+                break;
+            case CftcEvidenceStatus::NoMaterialState:
+            case CftcEvidenceStatus::Pending:
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+                break;
+            case CftcEvidenceStatus::Unavailable:
+                item->setForeground(QColor(ui::colors::WARNING()));
+                break;
         }
+    };
+    const auto set_evidence_row = [this, &apply_status](const CftcEvidenceItem& item) {
+        const int row = interpretation_evidence_->rowCount();
+        interpretation_evidence_->insertRow(row);
+        set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
+        set_plain_cell(interpretation_evidence_, row, 1, item.value, Qt::AlignRight | Qt::AlignVCenter);
+        apply_status(interpretation_evidence_->item(row, 1), item.status);
+        if (auto* cell = interpretation_evidence_->item(row, 0))
+            cell->setToolTip(item.label);
+        if (auto* cell = interpretation_evidence_->item(row, 1))
+            cell->setToolTip(item.value);
+    };
+
+    interpretation_evidence_->clearSpans();
+    interpretation_evidence_->setRowCount(0);
+    if (view.horizon_reports == 0) {
+        // Combined contract view (the page renders a selected horizon; this
+        // path is retained for the composition contract and its tests).
+        interpretation_evidence_->setColumnCount(3);
+        interpretation_evidence_->setHorizontalHeaderLabels({tr("EVIDENCE"), tr("4 REPORTS"), tr("13 REPORTS")});
+        interpretation_evidence_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        interpretation_evidence_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        interpretation_evidence_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+        QHash<QString, int> horizon_rows;
+        for (const CftcEvidenceItem& item : std::as_const(view.evidence)) {
+            if (item.horizon_reports == 4 || item.horizon_reports == 13) {
+                int row = horizon_rows.value(item.label, -1);
+                if (row < 0) {
+                    row = interpretation_evidence_->rowCount();
+                    interpretation_evidence_->insertRow(row);
+                    horizon_rows.insert(item.label, row);
+                    set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
+                    // A horizon that has not reported a value yet shows an
+                    // explicit dash; a real gap must not look like a zero.
+                    set_plain_cell(interpretation_evidence_, row, item.horizon_reports == 4 ? 2 : 1,
+                                   QStringLiteral("—"));
+                    for (int col : {1, 2}) {
+                        if (auto* cell = interpretation_evidence_->item(row, col))
+                            cell->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+                    }
+                }
+                const int column = item.horizon_reports == 4 ? 1 : 2;
+                set_plain_cell(interpretation_evidence_, row, column, item.value, Qt::AlignRight | Qt::AlignVCenter);
+                apply_status(interpretation_evidence_->item(row, column), item.status);
+                if (auto* cell = interpretation_evidence_->item(row, column))
+                    cell->setToolTip(item.value);
+            } else {
+                const int row = interpretation_evidence_->rowCount();
+                interpretation_evidence_->insertRow(row);
+                set_plain_cell(interpretation_evidence_, row, 0, item.label, Qt::AlignLeft | Qt::AlignVCenter);
+                set_plain_cell(interpretation_evidence_, row, 1, item.value, Qt::AlignRight | Qt::AlignVCenter);
+                apply_status(interpretation_evidence_->item(row, 1), item.status);
+                interpretation_evidence_->setSpan(row, 1, 1, 2);
+                if (auto* cell = interpretation_evidence_->item(row, 0))
+                    cell->setToolTip(item.label);
+                if (auto* cell = interpretation_evidence_->item(row, 1))
+                    cell->setToolTip(item.value);
+            }
+        }
+    } else {
+        // Single-horizon view: one label/value matrix with the selected
+        // horizon named in the value column header.
+        interpretation_evidence_->setColumnCount(2);
+        interpretation_evidence_->setHorizontalHeaderLabels(
+            {tr("EVIDENCE"), cftc_horizon_evidence_header(view.horizon_reports)});
+        interpretation_evidence_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        interpretation_evidence_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        for (const CftcEvidenceItem& item : std::as_const(view.evidence))
+            set_evidence_row(item);
     }
     interpretation_evidence_->resizeRowsToContents();
     int evidence_height = interpretation_evidence_->horizontalHeader()->height();
     for (int row = 0; row < interpretation_evidence_->rowCount(); ++row)
         evidence_height += interpretation_evidence_->rowHeight(row);
     interpretation_evidence_->setFixedHeight(evidence_height + 10);
+    if (interpretation_evidence_toggle_)
+        interpretation_evidence_toggle_->setVisible(!view.evidence.isEmpty());
+    update_evidence_visibility();
 }
 
 void CftcPanel::update_sync_chart() {
@@ -1396,7 +1596,7 @@ void CftcPanel::update_sync_chart() {
     const CftcSyncChartData data = cftc_build_sync_chart_data(
         interpretation_, history_.observations, price_ready ? price_ : QVector<CftcPricePoint>{}, market_key_,
         price_market_key_, range_, price_context, price_note, price_ready ? concise_price_source_text() : QString(),
-        price_ready && !price_spot_index_, price_spot_index_);
+        price_ready && !price_spot_index_, price_spot_index_, horizon_reports_);
     sync_chart_->set_data(data);
 }
 
@@ -1442,7 +1642,9 @@ void CftcPanel::update_snapshot() {
                                     : 0,
                  tr("as of %1").arg(as_of_date.toString(Qt::ISODate)),
                  tr("Latest net position of %1 (%2 − %3) as of the newest CFTC report.")
-                     .arg(participants_[speculative_index_].label, tr("long"), tr("short")));
+                     .arg(cftc_metric_participant_display_name(family_, participants_[speculative_index_].key,
+                                                               participants_[speculative_index_].label),
+                          tr("long"), tr("short")));
     } else {
         set_card(0, tr("NET (%1)").arg(spec_short), QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  QString());
@@ -1510,13 +1712,17 @@ void CftcPanel::update_snapshot() {
                  stat_metric_tooltip(StatMetric::ZScore));
     }
 
-    const QString pct_caption = tr("PERCENTILE (%1)").arg(range_label);
+    // The selected-window percentile is a different measure from the COT
+    // interpretation's strict 156-prior-report Net %OI percentile; the caption
+    // names the window explicitly so the two can never look contradictory.
+    const QString pct_caption = cftc_window_percentile_label(range_label);
     if (stats.has_percentile) {
         set_card(6, pct_caption, QString::number(stats.percentile, 'f', 1) + QLatin1Char('%'), 0,
-                 percentile_state(stats.percentile), stat_metric_tooltip(StatMetric::Percentile));
+                 tr("%1 · raw net, selected range").arg(percentile_state(stats.percentile)),
+                 cftc_window_percentile_tooltip());
     } else {
         set_card(6, pct_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
-                 stat_metric_tooltip(StatMetric::Percentile));
+                 cftc_window_percentile_tooltip());
     }
 }
 
@@ -1541,7 +1747,7 @@ void CftcPanel::set_signed_cell(QTableWidget* table, int row, int column, const 
     }
     if (!value) {
         item->setText(missing);
-        item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+        item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
     } else {
         item->setText(cftc_signed_net(*value));
         if (*value > 0.0)
@@ -1559,50 +1765,40 @@ void CftcPanel::update_positioning() {
     if (!positioning_table_ || history_.observations.isEmpty())
         return;
     const CftcObservation& latest = history_.observations.last();
-    const int columns = 8;
+    // Latest-report legs and shares only. The selected-window COT index and raw
+    // percentile columns that used to sit here duplicated the Current Snapshot
+    // cards and the Positioning Statistics section, so they were removed to
+    // keep one authoritative presentation of the selected-window statistic.
+    const int columns = 6;
     positioning_table_->setColumnCount(columns);
     positioning_table_->setRowCount(participants_.size());
-    positioning_table_->setHorizontalHeaderLabels({tr("PARTICIPANT"), tr("LONG"), tr("SHORT"), tr("NET"), tr("% LONG"),
-                                                   tr("% SHORT"), tr("COT IDX (%1)").arg(cftc_range_label(range_)),
-                                                   tr("%ILE (%1)").arg(cftc_range_label(range_))});
+    positioning_table_->setHorizontalHeaderLabels(
+        {tr("PARTICIPANT"), tr("LONG"), tr("SHORT"), tr("NET"), tr("% LONG"), tr("% SHORT")});
     positioning_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     for (int col = 1; col < columns; ++col)
         positioning_table_->horizontalHeader()->setSectionResizeMode(col, QHeaderView::Stretch);
 
     for (int p = 0; p < participants_.size(); ++p) {
-        set_plain_cell(positioning_table_, p, 0, participants_[p].label, Qt::AlignLeft | Qt::AlignVCenter);
+        set_plain_cell(positioning_table_, p, 0,
+                       cftc_metric_participant_display_name(family_, participants_[p].key, participants_[p].label),
+                       Qt::AlignLeft | Qt::AlignVCenter);
 
         const CftcPositionMetrics metrics = cftc_position_metrics(latest, p);
         set_plain_cell(positioning_table_, p, 1,
-                       metrics.has_long ? position_text(metrics.long_leg) : QStringLiteral("—"));
+                       metrics.has_long ? position_text(metrics.long_leg) : QStringLiteral("-"));
         set_plain_cell(positioning_table_, p, 2,
-                       metrics.has_short ? position_text(metrics.short_leg) : QStringLiteral("—"));
+                       metrics.has_short ? position_text(metrics.short_leg) : QStringLiteral("-"));
         set_signed_cell(positioning_table_, p, 3,
                         metrics.has_net ? std::optional<double>(metrics.net_position) : std::nullopt);
 
         if (metrics.has_long_pct_oi)
             set_plain_cell(positioning_table_, p, 4, QString::number(metrics.long_pct_oi, 'f', 1) + QLatin1Char('%'));
         else
-            set_plain_cell(positioning_table_, p, 4, QStringLiteral("—"));
+            set_plain_cell(positioning_table_, p, 4, QStringLiteral("-"));
         if (metrics.has_short_pct_oi)
             set_plain_cell(positioning_table_, p, 5, QString::number(metrics.short_pct_oi, 'f', 1) + QLatin1Char('%'));
         else
-            set_plain_cell(positioning_table_, p, 5, QStringLiteral("—"));
-
-        const QDate as_of_date = latest_report_date();
-        const CftcWindowStats stats = cftc_window_stats(participant_metric_series(p, CftcChartMetric::Net), as_of_date);
-        if (stats.has_cot_index)
-            set_plain_cell(positioning_table_, p, 6, QString::number(stats.cot_index, 'f', 1));
-        else {
-            set_plain_cell(positioning_table_, p, 6, QStringLiteral("—"));
-            positioning_table_->item(p, 6)->setToolTip(stat_unavailable_reason(stats, as_of_date));
-        }
-        if (stats.has_percentile)
-            set_plain_cell(positioning_table_, p, 7, QString::number(stats.percentile, 'f', 1) + QLatin1Char('%'));
-        else {
-            set_plain_cell(positioning_table_, p, 7, QStringLiteral("—"));
-            positioning_table_->item(p, 7)->setToolTip(stat_unavailable_reason(stats, as_of_date));
-        }
+            set_plain_cell(positioning_table_, p, 5, QStringLiteral("-"));
     }
     fit_table_height(positioning_table_);
 }
@@ -1636,7 +1832,9 @@ void CftcPanel::update_weekly() {
     }
 
     for (int p = 0; p < participants_.size(); ++p) {
-        set_plain_cell(weekly_table_, p, 0, participants_[p].label, Qt::AlignLeft | Qt::AlignVCenter);
+        set_plain_cell(weekly_table_, p, 0,
+                       cftc_metric_participant_display_name(family_, participants_[p].key, participants_[p].label),
+                       Qt::AlignLeft | Qt::AlignVCenter);
         const CftcChange long_change =
             cftc_weekly_change(metric_series(history_.observations, p, CftcChartMetric::Long), as_of_date);
         const CftcChange short_change =
@@ -1669,7 +1867,8 @@ void CftcPanel::update_chart() {
             continue;
         CftcChartSeries chart_series;
         chart_series.key = participants_[p].key;
-        chart_series.label = participants_[p].label;
+        chart_series.label =
+            cftc_metric_participant_display_name(family_, participants_[p].key, participants_[p].label);
         chart_series.color = palette[p % palette.size()];
         chart_series.points = cftc_to_time_series(participant_metric_series(p, metric));
         series.append(chart_series);
@@ -1852,7 +2051,8 @@ QString CftcPanel::price_source_text() const {
 void CftcPanel::update_divergence() {
     if (!divergence_table_ || principal_index_ < 0)
         return;
-    const QString spec_label = participants_[principal_index_].label;
+    const QString spec_label = cftc_metric_participant_display_name(family_, participants_[principal_index_].key,
+                                                                    participants_[principal_index_].label);
 
     // This section is raw numeric evidence only. Any user-facing statement that
     // price and positioning are aligned or diverging comes from the Batch 4A
@@ -1925,7 +2125,7 @@ void CftcPanel::update_divergence() {
         } else {
             set_plain_cell(divergence_table_, row, 1, QStringLiteral("—"));
             if (auto* item = divergence_table_->item(row, 1)) {
-                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
                 if (price_state_ == PriceState::Pending)
                     item->setToolTip(tr("price context is loading"));
                 else
@@ -1944,7 +2144,7 @@ void CftcPanel::update_divergence() {
         } else {
             set_plain_cell(divergence_table_, row, 2, QStringLiteral("—"));
             if (auto* item = divergence_table_->item(row, 2)) {
-                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
                 item->setToolTip(assessment && assessment->evaluated
                                      ? tr("no material net move state at this horizon")
                                      : (assessment ? cftc_unavailable_reason_wording(assessment->reason)
@@ -1957,7 +2157,7 @@ void CftcPanel::update_divergence() {
         } else if (assessment && !assessment->evaluated) {
             set_plain_cell(divergence_table_, row, 3, QStringLiteral("—"));
             if (auto* item = divergence_table_->item(row, 3)) {
-                item->setForeground(QColor(ui::colors::TEXT_TERTIARY()));
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
                 item->setToolTip(price_state_ == PriceState::Pending
                                      ? tr("price context is loading")
                                      : cftc_unavailable_reason_wording(assessment->reason));
@@ -2032,14 +2232,14 @@ void CftcPanel::update_heatmap() {
             by_date.insert(point.date, point);
 
         CftcHeatmapRow row;
-        row.label = participants_[p].label;
+        row.label = cftc_metric_participant_display_name(family_, participants_[p].key, participants_[p].label);
         row.short_label = participant_short_label(participants_[p].key);
         for (const QDate& date : std::as_const(dates)) {
             const auto it = by_date.constFind(date);
             CftcHeatmapCell cell;
             if (it == by_date.constEnd()) {
                 cell.tooltip = tr("%1 — %2\nNo net position observation at this report.")
-                                   .arg(participants_[p].label, date.toString(Qt::ISODate));
+                                   .arg(row.label, date.toString(Qt::ISODate));
             } else {
                 const CftcHeatmapPoint& point = *it;
                 bool has_metric = false;
@@ -2051,7 +2251,8 @@ void CftcPanel::update_heatmap() {
                 } else if (metric_code == QLatin1String("percentile")) {
                     has_metric = point.has_percentile;
                     cell.value = point.percentile;
-                    metric_text = tr("Percentile %1").arg(QString::number(point.percentile, 'f', 1) + QLatin1Char('%'));
+                    metric_text =
+                        tr("Window percentile %1").arg(QString::number(point.percentile, 'f', 1) + QLatin1Char('%'));
                 } else if (metric_code == QLatin1String("zscore")) {
                     has_metric = point.has_zscore;
                     cell.value = point.zscore;
@@ -2064,11 +2265,10 @@ void CftcPanel::update_heatmap() {
                 }
                 cell.has_value = has_metric;
                 cell.tooltip = has_metric ? tr("%1 — %2\nNet %3\n%4")
-                                                .arg(participants_[p].label, date.toString(Qt::ISODate),
-                                                     cftc_signed_net(point.net), metric_text)
+                                                .arg(row.label, date.toString(Qt::ISODate), cftc_signed_net(point.net),
+                                                     metric_text)
                                           : tr("%1 — %2\nNet %3\nNot available for this report.")
-                                                .arg(participants_[p].label, date.toString(Qt::ISODate),
-                                                     cftc_signed_net(point.net));
+                                                .arg(row.label, date.toString(Qt::ISODate), cftc_signed_net(point.net));
             }
             row.cells.append(cell);
         }
@@ -2124,21 +2324,34 @@ void CftcPanel::refresh_panel_theme() {
 
 QString CftcPanel::workspace_style() const {
     using namespace ui::colors;
+    // Every muted label, metadata line, table header and control uses the
+    // readable secondary token; tertiary/dim stay only for disabled controls.
+    // The history-display buttons deliberately use a quiet checked state while
+    // the interpretation-horizon buttons use the panel accent, so the two
+    // selectors never look alike.
     return QString("#cftcSection { background:%1; border:1px solid %2; border-radius:3px; }"
                    "#cftcSectionTitle { color:%3; font-size:9px; font-weight:700; letter-spacing:1px;"
                    " background:transparent; }"
-                   "#cftcSectionMeta { color:%4; font-size:9px; background:transparent; }"
+                   "#cftcSectionMeta { color:%3; font-size:9px; background:transparent; }"
                    "#cftcHeaderTitle { color:%5; font-size:15px; font-weight:700; background:transparent; }"
-                   "#cftcHeaderMeta { color:%4; font-size:10px; background:transparent; }"
+                   "#cftcHeaderMeta { color:%3; font-size:10px; background:transparent; }"
                    "#cftcRangeBtn { background:transparent; color:%3; border:1px solid %2;"
                    " font-size:10px; font-weight:700; padding:3px 9px; }"
                    "#cftcRangeBtn:hover { color:%5; background:%6; }"
-                   "#cftcRangeBtn:checked { background:%7; color:%8; border-color:%7; }"
+                   "#cftcRangeBtn:checked { background:%6; color:%5; border-color:%10; }"
                    "#cftcRangeBtn:disabled { color:%4; }"
+                   "#cftcHorizonBtn { background:transparent; color:%3; border:1px solid %2;"
+                   " font-size:10px; font-weight:700; padding:3px 9px; }"
+                   "#cftcHorizonBtn:hover { color:%5; background:%6; }"
+                   "#cftcHorizonBtn:checked { background:%7; color:%8; border-color:%7; }"
+                   "#cftcEvidenceToggle { background:transparent; color:%3; border:1px solid %2;"
+                   " font-size:9px; padding:3px 8px; }"
+                   "#cftcEvidenceToggle:hover { color:%5; background:%6; }"
+                   "#cftcEvidenceToggle:checked { background:%6; color:%5; border-color:%10; }"
                    "#cftcCard { background:%9; border:1px solid %2; border-radius:3px; }"
                    "#cftcCardLabel { color:%3; font-size:8px; font-weight:700; letter-spacing:1px;"
                    " background:transparent; }"
-                   "#cftcCardSub { color:%4; font-size:9px; background:transparent; }"
+                   "#cftcCardSub { color:%3; font-size:9px; background:transparent; }"
                    "#cftcInterpretationHeadline { color:%5; font-size:14px; font-weight:700;"
                    " background:transparent; }"
                    "#cftcInterpretationBody { color:%5; font-size:11px; background:transparent; }"
@@ -2146,15 +2359,16 @@ QString CftcPanel::workspace_style() const {
                    "#cftcTable QHeaderView::section { background:%9; color:%3; border:none;"
                    " border-bottom:1px solid %2; font-size:9px; font-weight:700; padding:3px; }"
                    "#cftcTable::item { padding:2px 4px; }")
-        .arg(BG_SURFACE())    // %1
-        .arg(BORDER_DIM())    // %2
-        .arg(TEXT_TERTIARY()) // %3
-        .arg(TEXT_DIM())      // %4
-        .arg(TEXT_PRIMARY())  // %5
-        .arg(BG_HOVER())      // %6
-        .arg(color_)          // %7
-        .arg(BG_BASE())       // %8
-        .arg(BG_RAISED());    // %9
+        .arg(BG_SURFACE())     // %1
+        .arg(BORDER_DIM())     // %2
+        .arg(TEXT_SECONDARY()) // %3 muted-but-readable labels, metadata, headers
+        .arg(TEXT_TERTIARY())  // %4 disabled only
+        .arg(TEXT_PRIMARY())   // %5
+        .arg(BG_HOVER())       // %6
+        .arg(color_)           // %7 accent
+        .arg(BG_BASE())        // %8
+        .arg(BG_RAISED())      // %9
+        .arg(BORDER_BRIGHT()); // %10
 }
 
 void CftcPanel::retranslateUi() {
@@ -2196,7 +2410,14 @@ void CftcPanel::retranslateUi() {
     if (heatmap_title_)
         heatmap_title_->setText(tr("POSITIONING HEATMAP"));
     if (range_lbl_)
-        range_lbl_->setText(tr("HISTORY"));
+        range_lbl_->setText(tr("HISTORY DISPLAY"));
+    if (range_hint_lbl_)
+        range_hint_lbl_->setText(tr("Charts and window statistics only — the interpretation always evaluates the "
+                                    "full validated history."));
+    if (horizon_lbl_)
+        horizon_lbl_->setText(tr("INTERPRETATION HORIZON"));
+    refresh_horizon_buttons();
+    update_evidence_visibility();
     if (chart_metric_lbl_)
         chart_metric_lbl_->setText(tr("SERIES"));
     if (chart_metric_combo_ && chart_metric_combo_->count() == 3) {
@@ -2210,7 +2431,7 @@ void CftcPanel::retranslateUi() {
         heatmap_metric_lbl_->setText(tr("METRIC"));
     if (heatmap_metric_combo_ && heatmap_metric_combo_->count() == 4) {
         heatmap_metric_combo_->setItemText(0, tr("COT Index"));
-        heatmap_metric_combo_->setItemText(1, tr("Percentile"));
+        heatmap_metric_combo_->setItemText(1, tr("Window percentile"));
         heatmap_metric_combo_->setItemText(2, tr("Z-Score"));
         heatmap_metric_combo_->setItemText(3, tr("Weekly Δ Net"));
     }

@@ -70,7 +70,7 @@ class CftcPositioningChart::Canvas : public QChartView {
             previous->deleteLater();
 
         crosshair_ = new QGraphicsLineItem(chart);
-        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1, Qt::DashLine));
+        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1, Qt::DashLine));
         crosshair_->setVisible(false);
         crosshair_->setZValue(10);
     }
@@ -415,7 +415,7 @@ void CftcPositioningChart::rebuild() {
             if (segment.size() < 2)
                 continue;
             auto* line = new QLineSeries;
-            line->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1.2, Qt::DashLine));
+            line->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1.2, Qt::DashLine));
             for (const auto& point : segment)
                 line->append(point_x(point), point.value);
             chart->addSeries(line);

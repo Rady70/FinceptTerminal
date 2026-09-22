@@ -298,4 +298,15 @@ fincept_add_test(tst_cftc_presentation
 fincept_add_test(tst_cftc_sync_chart
     tst_cftc_sync_chart.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart")
+# MarketLab: Batch 4B correction pass - the pure CFTC Analysis-page contract
+# (screens/economics/panels/CftcWorkspaceContract.h): the information hierarchy
+# (header, current snapshot, interpretation, then charts and deeper tables),
+# the sections the history-display range may refresh (never the interpretation),
+# the 1W | 4W | 13W interpretation-horizon vocabulary, and the percentile
+# labelling that separates the strict 156-prior-report interpretation measure
+# from the selected-window raw-net statistic. Header-only over Qt Core; no app
+# sources.
+fincept_add_test(tst_cftc_workspace_contract
+    tst_cftc_workspace_contract.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract")
