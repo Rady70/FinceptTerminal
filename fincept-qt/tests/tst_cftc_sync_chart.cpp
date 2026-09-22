@@ -183,6 +183,7 @@ class TstCftcSyncChart : public QObject {
     void provider_failure_reason_is_carried_into_the_chart();
     void no_mapped_source_reason_is_carried_into_the_chart();
     void hover_values_share_the_snapped_report_date();
+    void hover_snap_dates_are_shared_between_panes();
     void deterministic_repeatability();
 };
 
@@ -456,6 +457,57 @@ void TstCftcSyncChart::hover_values_share_the_snapped_report_date() {
     QVERIFY(!absent.has_positioning);
     QCOMPARE(absent.price, 0.0);
     QCOMPARE(absent.positioning, 0.0);
+}
+
+void TstCftcSyncChart::hover_snap_dates_are_shared_between_panes() {
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 6, 600.0, 400.0);
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    // Reports 3 and 4 carry no qualifying price: a deliberate price gap.
+    const CftcSyncChartData data =
+        build(interpretation, observations, report_prices(observations, {2, 3}), QStringLiteral("gold"),
+              QStringLiteral("gold"), CftcRange::Max, QStringLiteral("TEST source"), true, false);
+    QVERIFY(data.positioning.available);
+    QVERIFY(!data.price.points.isEmpty());
+    for (const auto& point : data.price.points)
+        QVERIFY(point.date != observations[3].date);
+
+    // The shared snap set is the sorted union of both series' report dates, so
+    // the missing-price report date is selectable even though the price pane
+    // itself has no point there.
+    const QVector<QDate> snap_dates = cftc_sync_snap_dates(data);
+    QCOMPARE(snap_dates.size(), observations.size());
+    for (const auto& observation : observations)
+        QVERIFY(snap_dates.contains(observation.date));
+    for (int i = 1; i < snap_dates.size(); ++i)
+        QVERIFY(snap_dates[i - 1] < snap_dates[i]);
+
+    const qint64 min_ms = QDateTime(observations.first().date, QTime(0, 0)).toMSecsSinceEpoch();
+    const qint64 max_ms = QDateTime(observations.last().date, QTime(0, 0)).toMSecsSinceEpoch();
+    const qint64 gap_ms = QDateTime(observations[3].date, QTime(0, 0)).toMSecsSinceEpoch();
+    const qint64 near_gap_ms = gap_ms - 2LL * 86400000LL;
+    QCOMPARE(cftc_sync_nearest_snap_date(snap_dates, gap_ms, min_ms, max_ms), observations[3].date);
+    // A position nearer the gap than any surviving price date snaps to the gap
+    // date itself; nothing is interpolated toward the neighbouring prices.
+    QCOMPARE(cftc_sync_nearest_snap_date(snap_dates, near_gap_ms, min_ms, max_ms), observations[3].date);
+    // Both panes call the shared helper with the same set, target and window,
+    // so they cannot resolve to different dates.
+    QCOMPARE(cftc_sync_nearest_snap_date(snap_dates, near_gap_ms, min_ms, max_ms),
+             cftc_sync_nearest_snap_date(snap_dates, near_gap_ms, min_ms, max_ms));
+
+    // Hovering the shared snap date exposes the truthful positioning-without-
+    // price readout, which the old per-pane price snapping could never reach.
+    const CftcSyncHoverValue gap = cftc_sync_hover_values(data, observations[3].date);
+    QVERIFY(!gap.has_price);
+    QVERIFY(gap.has_positioning);
+
+    // A window that contains no snap date resolves to an invalid date, and an
+    // empty snap set never snaps.
+    const qint64 before_first_ms = QDateTime(observations[0].date, QTime(0, 0)).toMSecsSinceEpoch();
+    const qint64 after_first_ms = QDateTime(observations[1].date, QTime(0, 0)).toMSecsSinceEpoch();
+    QVERIFY(!cftc_sync_nearest_snap_date(snap_dates, min_ms, before_first_ms + 86400000LL, after_first_ms - 86400000LL)
+                 .isValid());
+    QVERIFY(!cftc_sync_nearest_snap_date({}, gap_ms, min_ms, max_ms).isValid());
+    QCOMPARE(cftc_sync_nearest_snap_date(snap_dates, gap_ms, min_ms, max_ms), observations[3].date);
 }
 
 void TstCftcSyncChart::deterministic_repeatability() {

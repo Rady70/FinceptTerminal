@@ -20,6 +20,10 @@
 //     Disaggregated Managed Money, TFF Leveraged Funds) and never a generic
 //     speculative-flag selection; a missing principal participant leaves the
 //     pane truthfully unavailable;
+//   * both panes snap the crosshair to one shared set of official report dates
+//     (the union of the dates the two series carry), so a report date with
+//     positioning but no qualifying price stays reachable from either pane
+//     while the price gap itself is preserved and never interpolated;
 //   * the visible range filters the drawn points only and never the Batch 4A
 //     interpretation, which is computed from the full history above.
 //
@@ -33,8 +37,10 @@
 #include "ui/charts/TimeSeriesData.h"
 
 #include <QDate>
+#include <QDateTime>
 #include <QString>
 #include <QStringList>
+#include <QTime>
 #include <QVector>
 
 #include <algorithm>
@@ -88,6 +94,50 @@ inline CftcSyncHoverValue cftc_sync_hover_values(const CftcSyncChartData& data, 
         }
     }
     return out;
+}
+
+/// Shared crosshair snapping: both panes must resolve a hover position to the
+/// same official report date. The snap set is the union of the report dates the
+/// two series carry, so a report date with positioning but no qualifying price
+/// stays selectable from either pane and its truthful "positioning without
+/// price" readout remains reachable. The price gaps themselves are preserved;
+/// nothing is interpolated to fill them.
+inline QVector<QDate> cftc_sync_snap_dates(const CftcSyncChartData& data) {
+    QVector<QDate> dates;
+    dates.reserve(data.price.points.size() + data.positioning.points.size());
+    for (const auto& point : data.price.points) {
+        if (point.date.isValid())
+            dates.append(point.date);
+    }
+    for (const auto& point : data.positioning.points) {
+        if (point.date.isValid())
+            dates.append(point.date);
+    }
+    std::sort(dates.begin(), dates.end());
+    dates.erase(std::unique(dates.begin(), dates.end()), dates.end());
+    return dates;
+}
+
+/// The official report date both panes snap to for a millisecond axis position:
+/// the nearest snap date inside the shared visible window, or an invalid date
+/// when the window contains none. Both canvases call this with the same snap
+/// set, target and window, so they can never resolve to different dates. Ties
+/// resolve to the earlier date for determinism.
+inline QDate cftc_sync_nearest_snap_date(const QVector<QDate>& snap_dates, qint64 target_ms, qint64 window_min_ms,
+                                         qint64 window_max_ms) {
+    QDate best;
+    qint64 best_distance = -1;
+    for (const QDate& date : snap_dates) {
+        const qint64 x = QDateTime(date, QTime(0, 0)).toMSecsSinceEpoch();
+        if (x < window_min_ms || x > window_max_ms)
+            continue;
+        const qint64 distance = x >= target_ms ? x - target_ms : target_ms - x;
+        if (best_distance < 0 || distance < best_distance) {
+            best_distance = distance;
+            best = date;
+        }
+    }
+    return best;
 }
 
 /// Price aligned to the official report dates of `window`: one point per report

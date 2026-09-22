@@ -659,7 +659,10 @@ cftc_presentation_price_primary(const services::CftcInterpretationResult& result
 
 /// Price relationship sentences (precedence 6). The four states render
 /// distinctly; opposing-direction states keep the word divergence and never
-/// carry a reversal, catch-up or trade-advice claim. The shared
+/// carry a reversal, catch-up or trade-advice claim. A four/thirteen conflict
+/// is exposed instead of choosing one, and a divergent horizon keeps its full
+/// semantics inside the conflict wording: the gross-leg mechanism is named and
+/// the contemporaneous-only statement is made. The shared
 /// `CftcPriceContextState` plus the caller's concrete `price_unavailable_note`
 /// keep the sentence, the evidence rows and the synchronized chart describing
 /// the same actual price situation.
@@ -695,11 +698,40 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
         return out;
     }
 
-    // A genuine four/thirteen conflict is exposed instead of choosing one.
+    const auto is_divergence = [](const QString& state_id) {
+        return state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE") ||
+               state_id == QLatin1String("PRICE_DOWN_POSITIONING_UP_DIVERGENCE");
+    };
+    auto append_divergence = [&out, &participant](const services::CftcPricePositionAssessment& assessment) {
+        const QString horizon = cftc_horizon_phrase(assessment.horizon_reports);
+        if (assessment.state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE"))
+            out << cftc_presentation_tr("Price rose materially over %1 while %2 shifted materially shortward.")
+                       .arg(horizon, cftc_participant_display_name(participant));
+        else
+            out << cftc_presentation_tr("Price fell materially over %1 while %2 shifted materially longward.")
+                       .arg(horizon, cftc_participant_display_name(participant));
+        const QString mechanism = cftc_price_mechanism_fragment(assessment.mechanism_state_ids);
+        if (!mechanism.isEmpty())
+            out << cftc_presentation_tr("The positioning change was driven primarily by %1.").arg(mechanism);
+    };
+
+    // A genuine four/thirteen conflict is exposed instead of choosing one. A
+    // divergent horizon keeps its full semantics: the gross-leg mechanism is
+    // named and the contemporaneous-only statement is made, so the conflict
+    // wording can never silently downgrade a divergence.
     if (a4 && a13 && a4->has_state && a13->has_state && a4->state_id != a13->state_id) {
         out << cftc_presentation_tr("The price/positioning relationship differs across horizons: %1 over four reports "
                                     "and %2 over thirteen reports.")
                    .arg(cftc_relationship_wording(a4->state_id), cftc_relationship_wording(a13->state_id));
+        bool any_divergence = false;
+        for (const auto* assessment : {a4, a13}) {
+            if (is_divergence(assessment->state_id)) {
+                append_divergence(*assessment);
+                any_divergence = true;
+            }
+        }
+        if (any_divergence)
+            out << cftc_presentation_tr("This is a contemporaneous divergence only.");
         return out;
     }
 
@@ -709,16 +741,7 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
     } else if (primary->state_id == QLatin1String("PRICE_POSITION_MOVING_TOGETHER_DOWN")) {
         out << cftc_presentation_tr("Price and net positioning moved together downward over the last %1.").arg(horizon);
     } else {
-        const bool price_up = primary->state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE");
-        if (price_up)
-            out << cftc_presentation_tr("Price rose materially over %1 while %2 shifted materially shortward.")
-                       .arg(horizon, cftc_participant_display_name(participant));
-        else
-            out << cftc_presentation_tr("Price fell materially over %1 while %2 shifted materially longward.")
-                       .arg(horizon, cftc_participant_display_name(participant));
-        const QString mechanism = cftc_price_mechanism_fragment(primary->mechanism_state_ids);
-        if (!mechanism.isEmpty())
-            out << cftc_presentation_tr("The positioning change was driven primarily by %1.").arg(mechanism);
+        append_divergence(*primary);
         out << cftc_presentation_tr("This is a contemporaneous divergence only.");
     }
     return out;

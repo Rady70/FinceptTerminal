@@ -253,6 +253,7 @@ class TstCftcPresentation : public QObject {
     void long_accumulation_with_short_covering_composition();
     void long_liquidation_with_short_building_composition();
     void four_and_thirteen_report_conflict_is_exposed_as_mixed();
+    void four_and_thirteen_relationship_conflict_keeps_divergence_semantics();
     void legacy_terminology_is_neutral_and_crowding_gated();
     void disaggregated_terminology();
     void tff_terminology();
@@ -386,6 +387,59 @@ void TstCftcPresentation::four_and_thirteen_report_conflict_is_exposed_as_mixed(
                                                          "reports but still shortward over thirteen reports.")));
     QVERIFY(view.headline.contains(QStringLiteral("mixed repositioning across horizons")));
     QVERIFY(!join_sentences(view).contains(QStringLiteral("shifted longward over the last four and thirteen")));
+}
+
+void TstCftcPresentation::four_and_thirteen_relationship_conflict_keeps_divergence_semantics() {
+    // 4R moving together, 13R divergence: the conflict is exposed and the
+    // divergent horizon keeps its gross-leg mechanism and its
+    // contemporaneous-only statement. Before the fix the conflict early return
+    // dropped both.
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+    add_price_assessment(result, primary->participant_key, 4, QStringLiteral("PRICE_POSITION_MOVING_TOGETHER_UP"), {},
+                         100.0, 2000.0);
+    add_price_assessment(result, primary->participant_key, 13, QStringLiteral("PRICE_UP_POSITIONING_DOWN_DIVERGENCE"),
+                         {QStringLiteral("LONG_LIQUIDATION")}, 300.0, -4000.0);
+
+    const CftcInterpretationView view = cftc_compose_interpretation(result);
+    const QString text = join_sentences(view);
+    QVERIFY(text.contains(QStringLiteral("relationship differs across horizons")));
+    QVERIFY(text.contains(QStringLiteral("Price rose materially over thirteen reports")));
+    QVERIFY(text.contains(QStringLiteral("Non-Commercial shifted materially shortward")));
+    QVERIFY(text.contains(QStringLiteral("driven primarily by long liquidation")));
+    QVERIFY(text.contains(QStringLiteral("contemporaneous divergence")));
+    QVERIFY2(forbidden_language(conclusions_text(view)).isEmpty(),
+             qPrintable(forbidden_language(conclusions_text(view))));
+
+    // Divergence at 4R, moving together at 13R: same guarantees, other order.
+    CftcInterpretationResult reverse = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* reverse_primary = primary_participant(reverse);
+    reverse_primary->states << make_state(QStringLiteral("NET_SHORT"), reverse_primary->participant_key);
+    add_price_assessment(reverse, reverse_primary->participant_key, 4,
+                         QStringLiteral("PRICE_DOWN_POSITIONING_UP_DIVERGENCE"), {QStringLiteral("SHORT_COVERING")},
+                         -100.0, 2000.0);
+    add_price_assessment(reverse, reverse_primary->participant_key, 13,
+                         QStringLiteral("PRICE_POSITION_MOVING_TOGETHER_DOWN"), {}, -300.0, -4000.0);
+    const QString reverse_text = join_sentences(cftc_compose_interpretation(reverse));
+    QVERIFY(reverse_text.contains(QStringLiteral("relationship differs across horizons")));
+    QVERIFY(reverse_text.contains(QStringLiteral("Price fell materially over four reports")));
+    QVERIFY(reverse_text.contains(QStringLiteral("driven primarily by short covering")));
+    QVERIFY(reverse_text.contains(QStringLiteral("contemporaneous divergence")));
+
+    // A conflict between two moving-together states carries no divergence
+    // claim: the contemporaneous-only statement must not be invented.
+    CftcInterpretationResult moving = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* moving_primary = primary_participant(moving);
+    moving_primary->states << make_state(QStringLiteral("NET_LONG"), moving_primary->participant_key);
+    add_price_assessment(moving, moving_primary->participant_key, 4,
+                         QStringLiteral("PRICE_POSITION_MOVING_TOGETHER_UP"), {}, 100.0, 2000.0);
+    add_price_assessment(moving, moving_primary->participant_key, 13,
+                         QStringLiteral("PRICE_POSITION_MOVING_TOGETHER_DOWN"), {}, -300.0, -4000.0);
+    const QString moving_text = join_sentences(cftc_compose_interpretation(moving));
+    QVERIFY(moving_text.contains(QStringLiteral("relationship differs across horizons")));
+    QVERIFY(!moving_text.contains(QStringLiteral("contemporaneous divergence")));
+    QVERIFY(!moving_text.contains(QStringLiteral("driven primarily by")));
 }
 
 void TstCftcPresentation::legacy_terminology_is_neutral_and_crowding_gated() {

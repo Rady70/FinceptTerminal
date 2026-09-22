@@ -26,7 +26,6 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include <utility>
 
 namespace fincept::screens {
@@ -103,10 +102,10 @@ class CftcPricePositioningChart::Canvas : public QChartView {
         crosshair_->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1, Qt::DashLine));
         crosshair_->setVisible(false);
         crosshair_->setZValue(10);
-        hover_points_.clear();
+        snap_dates_.clear();
     }
 
-    void set_hover_points(const QVector<ui::TimeSeriesPoint>& points) { hover_points_ = points; }
+    void set_snap_dates(const QVector<QDate>& dates) { snap_dates_ = dates; }
 
     void refresh_crosshair_style() {
         if (crosshair_)
@@ -129,7 +128,7 @@ class CftcPricePositioningChart::Canvas : public QChartView {
   protected:
     void mouseMoveEvent(QMouseEvent* event) override {
         QChartView::mouseMoveEvent(event);
-        if (!hover_handler || !chart() || hover_points_.isEmpty()) {
+        if (!hover_handler || !chart() || snap_dates_.isEmpty()) {
             if (leave_handler)
                 leave_handler();
             return;
@@ -142,26 +141,13 @@ class CftcPricePositioningChart::Canvas : public QChartView {
             return;
         }
         const QPointF chart_value = chart()->mapToValue(event->pos());
-        qreal best_x = 0.0;
-        double best_distance = std::numeric_limits<double>::max();
-        bool found = false;
-        for (const auto& point : std::as_const(hover_points_)) {
-            const qreal x = point_x(point);
-            if (x < static_cast<double>(window_min) || x > static_cast<double>(window_max))
-                continue;
-            const double distance = std::abs(x - chart_value.x());
-            if (distance < best_distance) {
-                best_distance = distance;
-                best_x = x;
-                found = true;
-            }
-        }
-        if (!found) {
+        const QDate snapped =
+            cftc_sync_nearest_snap_date(snap_dates_, static_cast<qint64>(chart_value.x()), window_min, window_max);
+        if (!snapped.isValid()) {
             if (leave_handler)
                 leave_handler();
             return;
         }
-        const QDate snapped = QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(best_x), QTimeZone::LocalTime).date();
         hover_handler(snapped, mapToGlobal(event->pos()));
     }
 
@@ -186,7 +172,7 @@ class CftcPricePositioningChart::Canvas : public QChartView {
         return false;
     }
 
-    QVector<ui::TimeSeriesPoint> hover_points_;
+    QVector<QDate> snap_dates_;
     QGraphicsLineItem* crosshair_ = nullptr;
 };
 
@@ -470,8 +456,12 @@ void CftcPricePositioningChart::rebuild() {
 
     price_canvas_->install_chart(price_chart);
     position_canvas_->install_chart(position_chart);
-    price_canvas_->set_hover_points(data_.price.points);
-    position_canvas_->set_hover_points(data_.positioning.points);
+    // One shared snap set for both panes: the union of the report dates carried
+    // by the two series. Hovering either pane can therefore reach a report date
+    // whose price is a deliberate gap, while the gap itself stays a gap.
+    const QVector<QDate> snap_dates = cftc_sync_snap_dates(data_);
+    price_canvas_->set_snap_dates(snap_dates);
+    position_canvas_->set_snap_dates(snap_dates);
 
     QTimer::singleShot(0, this, [this]() { align_plot_areas(); });
 }
