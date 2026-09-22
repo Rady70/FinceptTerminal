@@ -24,6 +24,7 @@
 #pragma once
 
 #include "screens/economics/panels/EconPanelBase.h"
+#include "services/economics/CftcInterpretationModel.h"
 #include "services/economics/CftcMetricModel.h"
 
 #include <QComboBox>
@@ -46,8 +47,11 @@ struct HistoryPoint;
 
 namespace fincept::screens {
 
+enum class CftcPriceContextState;
+
 class CftcHeatmap;
 class CftcPositioningChart;
+class CftcPricePositioningChart;
 
 /// Which participant leg the historical chart and statistics plot.
 enum class CftcChartMetric { Net, Long, Short };
@@ -97,6 +101,9 @@ class CftcPanel : public EconPanelBase {
     void apply_range(services::CftcRange range);
     void rebuild_workspace();
     void update_header();
+    void refresh_interpretation();
+    void render_interpretation();
+    void update_sync_chart();
     void update_snapshot();
     void update_positioning();
     void update_weekly();
@@ -109,7 +116,11 @@ class CftcPanel : public EconPanelBase {
     // ── price context ───────────────────────────────────────────────────────
     void request_price(const QString& market_key);
     void update_price_points(const QVector<services::HistoryPoint>& points);
+    void update_price_views();
+    CftcPriceContextState price_context_state() const;
+    QString price_unavailable_note() const;
     QString price_source_text() const;
+    QString concise_price_source_text() const;
 
     // ── helpers ─────────────────────────────────────────────────────────────
     QDate latest_report_date() const;
@@ -150,11 +161,18 @@ class CftcPanel : public EconPanelBase {
     QGridLayout* snapshot_grid_ = nullptr;
     QVector<SnapshotCard> snapshot_cards_;
     QGridLayout* pair_layout_ = nullptr;       // positioning | weekly changes
-    QGridLayout* stats_pair_layout_ = nullptr; // statistics | divergence
+    QGridLayout* stats_pair_layout_ = nullptr; // statistics | divergence evidence
     QWidget* positioning_frame_ = nullptr;
     QWidget* weekly_frame_ = nullptr;
     QWidget* stats_frame_ = nullptr;
     QWidget* divergence_frame_ = nullptr;
+    QLabel* interpretation_title_ = nullptr;
+    QLabel* interpretation_headline_ = nullptr;
+    QLabel* interpretation_body_ = nullptr;
+    QLabel* interpretation_context_ = nullptr;
+    QTableWidget* interpretation_evidence_ = nullptr;
+    QLabel* sync_chart_title_ = nullptr;
+    CftcPricePositioningChart* sync_chart_ = nullptr;
     QLabel* positioning_title_ = nullptr;
     QLabel* weekly_title_ = nullptr;
     QLabel* chart_title_ = nullptr;
@@ -190,9 +208,11 @@ class CftcPanel : public EconPanelBase {
     // ── data state ──────────────────────────────────────────────────────────
     services::CftcHistory history_;
     QVector<services::CftcObservation> window_; // history_ filtered to the active range
+    services::CftcInterpretationResult interpretation_;
     services::CftcFamily family_ = services::CftcFamily::Legacy;
     QVector<services::CftcParticipant> participants_;
-    int speculative_index_ = -1;
+    int speculative_index_ = -1; // historical R3 numerical sections only
+    int principal_index_ = -1;   // Batch 4B semantic path: finalized terminology contract
     QString market_key_;
     QString market_label_;
     bool futures_only_ = false;

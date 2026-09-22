@@ -281,4 +281,21 @@ fincept_add_test(tst_cftc_metrics
 fincept_add_test(tst_cftc_interpretation
     tst_cftc_interpretation.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation")
+# MarketLab: Batch 4B of the CFTC work — the deterministic
+# presentation/composition layer
+# (screens/economics/panels/CftcInterpretationPresentation.h) that maps the
+# finalized Batch 4A state ids and emitted metric values to predefined
+# participant-aware wording, plus the pure synchronized-chart data contract
+# (screens/economics/panels/CftcSyncChartData.h) for report-date price
+# alignment without future observations, truthful gaps, stale-market rejection
+# and 1/4/13-report context. It proves the composed conclusions contain no
+# BUY/HOLD/SELL, bullish/bearish, confidence, expected-return, forecast or AI
+# output and that they are independent of the visible chart range. Header-only
+# over Qt Core; no app sources.
+fincept_add_test(tst_cftc_presentation
+    tst_cftc_presentation.cpp)
+
+fincept_add_test(tst_cftc_sync_chart
+    tst_cftc_sync_chart.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart")
