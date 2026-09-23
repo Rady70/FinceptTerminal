@@ -5,7 +5,6 @@
 #include "ui/theme/Theme.h"
 
 #include <QDateTime>
-#include <QFontMetrics>
 #include <QGraphicsLineItem>
 #include <QGuiApplication>
 #include <QLabel>
@@ -43,31 +42,6 @@ QString sync_axis_date_format(qint64 span_days) {
     if (span_days <= 2200)
         return QStringLiteral("MMM yyyy");
     return QStringLiteral("yyyy");
-}
-
-/// Width of the widest value-axis label the axis itself would draw, measured
-/// with the axis's actual label font so both stacked panes can reserve the same
-/// left inset and neither pane's labels are elided. The axis format is chosen
-/// by cftc_sync_value_axis_format() so contract-count labels are plain digits
-/// rather than scientific notation.
-int axis_label_width(const QValueAxis* axis) {
-    if (!axis)
-        return 0;
-    const QByteArray format = axis->labelFormat().toUtf8();
-    const QFontMetrics fm(axis->labelsFont());
-    const double min_value = axis->min();
-    const double max_value = axis->max();
-    int width = 0;
-    for (int i = 0; i <= 8; ++i) {
-        const double value = min_value + (max_value - min_value) * static_cast<double>(i) / 8.0;
-        width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), value)));
-    }
-    width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), min_value)));
-    width = std::max(width, fm.horizontalAdvance(QString::asprintf(format.constData(), max_value)));
-    // A small pad only: the measured labels already include their sign and
-    // digits, so a large extra reserve would show as dead space beside the
-    // plot area.
-    return width + 8;
 }
 
 QString pane_value_text(double value) {
@@ -472,21 +446,15 @@ void CftcPricePositioningChart::rebuild() {
                                        first_date, last_date, format)
                      : new QChart;
 
-    auto vertical_axis = [](QChart* chart) -> QValueAxis* {
-        const auto axes = chart->axes(Qt::Vertical);
-        return axes.isEmpty() ? nullptr : qobject_cast<QValueAxis*>(axes.first());
-    };
-    // ChartFactory::apply_theme resets the chart margins, so theme first and
-    // then reserve the shared left inset for the value-axis labels. The inset
-    // is measured from each axis's actual label font and current format and
-    // floored generously so a long net-position label is never elided.
+    // ChartFactory::apply_theme resets the chart margins. Qt already reserves
+    // the axis-label strip inside its own layout, so only the small standard
+    // padding is applied here; the shared alignment below equalizes the two
+    // panes' plot areas afterwards. An extra measured inset here would show as
+    // dead space beside the plot.
     ui::ChartFactory::apply_theme(price_chart);
     ui::ChartFactory::apply_theme(position_chart);
-    const int label_width =
-        std::max(axis_label_width(vertical_axis(price_chart)), axis_label_width(vertical_axis(position_chart)));
-    const int left_margin = std::max(56, label_width + 10);
-    price_chart->setMargins(QMargins(left_margin, 4, 4, 4));
-    position_chart->setMargins(QMargins(left_margin, 4, 4, 4));
+    price_chart->setMargins(QMargins(4, 4, 4, 4));
+    position_chart->setMargins(QMargins(4, 4, 4, 4));
 
     price_canvas_->install_chart(price_chart);
     position_canvas_->install_chart(position_chart);
