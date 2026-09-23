@@ -39,6 +39,7 @@ class CftcPricePositioningChart : public QWidget {
 
   protected:
     void changeEvent(QEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
   private:
     class Canvas;

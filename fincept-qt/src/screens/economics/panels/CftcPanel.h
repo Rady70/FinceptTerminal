@@ -23,6 +23,7 @@
 // section deferred until a supported free strip source exists.
 #pragma once
 
+#include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "screens/economics/panels/EconPanelBase.h"
 #include "services/economics/CftcInterpretationModel.h"
 #include "services/economics/CftcMetricModel.h"
@@ -99,10 +100,13 @@ class CftcPanel : public EconPanelBase {
     void show_analysis_tab();
     void show_raw_tab();
     void apply_range(services::CftcRange range);
-    void rebuild_workspace();
+    void rebuild_workspace(bool range_only = false);
     void update_header();
     void refresh_interpretation();
     void render_interpretation();
+    void set_interpretation_horizon(int horizon_reports);
+    void refresh_horizon_buttons();
+    void update_evidence_visibility();
     void update_sync_chart();
     void update_snapshot();
     void update_positioning();
@@ -152,6 +156,7 @@ class CftcPanel : public EconPanelBase {
     QLabel* hdr_title_ = nullptr;
     QLabel* hdr_meta_ = nullptr;
     QLabel* range_lbl_ = nullptr;
+    QLabel* range_hint_lbl_ = nullptr;
     QLabel* range_info_lbl_ = nullptr;
     QVector<QPushButton*> range_btns_;
     QVector<services::CftcRange> range_values_;
@@ -160,8 +165,9 @@ class CftcPanel : public EconPanelBase {
     // ── sections ────────────────────────────────────────────────────────────
     QGridLayout* snapshot_grid_ = nullptr;
     QVector<SnapshotCard> snapshot_cards_;
-    QGridLayout* pair_layout_ = nullptr;       // positioning | weekly changes
+    QGridLayout* top_row_layout_ = nullptr;    // interpretation | positioning + weekly changes
     QGridLayout* stats_pair_layout_ = nullptr; // statistics | divergence evidence
+    QWidget* interpretation_frame_ = nullptr;
     QWidget* positioning_frame_ = nullptr;
     QWidget* weekly_frame_ = nullptr;
     QWidget* stats_frame_ = nullptr;
@@ -170,6 +176,12 @@ class CftcPanel : public EconPanelBase {
     QLabel* interpretation_headline_ = nullptr;
     QLabel* interpretation_body_ = nullptr;
     QLabel* interpretation_context_ = nullptr;
+    QLabel* horizon_lbl_ = nullptr;
+    QVector<QPushButton*> horizon_btns_;
+    QVector<int> horizon_values_;
+    QPushButton* interpretation_evidence_toggle_ = nullptr;
+    bool evidence_expanded_ = false;
+    int horizon_reports_ = cftc_default_interpretation_horizon(); // 1W | 4W | 13W selection
     QTableWidget* interpretation_evidence_ = nullptr;
     QLabel* sync_chart_title_ = nullptr;
     CftcPricePositioningChart* sync_chart_ = nullptr;

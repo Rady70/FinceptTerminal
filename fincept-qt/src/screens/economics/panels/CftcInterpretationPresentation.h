@@ -25,6 +25,7 @@
 #pragma once
 
 #include "screens/economics/panels/CftcNetFormat.h"
+#include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "services/economics/CftcInterpretationModel.h"
 
 #include <QCoreApplication>
@@ -45,12 +46,13 @@ enum class CftcEvidenceStatus { Available, NoMaterialState, Pending, Unavailable
 
 /// One inspectable piece of supporting evidence. `horizon_reports` is 4 or 13
 /// for a horizon-scoped measure so the panel can render those as aligned
-/// columns; 0 means a whole-report measure.
+/// columns; 0 means a whole-report measure. A single-horizon view carries its
+/// own selected horizon on the view and renders every row as label/value.
 struct CftcEvidenceItem {
     QString label;
     QString value;
     CftcEvidenceStatus status = CftcEvidenceStatus::Unavailable;
-    int horizon_reports = 0; // 0, 4 or 13
+    int horizon_reports = 0; // 0 (whole report) or the measure's report horizon (1, 4, 13)
 };
 
 /// The actual price context the caller holds. The prose composer, the evidence
@@ -59,9 +61,12 @@ struct CftcEvidenceItem {
 enum class CftcPriceContextState { Pending, Unavailable, Ready };
 
 /// The predefined display content for one Batch 4A result. The panel renders
-/// this without deciding any wording itself.
+/// this without deciding any wording itself. `horizon_reports` is 0 for the
+/// combined multi-horizon view and the selected 1/4/13 report horizon for a
+/// single-horizon view; the panel uses it to choose the evidence layout.
 struct CftcInterpretationView {
     bool interpreted = false; ///< Batch 4A produced an interpretable report
+    int horizon_reports = 0;  ///< 0 = combined view; else the selected 1/4/13 horizon
     QString headline;
     QStringList sentences;
     QVector<CftcEvidenceItem> evidence;
@@ -243,6 +248,19 @@ inline QString cftc_participant_display_name(const services::CftcParticipantInte
     return participant.label;
 }
 
+/// The neutral display label for a metric-model participant (the R3 numerical
+/// sections that predate Batch 4A). The Legacy broad non-commercial class is
+/// rendered with its Batch 4A terminology name; the historical
+/// "Non-Commercial (Speculators)" metric label is never surfaced. Other
+/// classes keep their metric-model label unchanged.
+inline QString cftc_metric_participant_display_name(services::CftcFamily family, const QString& participant_key,
+                                                    const QString& fallback_label) {
+    if (services::cftc_participant_terminology(family, participant_key) ==
+        services::CftcTerminologyClass::BroadNonCommercial)
+        return cftc_presentation_tr("Non-Commercial");
+    return fallback_label;
+}
+
 /// The principal participant key defined by the finalized Batch 4A family and
 /// terminology contract: Legacy Non-Commercial (BroadNonCommercial),
 /// Disaggregated Managed Money (ManagedMoney), TFF Leveraged Funds
@@ -336,6 +354,64 @@ cftc_presentation_price(const services::CftcInterpretationResult& result, const 
     return nullptr;
 }
 
+/// The participant's raw flow measurement for one horizon, when the engine
+/// emitted one (every configured horizon emits a reading, including
+/// below-threshold horizons).
+inline const services::CftcHorizonFlowReading*
+cftc_presentation_flow_reading(const services::CftcParticipantInterpretation& participant, int horizon) {
+    for (const auto& reading : participant.flow_readings) {
+        if (reading.horizon_reports == horizon)
+            return &reading;
+    }
+    return nullptr;
+}
+
+/// The market-level Open Interest measurement for one horizon.
+inline const services::CftcOpenInterestReading*
+cftc_presentation_oi_reading(const services::CftcInterpretationResult& result, int horizon) {
+    for (const auto& reading : result.open_interest_readings) {
+        if (reading.horizon_reports == horizon)
+            return &reading;
+    }
+    return nullptr;
+}
+
+/// Marker appended to a measurement that was evaluated but stayed below the
+/// materiality threshold, so the row keeps its number and still states why no
+/// state was emitted.
+inline QString cftc_below_threshold_suffix() {
+    return cftc_presentation_tr(" (below threshold)");
+}
+
+/// Marker for a raw measurement whose materiality comparison could not be
+/// performed at all (the strictly trailing reference was too short or
+/// otherwise unavailable). The value is still a valid observation, but the row
+/// must not claim a threshold comparison happened: it carries the engine's own
+/// reason instead of "below threshold".
+inline QString cftc_materiality_unavailable_suffix(const QString& reason) {
+    return cftc_presentation_tr(" (materiality unavailable — %1)").arg(reason);
+}
+
+/// Unavailable reason for the secondary NET Δ cell. This is CFTC positioning
+/// evidence only: the participant's NET_SHIFT record, then its horizon reading,
+/// then nothing. A price assessment reason (which gives a missing price context
+/// precedence) must never label a positioning cell.
+inline QString cftc_net_delta_unavailable_reason(const services::CftcInterpretationResult& result,
+                                                 const QString& participant_key, int horizon) {
+    if (const auto* record =
+            cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_SHIFT"), participant_key, horizon))
+        return cftc_unavailable_reason_wording(record->reason);
+    for (const auto& participant : result.participants) {
+        if (participant.participant_key != participant_key)
+            continue;
+        for (const auto& reading : participant.flow_readings) {
+            if (reading.horizon_reports == horizon && !reading.evaluated)
+                return cftc_unavailable_reason_wording(reading.reason);
+        }
+    }
+    return QString();
+}
+
 // ── Indexed horizons ────────────────────────────────────────────────────────
 
 /// Read-only summary of the states Batch 4A already emitted for one participant
@@ -371,11 +447,16 @@ inline CftcHorizonFlowSummary cftc_summarize_horizon(const services::CftcPartici
     else if (has(QStringLiteral("NET_SHORTWARD_SHIFT")))
         out.net_direction = -1;
     out.material_net_move = out.net_direction != 0;
-    const QString sustained_long = horizon == 4 ? QStringLiteral("SUSTAINED_LONGWARD_REPOSITIONING_4R")
-                                                : QStringLiteral("SUSTAINED_LONGWARD_REPOSITIONING_13R");
-    const QString sustained_short = horizon == 4 ? QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_4R")
-                                                 : QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_13R");
-    out.sustained = has(sustained_long) || has(sustained_short);
+    // Sustained repositioning is only defined at the fixed four- and
+    // thirteen-report horizons (plan section 8.4); the one-report reading must
+    // never inherit a thirteen-report sustained state.
+    if (horizon == 4 || horizon == 13) {
+        const QString sustained_long = horizon == 4 ? QStringLiteral("SUSTAINED_LONGWARD_REPOSITIONING_4R")
+                                                    : QStringLiteral("SUSTAINED_LONGWARD_REPOSITIONING_13R");
+        const QString sustained_short = horizon == 4 ? QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_4R")
+                                                     : QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_13R");
+        out.sustained = has(sustained_long) || has(sustained_short);
+    }
     const services::CftcUnavailableRecord* record =
         cftc_presentation_unavailable(unavailable, QStringLiteral("NET_SHIFT"), participant.participant_key, horizon);
     if (record) {
@@ -615,6 +696,17 @@ inline QString cftc_net_share_disagreement_sentence(const services::CftcParticip
     return {};
 }
 
+/// The raw-net / Net-%OI disagreement sentence for one selected horizon.
+inline QString
+cftc_net_share_disagreement_sentence_for_horizon(const services::CftcParticipantInterpretation& participant,
+                                                 int horizon) {
+    if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), horizon))
+        return cftc_presentation_tr("Over %1 the change in Net %OI moved opposite to the raw net flow because "
+                                    "market size changed.")
+            .arg(cftc_horizon_phrase(horizon));
+    return {};
+}
+
 /// Gross mechanism fragment for a price/positioning divergence sentence.
 inline QString cftc_price_mechanism_fragment(const QStringList& mechanism_state_ids) {
     const bool accumulation = mechanism_state_ids.contains(QStringLiteral("LONG_ACCUMULATION"));
@@ -655,6 +747,26 @@ cftc_presentation_price_primary(const services::CftcInterpretationResult& result
             return assessment;
     }
     return a4 ? a4 : (a13 ? a13 : a1);
+}
+
+/// The sentences that carry a divergence: the direction sentence naming the
+/// participant, the gross-leg mechanism when the engine attached one, and
+/// nothing predictive. Shared by the combined and the single-horizon composers
+/// so a divergence can never lose its semantics in one path.
+inline QStringList cftc_divergence_sentences(const services::CftcPricePositionAssessment& assessment,
+                                             const services::CftcParticipantInterpretation& participant) {
+    QStringList out;
+    const QString horizon = cftc_horizon_phrase(assessment.horizon_reports);
+    if (assessment.state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE"))
+        out << cftc_presentation_tr("Price rose materially over %1 while %2 shifted materially shortward.")
+                   .arg(horizon, cftc_participant_display_name(participant));
+    else
+        out << cftc_presentation_tr("Price fell materially over %1 while %2 shifted materially longward.")
+                   .arg(horizon, cftc_participant_display_name(participant));
+    const QString mechanism = cftc_price_mechanism_fragment(assessment.mechanism_state_ids);
+    if (!mechanism.isEmpty())
+        out << cftc_presentation_tr("The positioning change was driven primarily by %1.").arg(mechanism);
+    return out;
 }
 
 /// Price relationship sentences (precedence 6). The four states render
@@ -703,16 +815,7 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
                state_id == QLatin1String("PRICE_DOWN_POSITIONING_UP_DIVERGENCE");
     };
     auto append_divergence = [&out, &participant](const services::CftcPricePositionAssessment& assessment) {
-        const QString horizon = cftc_horizon_phrase(assessment.horizon_reports);
-        if (assessment.state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE"))
-            out << cftc_presentation_tr("Price rose materially over %1 while %2 shifted materially shortward.")
-                       .arg(horizon, cftc_participant_display_name(participant));
-        else
-            out << cftc_presentation_tr("Price fell materially over %1 while %2 shifted materially longward.")
-                       .arg(horizon, cftc_participant_display_name(participant));
-        const QString mechanism = cftc_price_mechanism_fragment(assessment.mechanism_state_ids);
-        if (!mechanism.isEmpty())
-            out << cftc_presentation_tr("The positioning change was driven primarily by %1.").arg(mechanism);
+        out << cftc_divergence_sentences(assessment, participant);
     };
 
     // A genuine four/thirteen conflict is exposed instead of choosing one. A
@@ -747,6 +850,182 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
     return out;
 }
 
+// ── Single-horizon composition (Batch 4B correction pass) ───────────────────
+//
+// The user can select one interpretation horizon (1W | 4W | 13W). The level,
+// persistence and historical-percentile conclusions are strictly full-history
+// and identical at every selection; only the repositioning, gross-leg
+// mechanism, Open Interest context, disagreement and price relationship come
+// from the selected horizon's already-emitted Batch 4A states and metrics.
+
+/// One horizon-scoped reading with its evidence status. `sentence` always
+/// carries either the conclusion, the evaluated-not-material statement or the
+/// concrete unavailable reason; `has_value` is true only when the engine
+/// emitted a metric this horizon (never zero-filled by the presentation).
+struct CftcHorizonDimension {
+    CftcEvidenceStatus status = CftcEvidenceStatus::Unavailable;
+    QString sentence;
+    bool has_value = false;
+    double value = 0.0;
+    QString unavailable_reason;
+};
+
+inline bool cftc_has_extreme_transition_state(const services::CftcParticipantInterpretation& participant) {
+    return cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_HIGH_EXTREME")) ||
+           cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_LOW_EXTREME")) ||
+           cftc_presentation_state(participant.states, QStringLiteral("EXITED_HIGH_EXTREME")) ||
+           cftc_presentation_state(participant.states, QStringLiteral("EXITED_LOW_EXTREME")) ||
+           cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")) ||
+           cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME"));
+}
+
+/// Repositioning conclusion for one selected horizon. An evaluated horizon
+/// whose move stayed below the materiality threshold says exactly that; it is
+/// never reported as unavailable, and unavailable data is never reported as
+/// "no material state".
+inline QString cftc_repositioning_sentence_for_horizon(const CftcHorizonFlowSummary& summary, int horizon) {
+    const QString phrase = cftc_horizon_phrase(horizon);
+    if (!summary.evaluated)
+        return cftc_presentation_tr("Net repositioning over the last %1 is unavailable: %2.")
+            .arg(phrase, summary.unavailable_reason);
+    if (summary.material_net_move) {
+        QString text = cftc_presentation_tr("Net positioning shifted %1 over the last %2.")
+                           .arg(cftc_direction_word(summary.net_direction), phrase);
+        if (summary.sustained)
+            text +=
+                QLatin1Char(' ') + cftc_presentation_tr("The move was sustained across the individual weekly reports.");
+        return text;
+    }
+    return cftc_presentation_tr(
+               "Net repositioning over the last %1 was evaluated but did not cross the materiality threshold.")
+        .arg(phrase);
+}
+
+/// Headline trajectory for one selected horizon. Extreme persistence, exit and
+/// unwind keep precedence exactly as in the combined view; otherwise the
+/// trajectory describes the selected horizon (net move first, then a material
+/// gross leg when the net move did not qualify).
+inline QString cftc_headline_trajectory_for_horizon(const services::CftcParticipantInterpretation& participant,
+                                                    const CftcHorizonFlowSummary& summary) {
+    if (cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_HIGH_EXTREME")) ||
+        cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_LOW_EXTREME")))
+        return cftc_presentation_tr("unwind developing");
+    if (cftc_presentation_state(participant.states, QStringLiteral("EXITED_HIGH_EXTREME")) ||
+        cftc_presentation_state(participant.states, QStringLiteral("EXITED_LOW_EXTREME")))
+        return cftc_presentation_tr("extreme exit developing");
+    if (cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")) ||
+        cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME")))
+        return cftc_presentation_tr("extreme persisting");
+
+    if (!summary.evaluated)
+        return cftc_presentation_tr("recent repositioning unavailable");
+    if (summary.material_net_move) {
+        if (summary.sustained) {
+            return summary.net_direction > 0 ? cftc_presentation_tr("sustained longward repositioning")
+                                             : cftc_presentation_tr("sustained shortward repositioning");
+        }
+        if (summary.net_direction > 0 && summary.long_accumulation)
+            return cftc_presentation_tr("long accumulation");
+        if (summary.net_direction < 0 && summary.long_liquidation)
+            return cftc_presentation_tr("long liquidation");
+        return summary.net_direction > 0 ? cftc_presentation_tr("longward repositioning")
+                                         : cftc_presentation_tr("shortward repositioning");
+    }
+    if (summary.long_accumulation)
+        return cftc_presentation_tr("long accumulation");
+    if (summary.long_liquidation)
+        return cftc_presentation_tr("long liquidation");
+    if (summary.short_building)
+        return cftc_presentation_tr("short building");
+    if (summary.short_covering)
+        return cftc_presentation_tr("short covering");
+    return cftc_presentation_tr("no material repositioning");
+}
+
+/// Open Interest conclusion/evaluation for one selected horizon. A material OI
+/// state carries its emitted normalized change; an evaluated-but-not-material
+/// horizon says so; a missing or non-positive Open Interest keeps its concrete
+/// reason from the engine's market-level record.
+inline CftcHorizonDimension cftc_open_interest_dimension(const services::CftcInterpretationResult& result,
+                                                         int horizon) {
+    CftcHorizonDimension out;
+    const auto* state = cftc_presentation_state(result.market_context, QStringLiteral("OI_EXPANSION"), horizon);
+    if (!state)
+        state = cftc_presentation_state(result.market_context, QStringLiteral("OI_CONTRACTION"), horizon);
+    if (state) {
+        out.status = CftcEvidenceStatus::Available;
+        out.sentence =
+            state->state_id == QLatin1String("OI_EXPANSION")
+                ? cftc_presentation_tr("Open Interest expanded over the last %1.").arg(cftc_horizon_phrase(horizon))
+                : cftc_presentation_tr("Open Interest contracted over the last %1.").arg(cftc_horizon_phrase(horizon));
+        if (const auto* metric = cftc_presentation_metric(state->metrics, QStringLiteral("oi_change"));
+            metric && metric->has_value) {
+            out.has_value = true;
+            out.value = metric->value;
+        }
+        return out;
+    }
+    if (const auto* record =
+            cftc_presentation_unavailable(result.unavailable, QStringLiteral("OI_CONTEXT"), QString(), horizon)) {
+        out.status = CftcEvidenceStatus::Unavailable;
+        out.unavailable_reason = cftc_unavailable_reason_wording(record->reason);
+        out.sentence = cftc_presentation_tr("Open Interest context over the last %1 is unavailable: %2.")
+                           .arg(cftc_horizon_phrase(horizon), out.unavailable_reason);
+        return out;
+    }
+    out.status = CftcEvidenceStatus::NoMaterialState;
+    out.sentence =
+        cftc_presentation_tr(
+            "Open Interest change over the last %1 was evaluated but did not cross the materiality threshold.")
+            .arg(cftc_horizon_phrase(horizon));
+    return out;
+}
+
+/// Price relationship for one selected horizon. Uses only that horizon's Batch
+/// 4A assessment; the pending / failed / evaluated-not-material distinction and
+/// the divergence semantics match the combined composer exactly.
+inline QStringList cftc_price_relationship_sentences_for_horizon(
+    const services::CftcInterpretationResult& result, const services::CftcParticipantInterpretation& participant,
+    int horizon, CftcPriceContextState price_state, const QString& price_unavailable_note = QString()) {
+    QStringList out;
+    const QString phrase = cftc_horizon_phrase(horizon);
+    if (price_state == CftcPriceContextState::Pending) {
+        out << cftc_presentation_tr(
+            "Price context is still loading; the positioning conclusions above do not depend on it.");
+        return out;
+    }
+    const auto* assessment = cftc_presentation_price(result, participant.participant_key, horizon);
+    if (!assessment) {
+        out << cftc_presentation_tr(
+                   "Price relationship over the last %1 is unavailable: no assessment was emitted for this horizon.")
+                   .arg(phrase);
+        return out;
+    }
+    if (!assessment->evaluated) {
+        const bool missing_context = assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
+        const QString reason = missing_context && !price_unavailable_note.trimmed().isEmpty()
+                                   ? price_unavailable_note
+                                   : cftc_unavailable_reason_wording(assessment->reason);
+        out << cftc_presentation_tr("Price relationship over the last %1 is unavailable: %2.").arg(phrase, reason);
+        return out;
+    }
+    if (!assessment->has_state) {
+        out << cftc_presentation_tr("Price and net positioning both changed over the last %1, but not both materially "
+                                    "enough to classify the relationship.")
+                   .arg(phrase);
+        return out;
+    }
+    if (assessment->state_id == QLatin1String("PRICE_POSITION_MOVING_TOGETHER_UP")) {
+        out << cftc_presentation_tr("Price and net positioning moved together upward over the last %1.").arg(phrase);
+    } else if (assessment->state_id == QLatin1String("PRICE_POSITION_MOVING_TOGETHER_DOWN")) {
+        out << cftc_presentation_tr("Price and net positioning moved together downward over the last %1.").arg(phrase);
+    } else {
+        out << cftc_divergence_sentences(*assessment, participant);
+        out << cftc_presentation_tr("This is a contemporaneous divergence only.");
+    }
+    return out;
+}
+
 // ── Evidence ────────────────────────────────────────────────────────────────
 
 /// Batch 4A `move_value`, `net_flow` and `oi_change` are normalized metrics:
@@ -754,6 +1033,81 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
 /// Open Interest change is a percent change. The rows below state those exact
 /// units; they are never relabeled as contract counts, and the price change
 /// stays in the market's quoted price units.
+inline bool cftc_evidence_has_flow_value(const services::CftcParticipantInterpretation& participant, int horizon,
+                                         const QString& positive_state_id, const QString& negative_state_id,
+                                         const QString& metric_key, double& value) {
+    const auto* state = cftc_presentation_state(participant.states, positive_state_id, horizon);
+    if (!state)
+        state = cftc_presentation_state(participant.states, negative_state_id, horizon);
+    const auto* metric = state ? cftc_presentation_metric(state->metrics, metric_key) : nullptr;
+    if (!metric || !metric->has_value)
+        return false;
+    value = metric->value;
+    return true;
+}
+
+inline QString cftc_percentile_value_text(const services::CftcParticipantInterpretation& participant) {
+    return QString::number(participant.percentile * 100.0, 'f', 1) + QLatin1Char('%') +
+           cftc_presentation_tr(" (n=%1)").arg(participant.percentile_reference_count);
+}
+
+inline QString cftc_percentile_unavailable_reason(const services::CftcInterpretationResult& result,
+                                                  const services::CftcParticipantInterpretation& participant) {
+    if (const auto* record = cftc_presentation_unavailable(
+            result.unavailable, QStringLiteral("HISTORICAL_RELATIVE_STATE"), participant.participant_key)) {
+        return cftc_unavailable_reason_wording(record->reason);
+    }
+    return cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+}
+
+/// Signed fixed-decimal text for a quoted-price move (or any non-contract
+/// measured quantity). `cftc_signed_net` is the contract-count formatter and
+/// must not be used for quoted price units.
+inline QString cftc_signed_decimal(double value, int decimals) {
+    const QString text = QString::number(value, 'f', decimals);
+    return value > 0.0 ? QStringLiteral("+") + text : text;
+}
+/// Evidence status for one gross leg at one horizon. The engine emits a
+/// GROSS_FLOW record per leg that could not produce a state: a record with the
+/// leg's own direction id means the rank reference was insufficient, and a
+/// record with an empty state id means that leg itself is missing. A leg with
+/// an emitted state/metric is always available. This never labels an evaluated
+/// leg with the other leg's missing-data reason; when no leg record exists but
+/// the horizon itself is unavailable, the horizon-level reason is used.
+inline CftcEvidenceStatus cftc_leg_evidence_status(const services::CftcParticipantInterpretation& participant,
+                                                   const QVector<services::CftcUnavailableRecord>& unavailable,
+                                                   int horizon, bool long_leg, bool has_metric, bool horizon_evaluated,
+                                                   const QString& horizon_reason, QString& unavailable_reason) {
+    unavailable_reason.clear();
+    if (has_metric)
+        return CftcEvidenceStatus::Available;
+    const QString prefix = long_leg ? QStringLiteral("LONG_") : QStringLiteral("SHORT_");
+    const auto matches = [&](const services::CftcUnavailableRecord& record, bool require_prefix) {
+        if (record.state_family != QLatin1String("GROSS_FLOW") || record.participant_key != participant.participant_key)
+            return false;
+        if (record.has_horizon && record.horizon_reports != horizon)
+            return false;
+        return require_prefix ? record.state_id.startsWith(prefix) : record.state_id.isEmpty();
+    };
+    for (const auto& record : unavailable) {
+        if (matches(record, true)) {
+            unavailable_reason = cftc_unavailable_reason_wording(record.reason);
+            return CftcEvidenceStatus::Unavailable;
+        }
+    }
+    for (const auto& record : unavailable) {
+        if (matches(record, false)) {
+            unavailable_reason = cftc_unavailable_reason_wording(record.reason);
+            return CftcEvidenceStatus::Unavailable;
+        }
+    }
+    if (!horizon_evaluated) {
+        unavailable_reason = horizon_reason;
+        return CftcEvidenceStatus::Unavailable;
+    }
+    return CftcEvidenceStatus::NoMaterialState;
+}
+
 inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpretationResult& result,
                                                      const services::CftcParticipantInterpretation& participant,
                                                      const CftcHorizonFlowSummary& h4,
@@ -770,6 +1124,27 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
         return value > 0.0 ? QStringLiteral("+") + text : text;
     };
     const QString no_material = cftc_presentation_tr("no material state at this horizon");
+
+    // A raw reading is only labeled "below threshold" when its materiality
+    // comparison actually happened. When the strictly trailing reference was
+    // too short, the row keeps the measurement and states that the comparison
+    // was not performed, using the leg's or the net shift's own engine reason.
+    const auto leg_materiality_reason = [&](int horizon, bool long_leg, const CftcHorizonFlowSummary& summary) {
+        QString reason;
+        cftc_leg_evidence_status(participant, result.unavailable, horizon, long_leg, false, summary.evaluated,
+                                 summary.unavailable_reason, reason);
+        if (reason.isEmpty())
+            reason = cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+        return reason;
+    };
+    const auto net_materiality_reason = [&](int horizon, const CftcHorizonFlowSummary& summary) {
+        if (const auto* record = cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_SHIFT"),
+                                                               participant.participant_key, horizon))
+            return cftc_unavailable_reason_wording(record->reason);
+        if (!summary.unavailable_reason.isEmpty())
+            return summary.unavailable_reason;
+        return cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+    };
 
     const bool has_report_date = result.report_date_available && result.report_date.isValid();
     add(cftc_presentation_tr("Report date"),
@@ -788,16 +1163,10 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
                                                          : services::CftcUnavailableReason::MissingOpenInterest)));
 
     const bool has_percentile = participant.historical_percentile_available;
-    QString percentile_reason = cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
-    if (const auto* record = cftc_presentation_unavailable(
-            result.unavailable, QStringLiteral("HISTORICAL_RELATIVE_STATE"), participant.participant_key)) {
-        percentile_reason = cftc_unavailable_reason_wording(record->reason);
-    }
-    add(cftc_presentation_tr("Historical percentile (156 prior reports)"),
+    add(cftc_interpretation_percentile_label(),
         has_percentile ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
-        has_percentile ? QString::number(participant.percentile * 100.0, 'f', 1) + QLatin1Char('%') +
-                             cftc_presentation_tr(" (n=%1)").arg(participant.percentile_reference_count)
-                       : unavailable_text(percentile_reason));
+        has_percentile ? cftc_percentile_value_text(participant)
+                       : unavailable_text(cftc_percentile_unavailable_reason(result, participant)));
 
     for (int horizon : {4, 13}) {
         const CftcHorizonFlowSummary& summary = horizon == 4 ? h4 : h13;
@@ -811,10 +1180,35 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
             long_state = cftc_presentation_state(participant.states, QStringLiteral("LONG_LIQUIDATION"), horizon);
         const services::CftcStateMetric* long_metric =
             long_state ? cftc_presentation_metric(long_state->metrics, QStringLiteral("move_value")) : nullptr;
-        const bool has_long_flow = long_metric && long_metric->has_value;
-        add(cftc_presentation_tr("Long leg flow (% of prior OI)"),
-            has_long_flow ? CftcEvidenceStatus::Available : summary_status,
-            has_long_flow ? QString::number(long_metric->value, 'f', 2) + QLatin1Char('%') : summary_text, horizon);
+        const bool long_state_fired = long_metric && long_metric->has_value;
+        const services::CftcHorizonFlowReading* reading = cftc_presentation_flow_reading(participant, horizon);
+        bool has_long_flow = false;
+        double long_flow = 0.0;
+        if (reading && reading->evaluated) {
+            has_long_flow = reading->has_long_flow;
+            long_flow = reading->long_flow;
+        }
+        if (!has_long_flow && long_state_fired) {
+            has_long_flow = true;
+            long_flow = long_metric->value;
+        }
+        QString long_reason;
+        const CftcEvidenceStatus long_flow_status =
+            cftc_leg_evidence_status(participant, result.unavailable, horizon, /*long_leg=*/true, has_long_flow,
+                                     summary.evaluated, summary.unavailable_reason, long_reason);
+        if (has_long_flow && !long_state_fired && reading && reading->evaluated && !reading->has_long_rank) {
+            add(cftc_presentation_tr("Long leg flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+                QString::number(long_flow, 'f', 2) + QLatin1Char('%') +
+                    cftc_materiality_unavailable_suffix(leg_materiality_reason(horizon, true, summary)),
+                horizon);
+        } else {
+            add(cftc_presentation_tr("Long leg flow (% of prior OI)"), long_flow_status,
+                has_long_flow ? QString::number(long_flow, 'f', 2) + QLatin1Char('%') +
+                                    (long_state_fired ? QString() : cftc_below_threshold_suffix())
+                              : (long_flow_status == CftcEvidenceStatus::Unavailable ? unavailable_text(long_reason)
+                                                                                     : summary_text),
+                horizon);
+        }
 
         const services::CftcInterpretationState* short_state =
             cftc_presentation_state(participant.states, QStringLiteral("SHORT_BUILDING"), horizon);
@@ -822,19 +1216,52 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
             short_state = cftc_presentation_state(participant.states, QStringLiteral("SHORT_COVERING"), horizon);
         const services::CftcStateMetric* short_metric =
             short_state ? cftc_presentation_metric(short_state->metrics, QStringLiteral("move_value")) : nullptr;
-        const bool has_short_flow = short_metric && short_metric->has_value;
-        add(cftc_presentation_tr("Short leg flow (% of prior OI)"),
-            has_short_flow ? CftcEvidenceStatus::Available : summary_status,
-            has_short_flow ? QString::number(short_metric->value, 'f', 2) + QLatin1Char('%') : summary_text, horizon);
+        const bool short_state_fired = short_metric && short_metric->has_value;
+        bool has_short_flow = false;
+        double short_flow = 0.0;
+        if (reading && reading->evaluated) {
+            has_short_flow = reading->has_short_flow;
+            short_flow = reading->short_flow;
+        }
+        if (!has_short_flow && short_state_fired) {
+            has_short_flow = true;
+            short_flow = short_metric->value;
+        }
+        QString short_reason;
+        const CftcEvidenceStatus short_flow_status =
+            cftc_leg_evidence_status(participant, result.unavailable, horizon, /*long_leg=*/false, has_short_flow,
+                                     summary.evaluated, summary.unavailable_reason, short_reason);
+        if (has_short_flow && !short_state_fired && reading && reading->evaluated && !reading->has_short_rank) {
+            add(cftc_presentation_tr("Short leg flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+                QString::number(short_flow, 'f', 2) + QLatin1Char('%') +
+                    cftc_materiality_unavailable_suffix(leg_materiality_reason(horizon, false, summary)),
+                horizon);
+        } else {
+            add(cftc_presentation_tr("Short leg flow (% of prior OI)"), short_flow_status,
+                has_short_flow ? QString::number(short_flow, 'f', 2) + QLatin1Char('%') +
+                                     (short_state_fired ? QString() : cftc_below_threshold_suffix())
+                               : (short_flow_status == CftcEvidenceStatus::Unavailable ? unavailable_text(short_reason)
+                                                                                       : summary_text),
+                horizon);
+        }
 
         const services::CftcInterpretationState* net_state =
             cftc_presentation_state(participant.states, QStringLiteral("NET_LONGWARD_SHIFT"), horizon);
         if (!net_state)
             net_state = cftc_presentation_state(participant.states, QStringLiteral("NET_SHORTWARD_SHIFT"), horizon);
+        const bool net_state_fired = net_state != nullptr;
         const services::CftcStateMetric* net_metric =
             net_state ? cftc_presentation_metric(net_state->metrics, QStringLiteral("net_flow")) : nullptr;
-        bool has_net_flow = net_metric && net_metric->has_value;
-        double net_flow = has_net_flow ? net_metric->value : 0.0;
+        bool has_net_flow = false;
+        double net_flow = 0.0;
+        if (reading && reading->evaluated) {
+            has_net_flow = reading->has_net_flow;
+            net_flow = reading->net_flow;
+        }
+        if (!has_net_flow && net_metric && net_metric->has_value) {
+            has_net_flow = true;
+            net_flow = net_metric->value;
+        }
         if (!has_net_flow) {
             const auto* assessment = cftc_presentation_price(result, participant.participant_key, horizon);
             if (assessment && assessment->has_positioning_move) {
@@ -842,20 +1269,54 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
                 net_flow = assessment->positioning_move;
             }
         }
-        add(cftc_presentation_tr("Net flow (% of prior OI)"),
-            has_net_flow ? CftcEvidenceStatus::Available : summary_status,
-            has_net_flow ? signed_percent(net_flow, 2) + QLatin1Char('%') : summary_text, horizon);
+        if (has_net_flow && !net_state_fired && reading && reading->evaluated && !reading->has_net_rank) {
+            add(cftc_presentation_tr("Net flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+                signed_percent(net_flow, 2) + QLatin1Char('%') +
+                    cftc_materiality_unavailable_suffix(net_materiality_reason(horizon, summary)),
+                horizon);
+        } else if (has_net_flow) {
+            add(cftc_presentation_tr("Net flow (% of prior OI)"),
+                net_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState,
+                signed_percent(net_flow, 2) + QLatin1Char('%') +
+                    (net_state_fired ? QString() : cftc_below_threshold_suffix()),
+                horizon);
+        } else {
+            add(cftc_presentation_tr("Net flow (% of prior OI)"), summary_status, summary_text, horizon);
+        }
 
-        const bool has_rank = net_state && net_state->has_move_rank;
-        add(cftc_presentation_tr("Move materiality rank (% of prior moves)"),
-            has_rank ? CftcEvidenceStatus::Available : summary_status,
-            has_rank ? QString::number(net_state->move_rank * 100.0, 'f', 1) + QLatin1Char('%') +
-                           cftc_presentation_tr(" (n=%1)").arg(net_state->move_rank_reference_count)
-                     : summary_text,
-            horizon);
+        bool has_rank = false;
+        double rank = 0.0;
+        int rank_reference = 0;
+        if (reading && reading->evaluated && reading->has_net_rank) {
+            has_rank = true;
+            rank = reading->net_rank;
+            rank_reference = reading->net_rank_reference_count;
+        } else if (net_state && net_state->has_move_rank) {
+            has_rank = true;
+            rank = net_state->move_rank;
+            rank_reference = net_state->move_rank_reference_count;
+        }
+        if (has_rank) {
+            add(cftc_presentation_tr("Move materiality rank (% of prior moves)"),
+                net_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState,
+                QString::number(rank * 100.0, 'f', 1) + QLatin1Char('%') +
+                    cftc_presentation_tr(" (n=%1)").arg(rank_reference) +
+                    (net_state_fired ? QString() : cftc_below_threshold_suffix()),
+                horizon);
+        } else if (reading && reading->evaluated && reading->has_net_flow && !reading->has_net_rank) {
+            // The raw net move exists but its strictly trailing reference was
+            // too short: the rank comparison was never performed, so the row
+            // states the concrete reason instead of a threshold outcome.
+            add(cftc_presentation_tr("Move materiality rank (% of prior moves)"), CftcEvidenceStatus::Unavailable,
+                unavailable_text(net_materiality_reason(horizon, summary)), horizon);
+        } else {
+            add(cftc_presentation_tr("Move materiality rank (% of prior moves)"), summary_status, summary_text,
+                horizon);
+        }
     }
 
     const services::CftcInterpretationState* oi_state = nullptr;
+    const services::CftcOpenInterestReading* oi_reading = nullptr;
     int oi_horizon = 4;
     for (int horizon : {4, 13, 1}) {
         oi_state = cftc_presentation_state(result.market_context, QStringLiteral("OI_EXPANSION"), horizon);
@@ -866,14 +1327,24 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
             break;
         }
     }
+    if (!oi_state) {
+        for (int horizon : {4, 13, 1}) {
+            const auto* reading = cftc_presentation_oi_reading(result, horizon);
+            if (reading && reading->evaluated && reading->has_oi_change) {
+                oi_reading = reading;
+                oi_horizon = horizon;
+                break;
+            }
+        }
+    }
     const services::CftcStateMetric* oi_change =
         oi_state ? cftc_presentation_metric(oi_state->metrics, QStringLiteral("oi_change")) : nullptr;
     const bool has_oi_change = oi_change && oi_change->has_value;
-    // The unavailable record is only consulted when no state was emitted; if a
-    // state exists its own horizon already describes the value, and a record at
-    // another horizon must not mislabel it.
+    // The unavailable record is only consulted when no state or measurement was
+    // emitted; if a state or reading exists its own horizon already describes
+    // the value, and a record at another horizon must not mislabel it.
     const services::CftcUnavailableRecord* oi_record = nullptr;
-    if (!has_oi_change) {
+    if (!has_oi_change && !oi_reading) {
         for (int horizon : {4, 13, 1}) {
             oi_record =
                 cftc_presentation_unavailable(result.unavailable, QStringLiteral("OI_CONTEXT"), QString(), horizon);
@@ -883,13 +1354,17 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
             }
         }
     }
-    add(cftc_presentation_tr("Open Interest change (% change)%1")
-            .arg(cftc_presentation_tr(" (%1)").arg(cftc_horizon_phrase(oi_horizon))),
-        has_oi_change ? CftcEvidenceStatus::Available
-                      : (oi_record ? CftcEvidenceStatus::Unavailable : CftcEvidenceStatus::NoMaterialState),
-        has_oi_change
-            ? signed_percent(oi_change->value, 2) + QLatin1Char('%')
-            : (oi_record ? unavailable_text(cftc_unavailable_reason_wording(oi_record->reason)) : no_material));
+    const QString oi_prefix = cftc_presentation_tr("Open Interest change (% change)%1")
+                                  .arg(cftc_presentation_tr(" (%1)").arg(cftc_horizon_phrase(oi_horizon)));
+    if (has_oi_change) {
+        add(oi_prefix, CftcEvidenceStatus::Available, signed_percent(oi_change->value, 2) + QLatin1Char('%'));
+    } else if (oi_reading) {
+        add(oi_prefix, CftcEvidenceStatus::NoMaterialState,
+            signed_percent(oi_reading->oi_change, 2) + QLatin1Char('%') + cftc_below_threshold_suffix());
+    } else {
+        add(oi_prefix, oi_record ? CftcEvidenceStatus::Unavailable : CftcEvidenceStatus::NoMaterialState,
+            oi_record ? unavailable_text(cftc_unavailable_reason_wording(oi_record->reason)) : no_material);
+    }
 
     const services::CftcPricePositionAssessment* price_assessment =
         cftc_presentation_price_primary(result, participant.participant_key);
@@ -905,7 +1380,7 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
         price_value = cftc_presentation_tr("pending — price context is loading");
     } else if (has_price_move) {
         price_status = CftcEvidenceStatus::Available;
-        price_value = cftc_signed_net(price_assessment->price_move);
+        price_value = cftc_signed_decimal(price_assessment->price_move, 2);
     } else {
         const bool missing_context =
             !price_assessment || price_assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
@@ -944,6 +1419,300 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
         relationship_value = unavailable_text(reason);
     }
     add(cftc_presentation_tr("Price / positioning relationship"), relationship_status, relationship_value);
+
+    const services::CftcInterpretationState* headline_state = nullptr;
+    for (const auto& state : participant.states) {
+        if (state.state_id == QLatin1String("SEVERE_LONG_EXTREME") ||
+            state.state_id == QLatin1String("SEVERE_SHORT_EXTREME") ||
+            state.state_id == QLatin1String("CROWDED_LONG") || state.state_id == QLatin1String("CROWDED_SHORT") ||
+            state.state_id == QLatin1String("HISTORICALLY_HIGH_NET") ||
+            state.state_id == QLatin1String("HISTORICALLY_LOW_NET")) {
+            headline_state = &state;
+            break;
+        }
+    }
+    if (!headline_state && !participant.states.isEmpty())
+        headline_state = &participant.states.first();
+    add(cftc_presentation_tr("Evidence basis"),
+        headline_state != nullptr ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
+        headline_state ? cftc_evidence_basis_wording(headline_state->threshold_basis)
+                       : cftc_presentation_tr("no state emitted"));
+    return out;
+}
+
+// ── Single-horizon evidence (Batch 4B correction pass) ──────────────────────
+
+/// The inspectable evidence for one selected interpretation horizon. Only the
+/// engine's emitted metrics are shown; a horizon that was evaluated without a
+/// material state is marked as evaluated and below the threshold, and missing
+/// data keeps its concrete reason. The strict 156-prior-report percentile row
+/// is horizon-independent by definition and stays present at every selection.
+inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::CftcInterpretationResult& result,
+                                                             const services::CftcParticipantInterpretation& participant,
+                                                             const CftcHorizonFlowSummary& summary, int horizon,
+                                                             CftcPriceContextState price_state,
+                                                             const QString& price_unavailable_note) {
+    QVector<CftcEvidenceItem> out;
+    auto add = [&out](const QString& label, CftcEvidenceStatus status, const QString& value, int item_horizon = 0) {
+        out.append({label, value, status, item_horizon});
+    };
+    auto unavailable_text = [](const QString& reason) { return cftc_presentation_tr("unavailable — %1").arg(reason); };
+    auto signed_percent = [](double value, int decimals) {
+        const QString text = QString::number(value, 'f', decimals);
+        return value > 0.0 ? QStringLiteral("+") + text : text;
+    };
+    const QString no_material = cftc_presentation_tr("evaluated, below the materiality threshold");
+    const CftcEvidenceStatus summary_status =
+        summary.evaluated ? CftcEvidenceStatus::NoMaterialState : CftcEvidenceStatus::Unavailable;
+    const QString summary_text = summary.evaluated ? no_material : unavailable_text(summary.unavailable_reason);
+
+    const bool has_report_date = result.report_date_available && result.report_date.isValid();
+    add(cftc_presentation_tr("Report date"),
+        has_report_date ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
+        has_report_date
+            ? result.report_date.toString(Qt::ISODate)
+            : unavailable_text(cftc_unavailable_reason_wording(services::CftcUnavailableReason::StaleCurrentReport)));
+    add(cftc_presentation_tr("Participant"), CftcEvidenceStatus::Available, cftc_participant_display_name(participant));
+
+    const bool has_net_pct = participant.has_net_pct_oi;
+    add(cftc_presentation_tr("Net %OI (% of current OI)"),
+        has_net_pct ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
+        has_net_pct ? QString::number(participant.net_pct_oi, 'f', 2) + QLatin1Char('%')
+                    : unavailable_text(cftc_unavailable_reason_wording(
+                          result.open_interest_available ? services::CftcUnavailableReason::MissingParticipantLeg
+                                                         : services::CftcUnavailableReason::MissingOpenInterest)));
+
+    const bool has_percentile = participant.historical_percentile_available;
+    add(cftc_interpretation_percentile_label(),
+        has_percentile ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
+        has_percentile ? cftc_percentile_value_text(participant)
+                       : unavailable_text(cftc_percentile_unavailable_reason(result, participant)));
+
+    const services::CftcHorizonFlowReading* flow_reading = cftc_presentation_flow_reading(participant, horizon);
+    const QString below_suffix = cftc_below_threshold_suffix();
+    double value = 0.0;
+    QString leg_reason;
+
+    // See cftc_build_evidence: a raw reading is only "below threshold" when the
+    // materiality comparison happened; a too-short reference says so explicitly.
+    const auto leg_materiality_reason = [&](bool long_leg) {
+        QString reason;
+        cftc_leg_evidence_status(participant, result.unavailable, horizon, long_leg, false, summary.evaluated,
+                                 summary.unavailable_reason, reason);
+        if (reason.isEmpty())
+            reason = cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+        return reason;
+    };
+    const auto net_materiality_reason = [&]() {
+        if (const auto* record = cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_SHIFT"),
+                                                               participant.participant_key, horizon))
+            return cftc_unavailable_reason_wording(record->reason);
+        if (!summary.unavailable_reason.isEmpty())
+            return summary.unavailable_reason;
+        return cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+    };
+
+    const bool long_state_fired =
+        cftc_presentation_state(participant.states, QStringLiteral("LONG_ACCUMULATION"), horizon) != nullptr ||
+        cftc_presentation_state(participant.states, QStringLiteral("LONG_LIQUIDATION"), horizon) != nullptr;
+    bool has_long_flow = false;
+    if (flow_reading && flow_reading->evaluated) {
+        has_long_flow = flow_reading->has_long_flow;
+        value = flow_reading->long_flow;
+    }
+    if (!has_long_flow)
+        has_long_flow =
+            cftc_evidence_has_flow_value(participant, horizon, QStringLiteral("LONG_ACCUMULATION"),
+                                         QStringLiteral("LONG_LIQUIDATION"), QStringLiteral("move_value"), value);
+    if (has_long_flow && !long_state_fired && flow_reading && flow_reading->evaluated && !flow_reading->has_long_rank) {
+        add(cftc_presentation_tr("Long leg flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+            QString::number(value, 'f', 2) + QLatin1Char('%') +
+                cftc_materiality_unavailable_suffix(leg_materiality_reason(true)),
+            horizon);
+    } else if (has_long_flow) {
+        const CftcEvidenceStatus status =
+            long_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        add(cftc_presentation_tr("Long leg flow (% of prior OI)"), status,
+            QString::number(value, 'f', 2) + QLatin1Char('%') + (long_state_fired ? QString() : below_suffix), horizon);
+    } else {
+        const CftcEvidenceStatus status =
+            cftc_leg_evidence_status(participant, result.unavailable, horizon, /*long_leg=*/true, false,
+                                     summary.evaluated, summary.unavailable_reason, leg_reason);
+        add(cftc_presentation_tr("Long leg flow (% of prior OI)"), status,
+            status == CftcEvidenceStatus::Unavailable ? unavailable_text(leg_reason) : no_material, horizon);
+    }
+
+    leg_reason.clear();
+    const bool short_state_fired =
+        cftc_presentation_state(participant.states, QStringLiteral("SHORT_BUILDING"), horizon) != nullptr ||
+        cftc_presentation_state(participant.states, QStringLiteral("SHORT_COVERING"), horizon) != nullptr;
+    bool has_short_flow = false;
+    if (flow_reading && flow_reading->evaluated) {
+        has_short_flow = flow_reading->has_short_flow;
+        value = flow_reading->short_flow;
+    }
+    if (!has_short_flow)
+        has_short_flow =
+            cftc_evidence_has_flow_value(participant, horizon, QStringLiteral("SHORT_BUILDING"),
+                                         QStringLiteral("SHORT_COVERING"), QStringLiteral("move_value"), value);
+    if (has_short_flow && !short_state_fired && flow_reading && flow_reading->evaluated &&
+        !flow_reading->has_short_rank) {
+        add(cftc_presentation_tr("Short leg flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+            QString::number(value, 'f', 2) + QLatin1Char('%') +
+                cftc_materiality_unavailable_suffix(leg_materiality_reason(false)),
+            horizon);
+    } else if (has_short_flow) {
+        const CftcEvidenceStatus status =
+            short_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        add(cftc_presentation_tr("Short leg flow (% of prior OI)"), status,
+            QString::number(value, 'f', 2) + QLatin1Char('%') + (short_state_fired ? QString() : below_suffix),
+            horizon);
+    } else {
+        const CftcEvidenceStatus status =
+            cftc_leg_evidence_status(participant, result.unavailable, horizon, /*long_leg=*/false, false,
+                                     summary.evaluated, summary.unavailable_reason, leg_reason);
+        add(cftc_presentation_tr("Short leg flow (% of prior OI)"), status,
+            status == CftcEvidenceStatus::Unavailable ? unavailable_text(leg_reason) : no_material, horizon);
+    }
+
+    const bool net_state_fired =
+        cftc_presentation_state(participant.states, QStringLiteral("NET_LONGWARD_SHIFT"), horizon) != nullptr ||
+        cftc_presentation_state(participant.states, QStringLiteral("NET_SHORTWARD_SHIFT"), horizon) != nullptr;
+    double net_flow = 0.0;
+    bool net_flow_available = false;
+    if (flow_reading && flow_reading->evaluated) {
+        net_flow_available = flow_reading->has_net_flow;
+        net_flow = flow_reading->net_flow;
+    }
+    if (!net_flow_available)
+        net_flow_available =
+            cftc_evidence_has_flow_value(participant, horizon, QStringLiteral("NET_LONGWARD_SHIFT"),
+                                         QStringLiteral("NET_SHORTWARD_SHIFT"), QStringLiteral("net_flow"), net_flow);
+    if (!net_flow_available) {
+        const auto* assessment = cftc_presentation_price(result, participant.participant_key, horizon);
+        if (assessment && assessment->has_positioning_move) {
+            net_flow_available = true;
+            net_flow = assessment->positioning_move;
+        }
+    }
+    if (net_flow_available && !net_state_fired && flow_reading && flow_reading->evaluated &&
+        !flow_reading->has_net_rank) {
+        add(cftc_presentation_tr("Net flow (% of prior OI)"), CftcEvidenceStatus::Unavailable,
+            signed_percent(net_flow, 2) + QLatin1Char('%') +
+                cftc_materiality_unavailable_suffix(net_materiality_reason()),
+            horizon);
+    } else if (net_flow_available) {
+        const CftcEvidenceStatus status =
+            net_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        add(cftc_presentation_tr("Net flow (% of prior OI)"), status,
+            signed_percent(net_flow, 2) + QLatin1Char('%') + (net_state_fired ? QString() : below_suffix), horizon);
+    } else {
+        add(cftc_presentation_tr("Net flow (% of prior OI)"), summary_status, summary_text, horizon);
+    }
+
+    const services::CftcInterpretationState* net_state =
+        cftc_presentation_state(participant.states, QStringLiteral("NET_LONGWARD_SHIFT"), horizon);
+    if (!net_state)
+        net_state = cftc_presentation_state(participant.states, QStringLiteral("NET_SHORTWARD_SHIFT"), horizon);
+    bool rank_available = false;
+    double rank = 0.0;
+    int rank_reference = 0;
+    if (flow_reading && flow_reading->evaluated && flow_reading->has_net_rank) {
+        rank_available = true;
+        rank = flow_reading->net_rank;
+        rank_reference = flow_reading->net_rank_reference_count;
+    } else if (net_state && net_state->has_move_rank) {
+        rank_available = true;
+        rank = net_state->move_rank;
+        rank_reference = net_state->move_rank_reference_count;
+    }
+    if (rank_available) {
+        const CftcEvidenceStatus status =
+            net_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        add(cftc_presentation_tr("Move materiality rank (% of prior moves)"), status,
+            QString::number(rank * 100.0, 'f', 1) + QLatin1Char('%') +
+                cftc_presentation_tr(" (n=%1)").arg(rank_reference) + (net_state_fired ? QString() : below_suffix),
+            horizon);
+    } else if (flow_reading && flow_reading->evaluated && flow_reading->has_net_flow && !flow_reading->has_net_rank) {
+        add(cftc_presentation_tr("Move materiality rank (% of prior moves)"), CftcEvidenceStatus::Unavailable,
+            unavailable_text(net_materiality_reason()), horizon);
+    } else {
+        add(cftc_presentation_tr("Move materiality rank (% of prior moves)"), summary_status, summary_text, horizon);
+    }
+
+    const CftcHorizonDimension oi = cftc_open_interest_dimension(result, horizon);
+    const services::CftcOpenInterestReading* oi_reading = cftc_presentation_oi_reading(result, horizon);
+    const bool oi_state_fired = oi.status == CftcEvidenceStatus::Available;
+    bool oi_value_available = false;
+    double oi_value = 0.0;
+    if (oi_reading && oi_reading->evaluated && oi_reading->has_oi_change) {
+        oi_value_available = true;
+        oi_value = oi_reading->oi_change;
+    } else if (oi.has_value) {
+        oi_value_available = true;
+        oi_value = oi.value;
+    }
+    if (oi_value_available) {
+        const CftcEvidenceStatus status =
+            oi_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        add(cftc_presentation_tr("Open Interest change (% change) (%1)").arg(cftc_horizon_phrase(horizon)), status,
+            signed_percent(oi_value, 2) + QLatin1Char('%') + (oi_state_fired ? QString() : below_suffix), horizon);
+    } else {
+        add(cftc_presentation_tr("Open Interest change (% change) (%1)").arg(cftc_horizon_phrase(horizon)), oi.status,
+            oi.status == CftcEvidenceStatus::Unavailable ? unavailable_text(oi.unavailable_reason) : no_material,
+            horizon);
+    }
+
+    const auto* price_assessment = cftc_presentation_price(result, participant.participant_key, horizon);
+    const QString price_suffix = cftc_presentation_tr(" (%1)").arg(cftc_horizon_phrase(horizon));
+    const bool has_price_move = price_assessment && price_assessment->has_price_move;
+    CftcEvidenceStatus price_status = CftcEvidenceStatus::Unavailable;
+    QString price_value;
+    if (price_state == CftcPriceContextState::Pending) {
+        price_status = CftcEvidenceStatus::Pending;
+        price_value = cftc_presentation_tr("pending — price context is loading");
+    } else if (has_price_move) {
+        price_status = CftcEvidenceStatus::Available;
+        price_value = cftc_signed_decimal(price_assessment->price_move, 2);
+    } else {
+        const bool missing_context =
+            !price_assessment || price_assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
+        const QString reason =
+            missing_context && !price_unavailable_note.trimmed().isEmpty()
+                ? price_unavailable_note
+                : (price_assessment
+                       ? cftc_unavailable_reason_wording(price_assessment->reason)
+                       : cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingPriceContext));
+        price_status = CftcEvidenceStatus::Unavailable;
+        price_value = unavailable_text(reason);
+    }
+    add(cftc_presentation_tr("Price change (quoted price units)%1").arg(price_suffix), price_status, price_value,
+        horizon);
+
+    CftcEvidenceStatus relationship_status = CftcEvidenceStatus::Unavailable;
+    QString relationship_value;
+    if (price_state == CftcPriceContextState::Pending) {
+        relationship_status = CftcEvidenceStatus::Pending;
+        relationship_value = cftc_presentation_tr("pending — price context is loading");
+    } else if (price_assessment && price_assessment->has_state) {
+        relationship_status = CftcEvidenceStatus::Available;
+        relationship_value = cftc_relationship_wording(price_assessment->state_id);
+    } else if (price_assessment && price_assessment->evaluated) {
+        relationship_status = CftcEvidenceStatus::NoMaterialState;
+        relationship_value = cftc_presentation_tr("evaluated, not material enough for a relationship state");
+    } else {
+        const bool missing_context =
+            !price_assessment || price_assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
+        const QString reason =
+            missing_context && !price_unavailable_note.trimmed().isEmpty()
+                ? price_unavailable_note
+                : (price_assessment
+                       ? cftc_unavailable_reason_wording(price_assessment->reason)
+                       : cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingPriceContext));
+        relationship_status = CftcEvidenceStatus::Unavailable;
+        relationship_value = unavailable_text(reason);
+    }
+    add(cftc_presentation_tr("Price / positioning relationship"), relationship_status, relationship_value, horizon);
 
     const services::CftcInterpretationState* headline_state = nullptr;
     for (const auto& state : participant.states) {
@@ -1019,7 +1788,7 @@ inline QString cftc_headline_trajectory(const CftcHorizonFlowSummary& h4, const 
     return cftc_presentation_tr("no material recent repositioning");
 }
 
-/// The deterministic Batch 4B composition entry point. Pure function of the
+/// The deterministic Batch 4B composition implementation. Pure function of the
 /// Batch 4A result plus the caller's price state: it reads emitted states and
 /// emitted metrics only and never recalculates them. `price_unavailable_note`
 /// is a caller-known concrete price failure (for example a provider error or
@@ -1027,11 +1796,14 @@ inline QString cftc_headline_trajectory(const CftcHorizonFlowSummary& h4, const 
 /// `missing_price_context`. The principal participant is selected from the
 /// finalized Batch 4A terminology contract, never from the generic speculative
 /// flag, and a missing principal participant is reported as unavailable rather
-/// than substituted.
-inline CftcInterpretationView
-cftc_compose_interpretation(const services::CftcInterpretationResult& result,
-                            CftcPriceContextState price_state = CftcPriceContextState::Unavailable,
-                            const QString& price_unavailable_note = QString()) {
+/// than substituted. `horizon_reports == 0` is the combined multi-horizon view;
+/// 1, 4 or 13 composes only that horizon's repositioning, gross-leg mechanism,
+/// Open Interest context, disagreement and price relationship, while the
+/// full-history level, persistence and 156-prior-report percentile stay
+/// identical at every selection.
+inline CftcInterpretationView cftc_compose_interpretation_impl(const services::CftcInterpretationResult& result,
+                                                               int horizon_reports, CftcPriceContextState price_state,
+                                                               const QString& price_unavailable_note) {
     CftcInterpretationView view;
     if (result.rule_set_version.isEmpty() || result.participants.isEmpty()) {
         view.headline = cftc_presentation_tr("COT interpretation unavailable");
@@ -1096,9 +1868,66 @@ cftc_compose_interpretation(const services::CftcInterpretationResult& result,
         net_unavailable_reason = cftc_unavailable_reason_wording(record->reason);
     }
 
+    view.horizon_reports = cftc_is_interpretation_horizon(horizon_reports) ? horizon_reports : 0;
+
+    if (view.horizon_reports == 0) {
+        view.headline = QStringLiteral("%1 — %2; %3")
+                            .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary),
+                                 cftc_headline_trajectory(h4, h13, h1, *primary));
+
+        view.sentences << cftc_level_sentence(*primary, net_unavailable_reason);
+        if (cftc_exposure_is_crowded(*primary)) {
+            const QString caveat = cftc_terminology_caveat_sentence(*primary);
+            if (!caveat.isEmpty())
+                view.sentences << caveat;
+        }
+        const QString extreme = cftc_extreme_sentence(*primary);
+        if (!extreme.isEmpty())
+            view.sentences << extreme;
+        view.sentences << cftc_repositioning_sentences(h4, h13, h1);
+
+        // Gross-leg mechanism: the leading net move's horizon, else the horizon
+        // with gross states. The mechanism ids come from the Batch 4A state itself.
+        const CftcHorizonFlowSummary& leading =
+            h4.material_net_move || h4.long_accumulation || h4.long_liquidation || h4.short_building ||
+                    h4.short_covering
+                ? h4
+                : (h13.material_net_move || h13.long_accumulation || h13.long_liquidation || h13.short_building ||
+                           h13.short_covering
+                       ? h13
+                       : h1);
+        const services::CftcInterpretationState* leading_net_state =
+            cftc_presentation_state(primary->states, QStringLiteral("NET_LONGWARD_SHIFT"), leading.horizon);
+        if (!leading_net_state)
+            leading_net_state =
+                cftc_presentation_state(primary->states, QStringLiteral("NET_SHORTWARD_SHIFT"), leading.horizon);
+        const QString gross = cftc_gross_mechanism_sentence(leading_net_state, leading);
+        if (!gross.isEmpty())
+            view.sentences << gross;
+
+        const QString oi = cftc_open_interest_sentence(result);
+        if (!oi.isEmpty())
+            view.sentences << oi;
+        const QString disagreement = cftc_net_share_disagreement_sentence(*primary);
+        if (!disagreement.isEmpty())
+            view.sentences << disagreement;
+
+        view.sentences << cftc_price_relationship_sentences(result, *primary, price_state, price_unavailable_note);
+
+        view.evidence = cftc_build_evidence(result, *primary, h4, h13, price_state, price_unavailable_note);
+        return view;
+    }
+
+    // Single-horizon view: the level, caveat, persistence and strict percentile
+    // conclusions above remain full-history; everything horizon-scoped comes
+    // from the selected horizon's emitted states only.
+    const int horizon = view.horizon_reports;
+    const CftcHorizonFlowSummary& summary = horizon == 1 ? h1 : (horizon == 4 ? h4 : h13);
+    QString trajectory = cftc_headline_trajectory_for_horizon(*primary, summary);
+    if (!cftc_has_extreme_transition_state(*primary) && summary.evaluated)
+        trajectory = cftc_presentation_tr("%1 over the last %2").arg(trajectory, cftc_horizon_phrase(horizon));
     view.headline = QStringLiteral("%1 — %2; %3")
-                        .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary),
-                             cftc_headline_trajectory(h4, h13, h1, *primary));
+                        .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary), trajectory);
 
     view.sentences << cftc_level_sentence(*primary, net_unavailable_reason);
     if (cftc_exposure_is_crowded(*primary)) {
@@ -1109,37 +1938,52 @@ cftc_compose_interpretation(const services::CftcInterpretationResult& result,
     const QString extreme = cftc_extreme_sentence(*primary);
     if (!extreme.isEmpty())
         view.sentences << extreme;
-    view.sentences << cftc_repositioning_sentences(h4, h13, h1);
+    view.sentences << cftc_repositioning_sentence_for_horizon(summary, horizon);
+    if (horizon == 1)
+        view.sentences << cftc_presentation_tr(
+            "The one-report reading is a single weekly observation; the historical level and percentile above are "
+            "computed from the full validated history.");
 
-    // Gross-leg mechanism: the leading net move's horizon, else the horizon
-    // with gross states. The mechanism ids come from the Batch 4A state itself.
-    const CftcHorizonFlowSummary& leading =
-        h4.material_net_move || h4.long_accumulation || h4.long_liquidation || h4.short_building || h4.short_covering
-            ? h4
-            : (h13.material_net_move || h13.long_accumulation || h13.long_liquidation || h13.short_building ||
-                       h13.short_covering
-                   ? h13
-                   : h1);
-    const services::CftcInterpretationState* leading_net_state =
-        cftc_presentation_state(primary->states, QStringLiteral("NET_LONGWARD_SHIFT"), leading.horizon);
-    if (!leading_net_state)
-        leading_net_state =
-            cftc_presentation_state(primary->states, QStringLiteral("NET_SHORTWARD_SHIFT"), leading.horizon);
-    const QString gross = cftc_gross_mechanism_sentence(leading_net_state, leading);
+    const services::CftcInterpretationState* net_state =
+        cftc_presentation_state(primary->states, QStringLiteral("NET_LONGWARD_SHIFT"), horizon);
+    if (!net_state)
+        net_state = cftc_presentation_state(primary->states, QStringLiteral("NET_SHORTWARD_SHIFT"), horizon);
+    const QString gross = cftc_gross_mechanism_sentence(net_state, summary);
     if (!gross.isEmpty())
         view.sentences << gross;
 
-    const QString oi = cftc_open_interest_sentence(result);
-    if (!oi.isEmpty())
-        view.sentences << oi;
-    const QString disagreement = cftc_net_share_disagreement_sentence(*primary);
+    view.sentences << cftc_open_interest_dimension(result, horizon).sentence;
+    const QString disagreement = cftc_net_share_disagreement_sentence_for_horizon(*primary, horizon);
     if (!disagreement.isEmpty())
         view.sentences << disagreement;
 
-    view.sentences << cftc_price_relationship_sentences(result, *primary, price_state, price_unavailable_note);
+    view.sentences << cftc_price_relationship_sentences_for_horizon(result, *primary, horizon, price_state,
+                                                                    price_unavailable_note);
 
-    view.evidence = cftc_build_evidence(result, *primary, h4, h13, price_state, price_unavailable_note);
+    view.evidence =
+        cftc_build_horizon_evidence(result, *primary, summary, horizon, price_state, price_unavailable_note);
     return view;
+}
+
+/// The deterministic Batch 4B composition entry point. Returns the combined
+/// multi-horizon view.
+inline CftcInterpretationView
+cftc_compose_interpretation(const services::CftcInterpretationResult& result,
+                            CftcPriceContextState price_state = CftcPriceContextState::Unavailable,
+                            const QString& price_unavailable_note = QString()) {
+    return cftc_compose_interpretation_impl(result, 0, price_state, price_unavailable_note);
+}
+
+/// The single-horizon entry point used by the CFTC Analysis page: the user's
+/// 1W | 4W | 13W selection composes that horizon's interpretation. An
+/// unsupported horizon falls back to the combined view rather than inventing a
+/// scope.
+inline CftcInterpretationView
+cftc_compose_horizon_interpretation(const services::CftcInterpretationResult& result, int horizon_reports,
+                                    CftcPriceContextState price_state = CftcPriceContextState::Unavailable,
+                                    const QString& price_unavailable_note = QString()) {
+    const int horizon = cftc_is_interpretation_horizon(horizon_reports) ? horizon_reports : 0;
+    return cftc_compose_interpretation_impl(result, horizon, price_state, price_unavailable_note);
 }
 
 // ── Panel-facing input construction ─────────────────────────────────────────

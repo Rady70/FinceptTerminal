@@ -107,7 +107,7 @@ void CftcHeatmap::clear() {
 
 void CftcHeatmap::refresh_theme() {
     const auto label_style =
-        QString("color:%1; font-size:9px; background:transparent;").arg(ui::colors::TEXT_TERTIARY());
+        QString("color:%1; font-size:9px; background:transparent;").arg(ui::colors::TEXT_SECONDARY());
     if (scale_low_lbl_)
         scale_low_lbl_->setStyleSheet(label_style);
     if (scale_high_lbl_)
@@ -199,7 +199,7 @@ void CftcHeatmap::rebuild() {
         return;
 
     const auto header_style =
-        QString("color:%1; font-size:9px; font-weight:700; background:transparent;").arg(ui::colors::TEXT_TERTIARY());
+        QString("color:%1; font-size:9px; font-weight:700; background:transparent;").arg(ui::colors::TEXT_SECONDARY());
     const auto row_style =
         QString("color:%1; font-size:10px; background:transparent;").arg(ui::colors::TEXT_SECONDARY());
 

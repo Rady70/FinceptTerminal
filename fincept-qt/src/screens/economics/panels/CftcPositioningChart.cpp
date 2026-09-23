@@ -70,7 +70,7 @@ class CftcPositioningChart::Canvas : public QChartView {
             previous->deleteLater();
 
         crosshair_ = new QGraphicsLineItem(chart);
-        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1, Qt::DashLine));
+        crosshair_->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1, Qt::DashLine));
         crosshair_->setVisible(false);
         crosshair_->setZValue(10);
     }
@@ -304,6 +304,7 @@ void CftcPositioningChart::rebuild() {
         canvas_->set_hover_data({}, {}, false);
         canvas_->install_chart(new QChart);
         ui::ChartFactory::apply_theme(canvas_->chart());
+        setAccessibleName(tr("Historical positioning chart, no observations for the selected range"));
         return;
     }
 
@@ -415,7 +416,7 @@ void CftcPositioningChart::rebuild() {
             if (segment.size() < 2)
                 continue;
             auto* line = new QLineSeries;
-            line->setPen(QPen(QColor(ui::colors::TEXT_TERTIARY()), 1.2, Qt::DashLine));
+            line->setPen(QPen(QColor(ui::colors::TEXT_SECONDARY()), 1.2, Qt::DashLine));
             for (const auto& point : segment)
                 line->append(point_x(point), point.value);
             chart->addSeries(line);
@@ -441,6 +442,16 @@ void CftcPositioningChart::rebuild() {
     axis_x->setFormat(axis_date_format(static_cast<qint64>((last_x - first_x) / 86400000.0)));
     axis_x->setRange(QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(first_x), QTimeZone::LocalTime),
                      QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(last_x), QTimeZone::LocalTime));
+    // The plotted report span is part of the chart's accessible description, so
+    // assistive technology (and the UI verification harness) can tell which
+    // window is actually on screen without reading painted axis labels.
+    setAccessibleName(tr("Historical positioning chart, %1 to %2")
+                          .arg(QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(first_x), QTimeZone::LocalTime)
+                                   .date()
+                                   .toString(Qt::ISODate),
+                               QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(last_x), QTimeZone::LocalTime)
+                                   .date()
+                                   .toString(Qt::ISODate)));
 
     QVector<CftcChartSeries> hover_series;
     for (const auto& series : std::as_const(series_)) {
