@@ -392,6 +392,26 @@ inline QString cftc_materiality_unavailable_suffix(const QString& reason) {
     return cftc_presentation_tr(" (materiality unavailable — %1)").arg(reason);
 }
 
+/// Unavailable reason for the secondary NET Δ cell. This is CFTC positioning
+/// evidence only: the participant's NET_SHIFT record, then its horizon reading,
+/// then nothing. A price assessment reason (which gives a missing price context
+/// precedence) must never label a positioning cell.
+inline QString cftc_net_delta_unavailable_reason(const services::CftcInterpretationResult& result,
+                                                 const QString& participant_key, int horizon) {
+    if (const auto* record =
+            cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_SHIFT"), participant_key, horizon))
+        return cftc_unavailable_reason_wording(record->reason);
+    for (const auto& participant : result.participants) {
+        if (participant.participant_key != participant_key)
+            continue;
+        for (const auto& reading : participant.flow_readings) {
+            if (reading.horizon_reports == horizon && !reading.evaluated)
+                return cftc_unavailable_reason_wording(reading.reason);
+        }
+    }
+    return QString();
+}
+
 // ── Indexed horizons ────────────────────────────────────────────────────────
 
 /// Read-only summary of the states Batch 4A already emitted for one participant

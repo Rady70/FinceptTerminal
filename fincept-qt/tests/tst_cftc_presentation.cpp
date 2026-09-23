@@ -293,6 +293,7 @@ class TstCftcPresentation : public QObject {
     void price_evidence_keeps_quoted_units_precision();
     void horizon_evidence_uses_emitted_readings();
     void raw_reading_without_materiality_reference_is_not_below_threshold();
+    void net_delta_reason_never_comes_from_price();
 };
 
 void TstCftcPresentation::state_ids_map_to_predefined_wording() {
@@ -1661,6 +1662,36 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
     QVERIFY(combined_net != nullptr);
     QCOMPARE(combined_net->status, CftcEvidenceStatus::Unavailable);
     QCOMPARE(combined_net->value, QStringLiteral("+2.01% (materiality unavailable — ") + reason + QLatin1Char(')'));
+}
+
+void TstCftcPresentation::net_delta_reason_never_comes_from_price() {
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    const QString key = expected_principal_key(CftcFamily::Legacy);
+    // The CFTC net measurement is unavailable because the report sequence is
+    // broken while the price assessment also reports a missing price context:
+    // the positioning cell reason must come from the CFTC path.
+    add_unavailable(result, QStringLiteral("NET_SHIFT"), key, CftcUnavailableReason::BrokenReportSequence, 4);
+    CftcPricePositionAssessment assessment;
+    assessment.participant_key = key;
+    assessment.horizon_reports = 4;
+    assessment.reason = CftcUnavailableReason::MissingPriceContext;
+    result.price_context.append(assessment);
+    QCOMPARE(cftc_net_delta_unavailable_reason(result, key, 4), QStringLiteral("the weekly report sequence is broken"));
+    QVERIFY(!cftc_net_delta_unavailable_reason(result, key, 4).contains(QStringLiteral("price")));
+
+    // Without a NET_SHIFT record the participant's own horizon reading carries
+    // the reason; with no CFTC record at all the helper stays empty instead of
+    // borrowing the price wording.
+    CftcInterpretationResult fallback = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(fallback);
+    QCOMPARE(cftc_net_delta_unavailable_reason(fallback, key, 13), QString());
+    CftcHorizonFlowReading reading;
+    reading.horizon_reports = 13;
+    reading.evaluated = false;
+    reading.reason = CftcUnavailableReason::BrokenReportSequence;
+    primary->flow_readings << reading;
+    QCOMPARE(cftc_net_delta_unavailable_reason(fallback, key, 13),
+             QStringLiteral("the weekly report sequence is broken"));
 }
 
 QTEST_GUILESS_MAIN(TstCftcPresentation)

@@ -2117,23 +2117,11 @@ void CftcPanel::update_divergence() {
         return std::nullopt;
     };
 
-    // The NET Δ unavailable reason is a CFTC-only statement: the net shift's
-    // own record or the participant's horizon reading. The price assessment's
-    // reason (which gives a missing price context precedence) must never label
-    // a positioning cell.
+    // The NET Δ unavailable reason is a CFTC-only statement (NET_SHIFT record
+    // or the participant's horizon reading); the price assessment's reason
+    // never labels a positioning cell.
     auto cftc_net_unavailable_reason = [this, &primary_state_key](int horizon) -> QString {
-        if (const auto* record = cftc_presentation_unavailable(interpretation_.unavailable, QStringLiteral("NET_SHIFT"),
-                                                               primary_state_key, horizon))
-            return cftc_unavailable_reason_wording(record->reason);
-        for (const auto& participant : interpretation_.participants) {
-            if (participant.participant_key != primary_state_key)
-                continue;
-            for (const auto& reading : participant.flow_readings) {
-                if (reading.horizon_reports == horizon && !reading.evaluated)
-                    return cftc_unavailable_reason_wording(reading.reason);
-            }
-        }
-        return QString();
+        return cftc_net_delta_unavailable_reason(interpretation_, primary_state_key, horizon);
     };
 
     const auto unavailable_cell = [this](int row, int column, const QString& reason) {
