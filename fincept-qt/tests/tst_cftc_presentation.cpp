@@ -292,6 +292,7 @@ class TstCftcPresentation : public QObject {
     void non_material_open_interest_evidence_is_explicit();
     void price_evidence_keeps_quoted_units_precision();
     void horizon_evidence_uses_emitted_readings();
+    void raw_reading_without_materiality_reference_is_not_below_threshold();
 };
 
 void TstCftcPresentation::state_ids_map_to_predefined_wording() {
@@ -1545,6 +1546,10 @@ void TstCftcPresentation::horizon_evidence_uses_emitted_readings() {
     reading.short_flow = -1.7211;
     reading.has_net_flow = true;
     reading.net_flow = 2.0059;
+    reading.has_long_rank = true;
+    reading.long_rank = 0.25;
+    reading.has_short_rank = true;
+    reading.short_rank = 0.25;
     reading.has_net_rank = true;
     reading.net_rank = 0.25;
     reading.net_rank_reference_count = 156;
@@ -1589,6 +1594,73 @@ void TstCftcPresentation::horizon_evidence_uses_emitted_readings() {
     QVERIFY(oi_row != nullptr);
     QCOMPARE(oi_row->status, CftcEvidenceStatus::NoMaterialState);
     QCOMPARE(oi_row->value, QStringLiteral("+0.90% (below threshold)"));
+}
+
+void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below_threshold() {
+    // The raw 4R flows exist but the strictly trailing reference is too short,
+    // so no materiality comparison was performed. The rows keep the values and
+    // must state that the materiality rank is unavailable; they must not claim
+    // the move was compared with the threshold and found below it.
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+
+    CftcHorizonFlowReading reading;
+    reading.horizon_reports = 4;
+    reading.evaluated = true;
+    reading.has_long_flow = true;
+    reading.long_flow = 0.2848;
+    reading.has_short_flow = true;
+    reading.short_flow = -1.7211;
+    reading.has_net_flow = true;
+    reading.net_flow = 2.0059;
+    reading.has_long_rank = false;
+    reading.has_short_rank = false;
+    reading.has_net_rank = false;
+    primary->flow_readings << reading;
+    add_unavailable(result, QStringLiteral("GROSS_FLOW"), primary->participant_key,
+                    CftcUnavailableReason::InsufficientHistory, 4, QStringLiteral("LONG_ACCUMULATION"));
+    add_unavailable(result, QStringLiteral("GROSS_FLOW"), primary->participant_key,
+                    CftcUnavailableReason::InsufficientHistory, 4, QStringLiteral("SHORT_COVERING"));
+    add_unavailable(result, QStringLiteral("NET_SHIFT"), primary->participant_key,
+                    CftcUnavailableReason::InsufficientHistory, 4);
+
+    const QString reason = QStringLiteral("fewer than 156 prior reports are available for this reference");
+    auto row = [](const CftcInterpretationView& view, const QString& label) -> const CftcEvidenceItem* {
+        for (const auto& item : view.evidence) {
+            if (item.label == label)
+                return &item;
+        }
+        return nullptr;
+    };
+
+    const CftcInterpretationView horizon_view = cftc_compose_horizon_interpretation(result, 4);
+    const CftcEvidenceItem* long_row = row(horizon_view, QStringLiteral("Long leg flow (% of prior OI)"));
+    QVERIFY(long_row != nullptr);
+    QCOMPARE(long_row->status, CftcEvidenceStatus::Unavailable);
+    QCOMPARE(long_row->value, QStringLiteral("0.28% (materiality unavailable — ") + reason + QLatin1Char(')'));
+    QVERIFY(!long_row->value.contains(QStringLiteral("below threshold")));
+    const CftcEvidenceItem* short_row = row(horizon_view, QStringLiteral("Short leg flow (% of prior OI)"));
+    QVERIFY(short_row != nullptr);
+    QCOMPARE(short_row->status, CftcEvidenceStatus::Unavailable);
+    QCOMPARE(short_row->value, QStringLiteral("-1.72% (materiality unavailable — ") + reason + QLatin1Char(')'));
+    const CftcEvidenceItem* net_row = row(horizon_view, QStringLiteral("Net flow (% of prior OI)"));
+    QVERIFY(net_row != nullptr);
+    QCOMPARE(net_row->status, CftcEvidenceStatus::Unavailable);
+    QCOMPARE(net_row->value, QStringLiteral("+2.01% (materiality unavailable — ") + reason + QLatin1Char(')'));
+    QVERIFY(!net_row->value.contains(QStringLiteral("below threshold")));
+    const CftcEvidenceItem* rank_row = row(horizon_view, QStringLiteral("Move materiality rank (% of prior moves)"));
+    QVERIFY(rank_row != nullptr);
+    QCOMPARE(rank_row->status, CftcEvidenceStatus::Unavailable);
+    QVERIFY(rank_row->value.contains(reason));
+    QVERIFY(!rank_row->value.contains(QStringLiteral("no material state")));
+
+    // The combined contract view carries the same truthful wording.
+    const CftcInterpretationView combined = cftc_compose_interpretation(result);
+    const CftcEvidenceItem* combined_net = row(combined, QStringLiteral("Net flow (% of prior OI)"));
+    QVERIFY(combined_net != nullptr);
+    QCOMPARE(combined_net->status, CftcEvidenceStatus::Unavailable);
+    QCOMPARE(combined_net->value, QStringLiteral("+2.01% (materiality unavailable — ") + reason + QLatin1Char(')'));
 }
 
 QTEST_GUILESS_MAIN(TstCftcPresentation)

@@ -304,6 +304,7 @@ void CftcPositioningChart::rebuild() {
         canvas_->set_hover_data({}, {}, false);
         canvas_->install_chart(new QChart);
         ui::ChartFactory::apply_theme(canvas_->chart());
+        setAccessibleName(tr("Historical positioning chart, no observations for the selected range"));
         return;
     }
 
@@ -441,6 +442,16 @@ void CftcPositioningChart::rebuild() {
     axis_x->setFormat(axis_date_format(static_cast<qint64>((last_x - first_x) / 86400000.0)));
     axis_x->setRange(QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(first_x), QTimeZone::LocalTime),
                      QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(last_x), QTimeZone::LocalTime));
+    // The plotted report span is part of the chart's accessible description, so
+    // assistive technology (and the UI verification harness) can tell which
+    // window is actually on screen without reading painted axis labels.
+    setAccessibleName(tr("Historical positioning chart, %1 to %2")
+                          .arg(QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(first_x), QTimeZone::LocalTime)
+                                   .date()
+                                   .toString(Qt::ISODate),
+                               QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(last_x), QTimeZone::LocalTime)
+                                   .date()
+                                   .toString(Qt::ISODate)));
 
     QVector<CftcChartSeries> hover_series;
     for (const auto& series : std::as_const(series_)) {

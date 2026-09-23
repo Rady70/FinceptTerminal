@@ -2117,6 +2117,25 @@ void CftcPanel::update_divergence() {
         return std::nullopt;
     };
 
+    // The NET Δ unavailable reason is a CFTC-only statement: the net shift's
+    // own record or the participant's horizon reading. The price assessment's
+    // reason (which gives a missing price context precedence) must never label
+    // a positioning cell.
+    auto cftc_net_unavailable_reason = [this, &primary_state_key](int horizon) -> QString {
+        if (const auto* record = cftc_presentation_unavailable(interpretation_.unavailable, QStringLiteral("NET_SHIFT"),
+                                                               primary_state_key, horizon))
+            return cftc_unavailable_reason_wording(record->reason);
+        for (const auto& participant : interpretation_.participants) {
+            if (participant.participant_key != primary_state_key)
+                continue;
+            for (const auto& reading : participant.flow_readings) {
+                if (reading.horizon_reports == horizon && !reading.evaluated)
+                    return cftc_unavailable_reason_wording(reading.reason);
+            }
+        }
+        return QString();
+    };
+
     const auto unavailable_cell = [this](int row, int column, const QString& reason) {
         set_plain_cell(divergence_table_, row, column, tr("unavailable — %1").arg(reason));
         if (auto* item = divergence_table_->item(row, column))
@@ -2167,15 +2186,27 @@ void CftcPanel::update_divergence() {
         if (!net_move)
             net_move = state_net_flow(horizon);
         if (net_move) {
-            set_signed_cell(divergence_table_, row, 2, net_move);
-        } else if (assessment && assessment->evaluated) {
-            set_plain_cell(divergence_table_, row, 2, tr("not emitted for this horizon"));
+            // The NET Δ column is a normalized percentage, not a contract
+            // count: it keeps two decimals (a negative sub-percent move must
+            // never become "0") and the signed-decimal formatter.
+            set_plain_cell(divergence_table_, row, 2, signed_decimal(*net_move, 2));
             if (auto* item = divergence_table_->item(row, 2))
-                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+                item->setForeground(QColor(*net_move > 0.0   ? ui::colors::POSITIVE()
+                                           : *net_move < 0.0 ? ui::colors::NEGATIVE()
+                                                             : ui::colors::TEXT_PRIMARY()));
         } else {
-            const QString reason = assessment ? cftc_unavailable_reason_wording(assessment->reason)
-                                              : tr("the positioning horizon is unavailable");
-            unavailable_cell(row, 2, reason);
+            const QString cftc_reason = cftc_net_unavailable_reason(horizon);
+            if (!cftc_reason.isEmpty()) {
+                unavailable_cell(row, 2, cftc_reason);
+            } else if (assessment && assessment->evaluated) {
+                set_plain_cell(divergence_table_, row, 2, tr("not emitted for this horizon"));
+                if (auto* item = divergence_table_->item(row, 2))
+                    item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+            } else if (assessment && assessment->reason != services::CftcUnavailableReason::MissingPriceContext) {
+                unavailable_cell(row, 2, cftc_unavailable_reason_wording(assessment->reason));
+            } else {
+                unavailable_cell(row, 2, tr("the CFTC net measurement is unavailable for this horizon"));
+            }
         }
 
         // Neutral evaluation status only: the relationship conclusion itself
