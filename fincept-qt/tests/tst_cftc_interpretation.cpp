@@ -445,6 +445,10 @@ class TstCftcInterpretation : public QObject {
     void unusable_price_context_stays_unavailable();
 
     // Semantics, truthfulness and determinism
+    void raw_flow_readings_cover_every_horizon();
+    void below_threshold_flow_reading_keeps_its_value();
+    void positioning_measurement_survives_missing_price();
+    void open_interest_readings_are_emitted();
     void participant_terminology_maps_each_family();
     void terminology_caveats_are_exposed();
     void legacy_disaggregated_tff_applicability();
@@ -2378,6 +2382,102 @@ void TstCftcInterpretation::empty_history_is_unavailable() {
         find_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"), QString());
     QVERIFY(record);
     QCOMPARE(record->reason, CftcUnavailableReason::NoObservations);
+}
+
+void TstCftcInterpretation::raw_flow_readings_cover_every_horizon() {
+    QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 540.0, 545.0};
+    QVector<double> shorts(10, 400.0);
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(legacy_series(longs, shorts)));
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QCOMPARE(participant->flow_readings.size(), 3);
+    for (int horizon : {1, 4, 13}) {
+        const CftcHorizonFlowReading* reading = nullptr;
+        for (const auto& candidate : participant->flow_readings) {
+            if (candidate.horizon_reports == horizon)
+                reading = &candidate;
+        }
+        QVERIFY2(reading != nullptr, qPrintable(QStringLiteral("missing reading at %1").arg(horizon)));
+        if (horizon == 13) {
+            QVERIFY(!reading->evaluated);
+            QCOMPARE(reading->reason, CftcUnavailableReason::InsufficientHistory);
+        } else {
+            QVERIFY(reading->evaluated);
+            QVERIFY(reading->has_long_flow);
+            QVERIFY(reading->has_short_flow);
+            QVERIFY(reading->has_net_flow);
+            QVERIFY(reading->has_net_rank);
+            QVERIFY(reading->net_rank_reference_count > 0);
+        }
+    }
+}
+
+void TstCftcInterpretation::below_threshold_flow_reading_keeps_its_value() {
+    // Prior moves are large and varied, so the tiny last change ranks low and
+    // no material state fires, while the measurement itself stays emitted.
+    const QVector<double> longs = {500.0, 550.0, 610.0, 680.0, 760.0, 850.0, 950.0, 1060.0, 1180.0, 1185.0};
+    QVector<double> shorts(10, 400.0);
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(legacy_series(longs, shorts)));
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    const CftcHorizonFlowReading* one = nullptr;
+    for (const auto& reading : participant->flow_readings) {
+        if (reading.horizon_reports == 1)
+            one = &reading;
+    }
+    QVERIFY(one != nullptr);
+    QVERIFY(one->evaluated);
+    QVERIFY(one->has_net_flow);
+    QVERIFY(one->net_flow != 0.0);
+    QVERIFY(one->has_net_rank);
+    QVERIFY(one->net_rank < 0.75);
+    // No material state fired, yet the measurement is still emitted.
+    QVERIFY(!find_state(participant->states, QStringLiteral("NET_LONGWARD_SHIFT"), 1));
+    QVERIFY(!find_state(participant->states, QStringLiteral("NET_SHORTWARD_SHIFT"), 1));
+}
+
+void TstCftcInterpretation::positioning_measurement_survives_missing_price() {
+    QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
+    QVector<double> shorts(9, 400.0);
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(legacy_series(longs, shorts)));
+    QVERIFY(!result.price_requested);
+    const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 4);
+    QVERIFY(assessment);
+    QVERIFY2(!assessment->evaluated, "missing price context is unavailable, not flat");
+    QCOMPARE(assessment->reason, CftcUnavailableReason::MissingPriceContext);
+    // The CFTC-only positioning measurement is still emitted: a missing price
+    // must not suppress it from the presentation.
+    QVERIFY(assessment->has_positioning_move);
+    QVERIFY(assessment->has_positioning_move_rank);
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    const CftcHorizonFlowReading* reading = nullptr;
+    for (const auto& candidate : participant->flow_readings) {
+        if (candidate.horizon_reports == 4)
+            reading = &candidate;
+    }
+    QVERIFY(reading != nullptr);
+    QVERIFY(reading->has_net_flow);
+    QCOMPARE(assessment->positioning_move, reading->net_flow);
+}
+
+void TstCftcInterpretation::open_interest_readings_are_emitted() {
+    QVector<double> longs(10, 500.0);
+    QVector<double> shorts(10, 400.0);
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(legacy_series(longs, shorts)));
+    QVERIFY(result.open_interest_readings.size() >= 2);
+    bool saw_evaluated = false;
+    for (const auto& reading : result.open_interest_readings) {
+        if (reading.evaluated) {
+            saw_evaluated = true;
+            QVERIFY(reading.has_oi_change);
+            QVERIFY(reading.has_rank);
+            QVERIFY(reading.rank_reference_count > 0);
+        } else {
+            QCOMPARE(reading.reason, CftcUnavailableReason::InsufficientHistory);
+        }
+    }
+    QVERIFY(saw_evaluated);
 }
 
 QTEST_GUILESS_MAIN(TstCftcInterpretation)

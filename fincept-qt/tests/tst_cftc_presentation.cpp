@@ -291,6 +291,7 @@ class TstCftcPresentation : public QObject {
     void leg_evidence_uses_the_leg_own_record();
     void non_material_open_interest_evidence_is_explicit();
     void price_evidence_keeps_quoted_units_precision();
+    void horizon_evidence_uses_emitted_readings();
 };
 
 void TstCftcPresentation::state_ids_map_to_predefined_wording() {
@@ -1528,6 +1529,66 @@ void TstCftcPresentation::price_evidence_keeps_quoted_units_precision() {
     }
     QVERIFY(combined_price != nullptr);
     QCOMPARE(combined_price->value, QStringLiteral("-87.80"));
+}
+
+void TstCftcPresentation::horizon_evidence_uses_emitted_readings() {
+    CftcInterpretationResult result = make_result(CftcFamily::Legacy);
+    CftcParticipantInterpretation* primary = primary_participant(result);
+    primary->states << make_state(QStringLiteral("NET_LONG"), primary->participant_key);
+
+    CftcHorizonFlowReading reading;
+    reading.horizon_reports = 4;
+    reading.evaluated = true;
+    reading.has_long_flow = true;
+    reading.long_flow = 0.2848;
+    reading.has_short_flow = true;
+    reading.short_flow = -1.7211;
+    reading.has_net_flow = true;
+    reading.net_flow = 2.0059;
+    reading.has_net_rank = true;
+    reading.net_rank = 0.25;
+    reading.net_rank_reference_count = 156;
+    primary->flow_readings << reading;
+
+    CftcOpenInterestReading oi;
+    oi.horizon_reports = 4;
+    oi.evaluated = true;
+    oi.has_oi_change = true;
+    oi.oi_change = 0.8957;
+    oi.has_rank = true;
+    oi.rank = 0.30;
+    oi.rank_reference_count = 156;
+    result.open_interest_readings << oi;
+
+    // Price context failed: the CFTC-only measurements must still be shown.
+    const CftcInterpretationView view = cftc_compose_horizon_interpretation(
+        result, 4, CftcPriceContextState::Unavailable, QStringLiteral("provider failed"));
+
+    auto row = [&view](const QString& label) -> const CftcEvidenceItem* {
+        for (const auto& item : view.evidence) {
+            if (item.label == label)
+                return &item;
+        }
+        return nullptr;
+    };
+    const CftcEvidenceItem* long_row = row(QStringLiteral("Long leg flow (% of prior OI)"));
+    QVERIFY(long_row != nullptr);
+    QCOMPARE(long_row->status, CftcEvidenceStatus::NoMaterialState);
+    QCOMPARE(long_row->value, QStringLiteral("0.28% (below threshold)"));
+    const CftcEvidenceItem* short_row = row(QStringLiteral("Short leg flow (% of prior OI)"));
+    QVERIFY(short_row != nullptr);
+    QCOMPARE(short_row->value, QStringLiteral("-1.72% (below threshold)"));
+    const CftcEvidenceItem* net_row = row(QStringLiteral("Net flow (% of prior OI)"));
+    QVERIFY(net_row != nullptr);
+    QCOMPARE(net_row->status, CftcEvidenceStatus::NoMaterialState);
+    QCOMPARE(net_row->value, QStringLiteral("+2.01% (below threshold)"));
+    const CftcEvidenceItem* rank_row = row(QStringLiteral("Move materiality rank (% of prior moves)"));
+    QVERIFY(rank_row != nullptr);
+    QCOMPARE(rank_row->value, QStringLiteral("25.0% (n=156) (below threshold)"));
+    const CftcEvidenceItem* oi_row = row(QStringLiteral("Open Interest change (% change) (four reports)"));
+    QVERIFY(oi_row != nullptr);
+    QCOMPARE(oi_row->status, CftcEvidenceStatus::NoMaterialState);
+    QCOMPARE(oi_row->value, QStringLiteral("+0.90% (below threshold)"));
 }
 
 QTEST_GUILESS_MAIN(TstCftcPresentation)

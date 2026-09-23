@@ -473,6 +473,32 @@ inline CftcUnavailableRecord cftc_unavailable_record(const QString& state_family
     return out;
 }
 
+/// The raw normalized flow measurements for one participant and one report
+/// horizon. Every configured horizon emits one reading regardless of
+/// materiality, so a valid below-threshold observation stays inspectable
+/// instead of being replaced by an absent value. The readings are measurements,
+/// not conclusions: the states remain the only classification. `evaluated` is
+/// false when the horizon itself could not be formed, and the values are then
+/// absent rather than zeroed.
+struct CftcHorizonFlowReading {
+    int horizon_reports = 0;
+    bool evaluated = false;
+    CftcUnavailableReason reason = CftcUnavailableReason::None;
+    bool has_long_flow = false;
+    double long_flow = 0.0;
+    bool has_short_flow = false;
+    double short_flow = 0.0;
+    bool has_net_flow = false;
+    double net_flow = 0.0;
+    bool has_long_rank = false;
+    double long_rank = 0.0;
+    bool has_short_rank = false;
+    double short_rank = 0.0;
+    bool has_net_rank = false;
+    double net_rank = 0.0;
+    int net_rank_reference_count = 0;
+};
+
 /// One participant's descriptive interpretation: its neutral terminology and
 /// the established states. A participant the latest report did not carry keeps
 /// explicit availability flags instead of zeros.
@@ -494,6 +520,9 @@ struct CftcParticipantInterpretation {
     double percentile = 0.0;
     int percentile_reference_count = 0;
     QVector<CftcInterpretationState> states;
+    /// Raw per-horizon flow measurements emitted for every configured horizon,
+    /// including horizons whose move stayed below the materiality threshold.
+    QVector<CftcHorizonFlowReading> flow_readings;
 };
 
 /// Price-versus-positioning assessment for one participant and one horizon.
@@ -572,6 +601,22 @@ struct CftcInterpretationInput {
     CftcInterpretationConfig config;
 };
 
+/// The market-level Open Interest measurement for one report horizon. Emitted
+/// for every configured horizon regardless of materiality, with the same
+/// measurement-not-conclusion split as the participant flow readings.
+struct CftcOpenInterestReading {
+    int horizon_reports = 0;
+    bool evaluated = false;
+    CftcUnavailableReason reason = CftcUnavailableReason::None;
+    bool has_oi_change = false;
+    double oi_change = 0.0;
+    bool has_rank = false;
+    double rank = 0.0;
+    int rank_reference_count = 0;
+    bool material = false;
+    bool move_large = false;
+};
+
 struct CftcInterpretationResult {
     QString rule_set_version;
     bool config_is_v1 = false;
@@ -596,6 +641,9 @@ struct CftcInterpretationResult {
     QVector<CftcParticipantInterpretation> participants;
     QVector<CftcConcentrationAssessment> concentration;
     QVector<CftcInterpretationState> market_context;
+    /// Raw market-level Open Interest measurements per horizon, emitted
+    /// independently of whether a material state fired.
+    QVector<CftcOpenInterestReading> open_interest_readings;
     /// Price relationship availability and reasons live here, one assessment
     /// per participant and horizon; the price layer is deliberately not
     /// duplicated into unavailable[] because each assessment already carries
@@ -1358,6 +1406,30 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         horizons.append(evaluation);
     }
 
+    // Emit the raw per-horizon measurements before any state classification so
+    // a valid below-threshold move stays inspectable.
+    out.flow_readings.reserve(horizons.size());
+    for (const HorizonEvaluation& evaluation : horizons) {
+        CftcHorizonFlowReading reading;
+        reading.horizon_reports = evaluation.horizon;
+        reading.evaluated = evaluation.horizon_reason == CftcUnavailableReason::None;
+        reading.reason = evaluation.horizon_reason;
+        reading.has_long_flow = evaluation.flow.has_long_flow;
+        reading.long_flow = evaluation.flow.long_flow;
+        reading.has_short_flow = evaluation.flow.has_short_flow;
+        reading.short_flow = evaluation.flow.short_flow;
+        reading.has_net_flow = evaluation.flow.has_net_flow;
+        reading.net_flow = evaluation.flow.net_flow;
+        reading.has_long_rank = evaluation.long_rank.available;
+        reading.long_rank = evaluation.long_rank.rank;
+        reading.has_short_rank = evaluation.short_rank.available;
+        reading.short_rank = evaluation.short_rank.rank;
+        reading.has_net_rank = evaluation.net_rank.available;
+        reading.net_rank = evaluation.net_rank.rank;
+        reading.net_rank_reference_count = evaluation.net_rank.reference_count;
+        out.flow_readings.append(reading);
+    }
+
     auto base_flow_state = [&](const QString& state_id, CftcInterpretationScope scope, CftcEvidenceBasis basis) {
         CftcInterpretationState state;
         state.state_id = state_id;
@@ -1521,6 +1593,21 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         CftcPricePositionAssessment assessment;
         assessment.participant_key = participant.key;
         assessment.horizon_reports = horizon;
+        // The positioning side is pure CFTC data: populate it whenever the
+        // flow and its materiality reference exist, independently of price
+        // availability, so a missing price context can never suppress a valid
+        // CFTC positioning measurement from the presentation.
+        if (evaluation.horizon_reason == CftcUnavailableReason::None && flow.has_net_flow &&
+            evaluation.net_rank.available) {
+            assessment.has_positioning_move = true;
+            assessment.positioning_move = flow.net_flow;
+            assessment.has_positioning_move_rank = true;
+            assessment.positioning_move_rank = evaluation.net_rank.rank;
+            assessment.positioning_reference_count = evaluation.net_rank.reference_count;
+            assessment.positioning_material =
+                evaluation.net_rank.rank >= config.material_move_percentile && flow.net_flow != 0.0;
+            assessment.positioning_move_large = evaluation.net_rank.rank >= config.large_move_percentile;
+        }
         if (prices.isEmpty()) {
             assessment.reason = CftcUnavailableReason::MissingPriceContext;
         } else if (!price_source_specified) {
@@ -1532,14 +1619,6 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         } else if (!evaluation.net_rank.available) {
             assessment.reason = CftcUnavailableReason::InsufficientHistory;
         } else {
-            assessment.has_positioning_move = true;
-            assessment.positioning_move = flow.net_flow;
-            assessment.has_positioning_move_rank = true;
-            assessment.positioning_move_rank = evaluation.net_rank.rank;
-            assessment.positioning_reference_count = evaluation.net_rank.reference_count;
-            assessment.positioning_material =
-                evaluation.net_rank.rank >= config.material_move_percentile && flow.net_flow != 0.0;
-            assessment.positioning_move_large = evaluation.net_rank.rank >= config.large_move_percentile;
             const CftcReportPrice latest = cftc_report_price(prices, current_date);
             const CftcReportPrice anchor = cftc_report_price(prices, history[anchor_index].date);
             if (!latest.available || !anchor.available) {
@@ -1919,6 +1998,20 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
                                     current_date, config.history_window);
         if (reason == CftcUnavailableReason::None && !rank.available)
             reason = CftcUnavailableReason::InsufficientHistory;
+        CftcOpenInterestReading reading;
+        reading.horizon_reports = horizon;
+        reading.evaluated = reason == CftcUnavailableReason::None;
+        reading.reason = reason;
+        if (reading.evaluated) {
+            reading.has_oi_change = true;
+            reading.oi_change = flow.oi_change;
+            reading.has_rank = true;
+            reading.rank = rank.rank;
+            reading.rank_reference_count = rank.reference_count;
+            reading.material = flow.oi_change != 0.0 && rank.rank >= config.material_move_percentile;
+            reading.move_large = rank.rank >= config.large_move_percentile;
+        }
+        result.open_interest_readings.append(reading);
         if (reason != CftcUnavailableReason::None) {
             result.unavailable.append(cftc_unavailable_record(QStringLiteral("OI_CONTEXT"), QString(), true, horizon,
                                                               CftcInterpretationScope::MarketStructure,

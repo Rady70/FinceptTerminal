@@ -2071,19 +2071,33 @@ void CftcPanel::update_divergence() {
     divergence_table_->setColumnCount(4);
     divergence_table_->setRowCount(3);
     // Batch 4A net_flow is normalized by the anchor report's Open Interest, so
-    // the column states that exact unit rather than implying contracts.
+    // the column states that exact unit rather than implying contracts. There is
+    // deliberately no relationship column: the one authoritative relationship
+    // conclusion is the COT interpretation result above, and this section keeps
+    // only the numeric deltas and a neutral evaluation status.
     divergence_table_->setHorizontalHeaderLabels({tr("HORIZON"), tr("PRICE Δ (quoted units)"),
-                                                  tr("NET Δ, % of prior OI (%1)").arg(spec_short), tr("RELATIONSHIP")});
+                                                  tr("NET Δ, % of prior OI (%1)").arg(spec_short),
+                                                  tr("EVIDENCE STATUS")});
     divergence_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     divergence_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     divergence_table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     divergence_table_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
 
-    // While price is pending the Batch 4A price assessments carry no
-    // positioning move; the CFTC-only net move is still available from the
-    // emitted net-shift state, so the evidence stays visible without
-    // recomputing anything.
+    // The CFTC-only net move comes from the emitted per-horizon flow reading
+    // first, then the assessment, then a net-shift state. None of these depend
+    // on price availability.
     const QString primary_state_key = participants_[principal_index_].key;
+    auto net_flow_reading = [this, &primary_state_key](int horizon) -> std::optional<double> {
+        for (const auto& participant : interpretation_.participants) {
+            if (participant.participant_key != primary_state_key)
+                continue;
+            for (const auto& reading : participant.flow_readings) {
+                if (reading.horizon_reports == horizon && reading.evaluated && reading.has_net_flow)
+                    return reading.net_flow;
+            }
+        }
+        return std::nullopt;
+    };
     auto state_net_flow = [this, &primary_state_key](int horizon) -> std::optional<double> {
         for (const auto& participant : interpretation_.participants) {
             if (participant.participant_key != primary_state_key)
@@ -2101,6 +2115,24 @@ void CftcPanel::update_divergence() {
             }
         }
         return std::nullopt;
+    };
+
+    const auto unavailable_cell = [this](int row, int column, const QString& reason) {
+        set_plain_cell(divergence_table_, row, column, tr("unavailable — %1").arg(reason));
+        if (auto* item = divergence_table_->item(row, column))
+            item->setForeground(QColor(ui::colors::WARNING()));
+    };
+    // The caller's actual price failure wins over the engine's generic
+    // missing-context wording, exactly as in the interpretation evidence.
+    const auto concrete_price_reason = [this](const services::CftcPricePositionAssessment* assessment) {
+        const QString engine_reason = assessment ? cftc_unavailable_reason_wording(assessment->reason)
+                                                 : tr("no price context was requested for this horizon");
+        if (price_state_ == PriceState::Unavailable && assessment &&
+            assessment->reason == services::CftcUnavailableReason::MissingPriceContext &&
+            !price_reason_.trimmed().isEmpty()) {
+            return price_reason_;
+        }
+        return engine_reason;
     };
 
     int row = 0;
@@ -2122,52 +2154,46 @@ void CftcPanel::update_divergence() {
                 item->setForeground(QColor(assessment->price_move > 0.0   ? ui::colors::POSITIVE()
                                            : assessment->price_move < 0.0 ? ui::colors::NEGATIVE()
                                                                           : ui::colors::TEXT_PRIMARY()));
-        } else {
-            set_plain_cell(divergence_table_, row, 1, QStringLiteral("—"));
-            if (auto* item = divergence_table_->item(row, 1)) {
+        } else if (price_state_ == PriceState::Pending) {
+            set_plain_cell(divergence_table_, row, 1, tr("pending — price context is loading"));
+            if (auto* item = divergence_table_->item(row, 1))
                 item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
-                if (price_state_ == PriceState::Pending)
-                    item->setToolTip(tr("price context is loading"));
-                else
-                    item->setToolTip(assessment ? cftc_unavailable_reason_wording(assessment->reason)
-                                                : tr("no price context was requested for this horizon"));
-            }
+        } else {
+            unavailable_cell(row, 1, concrete_price_reason(assessment));
         }
-
-        std::optional<double> net_move;
-        if (assessment && assessment->has_positioning_move)
+        std::optional<double> net_move = net_flow_reading(horizon);
+        if (!net_move && assessment && assessment->has_positioning_move)
             net_move = assessment->positioning_move;
-        else
+        if (!net_move)
             net_move = state_net_flow(horizon);
         if (net_move) {
             set_signed_cell(divergence_table_, row, 2, net_move);
-        } else {
-            set_plain_cell(divergence_table_, row, 2, QStringLiteral("—"));
-            if (auto* item = divergence_table_->item(row, 2)) {
+        } else if (assessment && assessment->evaluated) {
+            set_plain_cell(divergence_table_, row, 2, tr("not emitted for this horizon"));
+            if (auto* item = divergence_table_->item(row, 2))
                 item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
-                item->setToolTip(assessment && assessment->evaluated
-                                     ? tr("no material net move state at this horizon")
-                                     : (assessment ? cftc_unavailable_reason_wording(assessment->reason)
-                                                   : tr("the positioning horizon is unavailable")));
-            }
+        } else {
+            const QString reason = assessment ? cftc_unavailable_reason_wording(assessment->reason)
+                                              : tr("the positioning horizon is unavailable");
+            unavailable_cell(row, 2, reason);
         }
 
-        if (assessment && assessment->has_state) {
-            set_plain_cell(divergence_table_, row, 3, cftc_relationship_wording(assessment->state_id));
-        } else if (assessment && !assessment->evaluated) {
-            set_plain_cell(divergence_table_, row, 3, QStringLiteral("—"));
-            if (auto* item = divergence_table_->item(row, 3)) {
-                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
-                item->setToolTip(price_state_ == PriceState::Pending
-                                     ? tr("price context is loading")
-                                     : cftc_unavailable_reason_wording(assessment->reason));
-            }
-        } else {
-            set_plain_cell(divergence_table_, row, 3, tr("Not material"));
+        // Neutral evaluation status only: the relationship conclusion itself
+        // lives in the COT interpretation result.
+        if (price_state_ == PriceState::Pending) {
+            set_plain_cell(divergence_table_, row, 3, tr("pending — price context is loading"));
             if (auto* item = divergence_table_->item(row, 3))
-                item->setToolTip(
-                    tr("Both price and net positioning changes were evaluated; at least one was not material "
-                       "enough for a relationship state."));
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+        } else if (assessment && !assessment->evaluated) {
+            unavailable_cell(row, 3, concrete_price_reason(assessment));
+        } else if (assessment && assessment->has_state) {
+            set_plain_cell(divergence_table_, row, 3, tr("evaluated — see COT INTERPRETATION"));
+            if (auto* item = divergence_table_->item(row, 3))
+                item->setForeground(QColor(ui::colors::TEXT_PRIMARY()));
+        } else {
+            set_plain_cell(divergence_table_, row, 3, tr("evaluated, below the materiality threshold"));
+            if (auto* item = divergence_table_->item(row, 3))
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
         }
         ++row;
     }
