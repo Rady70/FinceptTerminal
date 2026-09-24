@@ -12,6 +12,9 @@
 // Core; no app sources (tests/ HARD RULE).
 #include "screens/economics/panels/CftcSyncChartData.h"
 
+#include <QByteArray>
+#include <QDateTime>
+#include <QTimeZone>
 #include <QtTest>
 
 using namespace fincept::screens;
@@ -187,6 +190,10 @@ class TstCftcSyncChart : public QObject {
     void deterministic_repeatability();
     void value_axis_format_avoids_ellipsis();
     void selected_horizon_narrows_the_context_caption();
+
+    // 2026-09-24 audit corrections
+    void price_bar_session_date_ignores_the_local_zone();
+    void report_price_alignment_uses_four_day_lag();
 };
 
 void TstCftcSyncChart::price_aligns_to_report_dates_without_future_observation() {
@@ -224,9 +231,15 @@ void TstCftcSyncChart::missing_price_dates_remain_gaps() {
               QStringLiteral("TEST source"), true, false);
 
     QVERIFY(data.price.available);
-    QCOMPARE(data.price.points.size(), 5);
-    for (const auto& point : data.price.points)
+    // Both skipped report dates stay gaps: the close two days before report 1
+    // is nine days older than report 2, beyond the four-day report-price lag,
+    // so it no longer stands in for report 2 (rule set v2; v1's ten-day
+    // tolerance filled that gap with a stale close).
+    QCOMPARE(data.price.points.size(), 4);
+    for (const auto& point : data.price.points) {
+        QVERIFY(point.date != observations[2].date);
         QVERIFY(point.date != observations[3].date);
+    }
     QCOMPARE(segment_count(data.price.points), 2);
 }
 
@@ -582,6 +595,57 @@ void TstCftcSyncChart::selected_horizon_narrows_the_context_caption() {
     QVERIFY(combined.horizon_context[0].startsWith(QStringLiteral("one report:")));
     QVERIFY(combined.horizon_context[1].startsWith(QStringLiteral("four reports:")));
     QVERIFY(combined.horizon_context[2].startsWith(QStringLiteral("thirteen reports:")));
+}
+
+// ── 2026-09-24 audit corrections ─────────────────────────────────────────────
+
+void TstCftcSyncChart::price_bar_session_date_ignores_the_local_zone() {
+    // H1: Yahoo stamps daily futures bars at 00:00 New York time. Converting
+    // in the viewer's zone moves a bar to the previous day at UTC-5 or further
+    // west, so "the close on or before the report date" read the next session.
+    const qint64 edt_midnight = QDateTime(QDate(2026, 9, 15), QTime(4, 0), QTimeZone::utc()).toSecsSinceEpoch();
+    QCOMPARE(cftc_price_session_date(edt_midnight), QDate(2026, 9, 15));
+    const QTimeZone pacific(QByteArrayLiteral("America/Los_Angeles"));
+    QVERIFY(pacific.isValid());
+    QCOMPARE(QDateTime::fromSecsSinceEpoch(edt_midnight, pacific).date(), QDate(2026, 9, 14));
+    // Winter bars are stamped 00:00 EST = 05:00 UTC.
+    const qint64 est_midnight = QDateTime(QDate(2026, 1, 13), QTime(5, 0), QTimeZone::utc()).toSecsSinceEpoch();
+    QCOMPARE(cftc_price_session_date(est_midnight), QDate(2026, 1, 13));
+    // ^VIX bars are stamped 00:00 Chicago time (05:00 UTC in summer).
+    const qint64 cdt_midnight = QDateTime(QDate(2026, 9, 15), QTime(5, 0), QTimeZone::utc()).toSecsSinceEpoch();
+    QCOMPARE(cftc_price_session_date(cdt_midnight), QDate(2026, 9, 15));
+    // The exchange calendar, not UTC: 03:30 UTC on 09-16 is still 09-15 in New York.
+    const qint64 late = QDateTime(QDate(2026, 9, 16), QTime(3, 30), QTimeZone::utc()).toSecsSinceEpoch();
+    QCOMPARE(cftc_price_session_date(late), QDate(2026, 9, 15));
+    QCOMPARE(cftc_price_session_time_zone().id(), QByteArray("America/New_York"));
+
+    // End to end: Tuesday's and Wednesday's bars for a Tuesday report. The
+    // report-date close is Tuesday's; a Pacific-zone conversion would have
+    // relabelled Wednesday's bar as Tuesday and used the later close.
+    const qint64 tuesday = edt_midnight;
+    const qint64 wednesday = QDateTime(QDate(2026, 9, 16), QTime(4, 0), QTimeZone::utc()).toSecsSinceEpoch();
+    const QVector<CftcPricePoint> exchange_dates = {{cftc_price_session_date(tuesday), 4332.8},
+                                                    {cftc_price_session_date(wednesday), 4387.5}};
+    QCOMPARE(cftc_report_price(exchange_dates, QDate(2026, 9, 15)).close, 4332.8);
+    const QVector<CftcPricePoint> pacific_dates = {{QDateTime::fromSecsSinceEpoch(tuesday, pacific).date(), 4332.8},
+                                                   {QDateTime::fromSecsSinceEpoch(wednesday, pacific).date(), 4387.5}};
+    QCOMPARE(cftc_report_price(pacific_dates, QDate(2026, 9, 15)).close, 4387.5);
+}
+
+void TstCftcSyncChart::report_price_alignment_uses_four_day_lag() {
+    // M5: the chart aligns price with the same report-price rule as the
+    // engine: a close at most four days before the report date.
+    const QVector<CftcObservation> observations = make_series(CftcFamily::Legacy, 3, 600.0, 400.0);
+    QVector<CftcPricePoint> prices = {{observations[0].date.addDays(-4), 100.0},
+                                      {observations[1].date.addDays(-5), 101.0}};
+    CftcInterpretationResult interpretation = make_result(CftcFamily::Legacy);
+    const CftcSyncChartData data =
+        build(interpretation, observations, prices, QStringLiteral("gold"), QStringLiteral("gold"), CftcRange::Max,
+              QStringLiteral("TEST source"), true, false);
+    QVERIFY(data.price.available);
+    QCOMPARE(data.price.points.size(), 1);
+    QCOMPARE(data.price.points.first().date, observations[0].date);
+    QCOMPARE(data.price.points.first().value, 100.0);
 }
 
 QTEST_GUILESS_MAIN(TstCftcSyncChart)

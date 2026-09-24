@@ -37,7 +37,9 @@
 //     trailing: the current observation never contributes to the distribution
 //     that judges it;
 //   * missing or unsuitable price data leaves the price relationship
-//     unavailable, never flat;
+//     unavailable, never flat; a continuous front-month futures proxy that is
+//     not roll-adjusted is unsuitable, because a contract roll inside a window
+//     cannot be excluded;
 //   * Legacy, Disaggregated and TFF histories and participant identities are
 //     never mixed, and TFF is never reconstructed into a Commercial/Speculator
 //     split.
@@ -45,6 +47,28 @@
 // Participant display labels come from the finalized Batch 1 participant table
 // and are translated there; the engine's locale-independent identity is the
 // stable `participant_key`, and no state or reason depends on a label string.
+//
+// Rule set v2 (2026-09-24 independent audit corrections) changes these v1
+// rules; everything else is unchanged:
+//   * a weekly neighbour is 5-10 calendar days apart (a 3-day step is not a
+//     weekly interval);
+//   * a report-date close must be at most 4 calendar days older than the
+//     report, the two ends of a price window must be distinct sessions, and
+//     price-move materiality ranks absolute log returns (scale-invariant)
+//     instead of raw quoted-price differences;
+//   * price moves and price relationships are evaluated only on a roll-safe
+//     series: a continuous front-month futures proxy (for example Yahoo
+//     GC=F) splices contracts without roll adjustment and does not identify
+//     its roll dates, so a roll gap could sit inside the window or inside its
+//     comparable-move reference. For such a series the price relationship
+//     fails closed (price_series_not_roll_safe) instead of being classified;
+//   * NET_SHARE_RAW_DISAGREEMENT needs at least one of the two opposed moves
+//     to be material;
+//   * UNWINDING_* is the first report at or past the re-entry band within 13
+//     reports of a persistent extreme, not only a one-report collapse;
+//   * row report-basis metadata is verified against the declared basis, and a
+//     latest report older than 14 days relative to the evaluation date is
+//     flagged as outdated.
 #pragma once
 
 #include "services/economics/CftcMetricModel.h"
@@ -62,19 +86,26 @@ namespace fincept::services {
 
 // ── Rule-set identity and versioned configuration ───────────────────────────
 
-/// The versioned descriptive rule-set identity for the default v1
-/// configuration. Any change to a rule, threshold or reference window requires
-/// a new version string; a caller-supplied configuration that differs from the
-/// v1 defaults is reported under the distinct custom identity below.
+/// The versioned descriptive rule-set identity for the default configuration.
+/// Any change to a rule, threshold or reference window requires a new version
+/// string; a caller-supplied configuration that differs from the defaults is
+/// reported under the distinct custom identity below. v2 carries the
+/// 2026-09-24 audit corrections listed at the top of this header.
 inline QString cftc_interpretation_rule_set_version() {
-    return QStringLiteral("cftc-descriptive-interpretation-v1");
+    return QStringLiteral("cftc-descriptive-interpretation-v2");
 }
 
 /// The truthful identity for interpretations produced with a configuration
-/// that differs from the v1 defaults. It is never presented as plain v1.
+/// that differs from the defaults. It is never presented as the plain version.
 inline QString cftc_interpretation_custom_rule_set_version() {
-    return QStringLiteral("cftc-descriptive-interpretation-v1-custom");
+    return QStringLiteral("cftc-descriptive-interpretation-v2-custom");
 }
+
+/// Longest calendar gap between an official report date and the close used
+/// for it. A Tuesday report can use the previous Friday's close when Monday
+/// and Tuesday were not traded (4 days); anything older no longer describes
+/// the report date.
+inline constexpr int kCftcReportPriceMaxLagDays = 4;
 
 /// The versioned heuristic configuration. Every numeric cutoff here is an
 /// ENGINE_HEURISTIC per the governing plan, not a CFTC definition. Callers
@@ -93,8 +124,19 @@ struct CftcInterpretationConfig {
     double unwind_reentry_percentile = 0.75;      // UNWIND_REENTRY_PERCENTILE
     double low_unwind_reentry_percentile = 0.25;  // UNWINDING_LOW_EXTREME re-entry
     int persistent_extreme_reports = 3;           // PERSISTENT_EXTREME_REPORTS
-    double material_move_percentile = 0.75;       // MATERIAL_MOVE_PERCENTILE
-    double large_move_percentile = 0.90;          // LARGE_MOVE_PERCENTILE
+    /// UNWINDING_* looks back this many reports for the persistent extreme it
+    /// unwinds from (v2; v1 only accepted the immediately preceding report).
+    int unwind_lookback_reports = 13;       // UNWIND_LOOKBACK_REPORTS
+    double material_move_percentile = 0.75; // MATERIAL_MOVE_PERCENTILE
+    double large_move_percentile = 0.90;    // LARGE_MOVE_PERCENTILE
+    /// Oldest acceptable report-date close, in calendar days (v2; v1 reused
+    /// the 10-day weekly-report tolerance).
+    int price_max_lag_days = kCftcReportPriceMaxLagDays; // REPORT_PRICE_MAX_LAG_DAYS
+    /// A latest report older than this many days relative to the caller's
+    /// evaluation date is flagged as outdated. CFTC publishes every week
+    /// (Tuesday positions, normally released on Friday), so a normal latest
+    /// report is at most about 10 days old, 13 around holiday releases.
+    int max_report_age_days = 14; // MAX_REPORT_AGE_DAYS
     /// The flow, Open Interest and price horizons. Only the plan's supported
     /// report horizons (1, 4 and 13) are interpreted; other values are dropped
     /// from the effective configuration. Sustained repositioning has its own
@@ -108,15 +150,15 @@ struct CftcInterpretationConfig {
     QString primary_concentration_field = QStringLiteral("concentration_gross_4_long");
 };
 
-/// The exact v1 default configuration.
+/// The exact default configuration of the current rule set.
 inline CftcInterpretationConfig cftc_default_interpretation_config() {
     return {};
 }
 
-/// Whether a configuration carries the immutable v1 defaults. A result
-/// produced under any other configuration is reported under
-/// cftc_interpretation_custom_rule_set_version(), never as plain v1.
-inline bool cftc_interpretation_config_is_v1(const CftcInterpretationConfig& config) {
+/// Whether a configuration carries the immutable defaults of the current rule
+/// set. A result produced under any other configuration is reported under
+/// cftc_interpretation_custom_rule_set_version(), never as the plain version.
+inline bool cftc_interpretation_config_is_default(const CftcInterpretationConfig& config) {
     const CftcInterpretationConfig defaults;
     return config.history_window == defaults.history_window &&
            config.extreme_percentile == defaults.extreme_percentile &&
@@ -126,16 +168,19 @@ inline bool cftc_interpretation_config_is_v1(const CftcInterpretationConfig& con
            config.unwind_reentry_percentile == defaults.unwind_reentry_percentile &&
            config.low_unwind_reentry_percentile == defaults.low_unwind_reentry_percentile &&
            config.persistent_extreme_reports == defaults.persistent_extreme_reports &&
+           config.unwind_lookback_reports == defaults.unwind_lookback_reports &&
            config.material_move_percentile == defaults.material_move_percentile &&
            config.large_move_percentile == defaults.large_move_percentile &&
+           config.price_max_lag_days == defaults.price_max_lag_days &&
+           config.max_report_age_days == defaults.max_report_age_days &&
            config.horizons_reports == defaults.horizons_reports &&
            config.primary_concentration_field == defaults.primary_concentration_field;
 }
 
 /// The rule-set identity that truthfully describes a configuration.
 inline QString cftc_interpretation_rule_set_version_for(const CftcInterpretationConfig& config) {
-    return cftc_interpretation_config_is_v1(config) ? cftc_interpretation_rule_set_version()
-                                                    : cftc_interpretation_custom_rule_set_version();
+    return cftc_interpretation_config_is_default(config) ? cftc_interpretation_rule_set_version()
+                                                         : cftc_interpretation_custom_rule_set_version();
 }
 
 /// The only exact report horizons the descriptive taxonomy interprets.
@@ -143,7 +188,7 @@ inline bool cftc_is_supported_interpretation_horizon(int horizon_reports) {
     return horizon_reports == 1 || horizon_reports == 4 || horizon_reports == 13;
 }
 
-/// The effective v1 configuration: requested values with unsupported horizons
+/// The effective configuration: requested values with unsupported horizons
 /// dropped and duplicates removed.
 inline CftcInterpretationConfig cftc_effective_interpretation_config(const CftcInterpretationConfig& requested) {
     CftcInterpretationConfig effective = requested;
@@ -237,6 +282,8 @@ enum class CftcUnavailableReason {
     MissingParticipantLeg,
     MissingOpenInterest,
     NonPositiveOpenInterest,
+    /// The strictly trailing reference of history_window prior reports (156 by
+    /// default) is not complete: percentile and move-materiality references.
     InsufficientHistory,
     BrokenReportSequence,
     MissingPriceContext,
@@ -250,6 +297,25 @@ enum class CftcUnavailableReason {
     ParticipantCountMismatch,
     FamilyProvenanceMismatch,
     ReportBasisUnspecified,
+    /// The history does not reach back to the report a horizon or comparison
+    /// is anchored at (for example fewer than 13 earlier reports).
+    InsufficientHorizonHistory,
+    /// Fewer than history_window prior comparable price moves exist.
+    InsufficientPriceHistory,
+    /// Fewer than the minimum number of prior concentration readings exist.
+    InsufficientConcentrationHistory,
+    /// Both report dates of a price window resolve to the same price session,
+    /// so there is no price move to describe.
+    PriceSessionsNotDistinct,
+    /// The rows' own report-basis metadata contradicts the declared basis, or
+    /// only some rows carry it.
+    ReportBasisMismatch,
+    /// The price series is a continuous front-month futures proxy that splices
+    /// successive contracts without roll adjustment and does not identify the
+    /// roll dates. A roll gap inside the window, or inside any window of the
+    /// comparable-move reference, cannot be excluded, so no price move,
+    /// materiality rank or relationship is derived from it.
+    PriceSeriesNotRollSafe,
 };
 
 inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
@@ -292,6 +358,18 @@ inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
             return QStringLiteral("family_provenance_mismatch");
         case CftcUnavailableReason::ReportBasisUnspecified:
             return QStringLiteral("report_basis_unspecified");
+        case CftcUnavailableReason::InsufficientHorizonHistory:
+            return QStringLiteral("insufficient_horizon_history");
+        case CftcUnavailableReason::InsufficientPriceHistory:
+            return QStringLiteral("insufficient_price_history");
+        case CftcUnavailableReason::InsufficientConcentrationHistory:
+            return QStringLiteral("insufficient_concentration_history");
+        case CftcUnavailableReason::PriceSessionsNotDistinct:
+            return QStringLiteral("price_sessions_not_distinct");
+        case CftcUnavailableReason::ReportBasisMismatch:
+            return QStringLiteral("report_basis_mismatch");
+        case CftcUnavailableReason::PriceSeriesNotRollSafe:
+            return QStringLiteral("price_series_not_roll_safe");
     }
     return {};
 }
@@ -538,9 +616,15 @@ struct CftcPricePositionAssessment {
     bool evaluated = false;
     CftcUnavailableReason reason = CftcUnavailableReason::None;
     bool has_price_move = false;
-    double price_move = 0.0;
-    QDate price_anchor_date;
-    QDate price_latest_date;
+    double price_move = 0.0; // quoted price units: latest close - anchor close
+    /// The same move as a percent change, 100 * (latest / anchor - 1). The
+    /// materiality rank uses the equivalent absolute log return, so a doubled
+    /// price level does not make equal percentage moves look larger.
+    double price_move_pct = 0.0;
+    double price_anchor_close = 0.0;
+    double price_latest_close = 0.0;
+    QDate price_anchor_date; // the session whose close anchors the window
+    QDate price_latest_date; // the session whose close ends the window
     bool has_price_move_rank = false;
     double price_move_rank = 0.0;
     int price_reference_count = 0;
@@ -593,10 +677,25 @@ struct CftcInterpretationInput {
     /// silent default because a mixed basis would change every normalized
     /// metric.
     QString report_basis_code;
-    QDate as_of;                    // optional explicit current report
+    QDate as_of; // optional explicit current report
+    /// Optional calendar date the interpretation is evaluated on (the caller's
+    /// "today"). When valid, the latest report's age is measured against it and
+    /// a report older than config.max_report_age_days is flagged as outdated,
+    /// so a discontinued contract's last report is never presented as current.
+    /// The engine itself never reads a clock.
+    QDate evaluation_date;
     QVector<CftcPricePoint> prices; // ascending closes; empty = no price context
     QString price_source;           // explicit provider/proxy description
+    /// The series is a continuous front-month futures proxy (for example Yahoo
+    /// GC=F) that splices successive contracts without roll adjustment and does
+    /// not identify its roll dates. Such a series is not roll-safe: every price
+    /// assessment is unavailable with PriceSeriesNotRollSafe, and no price move,
+    /// materiality rank or relationship is derived from it.
     bool price_continuous_proxy = false;
+    /// The series is a spot index rather than the futures contract whose
+    /// positions are reported. It has no contract roll, so it is evaluated; the
+    /// presentation states that it is a spot index. A series with neither flag
+    /// is taken as the caller declares it: one roll-free series.
     bool price_spot_index = false;
     CftcInterpretationConfig config;
 };
@@ -619,11 +718,15 @@ struct CftcOpenInterestReading {
 
 struct CftcInterpretationResult {
     QString rule_set_version;
-    bool config_is_v1 = false;
+    bool config_is_default = false;
     CftcFamily family = CftcFamily::Legacy;
     QString family_code;
     bool futures_only = false;
     QString report_basis; // futures_only | futures_and_options_combined
+    /// True when every row carried report-basis metadata that matched the
+    /// declared basis; false when the rows carried none (the basis is then the
+    /// caller's declaration only).
+    bool report_basis_verified = false;
     QString market;
     QString contract_code;
     QString units;
@@ -631,6 +734,14 @@ struct CftcInterpretationResult {
     bool report_date_available = false;
     bool current_report_stale = false;
     QDate latest_observation_date; // newest report the supplied history actually carried
+    /// Age of the interpreted report relative to the input's evaluation date,
+    /// in calendar days; only meaningful when report_age_available.
+    bool report_age_available = false;
+    int report_age_days = 0;
+    /// The interpreted report is older than config.max_report_age_days: CFTC
+    /// has published newer weekly reports that this history does not carry
+    /// (for example a discontinued contract).
+    bool report_outdated = false;
     bool open_interest_available = false;
     double open_interest = 0.0;
     bool price_requested = false;
@@ -653,14 +764,9 @@ struct CftcInterpretationResult {
 };
 
 // ── Report continuity ───────────────────────────────────────────────────────
-
-/// A true weekly CFTC interval: the same tolerance the finalized metric
-/// foundation uses for a weekly neighbour.
-inline bool cftc_weekly_neighbour(const QDate& earlier, const QDate& later) {
-    if (!earlier.isValid() || !later.isValid() || earlier >= later)
-        return false;
-    return earlier.daysTo(later) <= kCftcWeeklyGapDays;
-}
+//
+// A weekly step is cftc_weekly_neighbour() from CftcMetricModel.h (5-10
+// calendar days), the same definition the page's weekly-change figures use.
 
 /// Whether every consecutive pair of reports in [first, last] is a weekly
 /// neighbour. A missing report or a stale anchor inside the window makes the
@@ -952,10 +1058,11 @@ inline QVector<CftcDatedValue> cftc_flow_move_series(const QVector<CftcObservati
 // ── Price context ───────────────────────────────────────────────────────────
 
 /// The close used for one official report date: the most recent observation at
-/// or before it, only when that observation is itself contemporaneous (within
-/// the weekly tolerance) and carries a usable positive close. The reason names
-/// the exact unavailability: no observation at or before the report, a
-/// non-positive/unusable close, or a close too old to describe this report.
+/// or before it, only when that observation is itself contemporaneous (at most
+/// `max_lag_days` calendar days older than the report) and carries a usable
+/// positive close. The reason names the exact unavailability: no observation at
+/// or before the report, a non-positive/unusable close, or a close too old to
+/// describe this report.
 struct CftcReportPrice {
     bool available = false;
     double close = 0.0;
@@ -963,7 +1070,8 @@ struct CftcReportPrice {
     CftcUnavailableReason reason = CftcUnavailableReason::None;
 };
 
-inline CftcReportPrice cftc_report_price(const QVector<CftcPricePoint>& prices, const QDate& report_date) {
+inline CftcReportPrice cftc_report_price(const QVector<CftcPricePoint>& prices, const QDate& report_date,
+                                         int max_lag_days = kCftcReportPriceMaxLagDays) {
     CftcReportPrice out;
     if (!report_date.isValid()) {
         out.reason = CftcUnavailableReason::PriceHistoryIncomplete;
@@ -984,7 +1092,7 @@ inline CftcReportPrice cftc_report_price(const QVector<CftcPricePoint>& prices, 
         out.reason = CftcUnavailableReason::PriceContextUnusable;
         return out;
     }
-    if (found->date.daysTo(report_date) > kCftcWeeklyGapDays) {
+    if (found->date.daysTo(report_date) > std::max(0, max_lag_days)) {
         out.reason = CftcUnavailableReason::PriceContextStale;
         return out;
     }
@@ -995,19 +1103,23 @@ inline CftcReportPrice cftc_report_price(const QVector<CftcPricePoint>& prices, 
 }
 
 /// Comparable report-date-to-report-date price moves over the same continuous
-/// report windows the positioning moves use.
+/// report windows the positioning moves use, as natural-log returns
+/// ln(latest close / anchor close). Log returns make the materiality rank
+/// scale-invariant: a price level that doubled inside the reference does not
+/// make equal percentage moves look larger. A window whose two ends resolve to
+/// the same price session carries no move and contributes no point.
 inline QVector<CftcDatedValue> cftc_price_move_series(const QVector<CftcPricePoint>& prices,
-                                                      const QVector<CftcObservation>& observations,
-                                                      int horizon_reports) {
+                                                      const QVector<CftcObservation>& observations, int horizon_reports,
+                                                      int max_lag_days = kCftcReportPriceMaxLagDays) {
     QVector<CftcDatedValue> out;
     for (int i = horizon_reports; i < observations.size(); ++i) {
         if (!cftc_report_sequence_continuous(observations, i - horizon_reports, i))
             continue;
-        const CftcReportPrice latest = cftc_report_price(prices, observations[i].date);
-        const CftcReportPrice anchor = cftc_report_price(prices, observations[i - horizon_reports].date);
-        if (!latest.available || !anchor.available)
+        const CftcReportPrice latest = cftc_report_price(prices, observations[i].date, max_lag_days);
+        const CftcReportPrice anchor = cftc_report_price(prices, observations[i - horizon_reports].date, max_lag_days);
+        if (!latest.available || !anchor.available || !(anchor.date < latest.date))
             continue;
-        out.append({observations[i].date, observations[i].date_label, latest.close - anchor.close});
+        out.append({observations[i].date, observations[i].date_label, std::log(latest.close / anchor.close)});
     }
     return out;
 }
@@ -1050,12 +1162,13 @@ struct CftcInterpretationRule {
     QString condition; // short formula, not UI prose
 };
 
-/// The versioned rule catalog for the v1 baseline. It records which part of
-/// the interpretation is a CFTC fact, an identity, a literature measure, a
+/// The versioned rule catalog of the current rule set
+/// (cftc_interpretation_rule_set_version()). It records which part of the
+/// interpretation is a CFTC fact, an identity, a literature measure, a
 /// practitioner convention or a versioned engine heuristic. It describes the
-/// default v1 configuration; when a caller overrides CftcInterpretationConfig
-/// the result is reported under cftc_interpretation_custom_rule_set_version()
-/// and this catalog no longer describes the effective thresholds.
+/// default configuration; when a caller overrides CftcInterpretationConfig the
+/// result is reported under cftc_interpretation_custom_rule_set_version() and
+/// this catalog no longer describes the effective thresholds.
 inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
     return {
         {QStringLiteral("PARTICIPANT_POSITION_LEGS"), CftcInterpretationScope::AccountingFact,
@@ -1091,22 +1204,35 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
         {QStringLiteral("NET_SHIFT"), CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("1/4/13-report net flow material at the 0.75 move rank")},
         {QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), CftcInterpretationScope::DescriptiveFlow,
-         CftcEvidenceBasis::DerivedIdentity,
-         QStringLiteral("raw net flow and Net %OI change have opposite signs and neither is zero")},
+         CftcEvidenceBasis::EngineHeuristic,
+         QStringLiteral("raw net flow and Net %OI change have opposite signs, neither is zero, and at least one "
+                        "of the two moves is material at the 0.75 move rank")},
         {QStringLiteral("SUSTAINED_REPOSITIONING"), CftcInterpretationScope::DescriptiveFlow,
          CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("material net flow plus 3 of 4 (or 9 of 13) one-report net flows same sign")},
         {QStringLiteral("EXTREME_TRANSITION"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("extreme persistence/exit/unwind bands over consecutive weekly reports")},
+         QStringLiteral("extreme persistence/exit bands over consecutive weekly reports; unwind within 13 reports "
+                        "of a persistent extreme")},
+        {QStringLiteral("WEEKLY_CONTINUITY"), CftcInterpretationScope::AccountingFact,
+         CftcEvidenceBasis::EngineHeuristic,
+         QStringLiteral("consecutive reports 5-10 calendar days apart form one weekly step")},
+        {QStringLiteral("REPORT_PRICE_ALIGNMENT"), CftcInterpretationScope::ContemporaneousRelation,
+         CftcEvidenceBasis::EngineHeuristic,
+         QStringLiteral("close on or at most 4 days before each report date; the two window ends are distinct "
+                        "sessions; materiality ranks absolute log returns")},
+        {QStringLiteral("REPORT_FRESHNESS"), CftcInterpretationScope::AccountingFact,
+         CftcEvidenceBasis::EngineHeuristic,
+         QStringLiteral("a latest report older than 14 days relative to the evaluation date is outdated")},
         {QStringLiteral("OI_CONTEXT"), CftcInterpretationScope::MarketStructure, CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("Open Interest change material at the 0.75 move rank")},
         {QStringLiteral("CONCENTRATION"), CftcInterpretationScope::MarketStructure, CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("selected market CR concentration percentile >= 0.90 or rising move rank >= 0.75")},
         {QStringLiteral("PRICE_POSITION_RELATION"), CftcInterpretationScope::ContemporaneousRelation,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral(
-             "price and net positioning moves both material at the same report window; divergence explicit")},
+         QStringLiteral("price and net positioning moves both material at the same report window; divergence "
+                        "explicit; only on a roll-safe price series, never on a continuous front-month proxy "
+                        "that is not roll-adjusted")},
         {QStringLiteral("NET_FLAT"), CftcInterpretationScope::AccountingFact, CftcEvidenceBasis::DerivedIdentity,
          QStringLiteral("reported long equals reported short")},
         {QStringLiteral("NET_LONG"), CftcInterpretationScope::AccountingFact, CftcEvidenceBasis::DerivedIdentity,
@@ -1149,10 +1275,12 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
          QStringLiteral("previous percentile <= 0.10, current > 0.10 and net_pct_oi rose")},
         {QStringLiteral("UNWINDING_HIGH_EXTREME"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("prior persistent high, current percentile <= 0.75 and net_pct_oi fell")},
+         QStringLiteral("persistent high within the last 13 reports, first report with percentile <= 0.75 and "
+                        "net_pct_oi fell")},
         {QStringLiteral("UNWINDING_LOW_EXTREME"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("prior persistent low, current percentile >= 0.25 and net_pct_oi rose")},
+         QStringLiteral("persistent low within the last 13 reports, first report with percentile >= 0.25 and "
+                        "net_pct_oi rose")},
         {QStringLiteral("OI_EXPANSION"), CftcInterpretationScope::MarketStructure, CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("Open Interest change > 0 and material")},
         {QStringLiteral("OI_CONTRACTION"), CftcInterpretationScope::MarketStructure, CftcEvidenceBasis::EngineHeuristic,
@@ -1256,13 +1384,14 @@ inline bool cftc_anchor_oi_positive(const QVector<CftcObservation>& history, int
 
 /// Interpret one participant class of one family over an already
 /// current-truncated history. Appends any price assessments and unavailable
-/// records to the caller's result containers.
-inline CftcParticipantInterpretation
-cftc_interpret_participant(const QVector<CftcObservation>& history, int participant_index,
-                           const CftcParticipant& participant, CftcFamily family,
-                           const CftcInterpretationConfig& config, const QVector<CftcPricePoint>& prices,
-                           bool price_source_specified, QVector<CftcPricePositionAssessment>& price_context,
-                           QVector<CftcUnavailableRecord>& unavailable) {
+/// records to the caller's result containers. `price_series_roll_safe` is false
+/// for a continuous front-month proxy that is not roll-adjusted; its price
+/// assessments then fail closed with PriceSeriesNotRollSafe.
+inline CftcParticipantInterpretation cftc_interpret_participant(
+    const QVector<CftcObservation>& history, int participant_index, const CftcParticipant& participant,
+    CftcFamily family, const CftcInterpretationConfig& config, const QVector<CftcPricePoint>& prices,
+    bool price_source_specified, bool price_series_roll_safe, QVector<CftcPricePositionAssessment>& price_context,
+    QVector<CftcUnavailableRecord>& unavailable) {
     CftcParticipantInterpretation out;
     out.participant_key = participant.key;
     out.label = participant.label;
@@ -1391,7 +1520,7 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         evaluation.horizon = horizon;
         evaluation.flow = cftc_report_flow(history, participant_index, horizon, current_index);
         if (current_index - horizon < 0)
-            evaluation.horizon_reason = CftcUnavailableReason::InsufficientHistory;
+            evaluation.horizon_reason = CftcUnavailableReason::InsufficientHorizonHistory;
         else if (!evaluation.flow.continuous)
             evaluation.horizon_reason = CftcUnavailableReason::BrokenReportSequence;
         evaluation.long_rank =
@@ -1451,7 +1580,7 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
                 : CftcUnavailableReason::MissingOpenInterest;
         auto flow_missing_reason = [&]() {
             if (anchor_index < 0)
-                return CftcUnavailableReason::InsufficientHistory;
+                return CftcUnavailableReason::InsufficientHorizonHistory;
             if (!anchor_oi_positive)
                 return anchor_oi_reason;
             return CftcUnavailableReason::MissingParticipantLeg;
@@ -1566,27 +1695,58 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         }
 
         if (evaluation.share_reason == CftcUnavailableReason::None) {
-            // The plan defines NET_SHARE_RAW_DISAGREEMENT without a materiality
-            // gate; it is an accounting observation, and the actual net flow and
-            // share change are exposed as metrics so a presentation layer can
-            // judge whether to narrate it.
+            // Opposite signs alone are an arithmetic identity that fires on
+            // noise-sized moves (v1 narrated a +0.0003 % disagreement). v2 only
+            // emits the state when at least one of the two opposed moves is
+            // itself material against its own strictly trailing reference, and
+            // it carries both values plus the Open Interest change that explains
+            // the disagreement.
             const bool raw_and_share_opposed = (flow.net_flow > 0.0 && flow.net_share_change < 0.0) ||
                                                (flow.net_flow < 0.0 && flow.net_share_change > 0.0);
             const bool neither_zero = flow.net_flow != 0.0 && flow.net_share_change != 0.0;
             if (raw_and_share_opposed && neither_zero) {
-                CftcInterpretationState state =
-                    base_flow_state(QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"),
-                                    CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::DerivedIdentity);
-                state.has_horizon = true;
-                state.horizon_reports = horizon;
-                state.metrics.append(cftc_state_metric(QStringLiteral("net_flow"), flow.net_flow));
-                state.metrics.append(cftc_state_metric(QStringLiteral("net_share_change"), flow.net_share_change));
-                out.states.append(state);
+                const CftcTrailingMoveRank share_rank = cftc_trailing_move_rank(
+                    cftc_flow_move_series(history, participant_index, CftcFlowMetric::NetShareChange, horizon),
+                    current_date, config.history_window);
+                const bool net_material =
+                    evaluation.net_rank.available && evaluation.net_rank.rank >= config.material_move_percentile;
+                const bool share_material = share_rank.available && share_rank.rank >= config.material_move_percentile;
+                if (net_material || share_material) {
+                    CftcInterpretationState state =
+                        base_flow_state(QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"),
+                                        CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic);
+                    state.has_horizon = true;
+                    state.horizon_reports = horizon;
+                    state.metrics.append(cftc_state_metric(QStringLiteral("net_flow"), flow.net_flow));
+                    state.metrics.append(cftc_state_metric(QStringLiteral("net_share_change"), flow.net_share_change));
+                    state.metrics.append(cftc_state_metric(QStringLiteral("oi_change"),
+                                                           detail::cftc_optional(flow.has_oi_change, flow.oi_change)));
+                    state.metrics.append(cftc_state_metric(
+                        QStringLiteral("net_flow_rank"),
+                        detail::cftc_optional(evaluation.net_rank.available, evaluation.net_rank.rank)));
+                    state.metrics.append(
+                        cftc_state_metric(QStringLiteral("net_share_change_rank"),
+                                          detail::cftc_optional(share_rank.available, share_rank.rank)));
+                    state.has_move_rank = true;
+                    state.move_rank = std::max(evaluation.net_rank.available ? evaluation.net_rank.rank : 0.0,
+                                               share_rank.available ? share_rank.rank : 0.0);
+                    state.move_rank_reference_count =
+                        std::max(evaluation.net_rank.reference_count, share_rank.reference_count);
+                    state.move_large = state.move_rank >= config.large_move_percentile;
+                    out.states.append(state);
+                } else if (!evaluation.net_rank.available || !share_rank.available) {
+                    // Neither available rank is material, but a missing rank
+                    // could have been: the gate cannot be decided.
+                    unavailable.append(cftc_unavailable_record(
+                        QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), participant.key, true, horizon,
+                        CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic,
+                        CftcUnavailableReason::InsufficientHistory, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT")));
+                }
             }
         } else {
             unavailable.append(cftc_unavailable_record(QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), participant.key,
                                                        true, horizon, CftcInterpretationScope::DescriptiveFlow,
-                                                       CftcEvidenceBasis::DerivedIdentity, evaluation.share_reason));
+                                                       CftcEvidenceBasis::EngineHeuristic, evaluation.share_reason));
         }
 
         // Price-versus-positioning assessment for this participant/horizon.
@@ -1612,6 +1772,13 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
             assessment.reason = CftcUnavailableReason::MissingPriceContext;
         } else if (!price_source_specified) {
             assessment.reason = CftcUnavailableReason::UnspecifiedPriceSource;
+        } else if (!price_series_roll_safe) {
+            // A spliced front-month series can carry a contract-roll gap in
+            // the window and in its comparable-move reference, and the
+            // provider does not say where the rolls are. Nothing is derived
+            // from it: no move, no rank and no relationship state (the
+            // positioning side above stays populated).
+            assessment.reason = CftcUnavailableReason::PriceSeriesNotRollSafe;
         } else if (evaluation.horizon_reason != CftcUnavailableReason::None) {
             assessment.reason = evaluation.horizon_reason;
         } else if (!flow.has_net_flow) {
@@ -1619,20 +1786,32 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         } else if (!evaluation.net_rank.available) {
             assessment.reason = CftcUnavailableReason::InsufficientHistory;
         } else {
-            const CftcReportPrice latest = cftc_report_price(prices, current_date);
-            const CftcReportPrice anchor = cftc_report_price(prices, history[anchor_index].date);
+            const CftcReportPrice latest = cftc_report_price(prices, current_date, config.price_max_lag_days);
+            const CftcReportPrice anchor =
+                cftc_report_price(prices, history[anchor_index].date, config.price_max_lag_days);
             if (!latest.available || !anchor.available) {
                 assessment.reason = !latest.available ? latest.reason : anchor.reason;
+            } else if (!(anchor.date < latest.date)) {
+                // Both report dates resolved to the same session: there is no
+                // price move to describe, and a 0.00 "move" must never be
+                // reported as an evaluated observation.
+                assessment.reason = CftcUnavailableReason::PriceSessionsNotDistinct;
+                assessment.price_anchor_date = anchor.date;
+                assessment.price_latest_date = latest.date;
             } else {
                 assessment.has_price_move = true;
                 assessment.price_move = latest.close - anchor.close;
+                assessment.price_move_pct = 100.0 * (latest.close / anchor.close - 1.0);
+                assessment.price_anchor_close = anchor.close;
+                assessment.price_latest_close = latest.close;
                 assessment.price_anchor_date = anchor.date;
                 assessment.price_latest_date = latest.date;
-                const QVector<CftcDatedValue> price_moves = cftc_price_move_series(prices, history, horizon);
+                const QVector<CftcDatedValue> price_moves =
+                    cftc_price_move_series(prices, history, horizon, config.price_max_lag_days);
                 evaluation.price_rank = cftc_trailing_move_rank(price_moves, current_date, config.history_window);
                 if (!evaluation.price_rank.available) {
                     assessment.reason = evaluation.price_rank.has_current
-                                            ? CftcUnavailableReason::InsufficientHistory
+                                            ? CftcUnavailableReason::InsufficientPriceHistory
                                             : CftcUnavailableReason::PriceHistoryIncomplete;
                 } else {
                     assessment.has_price_move_rank = true;
@@ -1675,7 +1854,7 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
                                       CftcUnavailableReason& reason) {
         flow = cftc_report_flow(history, participant_index, horizon, current_index);
         if (current_index - horizon < 0) {
-            reason = CftcUnavailableReason::InsufficientHistory;
+            reason = CftcUnavailableReason::InsufficientHorizonHistory;
             return false;
         }
         if (!flow.continuous) {
@@ -1705,7 +1884,7 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
         for (int k = count - 1; k >= 0; --k) {
             const int index = current_index - k;
             if (index < 1) {
-                reason = CftcUnavailableReason::InsufficientHistory;
+                reason = CftcUnavailableReason::InsufficientHorizonHistory;
                 return false;
             }
             if (!cftc_weekly_neighbour(history[index - 1].date, history[index].date)) {
@@ -1792,17 +1971,32 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
     //     strictly trailing reference;
     //   * EXITED_* compares the previous report's percentile with the current
     //     one and requires the Net %OI level to move in the exit direction;
-    //   * UNWINDING_* additionally requires the immediately preceding report
-    //     to have carried the persistent-extreme state (the "prior persistent
-    //     state" reading) and the current percentile to re-enter at or past
-    //     the re-entry band.
+    //   * UNWINDING_* (v2) is the first report at or past the re-entry band
+    //     after a persistent extreme that held at some report within the last
+    //     `unwind_lookback_reports` reports, over one unbroken weekly
+    //     sequence, with the Net %OI level moving away from the extreme in the
+    //     latest step. v1 only accepted a persistent extreme at the
+    //     immediately preceding report, so a gradual unwind over several weeks
+    //     was never reported.
     // An exit or unwind is a positioning transition, never a price forecast.
     const int persistence = std::max(1, config.persistent_extreme_reports);
+    QVector<CftcTrailingPercentile> percentile_cache;
+    QVector<bool> percentile_cached;
     auto percentile_at_offset = [&](int offset) {
         const int index = current_index - offset;
-        if (index < 0 || index >= history.size())
+        if (offset < 0 || index < 0 || index >= history.size())
             return CftcTrailingPercentile{};
-        return cftc_trailing_percentile_at(net_pct_series, history[index].date, config.history_window);
+        if (offset < percentile_cached.size() && percentile_cached[offset])
+            return percentile_cache[offset];
+        const CftcTrailingPercentile value =
+            cftc_trailing_percentile_at(net_pct_series, history[index].date, config.history_window);
+        if (offset >= percentile_cached.size()) {
+            percentile_cached.resize(offset + 1);
+            percentile_cache.resize(offset + 1);
+        }
+        percentile_cached[offset] = true;
+        percentile_cache[offset] = value;
+        return value;
     };
     auto adjacent_at = [&](int offset) {
         const int index = current_index - offset;
@@ -1811,30 +2005,41 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
     auto position_reason_at = [&](int offset) {
         const int index = current_index - offset;
         if (index < 0 || index >= history.size())
-            return CftcUnavailableReason::InsufficientHistory;
+            return CftcUnavailableReason::InsufficientHorizonHistory;
         return detail::cftc_position_reason(history[index], participant_index,
                                             cftc_participant_net(history[index], participant_index));
     };
+    auto percentile_missing_reason = [&](const CftcTrailingPercentile& point, int offset) {
+        return point.current_present ? CftcUnavailableReason::InsufficientHistory : position_reason_at(offset);
+    };
     // A run of `persistence` consecutive weekly reports at the requested band,
-    // starting `start_offset` reports before the current report. When a report
-    // in the run is not evaluable, `missing_reason` distinguishes an absent
-    // normalized reading from an insufficient reference window.
+    // starting `start_offset` reports before the current report. A report of
+    // the run that is evaluable and outside the band makes the run
+    // definitively false. Otherwise an unevaluable report (absent normalized
+    // reading or insufficient reference window) or a broken weekly step makes
+    // the run unevaluable, reported through `missing_reason`, never false.
     auto persistent_run = [&](int start_offset, bool high, CftcUnavailableReason& missing_reason) {
         missing_reason = CftcUnavailableReason::None;
+        CftcUnavailableReason first_missing = CftcUnavailableReason::None;
         for (int k = 0; k < persistence; ++k) {
             const int offset = start_offset + k;
             const CftcTrailingPercentile point = percentile_at_offset(offset);
             if (!point.available) {
-                missing_reason =
-                    point.current_present ? CftcUnavailableReason::InsufficientHistory : position_reason_at(offset);
-                return false;
+                if (first_missing == CftcUnavailableReason::None)
+                    first_missing = percentile_missing_reason(point, offset);
+                continue;
             }
             if (high ? point.percentile < config.extreme_percentile
                      : point.percentile > cftc_low_extreme_percentile(config))
                 return false;
-            // The step between offsets (offset-1) and offset is adjacent_at(offset-1).
-            // A broken weekly sequence makes the run unevaluable, not false.
-            if (k > 0 && !adjacent_at(offset - 1)) {
+        }
+        if (first_missing != CftcUnavailableReason::None) {
+            missing_reason = first_missing;
+            return false;
+        }
+        // The step between offsets (offset-1) and offset is adjacent_at(offset-1).
+        for (int k = 1; k < persistence; ++k) {
+            if (!adjacent_at(start_offset + k - 1)) {
                 missing_reason = CftcUnavailableReason::BrokenReportSequence;
                 return false;
             }
@@ -1895,8 +2100,7 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
 
         const CftcTrailingPercentile p1 = percentile_at_offset(1);
         if (!p1.available) {
-            const CftcUnavailableReason reason =
-                p1.current_present ? CftcUnavailableReason::InsufficientHistory : position_reason_at(1);
+            const CftcUnavailableReason reason = percentile_missing_reason(p1, 1);
             unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
                                                        CftcInterpretationScope::HistoricalRelativeState,
                                                        CftcEvidenceBasis::EngineHeuristic, reason,
@@ -1930,42 +2134,55 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
                     out.states.append(extreme_state(QStringLiteral("EXITED_LOW_EXTREME"), p0));
             }
         }
-        if (p0.percentile <= config.unwind_reentry_percentile) {
-            CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
-            const bool prior_persistent_high = persistent_run(1, true, prior_missing);
-            if (prior_persistent_high) {
-                if (!adjacent_now)
-                    unavailable.append(cftc_unavailable_record(
-                        QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
-                        CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
-                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("UNWINDING_HIGH_EXTREME")));
-                else if (net_fell)
-                    out.states.append(extreme_state(QStringLiteral("UNWINDING_HIGH_EXTREME"), p0));
-            } else if (prior_missing != CftcUnavailableReason::None) {
-                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
-                                                           0, CftcInterpretationScope::HistoricalRelativeState,
-                                                           CftcEvidenceBasis::EngineHeuristic, prior_missing,
-                                                           QStringLiteral("UNWINDING_HIGH_EXTREME")));
+        auto unwind_unavailable = [&](CftcUnavailableReason reason, const QString& state_id) {
+            unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
+                                                       CftcInterpretationScope::HistoricalRelativeState,
+                                                       CftcEvidenceBasis::EngineHeuristic, reason, state_id));
+        };
+        auto evaluate_unwind = [&](bool high, const QString& state_id, bool moved_away) {
+            const double reentry = high ? config.unwind_reentry_percentile : cftc_unwind_low_reentry_percentile(config);
+            const bool in_reentry = high ? p0.percentile <= reentry : p0.percentile >= reentry;
+            if (!in_reentry)
+                return;
+            // The most recent persistent extreme inside the lookback. An
+            // unevaluable run only matters when no evaluable run was found.
+            const int lookback = std::max(1, config.unwind_lookback_reports);
+            int found_offset = -1;
+            CftcUnavailableReason first_missing = CftcUnavailableReason::None;
+            for (int start = 1; start <= lookback; ++start) {
+                CftcUnavailableReason run_missing = CftcUnavailableReason::None;
+                if (persistent_run(start, high, run_missing)) {
+                    found_offset = start;
+                    break;
+                }
+                if (run_missing != CftcUnavailableReason::None && first_missing == CftcUnavailableReason::None)
+                    first_missing = run_missing;
             }
-        }
-        if (p0.percentile >= cftc_unwind_low_reentry_percentile(config)) {
-            CftcUnavailableReason prior_missing = CftcUnavailableReason::None;
-            const bool prior_persistent_low = persistent_run(1, false, prior_missing);
-            if (prior_persistent_low) {
-                if (!adjacent_now)
-                    unavailable.append(cftc_unavailable_record(
-                        QStringLiteral("EXTREME_TRANSITION"), participant.key, false, 0,
-                        CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic,
-                        CftcUnavailableReason::BrokenReportSequence, QStringLiteral("UNWINDING_LOW_EXTREME")));
-                else if (net_rose)
-                    out.states.append(extreme_state(QStringLiteral("UNWINDING_LOW_EXTREME"), p0));
-            } else if (prior_missing != CftcUnavailableReason::None) {
-                unavailable.append(cftc_unavailable_record(QStringLiteral("EXTREME_TRANSITION"), participant.key, false,
-                                                           0, CftcInterpretationScope::HistoricalRelativeState,
-                                                           CftcEvidenceBasis::EngineHeuristic, prior_missing,
-                                                           QStringLiteral("UNWINDING_LOW_EXTREME")));
+            if (found_offset < 0) {
+                if (first_missing != CftcUnavailableReason::None)
+                    unwind_unavailable(first_missing, state_id);
+                return;
             }
-        }
+            // The persistent run and the current report must be joined by one
+            // unbroken weekly sequence.
+            for (int offset = 0; offset < found_offset; ++offset) {
+                if (!adjacent_at(offset)) {
+                    unwind_unavailable(CftcUnavailableReason::BrokenReportSequence, state_id);
+                    return;
+                }
+            }
+            // A transition, not a lingering state: the previous report was
+            // still outside the re-entry band.
+            if (!p1.available) {
+                unwind_unavailable(percentile_missing_reason(p1, 1), state_id);
+                return;
+            }
+            const bool previous_outside = high ? p1.percentile > reentry : p1.percentile < reentry;
+            if (previous_outside && moved_away)
+                out.states.append(extreme_state(state_id, p0));
+        };
+        evaluate_unwind(true, QStringLiteral("UNWINDING_HIGH_EXTREME"), net_fell);
+        evaluate_unwind(false, QStringLiteral("UNWINDING_LOW_EXTREME"), net_rose);
     }
 
     return out;
@@ -1982,7 +2199,7 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
         const int anchor_index = current_index - horizon;
         CftcUnavailableReason reason = CftcUnavailableReason::None;
         if (anchor_index < 0)
-            reason = CftcUnavailableReason::InsufficientHistory;
+            reason = CftcUnavailableReason::InsufficientHorizonHistory;
         else if (!flow.continuous)
             reason = CftcUnavailableReason::BrokenReportSequence;
         else if (!history.last().open_interest.has_value())
@@ -2068,7 +2285,7 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
         }
         if (current_value) {
             if (current_index < 1)
-                assessment.change_unavailable_reason = CftcUnavailableReason::InsufficientHistory;
+                assessment.change_unavailable_reason = CftcUnavailableReason::InsufficientHorizonHistory;
             else if (!adjacent_previous)
                 assessment.change_unavailable_reason = CftcUnavailableReason::BrokenReportSequence;
             else if (!cftc_concentration_value(history[current_index - 1], field).has_value())
@@ -2125,7 +2342,7 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
     if (!primary->has_percentile) {
         result.unavailable.append(cftc_unavailable_record(
             QStringLiteral("CONCENTRATION"), QString(), false, 0, CftcInterpretationScope::MarketStructure,
-            CftcEvidenceBasis::EngineHeuristic, CftcUnavailableReason::InsufficientHistory,
+            CftcEvidenceBasis::EngineHeuristic, CftcUnavailableReason::InsufficientConcentrationHistory,
             QStringLiteral("HIGH_MARKET_CONCENTRATION")));
     } else if (primary->percentile >= config.extreme_percentile) {
         CftcInterpretationState state;
@@ -2140,10 +2357,11 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
         result.market_context.append(state);
     }
     if (!primary->has_change) {
-        const CftcUnavailableReason reason = primary->change_unavailable_reason != CftcUnavailableReason::None
-                                                 ? primary->change_unavailable_reason
-                                                 : (current_index >= 1 ? CftcUnavailableReason::BrokenReportSequence
-                                                                       : CftcUnavailableReason::InsufficientHistory);
+        const CftcUnavailableReason reason =
+            primary->change_unavailable_reason != CftcUnavailableReason::None
+                ? primary->change_unavailable_reason
+                : (current_index >= 1 ? CftcUnavailableReason::BrokenReportSequence
+                                      : CftcUnavailableReason::InsufficientHorizonHistory);
         result.unavailable.append(cftc_unavailable_record(
             QStringLiteral("CONCENTRATION"), QString(), false, 0, CftcInterpretationScope::MarketStructure,
             CftcEvidenceBasis::EngineHeuristic, reason, QStringLiteral("CONCENTRATION_RISING")));
@@ -2199,7 +2417,7 @@ inline void cftc_append_report_unavailable(CftcInterpretationResult& result,
          CftcEvidenceBasis::EngineHeuristic},
         {"GROSS_FLOW", CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic},
         {"NET_SHIFT", CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic},
-        {"NET_SHARE_RAW_DISAGREEMENT", CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::DerivedIdentity},
+        {"NET_SHARE_RAW_DISAGREEMENT", CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic},
         {"SUSTAINED_REPOSITIONING", CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic},
         {"EXTREME_TRANSITION", CftcInterpretationScope::HistoricalRelativeState, CftcEvidenceBasis::EngineHeuristic},
         {"OI_CONTEXT", CftcInterpretationScope::MarketStructure, CftcEvidenceBasis::EngineHeuristic},
@@ -2222,11 +2440,24 @@ inline void cftc_append_report_unavailable(CftcInterpretationResult& result,
 /// contracts and never guesses a silent report basis. The stable market
 /// identity is the CFTC contract-market code; the display market name is
 /// descriptive metadata and may legitimately change between reports (CFTC
-/// documents contract name changes while the code stays fixed).
+/// documents contract name changes while the code stays fixed). The declared
+/// report basis is checked against the rows' own published basis metadata
+/// whenever the rows carry it: a row published under the other basis, or a
+/// history where only some rows state their basis, is a mismatch.
 inline CftcUnavailableReason cftc_validate_provenance(const CftcInterpretationInput& input) {
     const QString basis = input.report_basis_code.trimmed().toLower();
     if (basis != QLatin1String("futures_only") && basis != QLatin1String("futures_and_options_combined"))
         return CftcUnavailableReason::ReportBasisUnspecified;
+    int rows_with_basis = 0;
+    for (const auto& observation : input.observations) {
+        if (observation.report_basis.trimmed().isEmpty())
+            continue;
+        ++rows_with_basis;
+        if (cftc_normalized_report_basis(observation.report_basis) != basis)
+            return CftcUnavailableReason::ReportBasisMismatch;
+    }
+    if (rows_with_basis != 0 && rows_with_basis != input.observations.size())
+        return CftcUnavailableReason::ReportBasisMismatch;
     const QString family_code = input.observations_family_code.trimmed().toLower();
     const bool known_family = family_code == QLatin1String("legacy") || family_code == QLatin1String("disaggregated") ||
                               family_code == QLatin1String("disagg") || family_code == QLatin1String("tff") ||
@@ -2255,7 +2486,7 @@ inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& in
     // the result carries the truthful identity of the effective configuration.
     const CftcInterpretationConfig effective = cftc_effective_interpretation_config(input.config);
     result.config = effective;
-    result.config_is_v1 = cftc_interpretation_config_is_v1(effective);
+    result.config_is_default = cftc_interpretation_config_is_default(effective);
     result.rule_set_version = cftc_interpretation_rule_set_version_for(effective);
     result.family = input.family;
     result.family_code = cftc_family_code(input.family);
@@ -2313,6 +2544,17 @@ inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& in
     result.report_date = input.as_of.isValid() ? input.as_of : current.date;
     result.current_report_stale = stale;
     result.report_date_available = !stale;
+    result.report_basis_verified = !current.report_basis.trimmed().isEmpty();
+    // Freshness against the caller's evaluation date: CFTC publishes weekly,
+    // so a latest report older than the configured age means newer reports
+    // exist that this history does not carry (for example a discontinued
+    // contract). The report stays interpretable as of its own date, but it is
+    // flagged so it is never presented as current.
+    if (input.evaluation_date.isValid() && current.date.isValid()) {
+        result.report_age_available = true;
+        result.report_age_days = static_cast<int>(current.date.daysTo(input.evaluation_date));
+        result.report_outdated = result.report_age_days > effective.max_report_age_days;
+    }
     result.market = current.market;
     result.contract_code = current.contract_code;
     result.units = current.units;
@@ -2326,10 +2568,11 @@ inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& in
     }
 
     const bool price_source_specified = !input.price_source.trimmed().isEmpty();
+    const bool price_series_roll_safe = !input.price_continuous_proxy;
     for (int i = 0; i < participants.size(); ++i) {
-        result.participants.append(cftc_interpret_participant(history, i, participants[i], input.family, effective,
-                                                              input.prices, price_source_specified,
-                                                              result.price_context, result.unavailable));
+        result.participants.append(cftc_interpret_participant(
+            history, i, participants[i], input.family, effective, input.prices, price_source_specified,
+            price_series_roll_safe, result.price_context, result.unavailable));
     }
     cftc_interpret_open_interest(history, effective, result);
     cftc_interpret_concentration(history, effective, result);

@@ -58,6 +58,7 @@ using services::cftc_family_from_code;
 using services::cftc_family_participants;
 using services::cftc_filter_range;
 using services::cftc_heatmap_series;
+using services::cftc_history_basis_error;
 using services::cftc_interpret;
 using services::cftc_metric_series;
 using services::cftc_net_extreme_dates;
@@ -86,6 +87,7 @@ using services::CftcRange;
 using services::CftcWindowStats;
 using services::kCftcHeatmapMinObservations;
 using services::kCftcWeeklyGapDays;
+using services::kCftcWeeklyMinGapDays;
 
 namespace {
 
@@ -129,7 +131,7 @@ static const QList<QPair<QString, QString>> kMarkets = {
     {"S&P 500", "s&p_500"},
     {"Nasdaq 100", "nasdaq_100"},
     {"Dow Jones", "dow_jones"},
-    {"Nikkei 225", "nikkei"},
+    {"Nikkei 225 (Yen)", "nikkei"},
     {"VIX", "vix"},
     // Rates
     {"T-Bonds (30Y)", "treasury_bonds"},
@@ -152,8 +154,11 @@ struct PriceSpec {
 // Retained free public price path (Yahoo Finance via MarketDataService, no
 // account, no key). A market without a mapping explicitly reports that price
 // analysis is unavailable instead of fabricating a series. Continuous symbols
-// are front-month proxies that roll between contracts; spot indices are
-// labelled as such in the divergence section.
+// are front-month proxies that roll between contracts without roll adjustment,
+// and the provider does not identify the roll dates, so the interpretation
+// engine derives no price move or relationship from them
+// (PriceSeriesNotRollSafe); the chart still shows the series. Spot indices
+// have no contract roll, are evaluated, and are labelled as spot indices.
 static const QHash<QString, PriceSpec>& price_specs() {
     static const QHash<QString, PriceSpec> specs = {
         {QStringLiteral("gold"), {QStringLiteral("GC=F"), false}},
@@ -327,7 +332,19 @@ QString weekly_unavailable_reason(const CftcChange& change, const QDate& as_of) 
             .arg(as_of.toString(Qt::ISODate));
     if (!change.has_pair)
         return QCoreApplication::translate("CftcPanel", "no previous report in the returned history");
-    return QCoreApplication::translate("CftcPanel", "previous report is %1 days earlier").arg(change.gap_days);
+    if (change.gap_days < kCftcWeeklyMinGapDays)
+        return QCoreApplication::translate("CftcPanel",
+                                           "previous report is only %1 days earlier (an extra report, not a weekly "
+                                           "interval of %2-%3 days)")
+            .arg(change.gap_days)
+            .arg(kCftcWeeklyMinGapDays)
+            .arg(kCftcWeeklyGapDays);
+    return QCoreApplication::translate("CftcPanel",
+                                       "previous report is %1 days earlier (longer than a weekly interval of %2-%3 "
+                                       "days)")
+        .arg(change.gap_days)
+        .arg(kCftcWeeklyMinGapDays)
+        .arg(kCftcWeeklyGapDays);
 }
 
 enum class StatMetric { Latest, Max, Min, Avg, CotIndex, Percentile, ZScore, FromHigh, FromLow, Change4W, Change13W };
@@ -420,13 +437,17 @@ QString stat_metric_tooltip(StatMetric metric) {
                                                "Mean net position over the selected window's real observations.");
         case StatMetric::CotIndex:
             return QCoreApplication::translate(
-                "CftcPanel", "COT Index = 100 × (latest − window min) / (window max − window min).\n"
-                             "0 = window low, 100 = window high. Undefined when the window has no variance.");
+                "CftcPanel", "COT Index = 100 × (latest − window min) / (window max − window min), on raw net "
+                             "contracts within the selected history range, including the latest report.\n"
+                             "0 = window low, 100 = window high. Undefined when the window has no variance.\n"
+                             "Not the COT interpretation's historical percentile, which ranks Net %OI against the "
+                             "previous 156 reports.");
         case StatMetric::Percentile:
             return cftc_window_percentile_tooltip();
         case StatMetric::ZScore:
-            return QCoreApplication::translate("CftcPanel",
-                                               "Z-score = (latest − window mean) / sample standard deviation (n−1).");
+            return QCoreApplication::translate(
+                "CftcPanel", "Z-score = (latest − window mean) / sample standard deviation (n−1), on raw net contracts "
+                             "within the selected history range, including the latest report.");
         case StatMetric::FromHigh:
             return QCoreApplication::translate("CftcPanel", "Latest minus the window's highest reading.");
         case StatMetric::FromLow:
@@ -500,14 +521,6 @@ bool stat_metric_readout(StatMetric metric, const CftcWindowStats& stats, QStrin
         return false;
     text = cftc_signed_net(stats.change_13w);
     return true;
-}
-
-QString percentile_state(double percentile) {
-    if (percentile >= 80.0)
-        return QCoreApplication::translate("CftcPanel", "UPPER RANGE");
-    if (percentile <= 20.0)
-        return QCoreApplication::translate("CftcPanel", "LOWER RANGE");
-    return QCoreApplication::translate("CftcPanel", "MIDDLE RANGE");
 }
 
 void apply_value_state(QLabel* label, int sign) {
@@ -1102,6 +1115,14 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
         show_error(history.error);
         return;
     }
+    // The rows' own published basis must be the requested basis: a Combined
+    // history labelled Futures Only (or a splice of the two) is refused.
+    const QString basis_error = cftc_history_basis_error(history.observations, futures_only_);
+    if (!basis_error.isEmpty()) {
+        clear_workspace();
+        show_error(basis_error);
+        return;
+    }
 
     history_ = history;
     participants_ = cftc_family_participants(family_);
@@ -1418,6 +1439,10 @@ void CftcPanel::update_header() {
 
     QStringList meta;
     meta << tr("Report %1").arg(latest.date_label);
+    if (interpretation_.report_outdated) {
+        meta << tr("OUT OF DATE — %1 days old; CFTC publishes weekly, so this contract may be discontinued")
+                    .arg(interpretation_.report_age_days);
+    }
     meta << family_label(family_);
     meta << (futures_only_ ? tr("Futures Only") : tr("Combined (futures + options)"));
     if (!latest.contract_code.isEmpty()) {
@@ -1453,10 +1478,13 @@ void CftcPanel::refresh_interpretation() {
     // history, and changing the visible range must not change any state.
     const bool price_ready = price_state_ == PriceState::Ready && price_market_key_ == market_key_;
     const QVector<CftcPricePoint> prices = price_ready ? price_ : QVector<CftcPricePoint>{};
+    // Today's UTC calendar date is passed only for the report-freshness check,
+    // so a discontinued contract's last report is flagged as out of date.
     const CftcInterpretationInput input = cftc_make_interpretation_input(
         family_, history_.observations,
         futures_only_ ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined"), prices,
-        price_ready ? concise_price_source_text() : QString(), price_ready && !price_spot_index_, price_spot_index_);
+        price_ready ? concise_price_source_text() : QString(), price_ready && !price_spot_index_, price_spot_index_,
+        QDateTime::currentDateTimeUtc().date());
     interpretation_ = cftc_interpret(input);
     render_interpretation();
 }
@@ -1658,12 +1686,15 @@ void CftcPanel::update_snapshot() {
                  : weekly.value < 0 ? -1
                                     : 0,
                  tr("vs previous report %1").arg(weekly.previous_date.toString(Qt::ISODate)),
-                 tr("Difference from the previous report; a gap longer than %1 days is not a weekly change.")
+                 tr("Difference from the previous report; only a previous report %1-%2 days earlier is a weekly "
+                    "change.")
+                     .arg(kCftcWeeklyMinGapDays)
                      .arg(kCftcWeeklyGapDays));
     } else {
         set_card(1, tr("WEEKLY CHANGE (%1)").arg(spec_short), QStringLiteral("—"), 0,
                  weekly_unavailable_reason(weekly, as_of_date),
-                 tr("A weekly change requires the latest report and a previous report within %1 days.")
+                 tr("A weekly change requires the latest report and a previous report %1-%2 days earlier.")
+                     .arg(kCftcWeeklyMinGapDays)
                      .arg(kCftcWeeklyGapDays));
     }
 
@@ -1692,11 +1723,17 @@ void CftcPanel::update_snapshot() {
                  weekly_unavailable_reason(oi_weekly, as_of_date), QString());
     }
 
-    // COT INDEX / Z-SCORE / PERCENTILE (window-dependent labels)
+    // COT INDEX / Z-SCORE / PERCENTILE (window-dependent labels). These are
+    // raw-net-contract statistics of the selected history range with the
+    // latest report included; they are a different measure from the
+    // interpretation's Net %OI percentile, so every card's subtitle names its
+    // metric, window and inclusion, and none carries a categorical range
+    // verdict.
     const QString cot_caption = tr("COT INDEX (%1)").arg(range_label);
     if (stats.has_cot_index) {
         set_card(4, cot_caption, QString::number(stats.cot_index, 'f', 1), 0,
-                 tr("window %1 → %2").arg(cftc_signed_net(stats.min_value), cftc_signed_net(stats.max_value)),
+                 tr("raw net contracts, window %1 → %2, incl. latest")
+                     .arg(cftc_signed_net(stats.min_value), cftc_signed_net(stats.max_value)),
                  stat_metric_tooltip(StatMetric::CotIndex));
     } else {
         set_card(4, cot_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
@@ -1705,8 +1742,8 @@ void CftcPanel::update_snapshot() {
 
     const QString z_caption = tr("Z-SCORE (%1)").arg(range_label);
     if (stats.has_zscore) {
-        set_card(5, z_caption, QString::number(stats.zscore, 'f', 2), 0, tr("vs window mean / σ"),
-                 stat_metric_tooltip(StatMetric::ZScore));
+        set_card(5, z_caption, QString::number(stats.zscore, 'f', 2), 0,
+                 tr("raw net contracts vs window mean / σ, incl. latest"), stat_metric_tooltip(StatMetric::ZScore));
     } else {
         set_card(5, z_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  stat_metric_tooltip(StatMetric::ZScore));
@@ -1718,8 +1755,7 @@ void CftcPanel::update_snapshot() {
     const QString pct_caption = cftc_window_percentile_label(range_label);
     if (stats.has_percentile) {
         set_card(6, pct_caption, QString::number(stats.percentile, 'f', 1) + QLatin1Char('%'), 0,
-                 tr("%1 · raw net, selected range").arg(percentile_state(stats.percentile)),
-                 cftc_window_percentile_tooltip());
+                 tr("raw net contracts, selected range, incl. latest"), cftc_window_percentile_tooltip());
     } else {
         set_card(6, pct_caption, QStringLiteral("—"), 0, stat_unavailable_reason(stats, as_of_date),
                  cftc_window_percentile_tooltip());
@@ -1919,8 +1955,9 @@ void CftcPanel::update_statistics() {
 
     if (stats_meta_lbl_) {
         stats_meta_lbl_->setText(
-            tr("Window %1 · %2 reports · %3 → %4 — statistical summaries of real observations; an extreme "
-               "reading is not a prediction. Latest-window measures are anchored at the %5 report.")
+            tr("Window %1 · %2 reports · %3 → %4 — statistical summaries of raw net contracts in the selected "
+               "range, including the latest report; they are not the COT interpretation's Net %OI percentile, and an "
+               "extreme reading is not a prediction. Latest-window measures are anchored at the %5 report.")
                 .arg(cftc_range_label(range_))
                 .arg(window_.size())
                 .arg(window_.first().date_label, window_.last().date_label)
@@ -1994,7 +2031,8 @@ void CftcPanel::update_price_points(const QVector<services::HistoryPoint>& point
             ++dropped;
             continue;
         }
-        const QDate date = QDateTime::fromSecsSinceEpoch(point.timestamp).date();
+        // Exchange-session date, independent of the viewer's time zone.
+        const QDate date = cftc_price_session_date(point.timestamp);
         if (!date.isValid()) {
             ++dropped;
             continue;
@@ -2042,9 +2080,11 @@ QString CftcPanel::price_source_text() const {
                   "interpretation engine and describes a contemporaneous relationship only.")
             .arg(price_symbol_);
     }
-    return tr("Price: Yahoo Finance — %1 front-month continuous futures (rolls between contracts; not an "
-              "individual deliverable contract). Separate from CFTC data. Relationship wording comes from the "
-              "descriptive COT interpretation engine and describes a contemporaneous relationship only.")
+    return tr("Price: Yahoo Finance — %1 front-month continuous futures (rolls between contracts without roll "
+              "adjustment, and the provider does not identify the roll dates, so a price move could include the gap "
+              "between contracts; not an individual deliverable contract). Price moves and the price/positioning "
+              "relationship are therefore not evaluated for this series; the chart shows it for reference only. "
+              "Separate from CFTC data.")
         .arg(price_symbol_);
 }
 
@@ -2156,11 +2196,15 @@ void CftcPanel::update_divergence() {
         }
 
         if (assessment && assessment->has_price_move) {
-            set_plain_cell(divergence_table_, row, 1, signed_decimal(assessment->price_move, 2));
-            if (auto* item = divergence_table_->item(row, 1))
+            set_plain_cell(divergence_table_, row, 1, cftc_price_move_evidence_text(*assessment));
+            if (auto* item = divergence_table_->item(row, 1)) {
                 item->setForeground(QColor(assessment->price_move > 0.0   ? ui::colors::POSITIVE()
                                            : assessment->price_move < 0.0 ? ui::colors::NEGATIVE()
                                                                           : ui::colors::TEXT_PRIMARY()));
+                item->setToolTip(tr("Closes %1 → %2 of %3.")
+                                     .arg(assessment->price_anchor_date.toString(Qt::ISODate),
+                                          assessment->price_latest_date.toString(Qt::ISODate), price_symbol_));
+            }
         } else if (price_state_ == PriceState::Pending) {
             set_plain_cell(divergence_table_, row, 1, tr("pending — price context is loading"));
             if (auto* item = divergence_table_->item(row, 1))
@@ -2335,8 +2379,8 @@ void CftcPanel::update_heatmap() {
             heatmap_meta_lbl_->clear();
         } else {
             heatmap_meta_lbl_->setText(
-                tr("Last %1 reports in the window. Each column uses the window's observations up to that report "
-                   "(no lookahead); fewer than %2 observations stays blank.")
+                tr("Last %1 reports in the window, on raw net contracts. Each column uses the window's observations "
+                   "up to that report (no lookahead); fewer than %2 observations stays blank.")
                     .arg(dates.size())
                     .arg(kCftcHeatmapMinObservations));
         }

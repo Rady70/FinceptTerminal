@@ -136,9 +136,11 @@ inline QString cftc_interpretation_percentile_label() {
 }
 
 /// The older workspace percentile: a descriptive percentile of the raw net
-/// position inside the selected history display range. It is a different metric
-/// on a different window and must never be presented as the interpretation
-/// measurement.
+/// position inside the selected history display range, with the latest report
+/// included in its own distribution. It is a different metric on a different
+/// window and must never be presented as the interpretation measurement: the
+/// card subtitle and this tooltip name the metric, and no categorical range
+/// verdict is attached.
 inline QString cftc_window_percentile_label(const QString& range_label) {
     return QCoreApplication::translate("CftcWorkspace", "WINDOW PERCENTILE (%1)").arg(range_label);
 }
@@ -146,9 +148,10 @@ inline QString cftc_window_percentile_label(const QString& range_label) {
 inline QString cftc_window_percentile_tooltip() {
     return QCoreApplication::translate(
         "CftcWorkspace",
-        "Descriptive percentile of the raw net position within the selected history display range (1Y–MAX). "
-        "This is a different measure from the COT interpretation's strict trailing Net %OI percentile over the "
-        "156 prior reports.");
+        "Descriptive percentile of the raw net position (contracts) within the selected history display range "
+        "(1Y–MAX), with the latest report included in the distribution. This is a different measure from the COT "
+        "interpretation's strict trailing Net %OI percentile over the 156 prior reports: raw contracts rise with "
+        "market size, so the two can differ widely when Open Interest has grown.");
 }
 
 /// The information-hierarchy guard the panel runs while building the Analysis

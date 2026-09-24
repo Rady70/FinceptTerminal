@@ -147,6 +147,11 @@ struct CftcObservation {
     QString market;     // market_and_exchange_names
     QString contract_code;
     QString units; // contract_units
+    /// The row's own report-basis metadata exactly as published
+    /// (`futonly_or_combined`: "FutOnly" or "Combined"); empty when the row
+    /// did not carry it. The interpretation engine checks it against the
+    /// declared basis instead of trusting the caller's declaration alone.
+    QString report_basis;
     std::optional<double> open_interest;
     QVector<std::optional<double>> longs;  // one per family participant
     QVector<std::optional<double>> shorts; // one per family participant
@@ -197,30 +202,101 @@ inline QDate cftc_parse_report_date(const QString& text) {
     return {};
 }
 
-/// Parse a JSON numeric cell, or a numeric string (Socrata returns some
-/// position columns as strings). Anything else — null, absent, junk text — is
-/// absent, never zero.
-inline std::optional<double> cftc_number(const QJsonObject& row, const QString& key) {
+/// Whether a cell holds a number that is not finite ("nan", "inf" or an
+/// equivalent numeric value). Such a cell is corrupt input, not a missing
+/// observation and never a number the analytics may use.
+inline bool cftc_cell_is_non_finite(const QJsonObject& row, const QString& key) {
     const QJsonValue value = row.value(key);
     if (value.isDouble())
-        return value.toDouble();
+        return !std::isfinite(value.toDouble());
     if (value.isString()) {
         bool ok = false;
         const double parsed = value.toString().trimmed().toDouble(&ok);
-        if (ok)
+        return ok && !std::isfinite(parsed);
+    }
+    return false;
+}
+
+/// Parse a JSON numeric cell, or a numeric string (Socrata returns some
+/// position columns as strings). Anything else — null, absent, junk text — is
+/// absent, never zero. A non-finite value ("nan", "inf") is never returned as
+/// a number; cftc_parse_history rejects a payload that carries one.
+inline std::optional<double> cftc_number(const QJsonObject& row, const QString& key) {
+    const QJsonValue value = row.value(key);
+    if (value.isDouble()) {
+        const double parsed = value.toDouble();
+        if (std::isfinite(parsed))
+            return parsed;
+        return std::nullopt;
+    }
+    if (value.isString()) {
+        bool ok = false;
+        const double parsed = value.toString().trimmed().toDouble(&ok);
+        if (ok && std::isfinite(parsed))
             return parsed;
     }
     return std::nullopt;
 }
+
+/// The engine's report-basis code for the provider's `futonly_or_combined`
+/// text ("FutOnly" -> futures_only, "Combined" ->
+/// futures_and_options_combined). The engine codes themselves are accepted
+/// too. Anything else — including empty text — is an empty string, so it can
+/// never silently match a declared basis.
+inline QString cftc_normalized_report_basis(const QString& text) {
+    const QString lower = text.trimmed().toLower();
+    if (lower == QLatin1String("futonly") || lower == QLatin1String("futures_only") ||
+        lower == QLatin1String("futures only"))
+        return QStringLiteral("futures_only");
+    if (lower == QLatin1String("combined") || lower == QLatin1String("futures_and_options_combined"))
+        return QStringLiteral("futures_and_options_combined");
+    return {};
+}
+
+/// Largest amount (in contracts) by which one participant leg may exceed the
+/// report's Open Interest before the row is rejected as impossible. Futures
+/// Only reports satisfy the CFTC accounting identities exactly; Combined
+/// reports round delta-adjusted option positions to whole contracts, so a
+/// couple of contracts of rounding are tolerated. A leg genuinely larger than
+/// the whole market is corrupt input.
+inline constexpr double kCftcLegOverOpenInterestTolerance = 2.0;
 
 struct CftcHistory {
     QVector<CftcObservation> observations; // ascending by report date
     QString error;                         // non-empty when unusable
 };
 
+/// The participant keys only this report family uses. Other Reportables and
+/// Non-Reportable exist in more than one family, so they cannot tell the
+/// families apart; Commercial / Non-Commercial (Legacy), Producer/Merchant,
+/// Swap Dealers and Managed Money (Disaggregated) and Dealer, Asset Manager and
+/// Leveraged Funds (TFF) can.
+inline QStringList cftc_family_distinctive_participant_keys(CftcFamily family) {
+    QStringList others;
+    for (CftcFamily other : {CftcFamily::Legacy, CftcFamily::Disaggregated, CftcFamily::Tff}) {
+        if (other == family)
+            continue;
+        for (const auto& participant : cftc_family_participants(other))
+            others << participant.key;
+    }
+    QStringList out;
+    for (const auto& participant : cftc_family_participants(family)) {
+        if (!others.contains(participant.key))
+            out << participant.key;
+    }
+    return out;
+}
+
 /// Build the typed history from the provider's rows. Fails closed: a row with
 /// an unparseable date or a repeated report date makes the whole payload
-/// unusable rather than being silently dropped (which would hide history).
+/// unusable rather than being silently dropped (which would hide history). The
+/// same applies to structurally impossible input: a non-finite number in any
+/// retained numeric field (Open Interest, participant legs, trader counts,
+/// concentration), a negative position or Open Interest, a participant leg
+/// larger than the whole market's Open Interest, and a row that does not belong
+/// to the declared report family — it carries none of that family's
+/// distinctive participant fields, or it carries another family's (a
+/// mis-declared family would otherwise read as "every leg is missing").
 inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family) {
     CftcHistory out;
     const auto participants = cftc_family_participants(family);
@@ -228,20 +304,60 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         out.error = QCoreApplication::translate("CftcPanel", "The provider returned no observations.");
         return out;
     }
+    auto fail = [&out](const QString& message) {
+        out.error = message;
+        out.observations.clear();
+        return out;
+    };
+    const QStringList own_keys = cftc_family_distinctive_participant_keys(family);
+    QStringList foreign_keys;
+    for (CftcFamily other : {CftcFamily::Legacy, CftcFamily::Disaggregated, CftcFamily::Tff}) {
+        if (other != family)
+            foreign_keys << cftc_family_distinctive_participant_keys(other);
+    }
+    auto carries_any = [](const QJsonObject& row, const QStringList& keys) {
+        for (const QString& key : keys) {
+            if (row.contains(key + QStringLiteral("_long")) || row.contains(key + QStringLiteral("_short")))
+                return true;
+        }
+        return false;
+    };
+    // Every numeric field the observation retains. A "nan"/"inf" cell in any of
+    // them is corrupt input, never a missing observation.
+    QStringList numeric_keys = {
+        QStringLiteral("open_interest_all"),          QStringLiteral("traders_total"),
+        QStringLiteral("traders_reportable_long"),    QStringLiteral("traders_reportable_short"),
+        QStringLiteral("concentration_gross_4_long"), QStringLiteral("concentration_gross_4_short"),
+        QStringLiteral("concentration_gross_8_long"), QStringLiteral("concentration_gross_8_short"),
+        QStringLiteral("concentration_net_4_long"),   QStringLiteral("concentration_net_4_short"),
+        QStringLiteral("concentration_net_8_long"),   QStringLiteral("concentration_net_8_short")};
+    for (const auto& participant : participants)
+        numeric_keys << participant.key + QStringLiteral("_long") << participant.key + QStringLiteral("_short");
     out.observations.reserve(rows.size());
     for (const auto& value : rows) {
         const QJsonObject row = value.toObject();
         CftcObservation obs;
         obs.date_label = row.value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString().trimmed();
         obs.date = cftc_parse_report_date(obs.date_label);
-        if (!obs.date.isValid()) {
-            out.error = QCoreApplication::translate("CftcPanel", "A report row has no usable report date.");
-            out.observations.clear();
-            return out;
+        if (!obs.date.isValid())
+            return fail(QCoreApplication::translate("CftcPanel", "A report row has no usable report date."));
+        if (!carries_any(row, own_keys) || carries_any(row, foreign_keys)) {
+            return fail(QCoreApplication::translate("CftcPanel",
+                                                    "The report row for %1 does not carry the %2 participant fields; "
+                                                    "the rows do not belong to the requested report family.")
+                            .arg(obs.date_label, cftc_family_code(family)));
+        }
+        for (const QString& key : std::as_const(numeric_keys)) {
+            if (cftc_cell_is_non_finite(row, key)) {
+                return fail(
+                    QCoreApplication::translate("CftcPanel", "The report row for %1 carries a non-finite value in %2.")
+                        .arg(obs.date_label, key));
+            }
         }
         obs.market = row.value(QStringLiteral("market_and_exchange_names")).toString();
         obs.contract_code = row.value(QStringLiteral("cftc_contract_market_code")).toString();
         obs.units = row.value(QStringLiteral("contract_units")).toString();
+        obs.report_basis = row.value(QStringLiteral("futonly_or_combined")).toString().trimmed();
         obs.open_interest = cftc_number(row, QStringLiteral("open_interest_all"));
         obs.traders_total = cftc_number(row, QStringLiteral("traders_total"));
         obs.traders_reportable_long = cftc_number(row, QStringLiteral("traders_reportable_long"));
@@ -260,6 +376,30 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
             obs.longs.append(cftc_number(row, participant.key + QStringLiteral("_long")));
             obs.shorts.append(cftc_number(row, participant.key + QStringLiteral("_short")));
         }
+        // Structurally impossible values are corrupt input: they would
+        // otherwise produce fabricated extremes (a leg worth 2,000 % of Open
+        // Interest reads as a "severe" historical reading).
+        if (obs.open_interest && *obs.open_interest < 0.0) {
+            return fail(QCoreApplication::translate("CftcPanel", "The report row for %1 carries a negative Open "
+                                                                 "Interest.")
+                            .arg(obs.date_label));
+        }
+        for (int p = 0; p < participants.size(); ++p) {
+            for (const std::optional<double>& leg : {obs.longs[p], obs.shorts[p]}) {
+                if (!leg)
+                    continue;
+                if (*leg < 0.0) {
+                    return fail(QCoreApplication::translate("CftcPanel",
+                                                            "The report row for %1 carries a negative %2 position.")
+                                    .arg(obs.date_label, participants[p].key));
+                }
+                if (obs.open_interest && *leg > *obs.open_interest + kCftcLegOverOpenInterestTolerance) {
+                    return fail(QCoreApplication::translate("CftcPanel", "The report row for %1 carries a %2 position "
+                                                                         "larger than the market's Open Interest.")
+                                    .arg(obs.date_label, participants[p].key));
+                }
+            }
+        }
         out.observations.append(obs);
     }
     std::stable_sort(out.observations.begin(), out.observations.end(),
@@ -273,6 +413,32 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         }
     }
     return out;
+}
+
+/// Ingestion check that the rows really are the report basis the caller asked
+/// for. Every row must carry the published `futonly_or_combined` metadata and
+/// it must name the requested basis; otherwise the payload is refused, because
+/// a Combined history labelled Futures Only (or a splice of the two) changes
+/// every normalized metric. Returns an empty string when the rows match.
+inline QString cftc_history_basis_error(const QVector<CftcObservation>& observations, bool futures_only) {
+    const QString expected =
+        futures_only ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined");
+    for (const auto& obs : observations) {
+        if (obs.report_basis.isEmpty()) {
+            return QCoreApplication::translate("CftcPanel", "The report row for %1 does not state its report basis "
+                                                            "(futures only or combined), so it cannot be verified.")
+                .arg(obs.date_label);
+        }
+        if (cftc_normalized_report_basis(obs.report_basis) != expected) {
+            return QCoreApplication::translate("CftcPanel",
+                                               "The report row for %1 is published as \"%2\", not the requested %3 "
+                                               "report basis.")
+                .arg(obs.date_label, obs.report_basis,
+                     futures_only ? QCoreApplication::translate("CftcPanel", "Futures Only")
+                                  : QCoreApplication::translate("CftcPanel", "Combined"));
+        }
+    }
+    return {};
 }
 
 /// long − short for one participant, or nothing when either leg is absent.
@@ -473,6 +639,22 @@ inline QVector<CftcDatedValue> cftc_metric_series(const QVector<CftcObservation>
 /// A longer gap is not a weekly change and must stay unavailable.
 inline constexpr int kCftcWeeklyGapDays = 10;
 
+/// Shortest interval between two reports that still counts as one weekly
+/// step. Holiday-shifted releases produce 6- and 8-day steps; the few 3-day
+/// steps in the official history (for example 2001-12-18 -> 2001-12-21) are
+/// extra reports, not weekly intervals.
+inline constexpr int kCftcWeeklyMinGapDays = 5;
+
+/// A true weekly CFTC interval: at least kCftcWeeklyMinGapDays and at most
+/// kCftcWeeklyGapDays calendar days. The one definition of a weekly step for
+/// every weekly figure on the CFTC page and for the interpretation engine.
+inline bool cftc_weekly_neighbour(const QDate& earlier, const QDate& later) {
+    if (!earlier.isValid() || !later.isValid() || earlier >= later)
+        return false;
+    const qint64 gap = earlier.daysTo(later);
+    return gap >= kCftcWeeklyMinGapDays && gap <= kCftcWeeklyGapDays;
+}
+
 struct CftcChange {
     bool has_pair = false;  // at least two observations exist
     bool has_value = false; // the pair is an actual weekly neighbour
@@ -486,6 +668,8 @@ struct CftcChange {
 /// anchored at `as_of` (the actual latest official report date) when given.
 /// A series that ends before `as_of` is stale for a current comparison and
 /// reports `stale` instead of presenting an older pair as this week's change.
+/// The pair must be a weekly neighbour (5-10 days apart): an extra report a few
+/// days after the previous one is not a weekly change either.
 inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series, const QDate& as_of = {}) {
     CftcChange out;
     if (series.size() < 2)
@@ -499,7 +683,7 @@ inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series, cons
     const CftcDatedValue& previous = series.at(series.size() - 2);
     out.gap_days = static_cast<int>(previous.date.daysTo(latest.date));
     out.previous_date = previous.date;
-    if (out.gap_days <= kCftcWeeklyGapDays) {
+    if (cftc_weekly_neighbour(previous.date, latest.date)) {
         out.has_value = true;
         out.value = latest.value - previous.value;
     }
@@ -1368,12 +1552,9 @@ inline QVector<CftcHeatmapPoint> cftc_heatmap_series(const QVector<CftcDatedValu
         point.date_label = window[i].date_label;
         point.net = window[i].value;
 
-        if (i > 0) {
-            const int gap = static_cast<int>(window[i - 1].date.daysTo(window[i].date));
-            if (gap <= kCftcWeeklyGapDays) {
-                point.has_change = true;
-                point.change = window[i].value - window[i - 1].value;
-            }
+        if (i > 0 && cftc_weekly_neighbour(window[i - 1].date, window[i].date)) {
+            point.has_change = true;
+            point.change = window[i].value - window[i - 1].value;
         }
         const QVector<CftcDatedValue> prefix = window.mid(0, i + 1);
         if (prefix.size() >= kCftcHeatmapMinObservations) {
