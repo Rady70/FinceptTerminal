@@ -200,7 +200,13 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertEqual(data["commercial_positions"]["net"], 200)
         self.assertEqual(data["non_commercial_positions"]["long"], 400)
         self.assertEqual(data["non_commercial_positions"]["net"], 250)
-        self.assertEqual(data["overall_sentiment"]["commercial_bias"], "bullish")
+        # The direction is the sign of the reported net position, never a
+        # bullish/bearish sentiment label.
+        self.assertEqual(data["overall_sentiment"]["commercial_bias"], "net_long")
+        self.assertEqual(data["overall_sentiment"]["non_commercial_bias"], "net_long")
+        serialized = json.dumps(result).lower()
+        self.assertNotIn("bullish", serialized)
+        self.assertNotIn("bearish", serialized)
         self.assertEqual(result["parameters"]["report_family"], "legacy")
 
     def test_sentiment_missing_field_fails_closed(self):
@@ -220,7 +226,11 @@ class CftcFixtureTest(unittest.TestCase):
         summary = self.wrapper.get_position_summary("s&p_500", "financial")
         for result, view in ((sent, "sentiment"), (trend, "trend"), (summary, "summary")):
             self.assertNotIn("success", result, view)
-            self.assertIn("Dealer/Intermediary", result["error"]["error"])
+        # The commercial/non-commercial views name the Legacy-only split; the
+        # trend names the TFF classes it cannot mislabel.
+        self.assertIn("Only the Legacy report", sent["error"]["error"])
+        self.assertIn("Only the Legacy report", summary["error"]["error"])
+        self.assertIn("Dealer/Intermediary", trend["error"]["error"])
 
     def test_position_summary_picks_the_latest_row_not_the_oldest(self):
         # get_cot_data orders ASC; the summary must still be the latest row.
@@ -255,25 +265,33 @@ class CftcFixtureTest(unittest.TestCase):
         self.assertEqual(data["overall_sentiment"]["oi_trend"], "unchanged")
         self.assertEqual(data["overall_sentiment"]["activity_level"], "low")
 
-    def test_sentiment_zero_net_is_neutral_not_bearish(self):
+    def test_sentiment_zero_net_is_flat_not_short(self):
         row = raw_legacy_row(comm_long="300", comm_short="300", noncomm_long="200", noncomm_short="200")
         self._serve([row])
         result = self.wrapper.analyze_market_sentiment("gold", "legacy")
         data = result["data"]
         self.assertEqual(data["commercial_positions"]["net"], 0)
         self.assertEqual(data["non_commercial_positions"]["net"], 0)
-        self.assertEqual(data["overall_sentiment"]["commercial_bias"], "neutral")
-        self.assertEqual(data["overall_sentiment"]["non_commercial_bias"], "neutral")
+        self.assertEqual(data["overall_sentiment"]["commercial_bias"], "flat")
+        self.assertEqual(data["overall_sentiment"]["non_commercial_bias"], "flat")
 
-    def test_disaggregated_sentiment_uses_producer_and_money_fields(self):
+    def test_disaggregated_sentiment_and_summary_fail_closed(self):
+        # Producer/Merchant and Managed Money are the Disaggregated report's own
+        # categories; relabelling them "commercial"/"non-commercial" would
+        # reconstruct a Legacy split the report does not publish.
         self._serve([raw_disaggregated_row()])
-        result = self.wrapper.analyze_market_sentiment("gold", "disaggregated")
+        sentiment = self.wrapper.analyze_market_sentiment("gold", "disaggregated")
+        summary = self.wrapper.get_position_summary("gold", "disaggregated")
+        for result in (sentiment, summary):
+            self.assertNotIn("success", result)
+            self.assertIn("Only the Legacy report", result["error"]["error"])
 
-        self.assertTrue(result.get("success"), result)
-        data = result["data"]
-        self.assertEqual(data["commercial_positions"]["net"], 300)          # 500 - 200
-        self.assertEqual(data["non_commercial_positions"]["net"], 400)      # 700 - 300
-        self.assertEqual(result["parameters"]["report_family"], "disaggregated")
+    def test_nikkei_maps_to_the_reporting_yen_contract(self):
+        # 240741 (USD Nikkei) stopped reporting on 2026-03-03; 240743 is the
+        # yen-denominated contract the NIY=F price proxy trades.
+        self.assertEqual(self.wrapper.cot_codes["nikkei"], "240743")
+        self.assertEqual(self.wrapper._build_search_query("nikkei"),
+                         "cftc_contract_market_code = '240743'")
 
     def test_trend_is_numeric_ordered_and_null_preserving(self):
         newer = raw_legacy_row(report_date="2026-09-01", oi="1100")

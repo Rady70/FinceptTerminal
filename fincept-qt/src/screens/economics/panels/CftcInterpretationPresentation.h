@@ -22,6 +22,15 @@
 //
 // It emits no BUY/HOLD/SELL, no bullish/bearish score, no predictive
 // confidence, no expected return, no forecast and no trading recommendation.
+//
+// Wording contract after the 2026-09-24 audit corrections: a historically high
+// or low Net %OI is phrased by the actual net direction; an unevaluable level,
+// persistence or sustained check is stated with its reason instead of falling
+// back to plain wording; "remains" needs an established persistent extreme;
+// historical and materiality conclusions name their MarketLab thresholds;
+// divergence attribution uses the legs' contribution shares; a price
+// conclusion names its series, roll/spot caveat and closing sessions; and an
+// out-of-date report is flagged in the headline and the first conclusion.
 #pragma once
 
 #include "screens/economics/panels/CftcNetFormat.h"
@@ -33,6 +42,8 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+
+#include <cmath>
 
 namespace fincept::screens {
 
@@ -88,10 +99,12 @@ inline QString cftc_state_short_wording(const QString& state_id) {
         return cftc_presentation_tr("net short");
     if (state_id == QLatin1String("NET_FLAT"))
         return cftc_presentation_tr("net flat");
+    // Sign-neutral on purpose: a high percentile of a net-short participant's
+    // Net %OI means the smallest net short, never a large exposure.
     if (state_id == QLatin1String("HISTORICALLY_HIGH_NET"))
-        return cftc_presentation_tr("historically high net exposure");
+        return cftc_presentation_tr("Net %OI historically high");
     if (state_id == QLatin1String("HISTORICALLY_LOW_NET"))
-        return cftc_presentation_tr("historically low net exposure");
+        return cftc_presentation_tr("Net %OI historically low");
     if (state_id == QLatin1String("CROWDED_LONG"))
         return cftc_presentation_tr("historically crowded long");
     if (state_id == QLatin1String("CROWDED_SHORT"))
@@ -131,9 +144,9 @@ inline QString cftc_state_short_wording(const QString& state_id) {
     if (state_id == QLatin1String("EXITED_LOW_EXTREME"))
         return cftc_presentation_tr("exit from low extreme");
     if (state_id == QLatin1String("UNWINDING_HIGH_EXTREME"))
-        return cftc_presentation_tr("unwinding high extreme");
+        return cftc_presentation_tr("moved back from a recent high extreme");
     if (state_id == QLatin1String("UNWINDING_LOW_EXTREME"))
-        return cftc_presentation_tr("unwinding low extreme");
+        return cftc_presentation_tr("moved back from a recent low extreme");
     if (state_id == QLatin1String("OI_EXPANSION"))
         return cftc_presentation_tr("Open Interest expansion");
     if (state_id == QLatin1String("OI_CONTRACTION"))
@@ -177,9 +190,21 @@ inline QString cftc_unavailable_reason_wording(services::CftcUnavailableReason r
         case CftcUnavailableReason::MissingOpenInterest:
             return cftc_presentation_tr("Open Interest is missing");
         case CftcUnavailableReason::NonPositiveOpenInterest:
-            return cftc_presentation_tr("Open Interest is missing or non-positive");
+            return cftc_presentation_tr("Open Interest is zero or negative");
         case CftcUnavailableReason::InsufficientHistory:
-            return cftc_presentation_tr("fewer than 156 prior reports are available for this reference");
+            return cftc_presentation_tr("fewer than the 156 prior reports this reference requires are available");
+        case CftcUnavailableReason::InsufficientHorizonHistory:
+            return cftc_presentation_tr("the history does not reach back far enough for this comparison");
+        case CftcUnavailableReason::InsufficientPriceHistory:
+            return cftc_presentation_tr("fewer than 156 prior comparable price moves are available");
+        case CftcUnavailableReason::InsufficientConcentrationHistory:
+            return cftc_presentation_tr("fewer than %1 prior concentration readings are available")
+                .arg(services::kCftcTrailingMinObservations);
+        case CftcUnavailableReason::PriceSessionsNotDistinct:
+            return cftc_presentation_tr(
+                "both report dates resolve to the same price session, so there is no price move to describe");
+        case CftcUnavailableReason::ReportBasisMismatch:
+            return cftc_presentation_tr("the rows' published report basis does not match the requested basis");
         case CftcUnavailableReason::BrokenReportSequence:
             return cftc_presentation_tr("the weekly report sequence is broken");
         case CftcUnavailableReason::MissingPriceContext:
@@ -424,6 +449,11 @@ struct CftcHorizonFlowSummary {
     bool material_net_move = false;
     int net_direction = 0; ///< -1 shortward, 0 none, +1 longward
     bool sustained = false;
+    int sustained_steps = 0;    ///< weekly steps in the move's direction (from the engine metric)
+    int sustained_required = 0; ///< steps the sustained rule requires (3 of 4 or 9 of 13)
+    /// Concrete reason when the sustained check could not be evaluated at this
+    /// horizon (for example a missing leg inside the window); empty otherwise.
+    QString sustained_unavailable_reason;
     bool long_accumulation = false;
     bool long_liquidation = false;
     bool short_building = false;
@@ -456,6 +486,20 @@ inline CftcHorizonFlowSummary cftc_summarize_horizon(const services::CftcPartici
         const QString sustained_short = horizon == 4 ? QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_4R")
                                                      : QStringLiteral("SUSTAINED_SHORTWARD_REPOSITIONING_13R");
         out.sustained = has(sustained_long) || has(sustained_short);
+        out.sustained_required = horizon == 4 ? 3 : 9;
+        const services::CftcInterpretationState* sustained_state =
+            cftc_presentation_state(participant.states, sustained_long, horizon);
+        if (!sustained_state)
+            sustained_state = cftc_presentation_state(participant.states, sustained_short, horizon);
+        if (sustained_state) {
+            if (const auto* steps =
+                    cftc_presentation_metric(sustained_state->metrics, QStringLiteral("confirming_steps"));
+                steps && steps->has_value)
+                out.sustained_steps = static_cast<int>(steps->value);
+        }
+        if (const services::CftcUnavailableRecord* sustained_record = cftc_presentation_unavailable(
+                unavailable, QStringLiteral("SUSTAINED_REPOSITIONING"), participant.participant_key, horizon))
+            out.sustained_unavailable_reason = cftc_unavailable_reason_wording(sustained_record->reason);
     }
     const services::CftcUnavailableRecord* record =
         cftc_presentation_unavailable(unavailable, QStringLiteral("NET_SHIFT"), participant.participant_key, horizon);
@@ -468,11 +512,36 @@ inline CftcHorizonFlowSummary cftc_summarize_horizon(const services::CftcPartici
 
 // ── Phrases and sentences ───────────────────────────────────────────────────
 
+/// The reported net direction: +1 net long, -1 net short, 0 flat, and
+/// `known == false` when no exposure state was emitted.
+struct CftcNetSign {
+    bool known = false;
+    int sign = 0;
+};
+
+inline CftcNetSign cftc_net_sign(const services::CftcParticipantInterpretation& participant) {
+    CftcNetSign out;
+    if (cftc_presentation_state(participant.states, QStringLiteral("NET_LONG"))) {
+        out.known = true;
+        out.sign = 1;
+    } else if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHORT"))) {
+        out.known = true;
+        out.sign = -1;
+    } else if (cftc_presentation_state(participant.states, QStringLiteral("NET_FLAT"))) {
+        out.known = true;
+    }
+    return out;
+}
+
 /// Family-appropriate exposure phrase. The severe historical extreme takes
 /// precedence over ordinary crowding so a co-emitted severe state is never
 /// silently downgraded. Crowding wording is used only when the engine emitted a
 /// crowding state (which it does only where the Batch 4A semantics permit it)
-/// and the participant carries the applicability flag.
+/// and the participant carries the applicability flag. A historically high or
+/// low Net %OI is phrased by the actual net direction: a high percentile of a
+/// net-short participant is its smallest recent net short, never "high
+/// exposure". When the historical comparison could not be evaluated the phrase
+/// says so instead of silently falling back to the plain direction.
 inline QString cftc_exposure_phrase(const services::CftcParticipantInterpretation& participant) {
     const bool crowded_long = participant.crowding_terminology_allowed &&
                               cftc_presentation_state(participant.states, QStringLiteral("CROWDED_LONG")) != nullptr;
@@ -486,17 +555,57 @@ inline QString cftc_exposure_phrase(const services::CftcParticipantInterpretatio
         return cftc_presentation_tr("historically crowded long");
     if (crowded_short)
         return cftc_presentation_tr("historically crowded short");
-    if (cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_HIGH_NET")))
-        return cftc_presentation_tr("historically high net exposure");
-    if (cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_LOW_NET")))
-        return cftc_presentation_tr("historically low net exposure");
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_LONG")))
-        return cftc_presentation_tr("net long");
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHORT")))
-        return cftc_presentation_tr("net short");
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_FLAT")))
-        return cftc_presentation_tr("net flat");
-    return cftc_presentation_tr("positioning unavailable");
+    const CftcNetSign net = cftc_net_sign(participant);
+    const bool high = cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_HIGH_NET")) != nullptr;
+    const bool low = cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_LOW_NET")) != nullptr;
+    if (high || low) {
+        if (net.known && net.sign > 0)
+            return high ? cftc_presentation_tr("historically large net long")
+                        : cftc_presentation_tr("net long, historically small");
+        if (net.known && net.sign < 0)
+            return high ? cftc_presentation_tr("net short, historically small")
+                        : cftc_presentation_tr("historically large net short");
+        if (net.known)
+            return high ? cftc_presentation_tr("net flat, Net %OI historically high")
+                        : cftc_presentation_tr("net flat, Net %OI historically low");
+        return high ? cftc_presentation_tr("Net %OI historically high")
+                    : cftc_presentation_tr("Net %OI historically low");
+    }
+    QString direction;
+    if (net.known)
+        direction = net.sign > 0   ? cftc_presentation_tr("net long")
+                    : net.sign < 0 ? cftc_presentation_tr("net short")
+                                   : cftc_presentation_tr("net flat");
+    else
+        return cftc_presentation_tr("positioning unavailable");
+    if (!participant.historical_percentile_available)
+        return cftc_presentation_tr("%1 (historical level unavailable)").arg(direction);
+    return direction;
+}
+
+/// Share-of-tail wording for a percentile threshold: 0.90 -> "10%",
+/// 0.975 -> "2.5%".
+inline QString cftc_tail_share_text(double tail_fraction) {
+    return QString::number(tail_fraction * 100.0, 'g', 3) + QLatin1Char('%');
+}
+
+/// The inline heuristic qualifier carried by every historical-level
+/// conclusion, so a MarketLab threshold is never presented as a CFTC fact:
+/// "Net %OI in the top 10% of its previous 156 reports; MarketLab threshold".
+inline QString cftc_level_threshold_note(const services::CftcInterpretationResult& result,
+                                         const services::CftcParticipantInterpretation& participant, bool high,
+                                         bool severe) {
+    const services::CftcInterpretationConfig& config = result.config;
+    const double tail = severe ? (high ? 1.0 - config.severe_extreme_percentile : config.low_severe_extreme_percentile)
+                               : (high ? 1.0 - config.extreme_percentile : config.low_extreme_percentile);
+    const int reference =
+        participant.percentile_reference_count > 0 ? participant.percentile_reference_count : config.history_window;
+    return high ? cftc_presentation_tr("Net %OI in the top %1 of its previous %2 reports; MarketLab threshold")
+                      .arg(cftc_tail_share_text(tail))
+                      .arg(reference)
+                : cftc_presentation_tr("Net %OI in the bottom %1 of its previous %2 reports; MarketLab threshold")
+                      .arg(cftc_tail_share_text(tail))
+                      .arg(reference);
 }
 
 inline QString cftc_horizon_phrase(int horizon) {
@@ -513,57 +622,180 @@ inline QString cftc_direction_word(int direction) {
     return direction > 0 ? cftc_presentation_tr("longward") : cftc_presentation_tr("shortward");
 }
 
+/// The concrete reason the participant's historical comparison could not be
+/// evaluated, from the engine's HISTORICAL_RELATIVE_STATE record.
+inline QString cftc_historical_level_unavailable_reason(const services::CftcInterpretationResult& result,
+                                                        const services::CftcParticipantInterpretation& participant) {
+    if (const auto* record = cftc_presentation_unavailable(
+            result.unavailable, QStringLiteral("HISTORICAL_RELATIVE_STATE"), participant.participant_key))
+        return cftc_unavailable_reason_wording(record->reason);
+    return cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory);
+}
+
 /// Historical-level sentence (precedence 1). The severe historical extreme is
 /// checked before ordinary crowding so a co-emitted severe state keeps its
-/// specificity.
-inline QString cftc_level_sentence(const services::CftcParticipantInterpretation& participant,
+/// specificity. Every historical conclusion carries its MarketLab threshold
+/// inline; "remains" is only used when the engine established persistence;
+/// a high or low Net %OI is phrased by the actual net direction; and an
+/// unavailable historical comparison is stated with its reason instead of
+/// falling back to the plain direction as if nothing were missing.
+inline QString cftc_level_sentence(const services::CftcInterpretationResult& result,
+                                   const services::CftcParticipantInterpretation& participant,
                                    const QString& net_unavailable_reason) {
     const QString name = cftc_participant_display_name(participant);
     if (cftc_presentation_state(participant.states, QStringLiteral("SEVERE_LONG_EXTREME")))
-        return cftc_presentation_tr("%1 sits at a severe historical net-long extreme relative to its recent history.")
-            .arg(name);
+        return cftc_presentation_tr("%1 sits at a severe historical net-long extreme (%2).")
+            .arg(name, cftc_level_threshold_note(result, participant, true, true));
     if (cftc_presentation_state(participant.states, QStringLiteral("SEVERE_SHORT_EXTREME")))
-        return cftc_presentation_tr("%1 sits at a severe historical net-short extreme relative to its recent history.")
-            .arg(name);
+        return cftc_presentation_tr("%1 sits at a severe historical net-short extreme (%2).")
+            .arg(name, cftc_level_threshold_note(result, participant, false, true));
+    const bool persistent_high =
+        cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")) != nullptr;
+    const bool persistent_low =
+        cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME")) != nullptr;
     if (participant.crowding_terminology_allowed &&
-        cftc_presentation_state(participant.states, QStringLiteral("CROWDED_LONG")))
-        return cftc_presentation_tr("%1 remains unusually net long relative to its recent history.").arg(name);
+        cftc_presentation_state(participant.states, QStringLiteral("CROWDED_LONG"))) {
+        return (persistent_high ? cftc_presentation_tr("%1 remains unusually net long relative to its recent history "
+                                                       "(%2).")
+                                : cftc_presentation_tr("%1 is unusually net long relative to its recent history (%2)."))
+            .arg(name, cftc_level_threshold_note(result, participant, true, false));
+    }
     if (participant.crowding_terminology_allowed &&
-        cftc_presentation_state(participant.states, QStringLiteral("CROWDED_SHORT")))
-        return cftc_presentation_tr("%1 remains unusually net short relative to its recent history.").arg(name);
-    if (cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_HIGH_NET")))
-        return cftc_presentation_tr("%1 exposure is historically high relative to its recent history.").arg(name);
-    if (cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_LOW_NET")))
-        return cftc_presentation_tr("%1 exposure is historically low relative to its recent history.").arg(name);
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_LONG")))
-        return cftc_presentation_tr("%1 is net long in the latest report.").arg(name);
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHORT")))
-        return cftc_presentation_tr("%1 is net short in the latest report.").arg(name);
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_FLAT")))
-        return cftc_presentation_tr("%1 reported long and short positions are equal in the latest report.").arg(name);
-    return cftc_presentation_tr("Current %1 net exposure is unavailable: %2.")
-        .arg(name, net_unavailable_reason.isEmpty()
-                       ? cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingParticipantLeg)
-                       : net_unavailable_reason);
+        cftc_presentation_state(participant.states, QStringLiteral("CROWDED_SHORT"))) {
+        return (persistent_low ? cftc_presentation_tr("%1 remains unusually net short relative to its recent history "
+                                                      "(%2).")
+                               : cftc_presentation_tr("%1 is unusually net short relative to its recent history (%2)."))
+            .arg(name, cftc_level_threshold_note(result, participant, false, false));
+    }
+    const CftcNetSign net = cftc_net_sign(participant);
+    const bool high = cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_HIGH_NET")) != nullptr;
+    const bool low = cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_LOW_NET")) != nullptr;
+    if (high || low) {
+        const QString note = cftc_level_threshold_note(result, participant, high, false);
+        if (net.known && net.sign > 0)
+            return high ? cftc_presentation_tr("%1 net long exposure is unusually large relative to its recent history "
+                                               "(%2).")
+                              .arg(name, note)
+                        : cftc_presentation_tr("%1 is net long, but the net long position is unusually small relative "
+                                               "to its recent history (%2).")
+                              .arg(name, note);
+        if (net.known && net.sign < 0)
+            return high ? cftc_presentation_tr("%1 is net short, but the net short position is unusually small "
+                                               "relative to its recent history (%2).")
+                              .arg(name, note)
+                        : cftc_presentation_tr("%1 net short exposure is unusually large relative to its recent "
+                                               "history (%2).")
+                              .arg(name, note);
+        return high ? cftc_presentation_tr("%1 reported long and short positions are equal; that Net %OI is "
+                                           "historically high relative to its recent history (%2).")
+                          .arg(name, note)
+                    : cftc_presentation_tr("%1 reported long and short positions are equal; that Net %OI is "
+                                           "historically low relative to its recent history (%2).")
+                          .arg(name, note);
+    }
+    QString direction;
+    if (net.known && net.sign > 0)
+        direction = cftc_presentation_tr("%1 is net long in the latest report").arg(name);
+    else if (net.known && net.sign < 0)
+        direction = cftc_presentation_tr("%1 is net short in the latest report").arg(name);
+    else if (net.known)
+        direction =
+            cftc_presentation_tr("%1 reported long and short positions are equal in the latest report").arg(name);
+    else
+        return cftc_presentation_tr("Current %1 net exposure is unavailable: %2.")
+            .arg(name, net_unavailable_reason.isEmpty()
+                           ? cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingParticipantLeg)
+                           : net_unavailable_reason);
+    if (!participant.historical_percentile_available)
+        return cftc_presentation_tr("%1; its historical level could not be evaluated: %2.")
+            .arg(direction, cftc_historical_level_unavailable_reason(result, participant));
+    return direction + QLatin1Char('.');
 }
 
-/// Extreme persistence / exit / unwind sentence (precedence 2). Empty when no
-/// extreme-transition state exists.
-inline QString cftc_extreme_sentence(const services::CftcParticipantInterpretation& participant) {
+/// Extreme persistence / exit / unwind sentence (precedence 2). When no
+/// extreme-transition state was emitted but the engine could not evaluate one
+/// (for example the persistence run reaches past the available history or
+/// crosses a missing report), the sentence states that explicitly instead of
+/// staying silent. Empty when there is nothing to report.
+inline QString cftc_extreme_sentence(const services::CftcInterpretationResult& result,
+                                     const services::CftcParticipantInterpretation& participant) {
+    const services::CftcInterpretationConfig& config = result.config;
     if (cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_HIGH_EXTREME")))
-        return cftc_presentation_tr("The reading has moved well back from the previous high extreme, with net exposure "
-                                    "decreasing.");
+        return cftc_presentation_tr("Net %OI has fallen back to or below the %1 percentile within %2 reports of a "
+                                    "persistent high extreme (MarketLab threshold).")
+            .arg(QString::number(config.unwind_reentry_percentile * 100.0, 'g', 3) + QStringLiteral("th"))
+            .arg(config.unwind_lookback_reports);
     if (cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_LOW_EXTREME")))
-        return cftc_presentation_tr("The reading has moved well back from the previous low extreme, with net exposure "
-                                    "increasing.");
+        return cftc_presentation_tr("Net %OI has risen back to or above the %1 percentile within %2 reports of a "
+                                    "persistent low extreme (MarketLab threshold).")
+            .arg(QString::number(config.low_unwind_reentry_percentile * 100.0, 'g', 3) + QStringLiteral("th"))
+            .arg(config.unwind_lookback_reports);
     if (cftc_presentation_state(participant.states, QStringLiteral("EXITED_HIGH_EXTREME")))
-        return cftc_presentation_tr("Net exposure has moved back below the high extreme band.");
+        return cftc_presentation_tr("Net %OI moved back below the high extreme band in the latest report.");
     if (cftc_presentation_state(participant.states, QStringLiteral("EXITED_LOW_EXTREME")))
-        return cftc_presentation_tr("Net exposure has moved back above the low extreme band.");
+        return cftc_presentation_tr("Net %OI moved back above the low extreme band in the latest report.");
     if (cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")))
-        return cftc_presentation_tr("The elevated reading has persisted for at least three consecutive reports.");
+        return cftc_presentation_tr("The elevated reading has persisted for at least %1 consecutive reports.")
+            .arg(config.persistent_extreme_reports);
     if (cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME")))
-        return cftc_presentation_tr("The depressed reading has persisted for at least three consecutive reports.");
+        return cftc_presentation_tr("The depressed reading has persisted for at least %1 consecutive reports.")
+            .arg(config.persistent_extreme_reports);
+
+    // No transition state: say which check could not be performed.
+    const bool in_high_band =
+        cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_HIGH_NET")) != nullptr;
+    const bool in_low_band =
+        cftc_presentation_state(participant.states, QStringLiteral("HISTORICALLY_LOW_NET")) != nullptr;
+    const services::CftcUnavailableRecord* persistence_record = nullptr;
+    const services::CftcUnavailableRecord* any_record = nullptr;
+    for (const auto& record : result.unavailable) {
+        if (record.state_family != QLatin1String("EXTREME_TRANSITION") ||
+            record.participant_key != participant.participant_key)
+            continue;
+        if (!any_record)
+            any_record = &record;
+        if ((in_high_band && record.state_id == QLatin1String("PERSISTENT_HIGH_EXTREME")) ||
+            (in_low_band && record.state_id == QLatin1String("PERSISTENT_LOW_EXTREME")))
+            persistence_record = &record;
+    }
+    if (persistence_record)
+        return cftc_presentation_tr("Whether the extreme reading has persisted for %1 consecutive reports could not be "
+                                    "evaluated: %2.")
+            .arg(QString::number(config.persistent_extreme_reports),
+                 cftc_unavailable_reason_wording(persistence_record->reason));
+    // The whole-family record (empty state id) repeats the historical-level
+    // reason already stated by the level sentence.
+    if (any_record && !any_record->state_id.isEmpty())
+        return cftc_presentation_tr("The extreme persistence, exit and unwind checks could not be evaluated: %1.")
+            .arg(cftc_unavailable_reason_wording(any_record->reason));
+    return {};
+}
+
+/// The sustained-repositioning statement for one four- or thirteen-report
+/// horizon with a material net move: the actual count of weekly steps in the
+/// move's direction and the rule's requirement, or the concrete reason the
+/// check could not be evaluated. Empty when neither applies.
+inline QString cftc_sustained_sentence(const CftcHorizonFlowSummary& summary) {
+    if (!summary.evaluated || !summary.material_net_move || (summary.horizon != 4 && summary.horizon != 13))
+        return {};
+    if (summary.sustained) {
+        if (summary.sustained_steps > 0)
+            return cftc_presentation_tr("The move was sustained: net positioning moved %1 in %2 of the last %3 weekly "
+                                        "reports (at least %4 required; MarketLab threshold).")
+                .arg(cftc_direction_word(summary.net_direction))
+                .arg(summary.sustained_steps)
+                .arg(summary.horizon)
+                .arg(summary.sustained_required);
+        return cftc_presentation_tr("The move was sustained: net positioning moved %1 in at least %2 of the last %3 "
+                                    "weekly reports (MarketLab threshold).")
+            .arg(cftc_direction_word(summary.net_direction))
+            .arg(summary.sustained_required)
+            .arg(summary.horizon);
+    }
+    if (!summary.sustained_unavailable_reason.isEmpty())
+        return cftc_presentation_tr("Whether the move was sustained across the weekly reports could not be evaluated: "
+                                    "%1.")
+            .arg(summary.sustained_unavailable_reason);
     return {};
 }
 
@@ -576,6 +808,11 @@ inline QStringList cftc_repositioning_sentences(const CftcHorizonFlowSummary& h4
     QStringList out;
     const bool h4_material = h4.evaluated && h4.material_net_move;
     const bool h13_material = h13.evaluated && h13.material_net_move;
+    auto append_sustained = [&out](const CftcHorizonFlowSummary& summary) {
+        const QString sentence = cftc_sustained_sentence(summary);
+        if (!sentence.isEmpty())
+            out << sentence;
+    };
     if (h4_material && h13_material && h4.net_direction != h13.net_direction) {
         out << cftc_presentation_tr("Positioning is mixed across horizons: %1 over four reports but still %2 over "
                                     "thirteen reports.")
@@ -583,18 +820,16 @@ inline QStringList cftc_repositioning_sentences(const CftcHorizonFlowSummary& h4
     } else if (h4_material && h13_material) {
         out << cftc_presentation_tr("Net positioning shifted %1 over the last four and thirteen reports.")
                    .arg(cftc_direction_word(h4.net_direction));
-        if (h4.sustained || h13.sustained)
-            out << cftc_presentation_tr("The move was sustained across the individual weekly reports.");
+        append_sustained(h4);
+        append_sustained(h13);
     } else if (h4_material) {
         out << cftc_presentation_tr("Net positioning shifted %1 over the last four reports.")
                    .arg(cftc_direction_word(h4.net_direction));
-        if (h4.sustained)
-            out << cftc_presentation_tr("The four-report move was sustained across the individual weekly reports.");
+        append_sustained(h4);
     } else if (h13_material) {
         out << cftc_presentation_tr("Net positioning shifted %1 over the last thirteen reports.")
                    .arg(cftc_direction_word(h13.net_direction));
-        if (h13.sustained)
-            out << cftc_presentation_tr("The thirteen-report move was sustained across the individual weekly reports.");
+        append_sustained(h13);
     } else if (h1.evaluated && h1.material_net_move) {
         out << cftc_presentation_tr("The latest weekly report showed a %1 change; a single week does not override the "
                                     "broader four- and thirteen-report context.")
@@ -621,51 +856,61 @@ inline QStringList cftc_repositioning_sentences(const CftcHorizonFlowSummary& h4
 /// Gross-leg mechanism sentence (precedence 4). Uses the mechanism ids Batch 4A
 /// attached to the leading net-shift state when present, otherwise the gross
 /// states emitted at the leading horizon. Empty when no gross leg is material.
+/// `label_horizon` names the horizon in the sentence; the combined view needs
+/// it because its mechanism can come from a different horizon than its
+/// repositioning sentence.
 inline QString cftc_gross_mechanism_sentence(const services::CftcInterpretationState* leading_net_state,
-                                             const CftcHorizonFlowSummary& leading) {
-    QStringList mechanisms;
-    if (leading_net_state) {
-        for (const QString& id : leading_net_state->mechanism_state_ids) {
-            if (id == QLatin1String("LONG_ACCUMULATION") || id == QLatin1String("LONG_LIQUIDATION") ||
-                id == QLatin1String("SHORT_BUILDING") || id == QLatin1String("SHORT_COVERING"))
-                mechanisms << id;
+                                             const CftcHorizonFlowSummary& leading, bool label_horizon = false) {
+    const QString sentence = [&]() -> QString {
+        QStringList mechanisms;
+        if (leading_net_state) {
+            for (const QString& id : leading_net_state->mechanism_state_ids) {
+                if (id == QLatin1String("LONG_ACCUMULATION") || id == QLatin1String("LONG_LIQUIDATION") ||
+                    id == QLatin1String("SHORT_BUILDING") || id == QLatin1String("SHORT_COVERING"))
+                    mechanisms << id;
+            }
         }
-    }
-    if (mechanisms.isEmpty()) {
-        if (leading.long_accumulation)
-            mechanisms << QStringLiteral("LONG_ACCUMULATION");
-        if (leading.long_liquidation)
-            mechanisms << QStringLiteral("LONG_LIQUIDATION");
-        if (leading.short_building)
-            mechanisms << QStringLiteral("SHORT_BUILDING");
-        if (leading.short_covering)
-            mechanisms << QStringLiteral("SHORT_COVERING");
-    }
-    if (mechanisms.isEmpty())
-        return {};
-    const bool accumulation = mechanisms.contains(QStringLiteral("LONG_ACCUMULATION"));
-    const bool liquidation = mechanisms.contains(QStringLiteral("LONG_LIQUIDATION"));
-    const bool building = mechanisms.contains(QStringLiteral("SHORT_BUILDING"));
-    const bool covering = mechanisms.contains(QStringLiteral("SHORT_COVERING"));
-    if (accumulation && covering)
-        return cftc_presentation_tr(
-            "Long exposure increased while short positions were reduced, producing a material longward shift.");
-    if (liquidation && building)
-        return cftc_presentation_tr(
-            "Long exposure decreased while short positions increased, producing a material shortward shift.");
-    if (accumulation && building)
-        return cftc_presentation_tr(
-            "Long and short exposure both increased materially; the net move was comparatively small.");
-    if (liquidation && covering)
-        return cftc_presentation_tr(
-            "Long and short exposure both decreased materially; the net move was comparatively small.");
-    if (accumulation)
-        return cftc_presentation_tr("Long exposure increased materially.");
-    if (liquidation)
-        return cftc_presentation_tr("Long exposure decreased materially.");
-    if (building)
-        return cftc_presentation_tr("Short positions increased materially.");
-    return cftc_presentation_tr("Short positions were reduced materially.");
+        if (mechanisms.isEmpty()) {
+            if (leading.long_accumulation)
+                mechanisms << QStringLiteral("LONG_ACCUMULATION");
+            if (leading.long_liquidation)
+                mechanisms << QStringLiteral("LONG_LIQUIDATION");
+            if (leading.short_building)
+                mechanisms << QStringLiteral("SHORT_BUILDING");
+            if (leading.short_covering)
+                mechanisms << QStringLiteral("SHORT_COVERING");
+        }
+        if (mechanisms.isEmpty())
+            return {};
+        const bool accumulation = mechanisms.contains(QStringLiteral("LONG_ACCUMULATION"));
+        const bool liquidation = mechanisms.contains(QStringLiteral("LONG_LIQUIDATION"));
+        const bool building = mechanisms.contains(QStringLiteral("SHORT_BUILDING"));
+        const bool covering = mechanisms.contains(QStringLiteral("SHORT_COVERING"));
+        if (accumulation && covering)
+            return cftc_presentation_tr(
+                "Long exposure increased while short positions were reduced, producing a material longward shift.");
+        if (liquidation && building)
+            return cftc_presentation_tr(
+                "Long exposure decreased while short positions increased, producing a material shortward shift.");
+        if (accumulation && building)
+            return cftc_presentation_tr(
+                "Long and short exposure both increased materially; the net move was comparatively small.");
+        if (liquidation && covering)
+            return cftc_presentation_tr(
+                "Long and short exposure both decreased materially; the net move was comparatively small.");
+        if (accumulation)
+            return cftc_presentation_tr("Long exposure increased materially.");
+        if (liquidation)
+            return cftc_presentation_tr("Long exposure decreased materially.");
+        if (building)
+            return cftc_presentation_tr("Short positions increased materially.");
+        return cftc_presentation_tr("Short positions were reduced materially.");
+    }();
+    if (sentence.isEmpty() || !label_horizon)
+        return sentence;
+    QString body = sentence;
+    body[0] = body[0].toLower();
+    return cftc_presentation_tr("Over the last %1, %2").arg(cftc_horizon_phrase(leading.horizon), body);
 }
 
 /// Open Interest context sentence (precedence 5). Empty when no material OI
@@ -686,24 +931,45 @@ inline QString cftc_open_interest_sentence(const services::CftcInterpretationRes
     return {};
 }
 
-inline QString cftc_net_share_disagreement_sentence(const services::CftcParticipantInterpretation& participant) {
-    for (int horizon : {4, 13, 1}) {
-        if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), horizon))
-            return cftc_presentation_tr("Over %1 the change in Net %OI moved opposite to the raw net flow because "
-                                        "market size changed.")
-                .arg(cftc_horizon_phrase(horizon));
-    }
-    return {};
-}
-
-/// The raw-net / Net-%OI disagreement sentence for one selected horizon.
+/// The raw-net / Net-%OI disagreement sentence for one horizon, with both
+/// measured values and the Open Interest change that explains it. The engine
+/// only emits the state when at least one of the two opposed moves is
+/// material, so the sentence never narrates a noise-sized disagreement.
 inline QString
 cftc_net_share_disagreement_sentence_for_horizon(const services::CftcParticipantInterpretation& participant,
                                                  int horizon) {
-    if (cftc_presentation_state(participant.states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), horizon))
-        return cftc_presentation_tr("Over %1 the change in Net %OI moved opposite to the raw net flow because "
-                                    "market size changed.")
-            .arg(cftc_horizon_phrase(horizon));
+    const services::CftcInterpretationState* state =
+        cftc_presentation_state(participant.states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), horizon);
+    if (!state)
+        return {};
+    const auto signed_text = [](double value) {
+        const QString text = QString::number(value, 'f', 2);
+        return value > 0.0 ? QStringLiteral("+") + text : text;
+    };
+    const auto* net_flow = cftc_presentation_metric(state->metrics, QStringLiteral("net_flow"));
+    const auto* share_change = cftc_presentation_metric(state->metrics, QStringLiteral("net_share_change"));
+    const auto* oi_change = cftc_presentation_metric(state->metrics, QStringLiteral("oi_change"));
+    if (net_flow && net_flow->has_value && share_change && share_change->has_value) {
+        const QString base =
+            cftc_presentation_tr("Over %1 the raw net flow was %2% of prior Open Interest, but Net %OI "
+                                 "changed by %3 percentage points")
+                .arg(cftc_horizon_phrase(horizon), signed_text(net_flow->value), signed_text(share_change->value));
+        if (oi_change && oi_change->has_value)
+            return cftc_presentation_tr("%1, because Open Interest changed by %2%.")
+                .arg(base, signed_text(oi_change->value));
+        return cftc_presentation_tr("%1, because market size changed.").arg(base);
+    }
+    return cftc_presentation_tr("Over %1 the change in Net %OI moved opposite to the raw net flow because market size "
+                                "changed.")
+        .arg(cftc_horizon_phrase(horizon));
+}
+
+inline QString cftc_net_share_disagreement_sentence(const services::CftcParticipantInterpretation& participant) {
+    for (int horizon : {4, 13, 1}) {
+        const QString sentence = cftc_net_share_disagreement_sentence_for_horizon(participant, horizon);
+        if (!sentence.isEmpty())
+            return sentence;
+    }
     return {};
 }
 
@@ -749,23 +1015,115 @@ cftc_presentation_price_primary(const services::CftcInterpretationResult& result
     return a4 ? a4 : (a13 ? a13 : a1);
 }
 
+/// How the two gross legs composed a net move at one horizon, from the
+/// engine's emitted flow reading (percent of prior Open Interest). A leg's
+/// contribution is its flow signed toward the net direction; "mostly" is only
+/// used for the leg that supplied more than half of the move, with the actual
+/// shares stated, so a smaller leg is never called the primary driver merely
+/// because it alone crossed its materiality threshold. Empty when the reading
+/// does not carry both legs and the net move.
+inline QString cftc_net_move_composition_sentence(const services::CftcParticipantInterpretation& participant,
+                                                  int horizon, int direction) {
+    const services::CftcHorizonFlowReading* reading = cftc_presentation_flow_reading(participant, horizon);
+    if (!reading || !reading->evaluated || !reading->has_long_flow || !reading->has_short_flow ||
+        !reading->has_net_flow || direction == 0)
+        return {};
+    const double d = direction > 0 ? 1.0 : -1.0;
+    const double long_contribution = d * reading->long_flow;
+    const double short_contribution = -d * reading->short_flow;
+    const QString long_name = reading->long_flow > 0.0   ? cftc_presentation_tr("long accumulation")
+                              : reading->long_flow < 0.0 ? cftc_presentation_tr("long liquidation")
+                                                         : QString();
+    const QString short_name = reading->short_flow > 0.0   ? cftc_presentation_tr("short building")
+                               : reading->short_flow < 0.0 ? cftc_presentation_tr("short covering")
+                                                           : QString();
+    const QString word = cftc_direction_word(direction);
+    if (long_contribution > 0.0 && short_contribution > 0.0) {
+        const double total = long_contribution + short_contribution;
+        const int long_share = static_cast<int>(std::lround(100.0 * long_contribution / total));
+        const int short_share = 100 - long_share;
+        if (long_share == short_share)
+            return cftc_presentation_tr("The %1 shift came equally from %2 and %3.").arg(word, long_name, short_name);
+        const bool long_leads = long_share > short_share;
+        return cftc_presentation_tr("The %1 shift came mostly from %2 (%3% of the net move), with %4 contributing "
+                                    "%5%.")
+            .arg(word, long_leads ? long_name : short_name)
+            .arg(long_leads ? long_share : short_share)
+            .arg(long_leads ? short_name : long_name)
+            .arg(long_leads ? short_share : long_share);
+    }
+    if (long_contribution > 0.0) {
+        if (reading->short_flow == 0.0)
+            return cftc_presentation_tr("The %1 shift came entirely from %2.").arg(word, long_name);
+        return cftc_presentation_tr("The %1 shift came from %2; %3 partly offset it.").arg(word, long_name, short_name);
+    }
+    if (short_contribution > 0.0) {
+        if (reading->long_flow == 0.0)
+            return cftc_presentation_tr("The %1 shift came entirely from %2.").arg(word, short_name);
+        return cftc_presentation_tr("The %1 shift came from %2; %3 partly offset it.").arg(word, short_name, long_name);
+    }
+    return {};
+}
+
+/// The price series behind a price-relationship conclusion, stated in the
+/// conclusion itself: the source and proxy kind, the two actual closing
+/// sessions and the move in quoted units and percent. A continuous front-month
+/// series is not roll-adjusted, so a contract roll inside the window is part of
+/// the move; a spot index is not the futures contract whose positions are
+/// reported. Empty when the assessment carries no price move.
+inline QString cftc_price_window_sentence(const services::CftcInterpretationResult& result,
+                                          const services::CftcPricePositionAssessment& assessment) {
+    if (!assessment.has_price_move || !assessment.price_anchor_date.isValid() ||
+        !assessment.price_latest_date.isValid())
+        return {};
+    const QString source = result.price_source.trimmed().isEmpty() ? cftc_presentation_tr("the supplied price series")
+                                                                   : result.price_source.trimmed();
+    const auto signed_text = [](double value) {
+        const QString text = QString::number(value, 'f', 2);
+        return value > 0.0 ? QStringLiteral("+") + text : text;
+    };
+    const QString move = cftc_presentation_tr("%1 (%2%)")
+                             .arg(signed_text(assessment.price_move), signed_text(assessment.price_move_pct));
+    QString qualifier;
+    if (result.price_spot_index)
+        qualifier = cftc_presentation_tr("a spot index, not the futures contract whose positions are reported");
+    else if (result.price_continuous_proxy)
+        qualifier = cftc_presentation_tr("not roll-adjusted, so a contract roll inside the window is part of the move");
+    if (qualifier.isEmpty())
+        return cftc_presentation_tr("Price series: %1; closes %2 → %3: %4.")
+            .arg(source, assessment.price_anchor_date.toString(Qt::ISODate),
+                 assessment.price_latest_date.toString(Qt::ISODate), move);
+    return cftc_presentation_tr("Price series: %1 (%2); closes %3 → %4: %5.")
+        .arg(source, qualifier, assessment.price_anchor_date.toString(Qt::ISODate),
+             assessment.price_latest_date.toString(Qt::ISODate), move);
+}
+
 /// The sentences that carry a divergence: the direction sentence naming the
-/// participant, the gross-leg mechanism when the engine attached one, and
-/// nothing predictive. Shared by the combined and the single-horizon composers
-/// so a divergence can never lose its semantics in one path.
+/// participant, how the gross legs composed the positioning move, and nothing
+/// predictive. Shared by the combined and the single-horizon composers so a
+/// divergence can never lose its semantics in one path.
 inline QStringList cftc_divergence_sentences(const services::CftcPricePositionAssessment& assessment,
                                              const services::CftcParticipantInterpretation& participant) {
     QStringList out;
     const QString horizon = cftc_horizon_phrase(assessment.horizon_reports);
-    if (assessment.state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE"))
+    const bool shortward = assessment.state_id == QLatin1String("PRICE_UP_POSITIONING_DOWN_DIVERGENCE");
+    if (shortward)
         out << cftc_presentation_tr("Price rose materially over %1 while %2 shifted materially shortward.")
                    .arg(horizon, cftc_participant_display_name(participant));
     else
         out << cftc_presentation_tr("Price fell materially over %1 while %2 shifted materially longward.")
                    .arg(horizon, cftc_participant_display_name(participant));
-    const QString mechanism = cftc_price_mechanism_fragment(assessment.mechanism_state_ids);
-    if (!mechanism.isEmpty())
-        out << cftc_presentation_tr("The positioning change was driven primarily by %1.").arg(mechanism);
+    const QString composition =
+        cftc_net_move_composition_sentence(participant, assessment.horizon_reports, shortward ? -1 : 1);
+    if (!composition.isEmpty()) {
+        out << composition;
+    } else {
+        // Without the flow reading only the individually material legs are
+        // known, so they are named without claiming which one dominated.
+        const QString mechanism = cftc_price_mechanism_fragment(assessment.mechanism_state_ids);
+        if (!mechanism.isEmpty())
+            out << cftc_presentation_tr("The positioning change included %1.").arg(mechanism);
+    }
     return out;
 }
 
@@ -803,7 +1161,10 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
         out << cftc_presentation_tr("Price relationship unavailable: %1.").arg(reason);
         return out;
     }
+    const QString primary_window = cftc_price_window_sentence(result, *primary);
     if (!primary->has_state) {
+        if (!primary_window.isEmpty())
+            out << primary_window;
         out << cftc_presentation_tr("Price and net positioning both changed over the last %1, but not both materially "
                                     "enough to classify the relationship.")
                    .arg(cftc_horizon_phrase(primary->horizon_reports));
@@ -823,6 +1184,11 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
     // named and the contemporaneous-only statement is made, so the conflict
     // wording can never silently downgrade a divergence.
     if (a4 && a13 && a4->has_state && a13->has_state && a4->state_id != a13->state_id) {
+        for (const auto* assessment : {a4, a13}) {
+            const QString window = cftc_price_window_sentence(result, *assessment);
+            if (!window.isEmpty())
+                out << window;
+        }
         out << cftc_presentation_tr("The price/positioning relationship differs across horizons: %1 over four reports "
                                     "and %2 over thirteen reports.")
                    .arg(cftc_relationship_wording(a4->state_id), cftc_relationship_wording(a13->state_id));
@@ -838,6 +1204,8 @@ inline QStringList cftc_price_relationship_sentences(const services::CftcInterpr
         return out;
     }
 
+    if (!primary_window.isEmpty())
+        out << primary_window;
     const QString horizon = cftc_horizon_phrase(primary->horizon_reports);
     if (primary->state_id == QLatin1String("PRICE_POSITION_MOVING_TOGETHER_UP")) {
         out << cftc_presentation_tr("Price and net positioning moved together upward over the last %1.").arg(horizon);
@@ -891,9 +1259,9 @@ inline QString cftc_repositioning_sentence_for_horizon(const CftcHorizonFlowSumm
     if (summary.material_net_move) {
         QString text = cftc_presentation_tr("Net positioning shifted %1 over the last %2.")
                            .arg(cftc_direction_word(summary.net_direction), phrase);
-        if (summary.sustained)
-            text +=
-                QLatin1Char(' ') + cftc_presentation_tr("The move was sustained across the individual weekly reports.");
+        const QString sustained = cftc_sustained_sentence(summary);
+        if (!sustained.isEmpty())
+            text += QLatin1Char(' ') + sustained;
         return text;
     }
     return cftc_presentation_tr(
@@ -901,21 +1269,56 @@ inline QString cftc_repositioning_sentence_for_horizon(const CftcHorizonFlowSumm
         .arg(phrase);
 }
 
-/// Headline trajectory for one selected horizon. Extreme persistence, exit and
-/// unwind keep precedence exactly as in the combined view; otherwise the
-/// trajectory describes the selected horizon (net move first, then a material
-/// gross leg when the net move did not qualify).
-inline QString cftc_headline_trajectory_for_horizon(const services::CftcParticipantInterpretation& participant,
-                                                    const CftcHorizonFlowSummary& summary) {
+/// Headline phrase for an extreme transition, or empty when none was emitted.
+/// The wording describes the transition the latest report shows; it never
+/// implies that a move is "developing" or will continue.
+inline QString cftc_extreme_transition_headline(const services::CftcParticipantInterpretation& participant) {
     if (cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_HIGH_EXTREME")) ||
         cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_LOW_EXTREME")))
-        return cftc_presentation_tr("unwind developing");
+        return cftc_presentation_tr("moved well back from a recent extreme");
     if (cftc_presentation_state(participant.states, QStringLiteral("EXITED_HIGH_EXTREME")) ||
         cftc_presentation_state(participant.states, QStringLiteral("EXITED_LOW_EXTREME")))
-        return cftc_presentation_tr("extreme exit developing");
+        return cftc_presentation_tr("left the extreme band in the latest report");
     if (cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")) ||
         cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME")))
         return cftc_presentation_tr("extreme persisting");
+    return {};
+}
+
+/// Headline phrase for material gross legs when the net move itself was not
+/// material. Both legs are always considered: two material legs moving the
+/// same way are a gross expansion or reduction, never "long accumulation"
+/// alone while the shorts grew even more; a single material leg says that the
+/// net change was not material.
+inline QString cftc_gross_only_headline(const CftcHorizonFlowSummary& summary) {
+    if (summary.long_accumulation && summary.short_building)
+        return cftc_presentation_tr("long and short exposure both increased");
+    if (summary.long_liquidation && summary.short_covering)
+        return cftc_presentation_tr("long and short exposure both decreased");
+    if (summary.long_accumulation && summary.short_covering)
+        return cftc_presentation_tr("longs up and shorts down without a material net change");
+    if (summary.long_liquidation && summary.short_building)
+        return cftc_presentation_tr("longs down and shorts up without a material net change");
+    if (summary.long_accumulation)
+        return cftc_presentation_tr("long exposure increased without a material net change");
+    if (summary.long_liquidation)
+        return cftc_presentation_tr("long exposure decreased without a material net change");
+    if (summary.short_building)
+        return cftc_presentation_tr("short exposure increased without a material net change");
+    if (summary.short_covering)
+        return cftc_presentation_tr("short exposure decreased without a material net change");
+    return {};
+}
+
+/// Headline trajectory for one selected horizon. Extreme persistence, exit and
+/// unwind keep precedence exactly as in the combined view; otherwise the
+/// trajectory describes the selected horizon (net move first, then the
+/// material gross legs when the net move did not qualify).
+inline QString cftc_headline_trajectory_for_horizon(const services::CftcParticipantInterpretation& participant,
+                                                    const CftcHorizonFlowSummary& summary) {
+    const QString transition = cftc_extreme_transition_headline(participant);
+    if (!transition.isEmpty())
+        return transition;
 
     if (!summary.evaluated)
         return cftc_presentation_tr("recent repositioning unavailable");
@@ -931,14 +1334,9 @@ inline QString cftc_headline_trajectory_for_horizon(const services::CftcParticip
         return summary.net_direction > 0 ? cftc_presentation_tr("longward repositioning")
                                          : cftc_presentation_tr("shortward repositioning");
     }
-    if (summary.long_accumulation)
-        return cftc_presentation_tr("long accumulation");
-    if (summary.long_liquidation)
-        return cftc_presentation_tr("long liquidation");
-    if (summary.short_building)
-        return cftc_presentation_tr("short building");
-    if (summary.short_covering)
-        return cftc_presentation_tr("short covering");
+    const QString gross = cftc_gross_only_headline(summary);
+    if (!gross.isEmpty())
+        return gross;
     return cftc_presentation_tr("no material repositioning");
 }
 
@@ -1009,6 +1407,9 @@ inline QStringList cftc_price_relationship_sentences_for_horizon(
         out << cftc_presentation_tr("Price relationship over the last %1 is unavailable: %2.").arg(phrase, reason);
         return out;
     }
+    const QString window = cftc_price_window_sentence(result, *assessment);
+    if (!window.isEmpty())
+        out << window;
     if (!assessment->has_state) {
         out << cftc_presentation_tr("Price and net positioning both changed over the last %1, but not both materially "
                                     "enough to classify the relationship.")
@@ -1066,6 +1467,145 @@ inline QString cftc_percentile_unavailable_reason(const services::CftcInterpreta
 inline QString cftc_signed_decimal(double value, int decimals) {
     const QString text = QString::number(value, 'f', decimals);
     return value > 0.0 ? QStringLiteral("+") + text : text;
+}
+
+/// The actual cause of a missing Net %OI reading: a missing leg, missing Open
+/// Interest, or zero/negative Open Interest are different states and must not
+/// share one reason.
+inline QString cftc_net_pct_unavailable_reason(const services::CftcInterpretationResult& result,
+                                               const services::CftcParticipantInterpretation& participant) {
+    using services::CftcUnavailableReason;
+    if (!participant.net_available)
+        return cftc_unavailable_reason_wording(CftcUnavailableReason::MissingParticipantLeg);
+    if (!result.open_interest_available)
+        return cftc_unavailable_reason_wording(CftcUnavailableReason::MissingOpenInterest);
+    if (result.open_interest <= 0.0)
+        return cftc_unavailable_reason_wording(CftcUnavailableReason::NonPositiveOpenInterest);
+    return cftc_unavailable_reason_wording(CftcUnavailableReason::MissingParticipantLeg);
+}
+
+/// Evidence text for a price move: quoted units, percent change and the two
+/// closing sessions actually used, e.g. "-87.80 (-1.99%; 2026-08-18 → 2026-09-15)".
+inline QString cftc_price_move_evidence_text(const services::CftcPricePositionAssessment& assessment) {
+    QString text = cftc_signed_decimal(assessment.price_move, 2);
+    if (assessment.price_anchor_date.isValid() && assessment.price_latest_date.isValid()) {
+        text += cftc_presentation_tr(" (%1%; %2 → %3)")
+                    .arg(cftc_signed_decimal(assessment.price_move_pct, 2),
+                         assessment.price_anchor_date.toString(Qt::ISODate),
+                         assessment.price_latest_date.toString(Qt::ISODate));
+    }
+    return text;
+}
+
+/// The price-move materiality rank row: the rank of the absolute log return
+/// against the previous comparable moves, marked below threshold when the
+/// price move was not material, or the concrete reason it is unavailable.
+inline CftcEvidenceItem cftc_price_rank_evidence(const services::CftcPricePositionAssessment* assessment,
+                                                 CftcPriceContextState price_state,
+                                                 const QString& price_unavailable_note, int horizon) {
+    CftcEvidenceItem item;
+    item.label = cftc_presentation_tr("Price move materiality rank (|log return| vs prior moves)");
+    item.horizon_reports = horizon;
+    if (price_state == CftcPriceContextState::Pending) {
+        item.status = CftcEvidenceStatus::Pending;
+        item.value = cftc_presentation_tr("pending — price context is loading");
+        return item;
+    }
+    if (assessment && assessment->has_price_move_rank) {
+        item.status = assessment->price_material ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
+        item.value = QString::number(assessment->price_move_rank * 100.0, 'f', 1) + QLatin1Char('%') +
+                     cftc_presentation_tr(" (n=%1)").arg(assessment->price_reference_count) +
+                     (assessment->price_material ? QString() : cftc_below_threshold_suffix());
+        return item;
+    }
+    const bool missing_context =
+        !assessment || assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
+    const QString reason =
+        missing_context && !price_unavailable_note.trimmed().isEmpty()
+            ? price_unavailable_note
+            : cftc_unavailable_reason_wording(assessment ? assessment->reason
+                                                         : services::CftcUnavailableReason::MissingPriceContext);
+    item.status = CftcEvidenceStatus::Unavailable;
+    item.value = cftc_presentation_tr("unavailable — %1").arg(reason);
+    return item;
+}
+
+/// Market-level concentration evidence and conclusion. The standard CFTC
+/// concentration ratio is a market/report property (share of Open Interest held
+/// by the four largest long traders) and is never attributed to a participant
+/// category.
+inline QVector<CftcEvidenceItem> cftc_concentration_evidence(const services::CftcInterpretationResult& result) {
+    QVector<CftcEvidenceItem> out;
+    const QString label = cftc_presentation_tr("Market concentration (largest 4 long traders, % of OI)");
+    const services::CftcConcentrationAssessment* primary = nullptr;
+    for (const auto& assessment : result.concentration) {
+        if (assessment.field_key == result.config.primary_concentration_field) {
+            primary = &assessment;
+            break;
+        }
+    }
+    if (!primary || !primary->has_current) {
+        out.append(
+            {label,
+             cftc_presentation_tr("unavailable — %1")
+                 .arg(cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingConcentrationField)),
+             CftcEvidenceStatus::Unavailable, 0});
+        return out;
+    }
+    const bool high = cftc_presentation_state(result.market_context, QStringLiteral("HIGH_MARKET_CONCENTRATION"));
+    QString value = QString::number(primary->current, 'f', 1) + QLatin1Char('%');
+    if (primary->has_percentile)
+        value += cftc_presentation_tr(" (percentile %1% of its own history, n=%2)")
+                     .arg(QString::number(primary->percentile * 100.0, 'f', 1))
+                     .arg(primary->percentile_reference_count);
+    out.append({label, value, high ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState, 0});
+
+    const QString change_label = cftc_presentation_tr("Market concentration change (latest weekly report, points)");
+    if (primary->has_change) {
+        const bool rising = cftc_presentation_state(result.market_context, QStringLiteral("CONCENTRATION_RISING"));
+        QString change = cftc_signed_decimal(primary->change, 2);
+        if (primary->has_change_rank)
+            change += cftc_presentation_tr(" (rank %1%, n=%2)")
+                          .arg(QString::number(primary->change_rank * 100.0, 'f', 1))
+                          .arg(primary->change_reference_count);
+        out.append({change_label, change + (rising ? QString() : cftc_below_threshold_suffix()),
+                    rising ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState, 0});
+    } else {
+        out.append({change_label,
+                    cftc_presentation_tr("unavailable — %1")
+                        .arg(cftc_unavailable_reason_wording(primary->change_unavailable_reason)),
+                    CftcEvidenceStatus::Unavailable, 0});
+    }
+    return out;
+}
+
+/// Market concentration conclusions, only for emitted states (a secondary
+/// market-structure context; its measurements and unavailability stay visible
+/// in the evidence rows).
+inline QStringList cftc_concentration_sentences(const services::CftcInterpretationResult& result) {
+    QStringList out;
+    const services::CftcInterpretationState* high =
+        cftc_presentation_state(result.market_context, QStringLiteral("HIGH_MARKET_CONCENTRATION"));
+    const services::CftcInterpretationState* rising =
+        cftc_presentation_state(result.market_context, QStringLiteral("CONCENTRATION_RISING"));
+    const services::CftcConcentrationAssessment* primary = nullptr;
+    for (const auto& assessment : result.concentration) {
+        if (assessment.field_key == result.config.primary_concentration_field) {
+            primary = &assessment;
+            break;
+        }
+    }
+    if (high && primary && primary->has_current)
+        out << cftc_presentation_tr("Market concentration is high: the four largest long traders hold %1% of Open "
+                                    "Interest, in the top %2 of that ratio's own history (market-wide, not a "
+                                    "participant category; MarketLab threshold).")
+                   .arg(QString::number(primary->current, 'f', 1),
+                        cftc_tail_share_text(1.0 - result.config.extreme_percentile));
+    if (rising && primary && primary->has_change)
+        out << cftc_presentation_tr("Market concentration rose by %1 percentage points in the latest weekly report, a "
+                                    "material weekly increase (market-wide; MarketLab threshold).")
+                   .arg(cftc_signed_decimal(primary->change, 2));
+    return out;
 }
 /// Evidence status for one gross leg at one horizon. The engine emits a
 /// GROSS_FLOW record per leg that could not produce a state: a record with the
@@ -1158,9 +1698,7 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
     add(cftc_presentation_tr("Net %OI (% of current OI)"),
         has_net_pct ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
         has_net_pct ? QString::number(participant.net_pct_oi, 'f', 2) + QLatin1Char('%')
-                    : unavailable_text(cftc_unavailable_reason_wording(
-                          result.open_interest_available ? services::CftcUnavailableReason::MissingParticipantLeg
-                                                         : services::CftcUnavailableReason::MissingOpenInterest)));
+                    : unavailable_text(cftc_net_pct_unavailable_reason(result, participant)));
 
     const bool has_percentile = participant.historical_percentile_available;
     add(cftc_interpretation_percentile_label(),
@@ -1202,7 +1740,9 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
                     cftc_materiality_unavailable_suffix(leg_materiality_reason(horizon, true, summary)),
                 horizon);
         } else {
-            add(cftc_presentation_tr("Long leg flow (% of prior OI)"), long_flow_status,
+            add(cftc_presentation_tr("Long leg flow (% of prior OI)"),
+                has_long_flow ? (long_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState)
+                              : long_flow_status,
                 has_long_flow ? QString::number(long_flow, 'f', 2) + QLatin1Char('%') +
                                     (long_state_fired ? QString() : cftc_below_threshold_suffix())
                               : (long_flow_status == CftcEvidenceStatus::Unavailable ? unavailable_text(long_reason)
@@ -1237,7 +1777,10 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
                     cftc_materiality_unavailable_suffix(leg_materiality_reason(horizon, false, summary)),
                 horizon);
         } else {
-            add(cftc_presentation_tr("Short leg flow (% of prior OI)"), short_flow_status,
+            add(cftc_presentation_tr("Short leg flow (% of prior OI)"),
+                has_short_flow
+                    ? (short_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState)
+                    : short_flow_status,
                 has_short_flow ? QString::number(short_flow, 'f', 2) + QLatin1Char('%') +
                                      (short_state_fired ? QString() : cftc_below_threshold_suffix())
                                : (short_flow_status == CftcEvidenceStatus::Unavailable ? unavailable_text(short_reason)
@@ -1380,7 +1923,7 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
         price_value = cftc_presentation_tr("pending — price context is loading");
     } else if (has_price_move) {
         price_status = CftcEvidenceStatus::Available;
-        price_value = cftc_signed_decimal(price_assessment->price_move, 2);
+        price_value = cftc_price_move_evidence_text(*price_assessment);
     } else {
         const bool missing_context =
             !price_assessment || price_assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
@@ -1394,6 +1937,7 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
         price_value = unavailable_text(reason);
     }
     add(cftc_presentation_tr("Price change (quoted price units)%1").arg(price_suffix), price_status, price_value);
+    out.append(cftc_price_rank_evidence(price_assessment, price_state, price_unavailable_note, 0));
 
     CftcEvidenceStatus relationship_status = CftcEvidenceStatus::Unavailable;
     QString relationship_value;
@@ -1433,6 +1977,7 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
     }
     if (!headline_state && !participant.states.isEmpty())
         headline_state = &participant.states.first();
+    out << cftc_concentration_evidence(result);
     add(cftc_presentation_tr("Evidence basis"),
         headline_state != nullptr ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
         headline_state ? cftc_evidence_basis_wording(headline_state->threshold_basis)
@@ -1478,9 +2023,7 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
     add(cftc_presentation_tr("Net %OI (% of current OI)"),
         has_net_pct ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
         has_net_pct ? QString::number(participant.net_pct_oi, 'f', 2) + QLatin1Char('%')
-                    : unavailable_text(cftc_unavailable_reason_wording(
-                          result.open_interest_available ? services::CftcUnavailableReason::MissingParticipantLeg
-                                                         : services::CftcUnavailableReason::MissingOpenInterest)));
+                    : unavailable_text(cftc_net_pct_unavailable_reason(result, participant)));
 
     const bool has_percentile = participant.historical_percentile_available;
     add(cftc_interpretation_percentile_label(),
@@ -1673,7 +2216,7 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
         price_value = cftc_presentation_tr("pending — price context is loading");
     } else if (has_price_move) {
         price_status = CftcEvidenceStatus::Available;
-        price_value = cftc_signed_decimal(price_assessment->price_move, 2);
+        price_value = cftc_price_move_evidence_text(*price_assessment);
     } else {
         const bool missing_context =
             !price_assessment || price_assessment->reason == services::CftcUnavailableReason::MissingPriceContext;
@@ -1688,6 +2231,7 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
     }
     add(cftc_presentation_tr("Price change (quoted price units)%1").arg(price_suffix), price_status, price_value,
         horizon);
+    out.append(cftc_price_rank_evidence(price_assessment, price_state, price_unavailable_note, horizon));
 
     CftcEvidenceStatus relationship_status = CftcEvidenceStatus::Unavailable;
     QString relationship_value;
@@ -1727,6 +2271,7 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
     }
     if (!headline_state && !participant.states.isEmpty())
         headline_state = &participant.states.first();
+    out << cftc_concentration_evidence(result);
     add(cftc_presentation_tr("Evidence basis"),
         headline_state != nullptr ? CftcEvidenceStatus::Available : CftcEvidenceStatus::Unavailable,
         headline_state ? cftc_evidence_basis_wording(headline_state->threshold_basis)
@@ -1736,19 +2281,48 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
 
 // ── Composition entry point ─────────────────────────────────────────────────
 
+/// The outdated-report notice: the interpreted report is older than the
+/// engine's maximum report age relative to the evaluation date, so it is not a
+/// current report (for example a discontinued contract). Empty otherwise.
+inline QString cftc_outdated_report_sentence(const services::CftcInterpretationResult& result) {
+    if (!result.report_outdated)
+        return {};
+    return cftc_presentation_tr(
+               "Out of date: this is the latest report the history carries, dated %1, %2 days before "
+               "today. CFTC publishes every week, so it is not a current report; the contract may have "
+               "been discontinued or its reporting suspended.")
+        .arg(result.report_date.toString(Qt::ISODate))
+        .arg(result.report_age_days);
+}
+
+/// The single method note that states the materiality and historical
+/// thresholds the conclusions use, so they read as MarketLab heuristics rather
+/// than CFTC definitions.
+inline QString cftc_method_sentence(const services::CftcInterpretationResult& result) {
+    const services::CftcInterpretationConfig& config = result.config;
+    return cftc_presentation_tr("Method: “material” means a move at or above the %1 percentile of the previous %2 "
+                                "comparable moves, and historical levels compare Net %OI with the previous %2 "
+                                "reports. These thresholds are MarketLab heuristics, not CFTC definitions.")
+        .arg(QString::number(config.material_move_percentile * 100.0, 'g', 3) + QStringLiteral("th"))
+        .arg(config.history_window);
+}
+
 inline QString cftc_interpretation_context_text(const services::CftcInterpretationResult& result) {
     QString text;
+    const QString outdated = cftc_outdated_report_sentence(result);
+    if (!outdated.isEmpty())
+        text = outdated + QLatin1Char(' ');
     if (result.report_date_available && result.report_date.isValid()) {
-        text = cftc_presentation_tr("Official CFTC report %1. Positioning is the report snapshot; COT reports are "
-                                    "published with a delay relative to the observation date. This describes reported "
-                                    "positioning and historical context; it is not a price forecast and not a trading "
-                                    "recommendation.")
-                   .arg(result.report_date.toString(Qt::ISODate));
+        text += cftc_presentation_tr("Official CFTC report %1. Positioning is the report snapshot; COT reports are "
+                                     "published with a delay relative to the observation date. This describes reported "
+                                     "positioning and historical context; it is not a price forecast and not a trading "
+                                     "recommendation.")
+                    .arg(result.report_date.toString(Qt::ISODate));
     } else {
-        text = cftc_presentation_tr("Positioning is the report snapshot; COT reports are published with a delay "
-                                    "relative to the observation date. This describes reported positioning and "
-                                    "historical context; it is not a price forecast and not a trading "
-                                    "recommendation.");
+        text += cftc_presentation_tr("Positioning is the report snapshot; COT reports are published with a delay "
+                                     "relative to the observation date. This describes reported positioning and "
+                                     "historical context; it is not a price forecast and not a trading "
+                                     "recommendation.");
     }
     if (!result.rule_set_version.isEmpty())
         text += QLatin1Char(' ') + cftc_presentation_tr("Interpretation engine: %1.").arg(result.rule_set_version);
@@ -1758,15 +2332,9 @@ inline QString cftc_interpretation_context_text(const services::CftcInterpretati
 inline QString cftc_headline_trajectory(const CftcHorizonFlowSummary& h4, const CftcHorizonFlowSummary& h13,
                                         const CftcHorizonFlowSummary& h1,
                                         const services::CftcParticipantInterpretation& participant) {
-    if (cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_HIGH_EXTREME")) ||
-        cftc_presentation_state(participant.states, QStringLiteral("UNWINDING_LOW_EXTREME")))
-        return cftc_presentation_tr("unwind developing");
-    if (cftc_presentation_state(participant.states, QStringLiteral("EXITED_HIGH_EXTREME")) ||
-        cftc_presentation_state(participant.states, QStringLiteral("EXITED_LOW_EXTREME")))
-        return cftc_presentation_tr("extreme exit developing");
-    if (cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_HIGH_EXTREME")) ||
-        cftc_presentation_state(participant.states, QStringLiteral("PERSISTENT_LOW_EXTREME")))
-        return cftc_presentation_tr("extreme persisting");
+    const QString transition = cftc_extreme_transition_headline(participant);
+    if (!transition.isEmpty())
+        return transition;
 
     const bool h4_material = h4.evaluated && h4.material_net_move;
     const bool h13_material = h13.evaluated && h13.material_net_move;
@@ -1774,11 +2342,14 @@ inline QString cftc_headline_trajectory(const CftcHorizonFlowSummary& h4, const 
         return cftc_presentation_tr("mixed repositioning across horizons");
     const int direction = h4_material ? h4.net_direction : (h13_material ? h13.net_direction : 0);
     const CftcHorizonFlowSummary& leading = h4_material ? h4 : h13;
+    // No "continuing": the horizon states say what happened over the window,
+    // not that the move is still under way (the latest week may have
+    // reversed).
     if (direction > 0)
-        return leading.long_accumulation ? cftc_presentation_tr("accumulation continuing")
+        return leading.long_accumulation ? cftc_presentation_tr("long accumulation")
                                          : cftc_presentation_tr("longward repositioning");
     if (direction < 0)
-        return leading.long_liquidation ? cftc_presentation_tr("liquidation continuing")
+        return leading.long_liquidation ? cftc_presentation_tr("long liquidation")
                                         : cftc_presentation_tr("shortward repositioning");
     if (h1.evaluated && h1.material_net_move)
         return h1.net_direction > 0 ? cftc_presentation_tr("longward in the latest weekly report")
@@ -1830,25 +2401,49 @@ inline CftcInterpretationView cftc_compose_interpretation_impl(const services::C
         return view;
     }
 
-    const bool interpreted = !primary->states.isEmpty();
+    // A whole-report failure (no observations, provenance, a stale as-of
+    // report) collapses the view to its report-level reason. A missing leg or
+    // Open Interest of the principal participant does not: the rest of the
+    // report (the other leg, Open Interest, concentration) is still valid and
+    // is composed with explicit unavailable statements, the same way whether
+    // the long or the short leg is the missing one.
+    // The engine records a report-wide exposure failure only when no
+    // participant could be interpreted at all.
+    bool any_participant_states = false;
+    for (const auto& participant : result.participants) {
+        if (!participant.states.isEmpty()) {
+            any_participant_states = true;
+            break;
+        }
+    }
+    bool whole_report_failure = false;
+    QString report_reason;
+    for (const auto& record : result.unavailable) {
+        if (record.participant_key.isEmpty() && record.state_family == QLatin1String("NET_EXPOSURE") &&
+            !any_participant_states) {
+            whole_report_failure = true;
+            report_reason = cftc_unavailable_reason_wording(record.reason);
+            break;
+        }
+    }
+    bool primary_has_records = false;
+    for (const auto& record : result.unavailable) {
+        if (record.participant_key == primary->participant_key) {
+            primary_has_records = true;
+            break;
+        }
+    }
+    const bool interpreted = !whole_report_failure && (!primary->states.isEmpty() || primary_has_records);
     view.interpreted = interpreted;
     if (!interpreted) {
-        // Truthful reason precedence: the primary participant's own blocked
-        // exposure reading first, then a report-wide failure (an unavailable
-        // record without a participant), and only then a generic fallback.
-        QString reason;
-        if (const auto* record = cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"),
-                                                               primary->participant_key)) {
-            reason = cftc_unavailable_reason_wording(record->reason);
-        }
+        // Truthful reason precedence: a report-wide failure first, then the
+        // primary participant's own blocked exposure reading, and only then a
+        // generic fallback.
+        QString reason = report_reason;
         if (reason.isEmpty()) {
-            for (const auto& record : result.unavailable) {
-                if (record.participant_key.isEmpty() && record.state_family != QLatin1String("OI_CONTEXT") &&
-                    record.state_family != QLatin1String("CONCENTRATION")) {
-                    reason = cftc_unavailable_reason_wording(record.reason);
-                    break;
-                }
-            }
+            if (const auto* record = cftc_presentation_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"),
+                                                                   primary->participant_key))
+                reason = cftc_unavailable_reason_wording(record->reason);
         }
         if (reason.isEmpty())
             reason = cftc_unavailable_reason_wording(services::CftcUnavailableReason::MissingParticipantLeg);
@@ -1869,25 +2464,42 @@ inline CftcInterpretationView cftc_compose_interpretation_impl(const services::C
     }
 
     view.horizon_reports = cftc_is_interpretation_horizon(horizon_reports) ? horizon_reports : 0;
-
-    if (view.horizon_reports == 0) {
-        view.headline = QStringLiteral("%1 — %2; %3")
-                            .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary),
-                                 cftc_headline_trajectory(h4, h13, h1, *primary));
-
-        view.sentences << cftc_level_sentence(*primary, net_unavailable_reason);
+    // An outdated report is flagged in the headline and as the first
+    // conclusion, so a discontinued contract's last report is never read as
+    // current.
+    const QString outdated = cftc_outdated_report_sentence(result);
+    const QString outdated_suffix = result.report_outdated
+                                        ? cftc_presentation_tr(" · out-of-date report (%1, %2 days old)")
+                                              .arg(result.report_date.toString(Qt::ISODate))
+                                              .arg(result.report_age_days)
+                                        : QString();
+    auto append_level_and_extremes = [&]() {
+        if (!outdated.isEmpty())
+            view.sentences << outdated;
+        view.sentences << cftc_level_sentence(result, *primary, net_unavailable_reason);
         if (cftc_exposure_is_crowded(*primary)) {
             const QString caveat = cftc_terminology_caveat_sentence(*primary);
             if (!caveat.isEmpty())
                 view.sentences << caveat;
         }
-        const QString extreme = cftc_extreme_sentence(*primary);
+        const QString extreme = cftc_extreme_sentence(result, *primary);
         if (!extreme.isEmpty())
             view.sentences << extreme;
+    };
+
+    if (view.horizon_reports == 0) {
+        view.headline = QStringLiteral("%1 — %2; %3")
+                            .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary),
+                                 cftc_headline_trajectory(h4, h13, h1, *primary)) +
+                        outdated_suffix;
+
+        append_level_and_extremes();
         view.sentences << cftc_repositioning_sentences(h4, h13, h1);
 
         // Gross-leg mechanism: the leading net move's horizon, else the horizon
-        // with gross states. The mechanism ids come from the Batch 4A state itself.
+        // with gross states. The mechanism ids come from the Batch 4A state
+        // itself, and the sentence names its horizon because it can differ
+        // from the horizon of the repositioning sentence above.
         const CftcHorizonFlowSummary& leading =
             h4.material_net_move || h4.long_accumulation || h4.long_liquidation || h4.short_building ||
                     h4.short_covering
@@ -1901,18 +2513,20 @@ inline CftcInterpretationView cftc_compose_interpretation_impl(const services::C
         if (!leading_net_state)
             leading_net_state =
                 cftc_presentation_state(primary->states, QStringLiteral("NET_SHORTWARD_SHIFT"), leading.horizon);
-        const QString gross = cftc_gross_mechanism_sentence(leading_net_state, leading);
+        const QString gross = cftc_gross_mechanism_sentence(leading_net_state, leading, /*label_horizon=*/true);
         if (!gross.isEmpty())
             view.sentences << gross;
 
         const QString oi = cftc_open_interest_sentence(result);
         if (!oi.isEmpty())
             view.sentences << oi;
+        view.sentences << cftc_concentration_sentences(result);
         const QString disagreement = cftc_net_share_disagreement_sentence(*primary);
         if (!disagreement.isEmpty())
             view.sentences << disagreement;
 
         view.sentences << cftc_price_relationship_sentences(result, *primary, price_state, price_unavailable_note);
+        view.sentences << cftc_method_sentence(result);
 
         view.evidence = cftc_build_evidence(result, *primary, h4, h13, price_state, price_unavailable_note);
         return view;
@@ -1927,22 +2541,25 @@ inline CftcInterpretationView cftc_compose_interpretation_impl(const services::C
     if (!cftc_has_extreme_transition_state(*primary) && summary.evaluated)
         trajectory = cftc_presentation_tr("%1 over the last %2").arg(trajectory, cftc_horizon_phrase(horizon));
     view.headline = QStringLiteral("%1 — %2; %3")
-                        .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary), trajectory);
+                        .arg(cftc_participant_display_name(*primary), cftc_exposure_phrase(*primary), trajectory) +
+                    outdated_suffix;
 
-    view.sentences << cftc_level_sentence(*primary, net_unavailable_reason);
-    if (cftc_exposure_is_crowded(*primary)) {
-        const QString caveat = cftc_terminology_caveat_sentence(*primary);
-        if (!caveat.isEmpty())
-            view.sentences << caveat;
-    }
-    const QString extreme = cftc_extreme_sentence(*primary);
-    if (!extreme.isEmpty())
-        view.sentences << extreme;
+    append_level_and_extremes();
     view.sentences << cftc_repositioning_sentence_for_horizon(summary, horizon);
-    if (horizon == 1)
-        view.sentences << cftc_presentation_tr(
-            "The one-report reading is a single weekly observation; the historical level and percentile above are "
-            "computed from the full validated history.");
+    if (horizon == 1) {
+        // The historical level is horizon-independent, but it compares the
+        // latest Net %OI with the previous reports of the reference window,
+        // not the whole history, and it may itself be unavailable.
+        if (primary->historical_percentile_available)
+            view.sentences << cftc_presentation_tr(
+                                  "The one-report reading is a single weekly observation; the historical level above "
+                                  "compares the latest Net %OI with the previous %1 reports and does not depend on the "
+                                  "selected horizon.")
+                                  .arg(primary->percentile_reference_count > 0 ? primary->percentile_reference_count
+                                                                               : result.config.history_window);
+        else
+            view.sentences << cftc_presentation_tr("The one-report reading is a single weekly observation.");
+    }
 
     const services::CftcInterpretationState* net_state =
         cftc_presentation_state(primary->states, QStringLiteral("NET_LONGWARD_SHIFT"), horizon);
@@ -1953,12 +2570,14 @@ inline CftcInterpretationView cftc_compose_interpretation_impl(const services::C
         view.sentences << gross;
 
     view.sentences << cftc_open_interest_dimension(result, horizon).sentence;
+    view.sentences << cftc_concentration_sentences(result);
     const QString disagreement = cftc_net_share_disagreement_sentence_for_horizon(*primary, horizon);
     if (!disagreement.isEmpty())
         view.sentences << disagreement;
 
     view.sentences << cftc_price_relationship_sentences_for_horizon(result, *primary, horizon, price_state,
                                                                     price_unavailable_note);
+    view.sentences << cftc_method_sentence(result);
 
     view.evidence =
         cftc_build_horizon_evidence(result, *primary, summary, horizon, price_state, price_unavailable_note);
@@ -1994,12 +2613,16 @@ cftc_compose_horizon_interpretation(const services::CftcInterpretationResult& re
 inline services::CftcInterpretationInput
 cftc_make_interpretation_input(services::CftcFamily family, const QVector<services::CftcObservation>& full_history,
                                const QString& report_basis_code, const QVector<services::CftcPricePoint>& prices,
-                               const QString& price_source, bool price_continuous_proxy, bool price_spot_index) {
+                               const QString& price_source, bool price_continuous_proxy, bool price_spot_index,
+                               const QDate& evaluation_date = QDate()) {
     services::CftcInterpretationInput input;
     input.family = family;
     input.observations_family_code = services::cftc_family_code(family);
     input.observations = full_history;
     input.report_basis_code = report_basis_code;
+    // The caller's calendar date for the report-freshness check; the engine
+    // itself never reads a clock.
+    input.evaluation_date = evaluation_date;
     input.prices = prices;
     input.price_source = price_source;
     input.price_continuous_proxy = price_continuous_proxy;

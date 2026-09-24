@@ -10,13 +10,18 @@
 // concentration, price/positioning alignment and both divergence states,
 // missing-data truthfulness, family terminology applicability and the absence
 // of any BUY/HOLD/SELL, bullish/bearish, confidence or expected-return output.
-// The suite defines 62 test slots (QTest reports 64 passes including
-// initTestCase/cleanupTestCase). Header-only over Qt Core; no app sources
+// Rule set v2 (the 2026-09-24 audit corrections) adds the 5-10-day weekly
+// neighbour, the 4-day report-price lag with distinct sessions, log-return
+// price materiality, the materiality-gated Net %OI disagreement, the 13-report
+// unwind lookback, row report-basis verification, report freshness and the
+// default 156-report boundary cases. Header-only over Qt Core; no app sources
 // (tests/ HARD RULE).
 #include "services/economics/CftcInterpretationModel.h"
 
 #include <QRegularExpression>
 #include <QtTest>
+
+#include <cmath>
 
 using namespace fincept::services;
 
@@ -457,12 +462,25 @@ class TstCftcInterpretation : public QObject {
     void deterministic_repeatability();
     void stale_as_of_report_is_not_current();
     void empty_history_is_unavailable();
+
+    // Rule set v2: 2026-09-24 audit corrections
+    void weekly_neighbour_requires_five_to_ten_days();
+    void report_price_lag_is_at_most_four_days();
+    void truncated_price_series_is_not_a_zero_move();
+    void identical_price_sessions_are_unavailable();
+    void price_materiality_ranks_log_returns();
+    void gradual_unwind_within_lookback();
+    void outdated_report_is_flagged();
+    void row_report_basis_must_match_declared_basis();
+    void default_window_percentile_boundaries();
+    void default_window_materiality_boundaries();
+    void per_cause_insufficient_history_reasons();
 };
 
 // ── Contract and configuration ──────────────────────────────────────────────
 
 void TstCftcInterpretation::default_rule_set_configuration() {
-    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v1"));
+    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v2"));
     const CftcInterpretationConfig config;
     QCOMPARE(config.history_window, 156);
     QCOMPARE(config.extreme_percentile, 0.90);
@@ -479,16 +497,16 @@ void TstCftcInterpretation::default_rule_set_configuration() {
     QCOMPARE(cftc_unwind_low_reentry_percentile(config), 0.25);
     QCOMPARE(cftc_low_extreme_percentile(config), 0.10);
     QCOMPARE(cftc_low_severe_percentile(config), 0.025);
-    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v1"));
+    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v2"));
     QVERIFY(cftc_interpretation_custom_rule_set_version() != cftc_interpretation_rule_set_version());
-    QVERIFY(cftc_interpretation_config_is_v1(cftc_default_interpretation_config()));
-    QVERIFY(!cftc_interpretation_config_is_v1(small_window_config(4)));
+    QVERIFY(cftc_interpretation_config_is_default(cftc_default_interpretation_config()));
+    QVERIFY(!cftc_interpretation_config_is_default(small_window_config(4)));
     CftcInterpretationConfig narrow_horizons;
     narrow_horizons.horizons_reports = {1, 4};
-    QVERIFY(!cftc_interpretation_config_is_v1(narrow_horizons));
+    QVERIFY(!cftc_interpretation_config_is_default(narrow_horizons));
     CftcInterpretationConfig narrow_concentration;
     narrow_concentration.primary_concentration_field = QStringLiteral("concentration_net_4_short");
-    QVERIFY(!cftc_interpretation_config_is_v1(narrow_concentration));
+    QVERIFY(!cftc_interpretation_config_is_default(narrow_concentration));
     QCOMPARE(cftc_interpretation_rule_set_version_for(cftc_default_interpretation_config()),
              cftc_interpretation_rule_set_version());
     QCOMPARE(cftc_interpretation_rule_set_version_for(small_window_config(4)),
@@ -598,10 +616,10 @@ void TstCftcInterpretation::custom_config_gets_distinct_rule_set_identity() {
     QVector<double> shorts(9, 400.0);
     const CftcInterpretationResult v1 = cftc_interpret(legacy_input(legacy_series(longs, shorts), 156));
     QCOMPARE(v1.rule_set_version, cftc_interpretation_rule_set_version());
-    QVERIFY(v1.config_is_v1);
+    QVERIFY(v1.config_is_default);
     const CftcInterpretationResult custom = cftc_interpret(legacy_input(legacy_series(longs, shorts), 4));
     QCOMPARE(custom.rule_set_version, cftc_interpretation_custom_rule_set_version());
-    QVERIFY2(!custom.config_is_v1, "an overridden configuration must not claim the plain v1 identity");
+    QVERIFY2(!custom.config_is_default, "an overridden configuration must not claim the plain v1 identity");
     QCOMPARE(custom.config.history_window, 4);
 }
 
@@ -1805,25 +1823,66 @@ void TstCftcInterpretation::oi_expansion_and_contraction() {
 }
 
 void TstCftcInterpretation::net_share_raw_disagreement() {
-    QVector<std::optional<double>> oi = {1000.0, 1000.0, 1000.0, 1000.0, 2000.0};
-    QVector<std::optional<double>> longs = {600.0, 600.0, 600.0, 600.0, 650.0};
-    QVector<std::optional<double>> shorts = {500.0, 500.0, 500.0, 500.0, 500.0};
     const int speculative = participant_index(CftcFamily::Legacy, QStringLiteral("non_commercial"));
-    const QVector<CftcObservation> series = make_series_with_oi(CftcFamily::Legacy, speculative, longs, shorts, oi);
-    const CftcInterpretationResult result = cftc_interpret(legacy_input(series));
+
+    // Material case: a +50-contract raw net move (+5 % of prior OI, larger than
+    // every prior move) while Open Interest doubles, so Net %OI falls from 10 %
+    // to 7.5 %. v2 emits the state with both values and the OI change.
+    QVector<std::optional<double>> oi = {1000.0, 1000.0, 1000.0, 1000.0, 1000.0,
+                                         1000.0, 1000.0, 1000.0, 1000.0, 2000.0};
+    QVector<std::optional<double>> longs = {600.0, 600.0, 600.0, 600.0, 600.0, 600.0, 600.0, 600.0, 600.0, 650.0};
+    QVector<std::optional<double>> shorts(10, 500.0);
+    CftcInterpretationResult result =
+        cftc_interpret(legacy_input(make_series_with_oi(CftcFamily::Legacy, speculative, longs, shorts, oi)));
     const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
     QVERIFY(participant);
     const CftcInterpretationState* disagreement =
         find_state(participant->states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), 4);
     QVERIFY(disagreement);
-    QCOMPARE(disagreement->threshold_basis, CftcEvidenceBasis::DerivedIdentity);
+    QCOMPARE(disagreement->threshold_basis, CftcEvidenceBasis::EngineHeuristic);
     const CftcStateMetric* net_flow = find_metric(disagreement->metrics, QStringLiteral("net_flow"));
     const CftcStateMetric* share_change = find_metric(disagreement->metrics, QStringLiteral("net_share_change"));
+    const CftcStateMetric* oi_change = find_metric(disagreement->metrics, QStringLiteral("oi_change"));
+    const CftcStateMetric* net_rank = find_metric(disagreement->metrics, QStringLiteral("net_flow_rank"));
     QVERIFY(net_flow);
     QVERIFY(share_change);
+    QVERIFY(oi_change && oi_change->has_value);
+    QVERIFY(net_rank && net_rank->has_value);
     QCOMPARE(net_flow->value, 5.0);
-    QVERIFY(net_flow->value > 0.0);
-    QVERIFY(share_change->value < 0.0);
+    QCOMPARE(share_change->value, -2.5);
+    QCOMPARE(oi_change->value, 100.0);
+    QCOMPARE(net_rank->value, 1.0);
+
+    // Noise case: prior weekly net moves of 2 % of OI, then a +0.1 % raw move
+    // with a 2 % OI increase (Net %OI 10.00 % -> 9.90 %). The signs are
+    // opposed, but neither move is material, so v2 emits nothing and records
+    // nothing (both references exist).
+    QVector<std::optional<double>> noise_oi = {1000.0, 1000.0, 1000.0, 1000.0, 1000.0,
+                                               1000.0, 1000.0, 1000.0, 1000.0, 1020.0};
+    QVector<std::optional<double>> noise_longs = {600.0, 620.0, 600.0, 620.0, 600.0, 620.0, 600.0, 620.0, 600.0, 601.0};
+    result = cftc_interpret(
+        legacy_input(make_series_with_oi(CftcFamily::Legacy, speculative, noise_longs, shorts, noise_oi)));
+    participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QVERIFY2(!has_state(participant->states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), 1),
+             "an opposed-but-trivial move is not narrated");
+    QVERIFY(!find_unavailable(result.unavailable, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"),
+                              QStringLiteral("non_commercial"), 1));
+
+    // Too-short reference: the gate cannot be decided, so the state is
+    // recorded unavailable instead of being emitted or silently dropped.
+    QVector<std::optional<double>> short_oi = {1000.0, 1000.0, 1000.0, 1000.0, 2000.0};
+    QVector<std::optional<double>> short_longs = {600.0, 600.0, 600.0, 600.0, 650.0};
+    QVector<std::optional<double>> short_shorts(5, 500.0);
+    result = cftc_interpret(
+        legacy_input(make_series_with_oi(CftcFamily::Legacy, speculative, short_longs, short_shorts, short_oi)));
+    participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QVERIFY(!has_state(participant->states, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), 4));
+    const CftcUnavailableRecord* record = find_unavailable(
+        result.unavailable, QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), QStringLiteral("non_commercial"), 4);
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::InsufficientHistory);
 }
 
 void TstCftcInterpretation::net_share_raw_disagreement_requires_opposite_signs() {
@@ -2400,7 +2459,7 @@ void TstCftcInterpretation::raw_flow_readings_cover_every_horizon() {
         QVERIFY2(reading != nullptr, qPrintable(QStringLiteral("missing reading at %1").arg(horizon)));
         if (horizon == 13) {
             QVERIFY(!reading->evaluated);
-            QCOMPARE(reading->reason, CftcUnavailableReason::InsufficientHistory);
+            QCOMPARE(reading->reason, CftcUnavailableReason::InsufficientHorizonHistory);
         } else {
             QVERIFY(reading->evaluated);
             QVERIFY(reading->has_long_flow);
@@ -2474,10 +2533,365 @@ void TstCftcInterpretation::open_interest_readings_are_emitted() {
             QVERIFY(reading.has_rank);
             QVERIFY(reading.rank_reference_count > 0);
         } else {
-            QCOMPARE(reading.reason, CftcUnavailableReason::InsufficientHistory);
+            QCOMPARE(reading.reason, CftcUnavailableReason::InsufficientHorizonHistory);
         }
     }
     QVERIFY(saw_evaluated);
+}
+
+// ── Rule set v2: 2026-09-24 audit corrections ───────────────────────────────
+
+void TstCftcInterpretation::weekly_neighbour_requires_five_to_ten_days() {
+    // The 3-day steps in the official history (2001-12-18 -> 2001-12-21) are
+    // extra reports, not weekly intervals; holiday 6/8-day steps are weekly.
+    QVERIFY(!cftc_weekly_neighbour(QDate(2001, 12, 18), QDate(2001, 12, 21)));
+    const QDate day(2026, 9, 1);
+    QVERIFY(!cftc_weekly_neighbour(day, day.addDays(4)));
+    QVERIFY(cftc_weekly_neighbour(day, day.addDays(5)));
+    QVERIFY(cftc_weekly_neighbour(day, day.addDays(6)));
+    QVERIFY(cftc_weekly_neighbour(day, day.addDays(8)));
+    QVERIFY(cftc_weekly_neighbour(day, day.addDays(10)));
+    QVERIFY(!cftc_weekly_neighbour(day, day.addDays(11)));
+
+    // An extra report three days after the previous one breaks the exact
+    // one-report horizon instead of being read as a weekly change.
+    QVector<double> longs = {500, 505, 510, 515, 520, 525, 530, 535, 540, 545};
+    QVector<CftcObservation> observations = legacy_series(longs, QVector<double>(10, 400.0));
+    observations.last().date = observations[observations.size() - 2].date.addDays(3);
+    observations.last().date_label = observations.last().date.toString(Qt::ISODate);
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(observations));
+    const CftcUnavailableRecord* record =
+        find_unavailable(result.unavailable, QStringLiteral("GROSS_FLOW"), QStringLiteral("non_commercial"), 1);
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::BrokenReportSequence);
+}
+
+void TstCftcInterpretation::report_price_lag_is_at_most_four_days() {
+    const QDate report(2026, 9, 15); // Tuesday
+    // Friday's close for a Tuesday report (Monday and Tuesday not traded): 4 days.
+    const CftcReportPrice friday = cftc_report_price({{QDate(2026, 9, 11), 100.0}}, report);
+    QVERIFY(friday.available);
+    QCOMPARE(friday.date, QDate(2026, 9, 11));
+    // Five days is no longer the report date's session.
+    const CftcReportPrice thursday = cftc_report_price({{QDate(2026, 9, 10), 100.0}}, report);
+    QVERIFY(!thursday.available);
+    QCOMPARE(thursday.reason, CftcUnavailableReason::PriceContextStale);
+    // The previous report's close (7 days) never stands in for this report.
+    const CftcReportPrice previous_report = cftc_report_price({{QDate(2026, 9, 8), 100.0}}, report);
+    QVERIFY(!previous_report.available);
+    QCOMPARE(previous_report.reason, CftcUnavailableReason::PriceContextStale);
+    QCOMPARE(cftc_default_interpretation_config().price_max_lag_days, 4);
+}
+
+void TstCftcInterpretation::truncated_price_series_is_not_a_zero_move() {
+    // The audit scenario: the price series ends one report before the latest
+    // CFTC report. v1 reused the previous report's close for the latest report,
+    // so the one-report "move" was an evaluated 0.00 and the longer windows
+    // silently ended a week early. v2 keeps every price window unavailable.
+    QVector<double> longs = {500, 500, 500, 500, 500, 500, 500, 500, 500, 600};
+    QVector<CftcObservation> observations = legacy_series(longs, QVector<double>(10, 400.0));
+    QVector<CftcPricePoint> prices;
+    for (int i = 0; i + 1 < observations.size(); ++i)
+        prices.append({observations[i].date, 100.0 + i});
+    CftcInterpretationInput input = legacy_input(observations);
+    input.prices = prices;
+    input.price_source = QStringLiteral("TEST source");
+    input.price_continuous_proxy = true;
+    const CftcInterpretationResult result = cftc_interpret(input);
+    for (int horizon : {1, 4}) {
+        const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), horizon);
+        QVERIFY(assessment);
+        QVERIFY2(!assessment->has_price_move, "a missing close must not become a price move");
+        QVERIFY(!assessment->evaluated);
+        QVERIFY(!assessment->has_state);
+        QCOMPARE(assessment->reason, CftcUnavailableReason::PriceContextStale);
+    }
+}
+
+void TstCftcInterpretation::identical_price_sessions_are_unavailable() {
+    // With a (custom) lag long enough for both report dates to resolve to the
+    // same session, the window carries no price move and is unavailable, never
+    // an evaluated 0.00.
+    QVector<double> longs = {500, 500, 500, 500, 500, 500, 600};
+    QVector<CftcObservation> observations = legacy_series(longs, QVector<double>(7, 400.0));
+    QVector<CftcPricePoint> prices;
+    for (int i = 0; i + 1 < observations.size(); ++i)
+        prices.append({observations[i].date, 100.0 + i});
+    CftcInterpretationInput input = legacy_input(observations);
+    input.config.price_max_lag_days = 7;
+    input.prices = prices;
+    input.price_source = QStringLiteral("TEST source");
+    const CftcInterpretationResult result = cftc_interpret(input);
+    const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 1);
+    QVERIFY(assessment);
+    QCOMPARE(assessment->reason, CftcUnavailableReason::PriceSessionsNotDistinct);
+    QVERIFY(!assessment->has_price_move);
+    QVERIFY(!assessment->evaluated);
+    QCOMPARE(assessment->price_anchor_date, assessment->price_latest_date);
+}
+
+void TstCftcInterpretation::price_materiality_ranks_log_returns() {
+    // Closes 100, 105, 100, 200, 195, 201: the latest raw move (+6) is larger
+    // than three of the four prior raw moves (5, 5, 100, 5 -> raw rank 0.75,
+    // material), but as a return (+3.08 %) it is smaller than three of the four
+    // prior returns (4.9 %, 5.1 %, 69 %, 2.5 % -> rank 0.25). Price materiality
+    // is scale-invariant in v2, so no relationship state is emitted.
+    QVector<double> longs = {500, 500, 500, 500, 500, 550};
+    const QVector<CftcObservation> observations = legacy_series(longs, QVector<double>(6, 400.0));
+    CftcInterpretationInput input = legacy_input(observations);
+    input.prices = price_points({100, 105, 100, 200, 195, 201});
+    input.price_source = QStringLiteral("TEST source");
+    input.price_continuous_proxy = true;
+    const CftcInterpretationResult result = cftc_interpret(input);
+    const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 1);
+    QVERIFY(assessment);
+    QVERIFY(assessment->evaluated);
+    QVERIFY(assessment->positioning_material);
+    QCOMPARE(assessment->price_move, 6.0);
+    QCOMPARE(assessment->price_anchor_close, 195.0);
+    QCOMPARE(assessment->price_latest_close, 201.0);
+    QVERIFY(qAbs(assessment->price_move_pct - 100.0 * (201.0 / 195.0 - 1.0)) < 1e-12);
+    QVERIFY(assessment->has_price_move_rank);
+    QCOMPARE(assessment->price_move_rank, 0.25);
+    QCOMPARE(assessment->price_reference_count, 4);
+    QVERIFY(!assessment->price_material);
+    QVERIFY(!assessment->has_state);
+
+    // The series itself holds log returns.
+    const QVector<CftcDatedValue> moves = cftc_price_move_series(input.prices, observations, 1);
+    QCOMPARE(moves.size(), 5);
+    QVERIFY(qAbs(moves.last().value - std::log(201.0 / 195.0)) < 1e-15);
+}
+
+void TstCftcInterpretation::gradual_unwind_within_lookback() {
+    // Net %OI 10..16 is a persistent high (percentile 1.0 at 14, 15, 16), then
+    // 16 (0.875) and 15.9 (0.5). The unwind to or below 0.75 happens two
+    // reports after the persistent run: v1 required the persistent state at
+    // the immediately preceding report and missed it; v2 looks back 13 reports.
+    const QString key = QStringLiteral("non_commercial");
+    const CftcInterpretationResult result =
+        cftc_interpret(legacy_input(legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 16, 15.9})));
+    const CftcParticipantInterpretation* participant = find_participant(result, key);
+    QVERIFY(participant);
+    QCOMPARE(participant->percentile, 0.5);
+    QVERIFY(has_state(participant->states, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+    QVERIFY(!has_state(participant->states, QStringLiteral("EXITED_HIGH_EXTREME")));
+
+    // It is a transition: the next report, already below the re-entry band,
+    // does not repeat it.
+    const CftcInterpretationResult next =
+        cftc_interpret(legacy_input(legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 16, 15.9, 15.5})));
+    const CftcParticipantInterpretation* next_participant = find_participant(next, key);
+    QVERIFY(next_participant);
+    QVERIFY(!has_state(next_participant->states, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+
+    // A one-report lookback reproduces the narrower v1 reading.
+    CftcInterpretationInput narrow = legacy_input(legacy_percent_series({10, 11, 12, 13, 14, 15, 16, 16, 15.9}));
+    narrow.config.unwind_lookback_reports = 1;
+    const CftcInterpretationResult narrow_result = cftc_interpret(narrow);
+    const CftcParticipantInterpretation* narrow_participant = find_participant(narrow_result, key);
+    QVERIFY(narrow_participant);
+    QVERIFY(!has_state(narrow_participant->states, QStringLiteral("UNWINDING_HIGH_EXTREME")));
+    QCOMPARE(narrow_result.rule_set_version, cftc_interpretation_custom_rule_set_version());
+}
+
+void TstCftcInterpretation::outdated_report_is_flagged() {
+    QVector<double> longs(10, 500.0);
+    CftcInterpretationInput input = legacy_input(legacy_series(longs, QVector<double>(10, 400.0)));
+
+    CftcInterpretationResult result = cftc_interpret(input);
+    QVERIFY2(!result.report_age_available, "without an evaluation date the engine reads no clock");
+    QVERIFY(!result.report_outdated);
+
+    input.evaluation_date = kLatest.addDays(14);
+    result = cftc_interpret(input);
+    QVERIFY(result.report_age_available);
+    QCOMPARE(result.report_age_days, 14);
+    QVERIFY2(!result.report_outdated, "a holiday-delayed weekly release is still current");
+
+    input.evaluation_date = kLatest.addDays(15);
+    result = cftc_interpret(input);
+    QVERIFY(result.report_outdated);
+
+    // The discontinued-contract case: the report is still interpreted as of
+    // its own date, but flagged.
+    input.evaluation_date = kLatest.addDays(205);
+    result = cftc_interpret(input);
+    QVERIFY(result.report_outdated);
+    QCOMPARE(result.report_age_days, 205);
+    QVERIFY(result.report_date_available);
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    QVERIFY(has_state(participant->states, QStringLiteral("NET_LONG")));
+}
+
+void TstCftcInterpretation::row_report_basis_must_match_declared_basis() {
+    QVector<double> longs(10, 500.0);
+    QVector<CftcObservation> combined_rows = legacy_series(longs, QVector<double>(10, 400.0));
+    for (auto& observation : combined_rows)
+        observation.report_basis = QStringLiteral("Combined");
+
+    // Combined rows declared Futures Only: refused, not relabelled.
+    CftcInterpretationInput mislabelled = legacy_input(combined_rows);
+    mislabelled.report_basis_code = QStringLiteral("futures_only");
+    CftcInterpretationResult result = cftc_interpret(mislabelled);
+    const CftcUnavailableRecord* record = find_market_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"));
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::ReportBasisMismatch);
+    for (const auto& participant : result.participants)
+        QVERIFY(participant.states.isEmpty());
+
+    // The same rows declared Combined: interpreted and verified.
+    CftcInterpretationInput matching = legacy_input(combined_rows);
+    matching.report_basis_code = QStringLiteral("futures_and_options_combined");
+    result = cftc_interpret(matching);
+    QVERIFY(result.report_basis_verified);
+    QVERIFY(!find_market_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE")));
+
+    // Only some rows stating a basis is an unverifiable splice.
+    QVector<CftcObservation> spliced = legacy_series(longs, QVector<double>(10, 400.0));
+    spliced.last().report_basis = QStringLiteral("FutOnly");
+    CftcInterpretationInput splice_input = legacy_input(spliced);
+    splice_input.report_basis_code = QStringLiteral("futures_only");
+    result = cftc_interpret(splice_input);
+    record = find_market_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE"));
+    QVERIFY(record);
+    QCOMPARE(record->reason, CftcUnavailableReason::ReportBasisMismatch);
+
+    // Rows without basis metadata stay a caller declaration, reported as such.
+    result = cftc_interpret(legacy_input(legacy_series(longs, QVector<double>(10, 400.0))));
+    QVERIFY(!result.report_basis_verified);
+    QVERIFY(!find_market_unavailable(result.unavailable, QStringLiteral("NET_EXPOSURE")));
+}
+
+void TstCftcInterpretation::default_window_percentile_boundaries() {
+    // The default 156-report reference: 0.90 needs 140.5 of 156 (141 below,
+    // or 140 below plus one tie); 140 below is 0.8974 and not high.
+    const QString key = QStringLiteral("non_commercial");
+    auto percentile_result = [&](int below, int equal, int above) {
+        QVector<double> values;
+        for (int i = 0; i < below; ++i)
+            values.append(1.0);
+        for (int i = 0; i < equal; ++i)
+            values.append(5.0);
+        for (int i = 0; i < above; ++i)
+            values.append(9.0);
+        values.append(5.0);
+        CftcInterpretationInput input = legacy_input(legacy_percent_series(values), 156);
+        return cftc_interpret(input);
+    };
+    CftcInterpretationResult result = percentile_result(140, 0, 16);
+    QVERIFY(result.config_is_default);
+    const CftcParticipantInterpretation* participant = find_participant(result, key);
+    QVERIFY(participant);
+    QCOMPARE(participant->percentile_reference_count, 156);
+    QCOMPARE(participant->percentile, 140.0 / 156.0);
+    QVERIFY(!has_state(participant->states, QStringLiteral("HISTORICALLY_HIGH_NET")));
+
+    result = percentile_result(141, 0, 15);
+    participant = find_participant(result, key);
+    QVERIFY(participant);
+    QCOMPARE(participant->percentile, 141.0 / 156.0);
+    QVERIFY(has_state(participant->states, QStringLiteral("HISTORICALLY_HIGH_NET")));
+    QVERIFY(has_state(participant->states, QStringLiteral("CROWDED_LONG")));
+
+    result = percentile_result(140, 1, 15);
+    participant = find_participant(result, key);
+    QVERIFY(participant);
+    QCOMPARE(participant->percentile, 140.5 / 156.0);
+    QVERIFY(has_state(participant->states, QStringLiteral("HISTORICALLY_HIGH_NET")));
+}
+
+void TstCftcInterpretation::default_window_materiality_boundaries() {
+    // With the default 156-move reference, 0.75 is exactly 117 of 156 moves
+    // strictly below the current absolute move; 116 below plus one tie is
+    // 0.7468 and not material.
+    const QString key = QStringLiteral("non_commercial");
+    auto net_move_result = [&](int small, int equal, int large) {
+        QVector<double> percents = {0.0};
+        double level = 0.0;
+        int step = 0;
+        auto move = [&](double size) {
+            level += (step % 2 == 0) ? size : -size;
+            ++step;
+            percents.append(level);
+        };
+        for (int i = 0; i < small; ++i)
+            move(1.0);
+        for (int i = 0; i < equal; ++i)
+            move(2.0);
+        for (int i = 0; i < large; ++i)
+            move(3.0);
+        percents.append(level + 2.0); // the current +2 % move
+        CftcInterpretationInput input = legacy_input(legacy_percent_series(percents), 156);
+        return cftc_interpret(input);
+    };
+    CftcInterpretationResult result = net_move_result(117, 0, 39);
+    QVERIFY(result.config_is_default);
+    const CftcParticipantInterpretation* participant = find_participant(result, key);
+    QVERIFY(participant);
+    const CftcInterpretationState* shift = find_state(participant->states, QStringLiteral("NET_LONGWARD_SHIFT"), 1);
+    QVERIFY(shift);
+    QCOMPARE(shift->move_rank, 0.75);
+    QCOMPARE(shift->move_rank_reference_count, 156);
+
+    result = net_move_result(116, 1, 39);
+    participant = find_participant(result, key);
+    QVERIFY(participant);
+    QVERIFY(!has_state(participant->states, QStringLiteral("NET_LONGWARD_SHIFT"), 1));
+    const CftcHorizonFlowReading* reading = nullptr;
+    for (const auto& candidate : participant->flow_readings) {
+        if (candidate.horizon_reports == 1)
+            reading = &candidate;
+    }
+    QVERIFY(reading);
+    QCOMPARE(reading->net_rank, 116.5 / 156.0);
+}
+
+void TstCftcInterpretation::per_cause_insufficient_history_reasons() {
+    // Horizon anchor before the history start.
+    const CftcInterpretationResult short_history =
+        cftc_interpret(legacy_input(legacy_series(QVector<double>(10, 500.0), QVector<double>(10, 400.0))));
+    const CftcUnavailableRecord* horizon =
+        find_unavailable(short_history.unavailable, QStringLiteral("NET_SHIFT"), QStringLiteral("non_commercial"), 13);
+    QVERIFY(horizon);
+    QCOMPARE(horizon->reason, CftcUnavailableReason::InsufficientHorizonHistory);
+
+    // Concentration reference shorter than its own minimum (8 readings).
+    QVector<CftcObservation> concentrated = legacy_series(QVector<double>(6, 500.0), QVector<double>(6, 400.0));
+    for (int i = 0; i < concentrated.size(); ++i)
+        concentrated[i].concentration_gross_4_long = 10.0 + i;
+    const CftcInterpretationResult concentration = cftc_interpret(legacy_input(concentrated));
+    const CftcUnavailableRecord* high = nullptr;
+    for (const auto& record : concentration.unavailable) {
+        if (record.state_family == QLatin1String("CONCENTRATION") &&
+            record.state_id == QLatin1String("HIGH_MARKET_CONCENTRATION"))
+            high = &record;
+    }
+    QVERIFY(high);
+    QCOMPARE(high->reason, CftcUnavailableReason::InsufficientConcentrationHistory);
+
+    // Price reference shorter than the move window while positioning is fully
+    // referenced.
+    QVector<double> longs(20, 500.0);
+    longs.last() = 600.0;
+    const QVector<CftcObservation> observations = legacy_series(longs, QVector<double>(20, 400.0));
+    CftcInterpretationInput input = legacy_input(observations, 8);
+    for (int i = observations.size() - 6; i < observations.size(); ++i)
+        input.prices.append({observations[i].date, 100.0 + i});
+    input.price_source = QStringLiteral("TEST source");
+    const CftcInterpretationResult price = cftc_interpret(input);
+    const CftcPricePositionAssessment* assessment = find_price(price, QStringLiteral("non_commercial"), 1);
+    QVERIFY(assessment);
+    QCOMPARE(assessment->reason, CftcUnavailableReason::InsufficientPriceHistory);
+    QVERIFY(assessment->has_price_move);
+    QVERIFY(!assessment->evaluated);
+
+    for (CftcUnavailableReason reason :
+         {CftcUnavailableReason::InsufficientHorizonHistory, CftcUnavailableReason::InsufficientPriceHistory,
+          CftcUnavailableReason::InsufficientConcentrationHistory, CftcUnavailableReason::PriceSessionsNotDistinct,
+          CftcUnavailableReason::ReportBasisMismatch})
+        QVERIFY(!cftc_unavailable_reason_code(reason).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TstCftcInterpretation)

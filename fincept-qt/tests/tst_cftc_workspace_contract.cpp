@@ -104,6 +104,12 @@ void TstCftcWorkspaceContract::percentile_labels_separate_the_two_measures() {
     QVERIFY(tooltip.contains(QStringLiteral("different measure")));
     QVERIFY(tooltip.contains(QStringLiteral("156 prior reports")));
     QVERIFY(tooltip.contains(QStringLiteral("raw net position")));
+    QVERIFY(tooltip.contains(QStringLiteral("latest report included")));
+    for (const QString& verdict :
+         {QStringLiteral("UPPER RANGE"), QStringLiteral("MIDDLE RANGE"), QStringLiteral("LOWER RANGE")}) {
+        QVERIFY(!window.contains(verdict));
+        QVERIFY(!tooltip.contains(verdict));
+    }
 }
 
 QTEST_GUILESS_MAIN(TstCftcWorkspaceContract)

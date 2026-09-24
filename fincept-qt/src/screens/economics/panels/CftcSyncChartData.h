@@ -36,17 +36,45 @@
 #include "services/economics/CftcMetricModel.h"
 #include "ui/charts/TimeSeriesData.h"
 
+#include <QByteArray>
 #include <QDate>
 #include <QDateTime>
 #include <QString>
 #include <QStringList>
 #include <QTime>
+#include <QTimeZone>
 #include <QVector>
 
 #include <algorithm>
 #include <cmath>
 
 namespace fincept::screens {
+
+/// The time zone the retained price provider stamps daily bars in. Yahoo
+/// Finance stamps each daily futures bar at 00:00 exchange time: 00:00
+/// America/New_York for every mapped CME/COMEX/NYMEX/CBOT/ICE futures proxy and
+/// DX-Y.NYB, and 00:00 America/Chicago for ^VIX (verified 2026-09-24). A
+/// New York wall-clock date recovers the session date for all of them (Chicago
+/// midnight is 01:00 in New York on the same date).
+inline QTimeZone cftc_price_session_time_zone() {
+    static const QTimeZone zone(QByteArrayLiteral("America/New_York"));
+    return zone;
+}
+
+/// The trading-session date of a provider daily bar. Converting the epoch
+/// timestamp in the viewer's local zone would move a bar stamped 00:00 New York
+/// time back to the previous calendar day on any machine at UTC-5 or further
+/// west, so the "close on or before the report date" rule would read the
+/// session after the report (lookahead). The conversion therefore uses the
+/// exchange zone and never the local zone. If the zone database is unavailable
+/// the UTC date is used, which equals the session date for bars stamped at a US
+/// midnight (04:00-06:00 UTC).
+inline QDate cftc_price_session_date(qint64 timestamp_secs) {
+    const QTimeZone zone = cftc_price_session_time_zone();
+    if (zone.isValid())
+        return QDateTime::fromSecsSinceEpoch(timestamp_secs, zone).date();
+    return QDateTime::fromSecsSinceEpoch(timestamp_secs, QTimeZone::utc()).date();
+}
 
 struct CftcSyncPane {
     QVector<ui::TimeSeriesPoint> points; // real observations only; ascending by report date

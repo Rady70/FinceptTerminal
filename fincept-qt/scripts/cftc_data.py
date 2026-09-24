@@ -102,7 +102,10 @@ class CFTCDataWrapper:
             "s&p_500": "13874A",
             "nasdaq_100": "209742",
             "dow_jones": "124603",
-            "nikkei": "240741",
+            # 240741 (USD-denominated Nikkei) stopped reporting on 2026-03-03.
+            # 240743 is the yen-denominated CME Nikkei 225 contract, which still
+            # reports and is the contract the NIY=F price proxy trades.
+            "nikkei": "240743",
             "vix": "1170E1",
 
             # Interest Rates
@@ -305,13 +308,14 @@ class CFTCDataWrapper:
 
     # The participant fields the derived views read, per report family.
     #
-    # The panel labels the first group "commercial" and the second
-    # "non-commercial (speculators)". For legacy that is the CFTC's own split;
-    # for disaggregated the faithful equivalents are Producer/Merchant
-    # (commercial hedgers) and Managed Money (speculators). The TFF/financial
-    # family has no such split at all — it reports Dealer/Intermediary, Asset
-    # Manager/Institutional, and Leveraged Funds — so the derived views refuse
-    # it instead of mislabelling one class or zero-filling the difference.
+    # The commercial / non-commercial split is the CFTC's own Legacy
+    # classification. The sentiment and position-summary views (dormant CLI
+    # commands; the R3 workspace uses cot_history only) therefore serve the
+    # Legacy family only: relabelling Disaggregated Producer/Merchant or Managed
+    # Money as "commercial"/"non-commercial", or reconstructing TFF into that
+    # split, would mislabel CFTC categories. The trend view keeps each family's
+    # own vocabulary (Legacy commercial / non-commercial, Disaggregated
+    # producer-merchant / managed-money) and still refuses TFF.
     _POSITION_FIELDS = {
         "legacy": {
             "commercial_long": ("comm_positions_long_all", "comm_long_all"),
@@ -771,23 +775,25 @@ class CFTCDataWrapper:
 
     # MARKET SENTIMENT ANALYSIS ENDPOINTS
 
-    def analyze_market_sentiment(self, identifier: str, report_type: str = "disaggregated") -> Dict[str, Any]:
-        """Analyze market sentiment from COT data.
+    def analyze_market_sentiment(self, identifier: str, report_type: str = "legacy") -> Dict[str, Any]:
+        """Describe the latest Legacy commercial / non-commercial positioning.
 
-        Reads the participant fields the given report family actually carries;
-        a family whose fields cannot answer the commercial/non-commercial
-        question (TFF) and a row missing a required field both return a typed
-        error instead of zero-filled positions."""
+        Only the Legacy family carries the CFTC's commercial/non-commercial
+        split; Disaggregated and TFF return a typed error instead of relabelling
+        their own categories. A row missing a required field returns a typed
+        error instead of zero-filled positions. The direction fields describe
+        the sign of the reported net position only (net_long / net_short /
+        flat); they are not a sentiment, a forecast or a trading signal."""
         try:
             family = self._report_family(report_type)
-            field_map = self._POSITION_FIELDS.get(family)
+            field_map = self._POSITION_FIELDS.get(family) if family == "legacy" else None
             if field_map is None:
                 return {"error": CFTCError(
                     "market_sentiment",
-                    f"Derived sentiment is not defined for the '{report_type}' report family. "
-                    "The CFTC financial futures (TFF) report classifies traders as "
-                    "Dealer/Intermediary, Asset Manager/Institutional and Leveraged Funds, so a "
-                    "commercial/non-commercial split would be mislabelled. Use the COT Table view."
+                    f"The commercial/non-commercial view is not defined for the '{report_type}' report family. "
+                    "Only the Legacy report classifies traders as commercial and non-commercial; the "
+                    "Disaggregated and financial (TFF) reports use their own categories, which this view "
+                    "would mislabel. Use the cot_history command."
                 ).to_dict()}
 
             # Get recent COT data
@@ -870,16 +876,17 @@ class CFTCDataWrapper:
                 sentiment_analysis["non_commercial_long_pct"] = (sentiment_analysis["non_commercial_positions"]["long"] / total_oi) * 100
                 sentiment_analysis["non_reportable_long_pct"] = (sentiment_analysis["non_reportable_positions"]["long"] / total_oi) * 100
 
-            # Determine overall sentiment. An exact-zero net is genuinely
-            # neutral, not bearish; an unavailable comparison is "unavailable",
-            # not "decreasing", and activity is only derived when the change
-            # percent it needs actually exists.
+            # The reported net direction only. An exact-zero net is "flat"; an
+            # unavailable comparison is "unavailable", not "decreasing", and
+            # activity is only derived when the change percent it needs actually
+            # exists. No bullish/bearish vocabulary: a net position is an
+            # accounting fact, not a statement of motive or a forecast.
             def _bias(net: int) -> str:
                 if net > 0:
-                    return "bullish"
+                    return "net_long"
                 if net < 0:
-                    return "bearish"
-                return "neutral"
+                    return "net_short"
+                return "flat"
 
             net_commercial = sentiment_analysis["commercial_positions"]["net"]
             net_non_commercial = sentiment_analysis["non_commercial_positions"]["net"]
@@ -924,20 +931,21 @@ class CFTCDataWrapper:
         except Exception as e:
             return {"error": CFTCError("market_sentiment", str(e)).to_dict()}
 
-    def get_position_summary(self, identifier: str, report_type: str = "disaggregated") -> Dict[str, Any]:
-        """Get summary of current positions for a market.
+    def get_position_summary(self, identifier: str, report_type: str = "legacy") -> Dict[str, Any]:
+        """Get summary of current Legacy positions for a market.
 
-        Same rules as the sentiment view: family-specific fields, numeric
-        coercion, and a typed error when a required field is missing."""
+        Same rules as the sentiment view: Legacy only (the commercial /
+        non-commercial classes are the Legacy report's own), numeric coercion,
+        and a typed error when a required field is missing."""
         try:
             family = self._report_family(report_type)
-            field_map = self._POSITION_FIELDS.get(family)
+            field_map = self._POSITION_FIELDS.get(family) if family == "legacy" else None
             if field_map is None:
                 return {"error": CFTCError(
                     "position_summary",
-                    f"Position classes are not defined for the '{report_type}' report family. "
-                    "The CFTC financial futures (TFF) report uses Dealer/Intermediary, Asset "
-                    "Manager/Institutional and Leveraged Funds classes. Use the COT Table view."
+                    f"Commercial/non-commercial position classes are not defined for the '{report_type}' "
+                    "report family. Only the Legacy report uses them; the Disaggregated and financial (TFF) "
+                    "reports use their own categories. Use the cot_history command."
                 ).to_dict()}
 
             # Get latest COT data
@@ -1028,7 +1036,7 @@ class CFTCDataWrapper:
 
     # COMPREHENSIVE DATA ENDPOINTS
 
-    def get_comprehensive_cot_overview(self, identifiers: List[str] = None, report_type: str = "disaggregated") -> Dict[str, Any]:
+    def get_comprehensive_cot_overview(self, identifiers: List[str] = None, report_type: str = "legacy") -> Dict[str, Any]:
         """Get comprehensive COT overview for multiple markets"""
         try:
             if not identifiers:
@@ -1200,18 +1208,18 @@ def main(args=None):
 
         elif command == "market_sentiment":
             identifier = args[1] if len(args) + 1 > 2 else None
-            report_type = args[2] if len(args) + 1 > 3 else "disaggregated"
+            report_type = args[2] if len(args) + 1 > 3 else "legacy"
             result = wrapper.analyze_market_sentiment(identifier, report_type)
 
         elif command == "position_summary":
             identifier = args[1] if len(args) + 1 > 2 else None
-            report_type = args[2] if len(args) + 1 > 3 else "disaggregated"
+            report_type = args[2] if len(args) + 1 > 3 else "legacy"
             result = wrapper.get_position_summary(identifier, report_type)
 
         elif command == "comprehensive_cot_overview":
             identifiers_str = args[1] if len(args) + 1 > 2 else None
             identifiers = identifiers_str.split(',') if identifiers_str else None
-            report_type = args[2] if len(args) + 1 > 3 else "disaggregated"
+            report_type = args[2] if len(args) + 1 > 3 else "legacy"
             result = wrapper.get_comprehensive_cot_overview(identifiers, report_type)
 
         elif command == "cot_historical_trend":
