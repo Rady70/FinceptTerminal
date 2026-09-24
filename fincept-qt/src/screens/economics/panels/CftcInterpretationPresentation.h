@@ -29,8 +29,10 @@
 // back to plain wording; "remains" needs an established persistent extreme;
 // historical and materiality conclusions name their MarketLab thresholds;
 // divergence attribution uses the legs' contribution shares; a price
-// conclusion names its series, roll/spot caveat and closing sessions; and an
-// out-of-date report is flagged in the headline and the first conclusion.
+// conclusion names its series, spot caveat and closing sessions, and a
+// continuous front-month proxy that is not roll-adjusted never reaches one
+// (the engine fails closed and the reason is stated); and an out-of-date
+// report is flagged in the headline and the first conclusion.
 #pragma once
 
 #include "screens/economics/panels/CftcNetFormat.h"
@@ -205,6 +207,10 @@ inline QString cftc_unavailable_reason_wording(services::CftcUnavailableReason r
                 "both report dates resolve to the same price session, so there is no price move to describe");
         case CftcUnavailableReason::ReportBasisMismatch:
             return cftc_presentation_tr("the rows' published report basis does not match the requested basis");
+        case CftcUnavailableReason::PriceSeriesNotRollSafe:
+            return cftc_presentation_tr(
+                "the price series is a continuous front-month futures proxy without roll adjustment or known roll "
+                "dates, so a contract roll inside the window cannot be excluded");
         case CftcUnavailableReason::BrokenReportSequence:
             return cftc_presentation_tr("the weekly report sequence is broken");
         case CftcUnavailableReason::MissingPriceContext:
@@ -1067,10 +1073,11 @@ inline QString cftc_net_move_composition_sentence(const services::CftcParticipan
 
 /// The price series behind a price-relationship conclusion, stated in the
 /// conclusion itself: the source and proxy kind, the two actual closing
-/// sessions and the move in quoted units and percent. A continuous front-month
-/// series is not roll-adjusted, so a contract roll inside the window is part of
-/// the move; a spot index is not the futures contract whose positions are
-/// reported. Empty when the assessment carries no price move.
+/// sessions and the move in quoted units and percent. A spot index is not the
+/// futures contract whose positions are reported. The engine never derives a
+/// move from a continuous front-month proxy (PriceSeriesNotRollSafe); the roll
+/// qualifier below only keeps a hand-built result of that kind truthful. Empty
+/// when the assessment carries no price move.
 inline QString cftc_price_window_sentence(const services::CftcInterpretationResult& result,
                                           const services::CftcPricePositionAssessment& assessment) {
     if (!assessment.has_price_move || !assessment.price_anchor_date.isValid() ||

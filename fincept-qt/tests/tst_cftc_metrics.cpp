@@ -1230,6 +1230,26 @@ void TstCftcMetrics::parse_rejects_non_finite_values() {
     rows.replace(0, row);
     QVERIFY(!cftc_parse_history(rows, CftcFamily::Legacy).error.isEmpty());
 
+    // Every other retained numeric field too: a non-finite trader count or
+    // concentration cell rejects the payload, naming the field, instead of
+    // silently becoming a missing reading.
+    for (const QString& key :
+         {QStringLiteral("traders_total"), QStringLiteral("traders_reportable_long"),
+          QStringLiteral("traders_reportable_short"), QStringLiteral("concentration_gross_4_long"),
+          QStringLiteral("concentration_gross_4_short"), QStringLiteral("concentration_gross_8_long"),
+          QStringLiteral("concentration_gross_8_short"), QStringLiteral("concentration_net_4_long"),
+          QStringLiteral("concentration_net_4_short"), QStringLiteral("concentration_net_8_long"),
+          QStringLiteral("concentration_net_8_short")}) {
+        QJsonArray field_rows = legacy_rows_with_trader_context();
+        QJsonObject field_row = field_rows.last().toObject();
+        field_row[key] = QStringLiteral("nan");
+        field_rows.replace(field_rows.size() - 1, field_row);
+        const CftcHistory history = cftc_parse_history(field_rows, CftcFamily::Legacy);
+        QVERIFY2(history.observations.isEmpty(), qPrintable(key));
+        QVERIFY2(history.error.contains(QStringLiteral("non-finite")) && history.error.contains(key),
+                 qPrintable(key + QStringLiteral(": ") + history.error));
+    }
+
     QJsonObject bare;
     bare[QStringLiteral("x")] = QStringLiteral("nan");
     QVERIFY(!cftc_number(bare, QStringLiteral("x")).has_value());

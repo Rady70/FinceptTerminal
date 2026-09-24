@@ -586,6 +586,7 @@ class TstCftcPresentation : public QObject {
     void combined_view_below_threshold_legs_are_not_available();
     void heuristic_thresholds_are_labelled_inline();
     void price_conclusions_name_the_series_and_sessions();
+    void continuous_proxy_price_relationship_fails_closed();
     void two_material_legs_without_net_move_headline();
     void outdated_report_is_flagged_in_headline_and_body();
     void golden_real_gold_legacy_report();
@@ -2388,8 +2389,12 @@ void TstCftcPresentation::heuristic_thresholds_are_labelled_inline() {
 }
 
 void TstCftcPresentation::price_conclusions_name_the_series_and_sessions() {
-    // H2 / M5: the price conclusion names the proxy, its roll caveat, the two
-    // closing sessions and the move in quoted units and percent.
+    // M5: an evaluated price conclusion names the series, the two closing
+    // sessions and the move in quoted units and percent. The engine never
+    // evaluates a continuous front-month proxy (H2, see
+    // continuous_proxy_price_relationship_fails_closed); the hand-built
+    // continuous result below only checks that such a result would still carry
+    // the roll caveat.
     auto evaluated_result = [](bool spot) {
         CftcInterpretationResult result = make_result(CftcFamily::Legacy);
         CftcParticipantInterpretation* primary = primary_participant(result);
@@ -2441,6 +2446,73 @@ void TstCftcPresentation::price_conclusions_name_the_series_and_sessions() {
     QVERIFY(spot.contains(QStringLiteral(
         "Price series: Yahoo Finance — ^VIX spot index (a spot index, not the futures contract whose positions are "
         "reported); closes 2026-08-18 → 2026-09-15: -87.80 (-1.99%).")));
+}
+
+void TstCftcPresentation::continuous_proxy_price_relationship_fails_closed() {
+    // H2 end to end, engine to wording. The latest window holds a contract
+    // roll: the front contract drifts from 100.2 to 99.9 over four reports,
+    // but the spliced series jumps to the next contract (+6.00), so it shows
+    // 100.2 -> 105.9. Read as one roll-free series, that roll gap produces
+    // "moved together upward"; declared as the continuous front-month proxy it
+    // is, every view states why the relationship is unavailable, and no price
+    // move, rank or relationship is shown.
+    const QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
+    const QVector<double> closes = {100.0, 100.4, 100.1, 100.5, 100.2, 100.6, 100.3, 100.7, 105.9};
+    QVector<CftcObservation> observations;
+    QVector<CftcPricePoint> prices;
+    for (int i = 0; i < longs.size(); ++i) {
+        const QDate date = kLatest.addDays(-7LL * (longs.size() - 1 - i));
+        observations.append(legacy_observation(date, 5000.0, longs[i], 400.0));
+        prices.append({date, closes[i]});
+    }
+    const auto interpret = [&](bool continuous_proxy, const QString& source) {
+        CftcInterpretationInput input = cftc_make_interpretation_input(CftcFamily::Legacy, observations,
+                                                                       QStringLiteral("futures_and_options_combined"),
+                                                                       prices, source, continuous_proxy, false);
+        input.config.history_window = 4; // a short synthetic history
+        return cftc_interpret(input);
+    };
+    const QString reason =
+        QStringLiteral("the price series is a continuous front-month futures proxy without roll adjustment or known "
+                       "roll dates, so a contract roll inside the window cannot be excluded");
+
+    const CftcInterpretationResult proxy =
+        interpret(true, QStringLiteral("Yahoo Finance — GC=F front-month continuous futures"));
+    const QString combined = join_sentences(cftc_compose_interpretation(proxy, CftcPriceContextState::Ready));
+    QVERIFY2(combined.contains(QStringLiteral("Price relationship unavailable: %1.").arg(reason)),
+             qPrintable(combined));
+    QVERIFY(!combined.contains(QStringLiteral("Price series:")));
+    for (int horizon : {1, 4, 13}) {
+        const CftcInterpretationView view =
+            cftc_compose_horizon_interpretation(proxy, horizon, CftcPriceContextState::Ready);
+        const QString text = join_sentences(view);
+        QVERIFY2(text.contains(QStringLiteral("Price relationship over the last %1 is unavailable: %2.")
+                                   .arg(cftc_horizon_phrase(horizon), reason)),
+                 qPrintable(text));
+        QVERIFY2(!text.contains(QStringLiteral("Price series:")), qPrintable(text));
+        QVERIFY2(!text.contains(QStringLiteral("moved together")), qPrintable(text));
+        QVERIFY2(!text.contains(QStringLiteral("contemporaneous divergence")), qPrintable(text));
+        int price_rows = 0;
+        for (const auto& item : view.evidence) {
+            if (!item.label.startsWith(QStringLiteral("Price")))
+                continue;
+            ++price_rows;
+            QCOMPARE(item.status, CftcEvidenceStatus::Unavailable);
+            QVERIFY2(item.value.contains(reason), qPrintable(item.label + QStringLiteral(": ") + item.value));
+        }
+        QCOMPARE(price_rows, 3); // price change, materiality rank, relationship
+        QVERIFY2(forbidden_language(conclusions_text(view)).isEmpty(),
+                 qPrintable(forbidden_language(conclusions_text(view))));
+    }
+
+    // The same closes read as one roll-free series: the roll gap alone yields
+    // a relationship, which is exactly what the proxy declaration prevents.
+    const CftcInterpretationResult roll_free = interpret(false, QStringLiteral("TEST roll-free series"));
+    const QString misread =
+        join_sentences(cftc_compose_horizon_interpretation(roll_free, 4, CftcPriceContextState::Ready));
+    QVERIFY2(misread.contains(QStringLiteral("Price and net positioning moved together upward over the last four "
+                                             "reports.")),
+             qPrintable(misread));
 }
 
 void TstCftcPresentation::two_material_legs_without_net_move_headline() {

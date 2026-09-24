@@ -373,7 +373,6 @@ CftcInterpretationResult rich_result() {
     CftcInterpretationInput input = legacy_input(observations);
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
     input.price_source = QStringLiteral("TEST source");
-    input.price_continuous_proxy = true;
     input.report_basis_code = QStringLiteral("futures_only");
     return cftc_interpret(input);
 }
@@ -469,6 +468,7 @@ class TstCftcInterpretation : public QObject {
     void truncated_price_series_is_not_a_zero_move();
     void identical_price_sessions_are_unavailable();
     void price_materiality_ranks_log_returns();
+    void continuous_front_month_proxy_fails_closed();
     void gradual_unwind_within_lookback();
     void outdated_report_is_flagged();
     void row_report_basis_must_match_declared_basis();
@@ -2045,8 +2045,7 @@ void TstCftcInterpretation::price_position_moving_together_up_and_down() {
     QVector<double> shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
-    input.price_source = QStringLiteral("TEST continuous futures");
-    input.price_continuous_proxy = true;
+    input.price_source = QStringLiteral("TEST roll-free series");
     CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* up = find_price(result, key, 4);
     QVERIFY(up);
@@ -2058,7 +2057,7 @@ void TstCftcInterpretation::price_position_moving_together_up_and_down() {
     QVERIFY(up->price_material);
     QVERIFY(up->positioning_material);
     QCOMPARE(up->mechanism_state_ids, QStringList({QStringLiteral("LONG_ACCUMULATION")}));
-    QVERIFY(result.price_continuous_proxy);
+    QVERIFY(!result.price_continuous_proxy);
 
     QVector<double> rising_shorts = {400.0, 405.0, 410.0, 415.0, 420.0, 425.0, 430.0, 435.0, 1400.0};
     QVector<double> flat_longs(9, 500.0);
@@ -2083,7 +2082,7 @@ void TstCftcInterpretation::price_position_divergence_both_directions() {
     QVector<double> flat_shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(falling, flat_shorts));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* up_divergence = find_price(result, key, 4);
     QVERIFY(up_divergence);
@@ -2096,7 +2095,7 @@ void TstCftcInterpretation::price_position_divergence_both_directions() {
     QVector<double> covering = {700.0, 695.0, 690.0, 685.0, 680.0, 675.0, 670.0, 665.0, 200.0};
     input = legacy_input(legacy_series(flat_longs, covering));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 40});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     result = cftc_interpret(input);
     const CftcPricePositionAssessment* down_divergence = find_price(result, key, 4);
     QVERIFY(down_divergence);
@@ -2112,7 +2111,7 @@ void TstCftcInterpretation::divergence_mechanism_from_gross_legs() {
     QVector<double> flat_shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(falling, flat_shorts));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* divergence = find_price(result, key, 4);
     QVERIFY(divergence);
@@ -2125,7 +2124,7 @@ void TstCftcInterpretation::divergence_mechanism_from_gross_legs() {
     QVector<double> covering = {700.0, 695.0, 690.0, 685.0, 680.0, 675.0, 670.0, 665.0, 200.0};
     input = legacy_input(legacy_series(flat_longs, covering));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 40});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     result = cftc_interpret(input);
     divergence = find_price(result, key, 4);
     QVERIFY(divergence);
@@ -2142,7 +2141,7 @@ void TstCftcInterpretation::non_material_price_or_positioning_yields_no_relation
     QVector<double> shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
     input.prices = price_points({100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* quiet_price = find_price(result, key, 4);
     QVERIFY(quiet_price);
@@ -2158,7 +2157,7 @@ void TstCftcInterpretation::non_material_price_or_positioning_yields_no_relation
     QVector<double> flat_longs(9, 500.0);
     QVector<double> flat_shorts(9, 400.0);
     input.observations = legacy_series(flat_longs, flat_shorts);
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     result = cftc_interpret(input);
     const CftcPricePositionAssessment* quiet_position = find_price(result, key, 4);
     QVERIFY(quiet_position);
@@ -2207,7 +2206,7 @@ void TstCftcInterpretation::stale_price_context_stays_unavailable() {
     for (int i = 0; i < 9; ++i)
         prices.append({kLatest.addDays(-7LL * (8 - i) - 30), 100.0 + i});
     input.prices = prices;
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     const CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 4);
     QVERIFY(assessment);
@@ -2232,7 +2231,7 @@ void TstCftcInterpretation::unusable_price_context_stays_unavailable() {
     QVector<double> shorts(9, 400.0);
     CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 0});
-    input.price_source = QStringLiteral("TEST continuous futures");
+    input.price_source = QStringLiteral("TEST roll-free series");
     const CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 4);
     QVERIFY(assessment);
@@ -2396,8 +2395,7 @@ void TstCftcInterpretation::deterministic_repeatability() {
         observations[i].concentration_gross_4_long = 10.0 + 5.0 * i;
     CftcInterpretationInput input = legacy_input(observations);
     input.prices = price_points({100, 101, 102, 103, 104, 105, 106, 107, 300});
-    input.price_source = QStringLiteral("TEST continuous futures");
-    input.price_continuous_proxy = true;
+    input.price_source = QStringLiteral("TEST roll-free series");
     const CftcInterpretationResult first = cftc_interpret(input);
     const CftcInterpretationResult second = cftc_interpret(input);
     QCOMPARE(result_signature(first), result_signature(second));
@@ -2596,7 +2594,6 @@ void TstCftcInterpretation::truncated_price_series_is_not_a_zero_move() {
     CftcInterpretationInput input = legacy_input(observations);
     input.prices = prices;
     input.price_source = QStringLiteral("TEST source");
-    input.price_continuous_proxy = true;
     const CftcInterpretationResult result = cftc_interpret(input);
     for (int horizon : {1, 4}) {
         const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), horizon);
@@ -2641,7 +2638,6 @@ void TstCftcInterpretation::price_materiality_ranks_log_returns() {
     CftcInterpretationInput input = legacy_input(observations);
     input.prices = price_points({100, 105, 100, 200, 195, 201});
     input.price_source = QStringLiteral("TEST source");
-    input.price_continuous_proxy = true;
     const CftcInterpretationResult result = cftc_interpret(input);
     const CftcPricePositionAssessment* assessment = find_price(result, QStringLiteral("non_commercial"), 1);
     QVERIFY(assessment);
@@ -2661,6 +2657,87 @@ void TstCftcInterpretation::price_materiality_ranks_log_returns() {
     const QVector<CftcDatedValue> moves = cftc_price_move_series(input.prices, observations, 1);
     QCOMPARE(moves.size(), 5);
     QVERIFY(qAbs(moves.last().value - std::log(201.0 / 195.0)) < 1e-15);
+}
+
+void TstCftcInterpretation::continuous_front_month_proxy_fails_closed() {
+    // The audit's H2 scenario. A continuous front-month series rolls to the
+    // next contract at the latest report: the front contract drifts from
+    // 100.2 to 99.9 over the last four reports (a fall), but the next contract
+    // trades 6.00 higher, so the spliced series shows 100.2 -> 105.9 (+5.69 %).
+    // Read as one roll-free series, that roll gap is ranked material and the
+    // relationship reads "moved together upward"; declared as the continuous
+    // front-month proxy it is (Yahoo GC=F), nothing is derived from it.
+    const QString key = QStringLiteral("non_commercial");
+    const QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
+    const QVector<double> shorts(9, 400.0);
+    const QVector<double> spliced = {100.0, 100.4, 100.1, 100.5, 100.2, 100.6, 100.3, 100.7, 105.9};
+
+    CftcInterpretationInput input = legacy_input(legacy_series(longs, shorts));
+    input.prices = price_points(spliced);
+    input.price_source = QStringLiteral("TEST front-month continuous futures");
+
+    // Control: the same closes declared roll-free are ranked and classified.
+    const CftcInterpretationResult roll_free = cftc_interpret(input);
+    const CftcPricePositionAssessment* control = find_price(roll_free, key, 4);
+    QVERIFY(control);
+    QVERIFY(control->evaluated);
+    QVERIFY(control->has_price_move);
+    QVERIFY(qAbs(control->price_move - 5.7) < 1e-9);
+    QVERIFY(control->price_material);
+    QCOMPARE(control->state_id, QStringLiteral("PRICE_POSITION_MOVING_TOGETHER_UP"));
+
+    // Declared as a continuous front-month proxy: every assessment fails
+    // closed with the roll reason; no move, rank or state is derived, and the
+    // CFTC positioning side stays populated.
+    input.price_continuous_proxy = true;
+    const CftcInterpretationResult result = cftc_interpret(input);
+    QVERIFY(result.price_requested);
+    QVERIFY(result.price_continuous_proxy);
+    QCOMPARE(result.price_context.size(), 9); // three Legacy participants x three horizons
+    for (const auto& assessment : result.price_context) {
+        QCOMPARE(assessment.reason, CftcUnavailableReason::PriceSeriesNotRollSafe);
+        QVERIFY(!assessment.evaluated);
+        QVERIFY(!assessment.has_price_move);
+        QVERIFY(!assessment.has_price_move_rank);
+        QVERIFY(!assessment.price_material);
+        QVERIFY(!assessment.has_state);
+        QVERIFY(assessment.state_id.isEmpty());
+        QVERIFY(!assessment.price_anchor_date.isValid());
+        QVERIFY(!assessment.price_latest_date.isValid());
+    }
+    for (int horizon : {1, 4}) {
+        const CftcPricePositionAssessment* assessment = find_price(result, key, horizon);
+        QVERIFY(assessment);
+        QVERIFY2(assessment->has_positioning_move, "the CFTC positioning measurement does not depend on price");
+        QVERIFY(assessment->positioning_material);
+    }
+    QCOMPARE(cftc_unavailable_reason_code(CftcUnavailableReason::PriceSeriesNotRollSafe),
+             QStringLiteral("price_series_not_roll_safe"));
+
+    // A missing series or source is still reported as such first.
+    CftcInterpretationInput no_prices = input;
+    no_prices.prices.clear();
+    const CftcInterpretationResult no_prices_result = cftc_interpret(no_prices);
+    const CftcPricePositionAssessment* no_prices_assessment = find_price(no_prices_result, key, 4);
+    QVERIFY(no_prices_assessment);
+    QCOMPARE(no_prices_assessment->reason, CftcUnavailableReason::MissingPriceContext);
+    CftcInterpretationInput no_source = input;
+    no_source.price_source.clear();
+    const CftcInterpretationResult no_source_result = cftc_interpret(no_source);
+    const CftcPricePositionAssessment* no_source_assessment = find_price(no_source_result, key, 4);
+    QVERIFY(no_source_assessment);
+    QCOMPARE(no_source_assessment->reason, CftcUnavailableReason::UnspecifiedPriceSource);
+
+    // A spot index has no contract roll and stays evaluated.
+    CftcInterpretationInput spot = input;
+    spot.price_continuous_proxy = false;
+    spot.price_spot_index = true;
+    spot.price_source = QStringLiteral("TEST spot index");
+    const CftcInterpretationResult spot_result = cftc_interpret(spot);
+    const CftcPricePositionAssessment* spot_assessment = find_price(spot_result, key, 4);
+    QVERIFY(spot_assessment);
+    QVERIFY(spot_assessment->evaluated);
+    QCOMPARE(spot_assessment->reason, CftcUnavailableReason::None);
 }
 
 void TstCftcInterpretation::gradual_unwind_within_lookback() {
@@ -2890,7 +2967,7 @@ void TstCftcInterpretation::per_cause_insufficient_history_reasons() {
     for (CftcUnavailableReason reason :
          {CftcUnavailableReason::InsufficientHorizonHistory, CftcUnavailableReason::InsufficientPriceHistory,
           CftcUnavailableReason::InsufficientConcentrationHistory, CftcUnavailableReason::PriceSessionsNotDistinct,
-          CftcUnavailableReason::ReportBasisMismatch})
+          CftcUnavailableReason::ReportBasisMismatch, CftcUnavailableReason::PriceSeriesNotRollSafe})
         QVERIFY(!cftc_unavailable_reason_code(reason).isEmpty());
 }
 

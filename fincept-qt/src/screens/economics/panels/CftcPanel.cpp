@@ -87,6 +87,7 @@ using services::CftcRange;
 using services::CftcWindowStats;
 using services::kCftcHeatmapMinObservations;
 using services::kCftcWeeklyGapDays;
+using services::kCftcWeeklyMinGapDays;
 
 namespace {
 
@@ -153,8 +154,11 @@ struct PriceSpec {
 // Retained free public price path (Yahoo Finance via MarketDataService, no
 // account, no key). A market without a mapping explicitly reports that price
 // analysis is unavailable instead of fabricating a series. Continuous symbols
-// are front-month proxies that roll between contracts; spot indices are
-// labelled as such in the divergence section.
+// are front-month proxies that roll between contracts without roll adjustment,
+// and the provider does not identify the roll dates, so the interpretation
+// engine derives no price move or relationship from them
+// (PriceSeriesNotRollSafe); the chart still shows the series. Spot indices
+// have no contract roll, are evaluated, and are labelled as spot indices.
 static const QHash<QString, PriceSpec>& price_specs() {
     static const QHash<QString, PriceSpec> specs = {
         {QStringLiteral("gold"), {QStringLiteral("GC=F"), false}},
@@ -328,7 +332,19 @@ QString weekly_unavailable_reason(const CftcChange& change, const QDate& as_of) 
             .arg(as_of.toString(Qt::ISODate));
     if (!change.has_pair)
         return QCoreApplication::translate("CftcPanel", "no previous report in the returned history");
-    return QCoreApplication::translate("CftcPanel", "previous report is %1 days earlier").arg(change.gap_days);
+    if (change.gap_days < kCftcWeeklyMinGapDays)
+        return QCoreApplication::translate("CftcPanel",
+                                           "previous report is only %1 days earlier (an extra report, not a weekly "
+                                           "interval of %2-%3 days)")
+            .arg(change.gap_days)
+            .arg(kCftcWeeklyMinGapDays)
+            .arg(kCftcWeeklyGapDays);
+    return QCoreApplication::translate("CftcPanel",
+                                       "previous report is %1 days earlier (longer than a weekly interval of %2-%3 "
+                                       "days)")
+        .arg(change.gap_days)
+        .arg(kCftcWeeklyMinGapDays)
+        .arg(kCftcWeeklyGapDays);
 }
 
 enum class StatMetric { Latest, Max, Min, Avg, CotIndex, Percentile, ZScore, FromHigh, FromLow, Change4W, Change13W };
@@ -1670,12 +1686,15 @@ void CftcPanel::update_snapshot() {
                  : weekly.value < 0 ? -1
                                     : 0,
                  tr("vs previous report %1").arg(weekly.previous_date.toString(Qt::ISODate)),
-                 tr("Difference from the previous report; a gap longer than %1 days is not a weekly change.")
+                 tr("Difference from the previous report; only a previous report %1-%2 days earlier is a weekly "
+                    "change.")
+                     .arg(kCftcWeeklyMinGapDays)
                      .arg(kCftcWeeklyGapDays));
     } else {
         set_card(1, tr("WEEKLY CHANGE (%1)").arg(spec_short), QStringLiteral("—"), 0,
                  weekly_unavailable_reason(weekly, as_of_date),
-                 tr("A weekly change requires the latest report and a previous report within %1 days.")
+                 tr("A weekly change requires the latest report and a previous report %1-%2 days earlier.")
+                     .arg(kCftcWeeklyMinGapDays)
                      .arg(kCftcWeeklyGapDays));
     }
 
@@ -2061,10 +2080,11 @@ QString CftcPanel::price_source_text() const {
                   "interpretation engine and describes a contemporaneous relationship only.")
             .arg(price_symbol_);
     }
-    return tr("Price: Yahoo Finance — %1 front-month continuous futures (rolls between contracts and is not "
-              "roll-adjusted, so a price move across a roll includes the gap between contracts; not an individual "
-              "deliverable contract). Separate from CFTC data. Relationship wording comes from the descriptive COT "
-              "interpretation engine and describes a contemporaneous relationship only.")
+    return tr("Price: Yahoo Finance — %1 front-month continuous futures (rolls between contracts without roll "
+              "adjustment, and the provider does not identify the roll dates, so a price move could include the gap "
+              "between contracts; not an individual deliverable contract). Price moves and the price/positioning "
+              "relationship are therefore not evaluated for this series; the chart shows it for reference only. "
+              "Separate from CFTC data.")
         .arg(price_symbol_);
 }
 

@@ -105,6 +105,7 @@ class TstCftcWorkspace : public QObject {
     void weekly_change_requires_the_latest_report();
     void heatmap_axis_keeps_reports_missing_a_class();
     void heatmap_series_gates_short_prefixes();
+    void heatmap_weekly_change_requires_a_weekly_neighbour();
     void price_helpers_align_to_report_dates();
     void direction_alignment_rules();
     void extreme_dates_follow_values();
@@ -297,6 +298,24 @@ void TstCftcWorkspace::weekly_change_requires_a_weekly_neighbour() {
     const CftcChange single = cftc_weekly_change(weekly_values({10}, QDate(2026, 9, 1)));
     QVERIFY(!single.has_pair);
     QVERIFY(!single.has_value);
+
+    // An extra report three days after the previous one (the official
+    // 2001-12-18 -> 2001-12-21 case) is not a weekly change either: the page's
+    // weekly figures use the interpretation engine's 5-10 day definition.
+    auto extra = weekly;
+    extra.last().date = extra[extra.size() - 2].date.addDays(3);
+    const CftcChange short_step = cftc_weekly_change(extra);
+    QVERIFY(short_step.has_pair);
+    QVERIFY2(!short_step.has_value, "a 3-day step is not a weekly change");
+    QCOMPARE(short_step.gap_days, 3);
+    QVERIFY(!cftc_horizon_change(extra, CftcHorizon::OneReport).has_value);
+    for (int gap : {4, 5, 6, 8, 10, 11}) {
+        auto shifted = weekly;
+        shifted.last().date = shifted[shifted.size() - 2].date.addDays(gap);
+        const bool weekly_step = gap >= kCftcWeeklyMinGapDays && gap <= kCftcWeeklyGapDays;
+        QCOMPARE(cftc_weekly_change(shifted).has_value, weekly_step);
+        QCOMPARE(cftc_weekly_neighbour(shifted[shifted.size() - 2].date, shifted.last().date), weekly_step);
+    }
 }
 
 void TstCftcWorkspace::change_since_days_uses_the_last_report_at_or_before_the_target() {
@@ -472,6 +491,27 @@ void TstCftcWorkspace::heatmap_series_gates_short_prefixes() {
 
     QVERIFY(cftc_heatmap_series({}, 10).isEmpty());
     QCOMPARE(cftc_heatmap_series(window, 999).size(), 10);
+}
+
+void TstCftcWorkspace::heatmap_weekly_change_requires_a_weekly_neighbour() {
+    // The heatmap's "Weekly Δ" uses the same weekly definition: an extra
+    // report three days after the previous one has no weekly change, and
+    // neither does a 14-day gap.
+    QVector<CftcDatedValue> window;
+    window.append(dated(2001, 12, 11, 10));
+    window.append(dated(2001, 12, 18, 20));
+    window.append(dated(2001, 12, 21, 25)); // extra report, 3 days later
+    window.append(dated(2001, 12, 28, 40)); // 7 days after the extra report
+    window.append(dated(2002, 1, 11, 45));  // 14 days later
+    const auto points = cftc_heatmap_series(window, 5);
+    QCOMPARE(points.size(), 5);
+    QVERIFY(!points[0].has_change);
+    QVERIFY(points[1].has_change);
+    QCOMPARE(points[1].change, 10.0);
+    QVERIFY2(!points[2].has_change, "a 3-day step is not a weekly change");
+    QVERIFY(points[3].has_change);
+    QCOMPARE(points[3].change, 15.0);
+    QVERIFY2(!points[4].has_change, "a 14-day step is not a weekly change");
 }
 
 void TstCftcWorkspace::price_helpers_align_to_report_dates() {

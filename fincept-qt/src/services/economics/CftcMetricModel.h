@@ -290,12 +290,13 @@ inline QStringList cftc_family_distinctive_participant_keys(CftcFamily family) {
 /// Build the typed history from the provider's rows. Fails closed: a row with
 /// an unparseable date or a repeated report date makes the whole payload
 /// unusable rather than being silently dropped (which would hide history). The
-/// same applies to structurally impossible input: a non-finite number, a
-/// negative position or Open Interest, a participant leg larger than the whole
-/// market's Open Interest, and a row that does not belong to the declared
-/// report family — it carries none of that family's distinctive participant
-/// fields, or it carries another family's (a mis-declared family would
-/// otherwise read as "every leg is missing").
+/// same applies to structurally impossible input: a non-finite number in any
+/// retained numeric field (Open Interest, participant legs, trader counts,
+/// concentration), a negative position or Open Interest, a participant leg
+/// larger than the whole market's Open Interest, and a row that does not belong
+/// to the declared report family — it carries none of that family's
+/// distinctive participant fields, or it carries another family's (a
+/// mis-declared family would otherwise read as "every leg is missing").
 inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family) {
     CftcHistory out;
     const auto participants = cftc_family_participants(family);
@@ -321,7 +322,15 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         }
         return false;
     };
-    QStringList numeric_keys = {QStringLiteral("open_interest_all")};
+    // Every numeric field the observation retains. A "nan"/"inf" cell in any of
+    // them is corrupt input, never a missing observation.
+    QStringList numeric_keys = {
+        QStringLiteral("open_interest_all"),          QStringLiteral("traders_total"),
+        QStringLiteral("traders_reportable_long"),    QStringLiteral("traders_reportable_short"),
+        QStringLiteral("concentration_gross_4_long"), QStringLiteral("concentration_gross_4_short"),
+        QStringLiteral("concentration_gross_8_long"), QStringLiteral("concentration_gross_8_short"),
+        QStringLiteral("concentration_net_4_long"),   QStringLiteral("concentration_net_4_short"),
+        QStringLiteral("concentration_net_8_long"),   QStringLiteral("concentration_net_8_short")};
     for (const auto& participant : participants)
         numeric_keys << participant.key + QStringLiteral("_long") << participant.key + QStringLiteral("_short");
     out.observations.reserve(rows.size());
@@ -630,6 +639,22 @@ inline QVector<CftcDatedValue> cftc_metric_series(const QVector<CftcObservation>
 /// A longer gap is not a weekly change and must stay unavailable.
 inline constexpr int kCftcWeeklyGapDays = 10;
 
+/// Shortest interval between two reports that still counts as one weekly
+/// step. Holiday-shifted releases produce 6- and 8-day steps; the few 3-day
+/// steps in the official history (for example 2001-12-18 -> 2001-12-21) are
+/// extra reports, not weekly intervals.
+inline constexpr int kCftcWeeklyMinGapDays = 5;
+
+/// A true weekly CFTC interval: at least kCftcWeeklyMinGapDays and at most
+/// kCftcWeeklyGapDays calendar days. The one definition of a weekly step for
+/// every weekly figure on the CFTC page and for the interpretation engine.
+inline bool cftc_weekly_neighbour(const QDate& earlier, const QDate& later) {
+    if (!earlier.isValid() || !later.isValid() || earlier >= later)
+        return false;
+    const qint64 gap = earlier.daysTo(later);
+    return gap >= kCftcWeeklyMinGapDays && gap <= kCftcWeeklyGapDays;
+}
+
 struct CftcChange {
     bool has_pair = false;  // at least two observations exist
     bool has_value = false; // the pair is an actual weekly neighbour
@@ -643,6 +668,8 @@ struct CftcChange {
 /// anchored at `as_of` (the actual latest official report date) when given.
 /// A series that ends before `as_of` is stale for a current comparison and
 /// reports `stale` instead of presenting an older pair as this week's change.
+/// The pair must be a weekly neighbour (5-10 days apart): an extra report a few
+/// days after the previous one is not a weekly change either.
 inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series, const QDate& as_of = {}) {
     CftcChange out;
     if (series.size() < 2)
@@ -656,7 +683,7 @@ inline CftcChange cftc_weekly_change(const QVector<CftcDatedValue>& series, cons
     const CftcDatedValue& previous = series.at(series.size() - 2);
     out.gap_days = static_cast<int>(previous.date.daysTo(latest.date));
     out.previous_date = previous.date;
-    if (out.gap_days <= kCftcWeeklyGapDays) {
+    if (cftc_weekly_neighbour(previous.date, latest.date)) {
         out.has_value = true;
         out.value = latest.value - previous.value;
     }
@@ -1525,12 +1552,9 @@ inline QVector<CftcHeatmapPoint> cftc_heatmap_series(const QVector<CftcDatedValu
         point.date_label = window[i].date_label;
         point.net = window[i].value;
 
-        if (i > 0) {
-            const int gap = static_cast<int>(window[i - 1].date.daysTo(window[i].date));
-            if (gap <= kCftcWeeklyGapDays) {
-                point.has_change = true;
-                point.change = window[i].value - window[i - 1].value;
-            }
+        if (i > 0 && cftc_weekly_neighbour(window[i - 1].date, window[i].date)) {
+            point.has_change = true;
+            point.change = window[i].value - window[i - 1].value;
         }
         const QVector<CftcDatedValue> prefix = window.mid(0, i + 1);
         if (prefix.size() >= kCftcHeatmapMinObservations) {

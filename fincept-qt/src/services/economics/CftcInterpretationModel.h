@@ -37,7 +37,9 @@
 //     trailing: the current observation never contributes to the distribution
 //     that judges it;
 //   * missing or unsuitable price data leaves the price relationship
-//     unavailable, never flat;
+//     unavailable, never flat; a continuous front-month futures proxy that is
+//     not roll-adjusted is unsuitable, because a contract roll inside a window
+//     cannot be excluded;
 //   * Legacy, Disaggregated and TFF histories and participant identities are
 //     never mixed, and TFF is never reconstructed into a Commercial/Speculator
 //     split.
@@ -54,6 +56,12 @@
 //     report, the two ends of a price window must be distinct sessions, and
 //     price-move materiality ranks absolute log returns (scale-invariant)
 //     instead of raw quoted-price differences;
+//   * price moves and price relationships are evaluated only on a roll-safe
+//     series: a continuous front-month futures proxy (for example Yahoo
+//     GC=F) splices contracts without roll adjustment and does not identify
+//     its roll dates, so a roll gap could sit inside the window or inside its
+//     comparable-move reference. For such a series the price relationship
+//     fails closed (price_series_not_roll_safe) instead of being classified;
 //   * NET_SHARE_RAW_DISAGREEMENT needs at least one of the two opposed moves
 //     to be material;
 //   * UNWINDING_* is the first report at or past the re-entry band within 13
@@ -180,7 +188,7 @@ inline bool cftc_is_supported_interpretation_horizon(int horizon_reports) {
     return horizon_reports == 1 || horizon_reports == 4 || horizon_reports == 13;
 }
 
-/// The effective v1 configuration: requested values with unsupported horizons
+/// The effective configuration: requested values with unsupported horizons
 /// dropped and duplicates removed.
 inline CftcInterpretationConfig cftc_effective_interpretation_config(const CftcInterpretationConfig& requested) {
     CftcInterpretationConfig effective = requested;
@@ -302,6 +310,12 @@ enum class CftcUnavailableReason {
     /// The rows' own report-basis metadata contradicts the declared basis, or
     /// only some rows carry it.
     ReportBasisMismatch,
+    /// The price series is a continuous front-month futures proxy that splices
+    /// successive contracts without roll adjustment and does not identify the
+    /// roll dates. A roll gap inside the window, or inside any window of the
+    /// comparable-move reference, cannot be excluded, so no price move,
+    /// materiality rank or relationship is derived from it.
+    PriceSeriesNotRollSafe,
 };
 
 inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
@@ -354,6 +368,8 @@ inline QString cftc_unavailable_reason_code(CftcUnavailableReason reason) {
             return QStringLiteral("price_sessions_not_distinct");
         case CftcUnavailableReason::ReportBasisMismatch:
             return QStringLiteral("report_basis_mismatch");
+        case CftcUnavailableReason::PriceSeriesNotRollSafe:
+            return QStringLiteral("price_series_not_roll_safe");
     }
     return {};
 }
@@ -670,7 +686,16 @@ struct CftcInterpretationInput {
     QDate evaluation_date;
     QVector<CftcPricePoint> prices; // ascending closes; empty = no price context
     QString price_source;           // explicit provider/proxy description
+    /// The series is a continuous front-month futures proxy (for example Yahoo
+    /// GC=F) that splices successive contracts without roll adjustment and does
+    /// not identify its roll dates. Such a series is not roll-safe: every price
+    /// assessment is unavailable with PriceSeriesNotRollSafe, and no price move,
+    /// materiality rank or relationship is derived from it.
     bool price_continuous_proxy = false;
+    /// The series is a spot index rather than the futures contract whose
+    /// positions are reported. It has no contract roll, so it is evaluated; the
+    /// presentation states that it is a spot index. A series with neither flag
+    /// is taken as the caller declares it: one roll-free series.
     bool price_spot_index = false;
     CftcInterpretationConfig config;
 };
@@ -739,21 +764,9 @@ struct CftcInterpretationResult {
 };
 
 // ── Report continuity ───────────────────────────────────────────────────────
-
-/// Shortest interval between two reports that still counts as one weekly
-/// step. Holiday-shifted releases produce 6- and 8-day steps; the few 3-day
-/// steps in the official history (for example 2001-12-18 -> 2001-12-21) are
-/// extra reports, not weekly intervals.
-inline constexpr int kCftcWeeklyMinGapDays = 5;
-
-/// A true weekly CFTC interval: at least kCftcWeeklyMinGapDays and at most
-/// the finalized metric foundation's weekly tolerance (kCftcWeeklyGapDays).
-inline bool cftc_weekly_neighbour(const QDate& earlier, const QDate& later) {
-    if (!earlier.isValid() || !later.isValid() || earlier >= later)
-        return false;
-    const qint64 gap = earlier.daysTo(later);
-    return gap >= kCftcWeeklyMinGapDays && gap <= kCftcWeeklyGapDays;
-}
+//
+// A weekly step is cftc_weekly_neighbour() from CftcMetricModel.h (5-10
+// calendar days), the same definition the page's weekly-change figures use.
 
 /// Whether every consecutive pair of reports in [first, last] is a weekly
 /// neighbour. A missing report or a stale anchor inside the window makes the
@@ -1149,12 +1162,13 @@ struct CftcInterpretationRule {
     QString condition; // short formula, not UI prose
 };
 
-/// The versioned rule catalog for the v1 baseline. It records which part of
-/// the interpretation is a CFTC fact, an identity, a literature measure, a
+/// The versioned rule catalog of the current rule set
+/// (cftc_interpretation_rule_set_version()). It records which part of the
+/// interpretation is a CFTC fact, an identity, a literature measure, a
 /// practitioner convention or a versioned engine heuristic. It describes the
-/// default v1 configuration; when a caller overrides CftcInterpretationConfig
-/// the result is reported under cftc_interpretation_custom_rule_set_version()
-/// and this catalog no longer describes the effective thresholds.
+/// default configuration; when a caller overrides CftcInterpretationConfig the
+/// result is reported under cftc_interpretation_custom_rule_set_version() and
+/// this catalog no longer describes the effective thresholds.
 inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
     return {
         {QStringLiteral("PARTICIPANT_POSITION_LEGS"), CftcInterpretationScope::AccountingFact,
@@ -1216,8 +1230,9 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
          QStringLiteral("selected market CR concentration percentile >= 0.90 or rising move rank >= 0.75")},
         {QStringLiteral("PRICE_POSITION_RELATION"), CftcInterpretationScope::ContemporaneousRelation,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral(
-             "price and net positioning moves both material at the same report window; divergence explicit")},
+         QStringLiteral("price and net positioning moves both material at the same report window; divergence "
+                        "explicit; only on a roll-safe price series, never on a continuous front-month proxy "
+                        "that is not roll-adjusted")},
         {QStringLiteral("NET_FLAT"), CftcInterpretationScope::AccountingFact, CftcEvidenceBasis::DerivedIdentity,
          QStringLiteral("reported long equals reported short")},
         {QStringLiteral("NET_LONG"), CftcInterpretationScope::AccountingFact, CftcEvidenceBasis::DerivedIdentity,
@@ -1369,13 +1384,14 @@ inline bool cftc_anchor_oi_positive(const QVector<CftcObservation>& history, int
 
 /// Interpret one participant class of one family over an already
 /// current-truncated history. Appends any price assessments and unavailable
-/// records to the caller's result containers.
-inline CftcParticipantInterpretation
-cftc_interpret_participant(const QVector<CftcObservation>& history, int participant_index,
-                           const CftcParticipant& participant, CftcFamily family,
-                           const CftcInterpretationConfig& config, const QVector<CftcPricePoint>& prices,
-                           bool price_source_specified, QVector<CftcPricePositionAssessment>& price_context,
-                           QVector<CftcUnavailableRecord>& unavailable) {
+/// records to the caller's result containers. `price_series_roll_safe` is false
+/// for a continuous front-month proxy that is not roll-adjusted; its price
+/// assessments then fail closed with PriceSeriesNotRollSafe.
+inline CftcParticipantInterpretation cftc_interpret_participant(
+    const QVector<CftcObservation>& history, int participant_index, const CftcParticipant& participant,
+    CftcFamily family, const CftcInterpretationConfig& config, const QVector<CftcPricePoint>& prices,
+    bool price_source_specified, bool price_series_roll_safe, QVector<CftcPricePositionAssessment>& price_context,
+    QVector<CftcUnavailableRecord>& unavailable) {
     CftcParticipantInterpretation out;
     out.participant_key = participant.key;
     out.label = participant.label;
@@ -1756,6 +1772,13 @@ cftc_interpret_participant(const QVector<CftcObservation>& history, int particip
             assessment.reason = CftcUnavailableReason::MissingPriceContext;
         } else if (!price_source_specified) {
             assessment.reason = CftcUnavailableReason::UnspecifiedPriceSource;
+        } else if (!price_series_roll_safe) {
+            // A spliced front-month series can carry a contract-roll gap in
+            // the window and in its comparable-move reference, and the
+            // provider does not say where the rolls are. Nothing is derived
+            // from it: no move, no rank and no relationship state (the
+            // positioning side above stays populated).
+            assessment.reason = CftcUnavailableReason::PriceSeriesNotRollSafe;
         } else if (evaluation.horizon_reason != CftcUnavailableReason::None) {
             assessment.reason = evaluation.horizon_reason;
         } else if (!flow.has_net_flow) {
@@ -2545,10 +2568,11 @@ inline CftcInterpretationResult cftc_interpret(const CftcInterpretationInput& in
     }
 
     const bool price_source_specified = !input.price_source.trimmed().isEmpty();
+    const bool price_series_roll_safe = !input.price_continuous_proxy;
     for (int i = 0; i < participants.size(); ++i) {
-        result.participants.append(cftc_interpret_participant(history, i, participants[i], input.family, effective,
-                                                              input.prices, price_source_specified,
-                                                              result.price_context, result.unavailable));
+        result.participants.append(cftc_interpret_participant(
+            history, i, participants[i], input.family, effective, input.prices, price_source_specified,
+            price_series_roll_safe, result.price_context, result.unavailable));
     }
     cftc_interpret_open_interest(history, effective, result);
     cftc_interpret_concentration(history, effective, result);
