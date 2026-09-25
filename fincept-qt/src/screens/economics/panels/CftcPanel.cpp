@@ -1288,9 +1288,15 @@ void CftcPanel::on_markets_button() {
     // An existing scan is a view, not a re-fetch; only the first entry scans,
     // and it uses the toolbar's current report-family/basis selection.
     if (monitor_rendered_) {
+        // A click that would only re-show the page it is already on gets an
+        // explicit status line instead of appearing dead.
+        const bool already_open = monitor_tab_ && monitor_tab_->isChecked();
         if (result_tabs_)
             result_tabs_->show();
         show_monitor_tab();
+        if (already_open)
+            set_monitor_status(
+                tr("The cross-market monitor is already open \u2014 use SCAN MARKETS to refresh it."));
         return;
     }
     if (monitor_family_combo_ && report_combo_) {
