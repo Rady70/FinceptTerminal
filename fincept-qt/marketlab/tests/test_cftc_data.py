@@ -1113,6 +1113,30 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertIn("conflicting duplicate rows", year["error"])
         self.assertEqual(self._archive_rows(), [])
 
+    def test_conflicting_duplicate_run_keeps_earlier_counters(self):
+        # An early terminal exit must keep the rejected/filtered counts already
+        # accumulated in that file rather than recording zeros.
+        bad_gold = legacy_annual_record(report_date="not-a-date")
+        unrequested = legacy_annual_record(report_date="2024-06-25", code="073732",
+                                           market="COCOA - ICE FUTURES U.S.")
+        corn_a = legacy_annual_record(report_date="2024-06-25", code="002602", market="CORN - CBOT")
+        corn_b = legacy_annual_record(report_date="2024-06-25", code="002602", market="CORN - CBOT",
+                                      oi="999999")
+        self._serve_annual(annual_zip("legacy", [bad_gold, unrequested, corn_a, corn_b]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold", "corn"])
+
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "malformed")
+        self.assertIn("conflicting duplicate rows", year["error"])
+        self.assertEqual(year["rows_rejected"], 1)
+        self.assertEqual(year["rows_filtered"], 1)
+        self.assertEqual(self._archive_rows(), [])
+        runs = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"]
+        run = next(item for item in runs if item["years"] == "2024")
+        self.assertEqual(run["status"], "malformed")
+        self.assertEqual(run["rows_rejected"], 1)
+        self.assertEqual(run["detail"]["rows_filtered"], 1)
+
     def test_identical_annual_duplicates_collapse_and_are_counted(self):
         duplicate = legacy_annual_record(report_date="2024-06-25")
         self._serve_annual(annual_zip("legacy", [duplicate, dict(duplicate)]))
