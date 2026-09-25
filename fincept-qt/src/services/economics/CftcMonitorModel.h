@@ -573,6 +573,21 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
         entry.status_detail = object.value(QStringLiteral("refresh_error")).toString().trimmed();
         entry.archive_rows = object.value(QStringLiteral("archive_rows")).toInt();
 
+        // A known market must declare its code; the payload is never allowed to
+        // leave the identity to be synthesized from the observation rows.
+        // Unknown-market entries intentionally carry no code and keep their
+        // explicit `Unknown market` presentation.
+        if (entry.known_market && entry.contract_code.isEmpty()) {
+            entry.status = CftcMonitorStatus::Unavailable;
+            entry.status_detail = QCoreApplication::translate(
+                "CftcMonitorModel",
+                "The monitor payload does not declare the market's CFTC contract-market code.");
+            entry.alerts = cftc_build_alerts(entry);
+            entry.requires_attention = !entry.alerts.isEmpty();
+            model.entries.append(entry);
+            continue;
+        }
+
         const QJsonArray rows = object.value(QStringLiteral("rows")).toArray();
         if (rows.isEmpty()) {
             entry.alerts = cftc_build_alerts(entry);
@@ -638,8 +653,6 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
             model.entries.append(entry);
             continue;
         }
-        if (entry.contract_code.isEmpty())
-            entry.contract_code = history_code;
 
         CftcInterpretationInput input;
         input.family = family;

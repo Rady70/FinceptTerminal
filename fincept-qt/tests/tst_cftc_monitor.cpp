@@ -519,20 +519,17 @@ void TstCftcMonitor::payload_identity_fails_closed() {
     QCOMPARE(code_model.entries.first().status, CftcMonitorStatus::Unavailable);
     QVERIFY(!code_model.entries.first().status_detail.isEmpty());
 
-    // Without a declared code, two conflicting observation identities are
-    // still refused instead of letting the last row decide.
-    QJsonArray mixed_codes = to_array(rows, 0, 10);
-    QJsonObject mixedfirst = mixed_codes.first().toObject();
-    mixedfirst[QStringLiteral("cftc_contract_market_code")] = QStringLiteral("999999");
-    mixed_codes.replace(0, mixedfirst);
+    // A known market must declare its code; consistent rows do not authorize
+    // the payload to synthesize the declaration.
     QJsonObject undeclared =
-        make_market(QStringLiteral("gold"), QStringLiteral("updated"), mixed_codes);
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows, 0, 10));
     undeclared.remove(QStringLiteral("contract_code"));
-    const CftcMonitorModel mixed_model = cftc_parse_monitor_payload(
+    const CftcMonitorModel undeclared_model = cftc_parse_monitor_payload(
         make_payload(QJsonArray{undeclared}), CftcFamily::Legacy, true, evaluation_date,
         cftc_principal_participant_key(CftcFamily::Legacy));
-    QCOMPARE(mixed_model.entries.size(), 1);
-    QCOMPARE(mixed_model.entries.first().status, CftcMonitorStatus::Unavailable);
+    QCOMPARE(undeclared_model.entries.size(), 1);
+    QCOMPARE(undeclared_model.entries.first().status, CftcMonitorStatus::Unavailable);
+    QVERIFY(!undeclared_model.entries.first().status_detail.isEmpty());
 
     // A concentration series that names a different field than the engine's
     // primary is refused rather than silently accepted.

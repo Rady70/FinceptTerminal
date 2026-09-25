@@ -1303,9 +1303,9 @@ class CFTCDataWrapper:
             date_value = date_value.split("T")[0]
         row["report_date_as_yyyy_mm_dd"] = date_value
         for key in self._HISTORY_METADATA_KEYS:
-            value = record.get(key)
-            # Both ingestion paths store the same trimmed identity text.
-            row[key] = value.strip() if isinstance(value, str) else value
+            # Both ingestion paths store the same canonical identity text; see
+            # _canonical_text for the whitespace/quote normalization.
+            row[key] = self._canonical_text(record.get(key))
         row["open_interest_all"] = self._pick(record, ("open_interest_all",))
         for key, long_aliases, short_aliases in participants:
             row[f"{key}_long"] = self._pick(record, long_aliases)
@@ -1364,6 +1364,24 @@ class CFTCDataWrapper:
         return text
 
     @staticmethod
+    def _canonical_text(value) -> Optional[str]:
+        """Canonical published display text for the identity/metadata columns.
+
+        Removes surrounding whitespace and, when both ends carry the same
+        literal single or double quote, that quote pair. Some older Socrata
+        resources (the pre-2011 TFF data) wrap Contract Units in literal
+        quotes while the annual files and the newer resources do not; the
+        value is the same published text, so both ingestion paths store it
+        identically and cannot rewrite each other's rows forever.
+        """
+        if value is None:
+            return None
+        text = str(value).strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+            text = text[1:-1].strip()
+        return text or None
+
+    @staticmethod
     def _annual_text(value) -> Optional[str]:
         """Exact provider text with surrounding whitespace removed.
 
@@ -1371,10 +1389,7 @@ class CFTCDataWrapper:
         Socrata resources do not; the value is the same identity, so the
         canonical row strips it rather than storing a byte-level difference.
         """
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
+        return CFTCDataWrapper._canonical_text(value)
 
     @staticmethod
     def _annual_report_date(value) -> Optional[str]:
@@ -1576,22 +1591,30 @@ class CFTCDataWrapper:
                     if header_error:
                         return finish("malformed", header_error)
                     rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
-                    rejected = 0
-                    filtered = 0
-                    collapsed = 0
                     for fields in reader:
                         if not fields or all(not str(field).strip() for field in fields):
                             continue
                         record = dict(zip(header, fields))
+                        # Decide market membership from the exact contract code
+                        # before validating the rest of the record: an
+                        # unrequested supported market's malformed cells must
+                        # not pollute the requested market's rejected count or
+                        # turn a genuinely absent year into `malformed`.
+                        normalized = {self._normalize_annual_header(key): value
+                                      for key, value in record.items() if key}
+                        code = self._normalize_contract_code(self._annual_first(
+                            normalized, self._ANNUAL_FIELD_ALIASES["cftc_contract_market_code"]))
+                        if code is None:
+                            outcome["rows_rejected"] += 1
+                            continue
+                        if code not in self._cot_code_values() or code not in wanted_codes:
+                            outcome["rows_filtered"] += 1
+                            continue
                         row, reason = self._canonical_row_from_annual(record, family, futures_only)
                         if row is None:
-                            if reason == "outside_universe":
-                                filtered += 1
-                            else:
-                                rejected += 1
-                            continue
-                        if row["cftc_contract_market_code"] not in wanted_codes:
-                            filtered += 1
+                            # `code` already proved the market is requested and
+                            # in universe; any remaining reason is invalid data.
+                            outcome["rows_rejected"] += 1
                             continue
                         key = (row["report_date_as_yyyy_mm_dd"], row["cftc_contract_market_code"])
                         previous = rows.get(key)
@@ -1600,11 +1623,13 @@ class CFTCDataWrapper:
                                 # Two contradictory official observations for
                                 # one report: fail closed for the year instead
                                 # of storing whichever row happened to appear
-                                # first while reporting success.
+                                # first while reporting success. The counts so
+                                # far already live in `outcome`, so the durable
+                                # run keeps them.
                                 return finish(
                                     "malformed",
                                     "conflicting duplicate rows for report {0} contract {1}".format(*key))
-                            collapsed += 1
+                            outcome["rows_collapsed"] += 1
                             continue
                         rows[key] = row
         except zipfile.BadZipFile:
@@ -1612,15 +1637,13 @@ class CFTCDataWrapper:
         except Exception as exc:
             return finish("malformed", f"the annual file could not be parsed: {exc}")
 
-        outcome["rows_rejected"] = rejected
-        outcome["rows_filtered"] = filtered
-        outcome["rows_collapsed"] = collapsed
         if not rows:
-            if rejected:
+            if outcome["rows_rejected"]:
                 # Records existed but none could be safely ingested; that is
                 # unusable data, not a market genuinely absent from the year.
                 return finish("malformed",
-                              f"{rejected} record(s) for the selected markets could not be ingested")
+                              f"{outcome['rows_rejected']} record(s) for the selected markets "
+                              "could not be ingested")
             return finish("no_market_data", None)
 
         retrieval_time = datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -806,6 +806,10 @@ class CftcBackfillMonitorTest(unittest.TestCase):
             "Traders_Tot_All": "100",
             "Traders_Tot_Rept_Long_All": "80",
             "Traders_Tot_Rept_Short_All": "70",
+            "Swap__Positions_Spread_All": "40",
+            "M_Money_Positions_Spread_All": "60",
+            "Traders_Swap_Spread_All": "5",
+            "Traders_M_Money_Spread_All": "7",
             "Conc_Gross_LE_4_TDR_Long_All": "20.0",
             "Contract_Units": "OUNCES",
         }])
@@ -822,6 +826,10 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(row["managed_money_long"], 400)
         self.assertEqual(row["other_reportable_long"], 50)
         self.assertEqual(row["non_reportable_long"], 150)
+        self.assertEqual(row["swap_dealer_spread"], 40)
+        self.assertEqual(row["managed_money_spread"], 60)
+        self.assertEqual(row["swap_dealer_traders_spread"], 5)
+        self.assertEqual(row["managed_money_traders_spread"], 7)
         # Disaggregated rows are never relabelled into the legacy classes.
         self.assertNotIn("commercial_long", row)
 
@@ -845,6 +853,8 @@ class CftcBackfillMonitorTest(unittest.TestCase):
             "Traders_Tot_All": "140",
             "Traders_Tot_Rept_Long_All": "100",
             "Traders_Tot_Rept_Short_All": "90",
+            "Dealer_Positions_Spread_All": "11",
+            "Traders_Lev_Money_Spread_All": "9",
             "Conc_Net_LE_4_TDR_Long_All": "35.0",
             "Contract_Units": "EURO (125,000 EURO)",
         }])
@@ -857,6 +867,8 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(rows[0]["report_basis"], "futures_only")
         row = json.loads(rows[0]["row_json"])
         self.assertEqual(row["leveraged_funds_short"], 1400)
+        self.assertEqual(row["dealer_spread"], 11)
+        self.assertEqual(row["leveraged_funds_traders_spread"], 9)
         self.assertEqual(row["futonly_or_combined"], "FutOnly")
         # TFF is never reconstructed into legacy commercial/non-commercial.
         self.assertNotIn("commercial_long", row)
@@ -1246,6 +1258,85 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(persisted["non_commercial_spread"], 1234)
         self.assertEqual(persisted["non_commercial_traders_spread"], 333)
         self.assertEqual(persisted["commercial_traders_short"], 555)
+
+    def test_subset_backfill_ignores_unrequested_supported_rows(self):
+        # A supported-but-unrequested market with malformed data is filtered,
+        # not validated: it must not turn a legitimate no-data year into
+        # `malformed`, nor inflate the requested market's rejected count.
+        corn_bad = legacy_annual_record(report_date="not-a-date", code="002602", market="CORN - CBOT")
+        self._serve_annual(annual_zip("legacy", [corn_bad]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "no_market_data")
+        self.assertEqual(year["rows_rejected"], 0)
+        self.assertEqual(year["rows_filtered"], 1)
+
+        gold = legacy_annual_record()
+        self._serve_annual(annual_zip("legacy", [gold, corn_bad]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "ok")
+        self.assertEqual(result["data"]["rows_inserted"], 1)
+        self.assertEqual(year["rows_rejected"], 0)
+        self.assertEqual(year["rows_filtered"], 1)
+
+    def test_quoted_old_contract_units_normalize_and_do_not_churn(self):
+        # The pre-2011 TFF Socrata resource wraps Contract Units in literal
+        # quotes while the annual file does not. Both paths must store the same
+        # canonical text, and neither may rewrite the other's row.
+        annual = {
+            "Market_and_Exchange_Names": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+            "As_of_Date_In_Form_YYMMDD": "100720",
+            "Report_Date_as_YYYY-MM-DD": "2010-07-20",
+            "CFTC_Contract_Market_Code": "099741",
+            "Open_Interest_All": "5000",
+            "Dealer_Positions_Long_All": "1000",
+            "Dealer_Positions_Short_All": "900",
+            "Dealer_Positions_Spread_All": "10",
+            "Asset_Mgr_Positions_Long_All": "1200",
+            "Asset_Mgr_Positions_Short_All": "300",
+            "Lev_Money_Positions_Long_All": "800",
+            "Lev_Money_Positions_Short_All": "1400",
+            "Other_Rept_Positions_Long_All": "250",
+            "Other_Rept_Positions_Short_All": "150",
+            "NonRept_Positions_Long_All": "400",
+            "NonRept_Positions_Short_All": "900",
+            "Traders_Tot_All": "140",
+            "Traders_Tot_Rept_Long_All": "100",
+            "Traders_Tot_Rept_Short_All": "90",
+            "Traders_Dealer_Spread_All": "4",
+            "Conc_Net_LE_4_TDR_Long_All": "35.0",
+            "Contract_Units": "(CONTRACTS OF EUR 125,000)",
+        }
+        self._serve_annual(annual_zip("tff", [annual]))
+        first = self.wrapper.cot_backfill("tff", True, 2010, 2010, ["euro"])
+        self.assertEqual(first["data"]["years"][0]["status"], "ok")
+        stored = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(stored["contract_units"], "(CONTRACTS OF EUR 125,000)")
+
+        current = raw_tff_row(report_date="2010-07-20")
+        current.update({
+            "contract_units": "'(CONTRACTS OF EUR 125,000)'",
+            "traders_tot_all": "140",
+            "traders_tot_rept_long_all": "100",
+            "traders_tot_rept_short_all": "90",
+            "traders_dealer_spread_all": "4",
+            "dealer_positions_spread_all": "10",
+            "conc_net_le_4_tdr_long_all": "35.0",
+        })
+        self._serve_monitor([current])
+        current_result = self.wrapper.get_cot_monitor("tff", True, ["euro"], 25000, refresh=True)
+        market = current_result["data"]["markets"][0]
+        self.assertEqual(market["inserted"], 0)
+        self.assertEqual(market["updated"], 0)
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(row["contract_units"], "(CONTRACTS OF EUR 125,000)")
+
+        # An annual re-ingestion after the current path must also be a no-op.
+        second = self.wrapper.cot_backfill("tff", True, 2010, 2010, ["euro"])
+        self.assertEqual(second["data"]["rows_inserted"], 0)
+        self.assertEqual(second["data"]["rows_updated"], 0)
+        self.assertEqual(len(self._archive_rows()), 1)
 
     def test_monitor_wrong_contract_code_fails_the_market_and_writes_nothing(self):
         wrong = raw_legacy_row(report_date="2026-09-01", code="999999")
