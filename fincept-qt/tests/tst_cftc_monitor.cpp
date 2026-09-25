@@ -16,9 +16,9 @@
 //   * descriptive, traceable wording with no BUY/HOLD/SELL, bullish/bearish or
 //     predictive vocabulary.
 // Header-only over Qt Core; no app sources (tests/ HARD RULE).
+#include "screens/economics/panels/CftcInterpretationPresentation.h"
 #include "services/economics/CftcMarketCatalog.h"
 #include "services/economics/CftcMonitorModel.h"
-#include "screens/economics/panels/CftcInterpretationPresentation.h"
 
 #include <QtTest>
 
@@ -122,9 +122,9 @@ QJsonObject make_payload(const QJsonArray& markets, const QString& family = QStr
 
 CftcMonitorEntry parse_single_market(const QJsonObject& market, const QDate& evaluation_date) {
     const QJsonArray markets{market};
-    const CftcMonitorModel model = cftc_parse_monitor_payload(
-        make_payload(markets), CftcFamily::Legacy, true, evaluation_date,
-        cftc_principal_participant_key(CftcFamily::Legacy));
+    const CftcMonitorModel model =
+        cftc_parse_monitor_payload(make_payload(markets), CftcFamily::Legacy, true, evaluation_date,
+                                   cftc_principal_participant_key(CftcFamily::Legacy));
     if (model.entries.isEmpty())
         return {};
     return model.entries.first();
@@ -228,12 +228,10 @@ void TstCftcMonitor::alertable_states_match_the_engine_taxonomy() {
         QCOMPARE(cftc_state_attention_class(id), rule.attention_class);
     }
     QCOMPARE(cftc_state_attention_class(QStringLiteral("HISTORICALLY_HIGH_NET")), CftcAttentionClass::Extreme);
-    QCOMPARE(cftc_state_attention_class(QStringLiteral("EXITED_LOW_EXTREME")),
-             CftcAttentionClass::ExtremeTransition);
+    QCOMPARE(cftc_state_attention_class(QStringLiteral("EXITED_LOW_EXTREME")), CftcAttentionClass::ExtremeTransition);
     QCOMPARE(cftc_state_attention_class(QStringLiteral("SHORT_COVERING")), CftcAttentionClass::Repositioning);
     QCOMPARE(cftc_state_attention_class(QStringLiteral("OI_EXPANSION")), CftcAttentionClass::OpenInterest);
-    QCOMPARE(cftc_state_attention_class(QStringLiteral("CONCENTRATION_RISING")),
-             CftcAttentionClass::Concentration);
+    QCOMPARE(cftc_state_attention_class(QStringLiteral("CONCENTRATION_RISING")), CftcAttentionClass::Concentration);
     // Direction levels and price relationships are deliberately not alerts.
     QVERIFY(!cftc_state_is_alertable(QStringLiteral("NET_LONG")));
     QVERIFY(!cftc_state_is_alertable(QStringLiteral("NET_SHORT")));
@@ -393,9 +391,9 @@ void TstCftcMonitor::data_quality_states_are_explicit() {
     for (const Case& item : cases) {
         const QJsonObject market = make_market(QStringLiteral("gold"), item.status, QJsonArray());
         const QJsonArray markets{market};
-        const CftcMonitorModel model = cftc_parse_monitor_payload(
-            make_payload(markets), CftcFamily::Legacy, true, evaluation_date,
-            cftc_principal_participant_key(CftcFamily::Legacy));
+        const CftcMonitorModel model =
+            cftc_parse_monitor_payload(make_payload(markets), CftcFamily::Legacy, true, evaluation_date,
+                                       cftc_principal_participant_key(CftcFamily::Legacy));
         QCOMPARE(model.entries.size(), 1);
         const CftcMonitorEntry& entry = model.entries.first();
         QCOMPARE(entry.status, item.expected);
@@ -412,9 +410,9 @@ void TstCftcMonitor::data_quality_states_are_explicit() {
     const QVector<QJsonObject> rows = make_monotone_series(180, QDate(2022, 5, 3));
     QJsonObject archived = make_market(QStringLiteral("gold"), QStringLiteral("archive_only"), to_array(rows));
     archived[QStringLiteral("refresh_error")] = QStringLiteral("provider offline");
-    const CftcMonitorModel archived_model = cftc_parse_monitor_payload(
-        make_payload(QJsonArray{archived}), CftcFamily::Legacy, true, evaluation_date,
-        cftc_principal_participant_key(CftcFamily::Legacy));
+    const CftcMonitorModel archived_model =
+        cftc_parse_monitor_payload(make_payload(QJsonArray{archived}), CftcFamily::Legacy, true, evaluation_date,
+                                   cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(archived_model.entries.size(), 1);
     const CftcMonitorEntry& archived_entry = archived_model.entries.first();
     QCOMPARE(archived_entry.status, CftcMonitorStatus::ArchiveOnly);
@@ -431,8 +429,8 @@ void TstCftcMonitor::data_quality_states_are_explicit() {
 
 void TstCftcMonitor::outdated_report_is_a_data_quality_condition() {
     const QVector<QJsonObject> rows = make_monotone_series(180, QDate(2022, 5, 3));
-    const QDate last_report = QDate::fromString(
-        rows.last().value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString(), Qt::ISODate);
+    const QDate last_report =
+        QDate::fromString(rows.last().value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString(), Qt::ISODate);
     const QDate evaluation_date = last_report.addDays(30);
     const QJsonObject market = make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows));
     const CftcMonitorEntry entry = parse_single_market(market, evaluation_date);
@@ -442,7 +440,8 @@ void TstCftcMonitor::outdated_report_is_a_data_quality_condition() {
     QCOMPARE(entry.report_age_days, 30);
     bool has_outdated_alert = false;
     for (const CftcAlert& alert : entry.alerts) {
-        if (alert.attention_class == CftcAttentionClass::DataQuality && alert.detail_reason.contains(QStringLiteral("30")))
+        if (alert.attention_class == CftcAttentionClass::DataQuality &&
+            alert.detail_reason.contains(QStringLiteral("30")))
             has_outdated_alert = true;
     }
     QVERIFY(has_outdated_alert);
@@ -454,9 +453,9 @@ void TstCftcMonitor::payload_identity_fails_closed() {
     const QJsonArray markets{make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows))};
 
     // Wrong declared family or basis at the payload level.
-    const CftcMonitorModel wrong_family = cftc_parse_monitor_payload(
-        make_payload(markets, QStringLiteral("tff")), CftcFamily::Legacy, true, evaluation_date,
-        cftc_principal_participant_key(CftcFamily::Legacy));
+    const CftcMonitorModel wrong_family =
+        cftc_parse_monitor_payload(make_payload(markets, QStringLiteral("tff")), CftcFamily::Legacy, true,
+                                   evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QVERIFY(!wrong_family.error.isEmpty());
     const CftcMonitorModel wrong_basis = cftc_parse_monitor_payload(
         make_payload(markets, QStringLiteral("legacy"), QStringLiteral("futures_and_options_combined")),
@@ -521,12 +520,11 @@ void TstCftcMonitor::payload_identity_fails_closed() {
 
     // A known market must declare its code; consistent rows do not authorize
     // the payload to synthesize the declaration.
-    QJsonObject undeclared =
-        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows, 0, 10));
+    QJsonObject undeclared = make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows, 0, 10));
     undeclared.remove(QStringLiteral("contract_code"));
-    const CftcMonitorModel undeclared_model = cftc_parse_monitor_payload(
-        make_payload(QJsonArray{undeclared}), CftcFamily::Legacy, true, evaluation_date,
-        cftc_principal_participant_key(CftcFamily::Legacy));
+    const CftcMonitorModel undeclared_model =
+        cftc_parse_monitor_payload(make_payload(QJsonArray{undeclared}), CftcFamily::Legacy, true, evaluation_date,
+                                   cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(undeclared_model.entries.size(), 1);
     QCOMPARE(undeclared_model.entries.first().status, CftcMonitorStatus::Unavailable);
     QVERIFY(!undeclared_model.entries.first().status_detail.isEmpty());
@@ -536,8 +534,8 @@ void TstCftcMonitor::payload_identity_fails_closed() {
     QJsonObject mismatched_history = concentration_history(rows, 10);
     mismatched_history[QStringLiteral("field")] = QStringLiteral("concentration_gross_8_short");
     const CftcMonitorModel concentration_model = cftc_parse_monitor_payload(
-        make_payload(QJsonArray{make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows, 10),
-                                             mismatched_history)}),
+        make_payload(QJsonArray{
+            make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows, 10), mismatched_history)}),
         CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(concentration_model.entries.size(), 1);
     QCOMPARE(concentration_model.entries.first().status, CftcMonitorStatus::Unavailable);
@@ -561,12 +559,12 @@ void TstCftcMonitor::attention_order_is_class_then_label() {
                               CftcAttentionClass::Repositioning));
     entries.append(entry_with(QStringLiteral("silver"), QStringLiteral("Silver"),
                               QStringLiteral("HISTORICALLY_HIGH_NET"), CftcAttentionClass::Extreme));
-    entries.append(entry_with(QStringLiteral("copper"), QStringLiteral("Copper"), QString(),
-                              CftcAttentionClass::DataQuality));
+    entries.append(
+        entry_with(QStringLiteral("copper"), QStringLiteral("Copper"), QString(), CftcAttentionClass::DataQuality));
     entries.append(entry_with(QStringLiteral("corn"), QStringLiteral("Corn"), QStringLiteral("OI_EXPANSION"),
                               CftcAttentionClass::OpenInterest));
-    entries.append(entry_with(QStringLiteral("wheat"), QStringLiteral("Wheat"),
-                              QStringLiteral("HISTORICALLY_LOW_NET"), CftcAttentionClass::Extreme));
+    entries.append(entry_with(QStringLiteral("wheat"), QStringLiteral("Wheat"), QStringLiteral("HISTORICALLY_LOW_NET"),
+                              CftcAttentionClass::Extreme));
     CftcMonitorEntry quiet;
     quiet.market_key = QStringLiteral("vix");
     quiet.label = QStringLiteral("VIX");
@@ -592,9 +590,8 @@ void TstCftcMonitor::attention_order_is_class_then_label() {
 void TstCftcMonitor::alerts_are_descriptive_and_traceable() {
     const QVector<QJsonObject> rows = make_monotone_series(200, QDate(2022, 11, 1));
     const QDate evaluation_date = QDate(2026, 9, 25);
-    const CftcMonitorEntry entry =
-        parse_single_market(make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows)),
-                            evaluation_date);
+    const CftcMonitorEntry entry = parse_single_market(
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows)), evaluation_date);
     QVERIFY(!entry.alerts.isEmpty());
     for (const CftcAlert& alert : entry.alerts) {
         QVERIFY(!alert.detail_reason.isEmpty() || !alert.state_id.isEmpty());
@@ -618,9 +615,8 @@ void TstCftcMonitor::alerts_are_descriptive_and_traceable() {
     // The monitor's development wording must use the finalized terminology
     // mapping: Legacy BroadNonCommercial is "Non-Commercial", never
     // "Non-Commercial (Speculators)".
-    const QString neutral =
-        cftc_metric_participant_display_name(CftcFamily::Legacy, QStringLiteral("non_commercial"),
-                                             QStringLiteral("Non-Commercial (Speculators)"));
+    const QString neutral = cftc_metric_participant_display_name(CftcFamily::Legacy, QStringLiteral("non_commercial"),
+                                                                 QStringLiteral("Non-Commercial (Speculators)"));
     QCOMPARE(neutral, QStringLiteral("Non-Commercial"));
     CftcAlert participant_alert;
     participant_alert.state_id = QStringLiteral("HISTORICALLY_HIGH_NET");
@@ -639,9 +635,8 @@ void TstCftcMonitor::alerts_are_descriptive_and_traceable() {
     QCOMPARE(market_level.participant_key, QString());
     QVERIFY(!cftc_alert_summary(market_level, neutral).contains(neutral));
     // The projection is deterministic.
-    const CftcMonitorEntry again =
-        parse_single_market(make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows)),
-                            evaluation_date);
+    const CftcMonitorEntry again = parse_single_market(
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows)), evaluation_date);
     QStringList first;
     QStringList second;
     for (const CftcAlert& alert : entry.alerts)

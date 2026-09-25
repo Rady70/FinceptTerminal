@@ -338,9 +338,8 @@ inline QVector<CftcAlert> cftc_build_alerts(const CftcMonitorEntry& entry) {
             QCoreApplication::translate("CftcMonitorModel", "no stored history; the current refresh was not run")));
     } else if (entry.status == CftcMonitorStatus::Unavailable) {
         alerts.append(cftc_data_quality_alert(
-            entry.status_detail.isEmpty()
-                ? QCoreApplication::translate("CftcMonitorModel", "the data is unavailable")
-                : entry.status_detail));
+            entry.status_detail.isEmpty() ? QCoreApplication::translate("CftcMonitorModel", "the data is unavailable")
+                                          : entry.status_detail));
     } else if (entry.status == CftcMonitorStatus::ArchiveOnly) {
         // A stored-history fallback is a data-availability condition: the
         // provider refresh failed (or was not run), so the position shown is
@@ -348,8 +347,8 @@ inline QVector<CftcAlert> cftc_build_alerts(const CftcMonitorEntry& entry) {
         // of being indistinguishable from a successful current refresh.
         alerts.append(cftc_data_quality_alert(
             entry.status_detail.isEmpty()
-                ? QCoreApplication::translate(
-                      "CftcMonitorModel", "the provider refresh failed or was not run; stored history is shown")
+                ? QCoreApplication::translate("CftcMonitorModel",
+                                              "the provider refresh failed or was not run; stored history is shown")
                 : entry.status_detail));
     }
     if (entry.report_unavailable) {
@@ -448,7 +447,8 @@ inline CftcMonitorObservations cftc_monitor_observations(const CftcHistory& pars
     const QString field = concentration_history.value(QStringLiteral("field")).toString();
     if (field != config.primary_concentration_field) {
         out.error = QCoreApplication::translate(
-            "CftcMonitorModel", "The monitor supplied the %1 concentration series, but the engine's primary field is %2.")
+                        "CftcMonitorModel",
+                        "The monitor supplied the %1 concentration series, but the engine's primary field is %2.")
                         .arg(field.isEmpty() ? QStringLiteral("(unnamed)") : field, config.primary_concentration_field);
         out.observations.clear();
         return out;
@@ -456,8 +456,8 @@ inline CftcMonitorObservations cftc_monitor_observations(const CftcHistory& pars
     const QJsonArray dates = concentration_history.value(QStringLiteral("dates")).toArray();
     const QJsonArray values = concentration_history.value(QStringLiteral("values")).toArray();
     if (dates.size() != values.size()) {
-        out.error = QCoreApplication::translate(
-            "CftcMonitorModel", "The concentration series date and value counts do not match.");
+        out.error = QCoreApplication::translate("CftcMonitorModel",
+                                                "The concentration series date and value counts do not match.");
         out.observations.clear();
         return out;
     }
@@ -527,13 +527,13 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
     CftcMonitorModel model;
     const QString declared_family = data.value(QStringLiteral("report_family")).toString();
     if (declared_family.isEmpty()) {
-        model.error = QCoreApplication::translate("CftcMonitorModel",
-                                                  "The monitor payload does not state its report family.");
+        model.error =
+            QCoreApplication::translate("CftcMonitorModel", "The monitor payload does not state its report family.");
         return model;
     }
     if (declared_family != cftc_family_code(family)) {
-        model.error = QCoreApplication::translate(
-            "CftcMonitorModel", "The monitor returned the %1 report family, not the requested %2.")
+        model.error = QCoreApplication::translate("CftcMonitorModel",
+                                                  "The monitor returned the %1 report family, not the requested %2.")
                           .arg(declared_family, cftc_family_code(family));
         return model;
     }
@@ -541,13 +541,13 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
     const QString expected_basis =
         futures_only ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined");
     if (basis_code.isEmpty()) {
-        model.error = QCoreApplication::translate("CftcMonitorModel",
-                                                  "The monitor payload does not state its report basis.");
+        model.error =
+            QCoreApplication::translate("CftcMonitorModel", "The monitor payload does not state its report basis.");
         return model;
     }
     if (basis_code != expected_basis) {
-        model.error = QCoreApplication::translate(
-            "CftcMonitorModel", "The monitor returned the %1 report basis, not the requested %2.")
+        model.error = QCoreApplication::translate("CftcMonitorModel",
+                                                  "The monitor returned the %1 report basis, not the requested %2.")
                           .arg(basis_code, expected_basis);
         return model;
     }
@@ -580,8 +580,7 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
         if (entry.known_market && entry.contract_code.isEmpty()) {
             entry.status = CftcMonitorStatus::Unavailable;
             entry.status_detail = QCoreApplication::translate(
-                "CftcMonitorModel",
-                "The monitor payload does not declare the market's CFTC contract-market code.");
+                "CftcMonitorModel", "The monitor payload does not declare the market's CFTC contract-market code.");
             entry.alerts = cftc_build_alerts(entry);
             entry.requires_attention = !entry.alerts.isEmpty();
             model.entries.append(entry);
@@ -614,8 +613,8 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
             model.entries.append(entry);
             continue;
         }
-        const CftcMonitorObservations merged = cftc_monitor_observations(
-            history, object.value(QStringLiteral("concentration_history")).toObject());
+        const CftcMonitorObservations merged =
+            cftc_monitor_observations(history, object.value(QStringLiteral("concentration_history")).toObject());
         if (!merged.error.isEmpty()) {
             entry.status = CftcMonitorStatus::Unavailable;
             entry.status_detail = merged.error;

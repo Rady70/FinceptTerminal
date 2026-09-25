@@ -30,14 +30,9 @@ struct CftcMarketDefinition {
 /// Asset-class codes in display order.
 inline QStringList cftc_asset_class_order() {
     return {
-        QStringLiteral("metals"),
-        QStringLiteral("energy"),
-        QStringLiteral("agriculture"),
-        QStringLiteral("currencies"),
-        QStringLiteral("equity_indices"),
-        QStringLiteral("interest_rates"),
-        QStringLiteral("crypto"),
-        QStringLiteral("dollar_index"),
+        QStringLiteral("metals"),     QStringLiteral("energy"),         QStringLiteral("agriculture"),
+        QStringLiteral("currencies"), QStringLiteral("equity_indices"), QStringLiteral("interest_rates"),
+        QStringLiteral("crypto"),     QStringLiteral("dollar_index"),
     };
 }
 

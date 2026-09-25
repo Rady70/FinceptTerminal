@@ -1295,8 +1295,7 @@ void CftcPanel::on_markets_button() {
             result_tabs_->show();
         show_monitor_tab();
         if (already_open)
-            set_monitor_status(
-                tr("The cross-market monitor is already open \u2014 use SCAN MARKETS to refresh it."));
+            set_monitor_status(tr("The cross-market monitor is already open \u2014 use SCAN MARKETS to refresh it."));
         return;
     }
     if (monitor_family_combo_ && report_combo_) {
@@ -1313,10 +1312,10 @@ void CftcPanel::on_markets_button() {
 }
 
 void CftcPanel::on_scan_markets() {
-    monitor_request_family_code_ = monitor_family_combo_ ? monitor_family_combo_->currentData().toString()
-                                                         : QStringLiteral("legacy");
-    monitor_request_futures_only_ = monitor_type_combo_ &&
-                                    monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
+    monitor_request_family_code_ =
+        monitor_family_combo_ ? monitor_family_combo_->currentData().toString() : QStringLiteral("legacy");
+    monitor_request_futures_only_ =
+        monitor_type_combo_ && monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
     pending_monitor_request_ = QStringLiteral("cftc_monitor_%1").arg(++request_seq_);
     clear_monitor_display(tr("Scanning the supported markets against the current CFTC API and the local canonical "
                              "archive… the first scan reads each contract's full official history, so it can take "
@@ -1326,25 +1325,24 @@ void CftcPanel::on_scan_markets() {
     show_monitor_tab();
     services::EconomicsService::instance().execute(
         kCftcSourceId, kCftcScript, QStringLiteral("cot_monitor"),
-        {monitor_request_family_code_,
-         monitor_request_futures_only_ ? QStringLiteral("true") : QStringLiteral("false"), QStringLiteral("all"),
-         QString::fromLatin1(kCftcMonitorMaxRows)},
+        {monitor_request_family_code_, monitor_request_futures_only_ ? QStringLiteral("true") : QStringLiteral("false"),
+         QStringLiteral("all"), QString::fromLatin1(kCftcMonitorMaxRows)},
         pending_monitor_request_, /*bypass_cache=*/true);
 }
 
 void CftcPanel::on_backfill_history() {
-    const QString family_code = monitor_family_combo_ ? monitor_family_combo_->currentData().toString()
-                                                      : QStringLiteral("legacy");
-    const bool futures_only = monitor_type_combo_ &&
-                              monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
+    const QString family_code =
+        monitor_family_combo_ ? monitor_family_combo_->currentData().toString() : QStringLiteral("legacy");
+    const bool futures_only =
+        monitor_type_combo_ && monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
     pending_backfill_request_ = QStringLiteral("cftc_backfill_%1").arg(++request_seq_);
     set_monitor_status(tr("Downloading and storing the official CFTC annual files for this family and basis… "
                           "completed years are kept if a later year fails."));
-    services::EconomicsService::instance().execute(
-        kCftcSourceId, kCftcScript, QStringLiteral("cot_backfill"),
-        {family_code, futures_only ? QStringLiteral("true") : QStringLiteral("false"), QString(), QString(),
-         QStringLiteral("all")},
-        pending_backfill_request_, /*bypass_cache=*/true);
+    services::EconomicsService::instance().execute(kCftcSourceId, kCftcScript, QStringLiteral("cot_backfill"),
+                                                   {family_code,
+                                                    futures_only ? QStringLiteral("true") : QStringLiteral("false"),
+                                                    QString(), QString(), QStringLiteral("all")},
+                                                   pending_backfill_request_, /*bypass_cache=*/true);
 }
 
 QString CftcPanel::monitor_alert_text(const services::CftcAlert& alert, const QString& participant_label) const {
@@ -1358,8 +1356,8 @@ QString CftcPanel::monitor_descriptive_text(const services::CftcMonitorEntry& en
         return QStringLiteral("—");
     // The finalized Batch 4A terminology contract governs the monitor wording
     // too: Legacy Non-Commercial is never rendered as "Speculators".
-    const QString participant = cftc_metric_participant_display_name(
-        entry.family, entry.principal_participant_key, entry.principal_label);
+    const QString participant =
+        cftc_metric_participant_display_name(entry.family, entry.principal_participant_key, entry.principal_label);
     QStringList parts;
     for (const auto& alert : entry.alerts)
         parts << monitor_alert_text(alert, participant);
@@ -1372,14 +1370,14 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
     if (result_tabs_)
         result_tabs_->show();
 
-    const QString family_code = monitor_family_combo_ ? monitor_family_combo_->currentData().toString()
-                                                      : QStringLiteral("legacy");
-    const bool futures_only = monitor_type_combo_ &&
-                              monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
-    set_monitor_status(tr("Scan complete: %1 markets read for %2 · %3.")
-                           .arg(monitor_entries_.size())
-                           .arg(family_label(cftc_family_from_code(family_code)),
-                                futures_only ? tr("Futures Only") : tr("Combined")));
+    const QString family_code =
+        monitor_family_combo_ ? monitor_family_combo_->currentData().toString() : QStringLiteral("legacy");
+    const bool futures_only =
+        monitor_type_combo_ && monitor_type_combo_->currentData().toString() == QLatin1String("futures_only");
+    set_monitor_status(
+        tr("Scan complete: %1 markets read for %2 · %3.")
+            .arg(monitor_entries_.size())
+            .arg(family_label(cftc_family_from_code(family_code)), futures_only ? tr("Futures Only") : tr("Combined")));
 
     // Markets requiring attention.
     const QVector<int> order = services::cftc_attention_order(monitor_entries_);
@@ -1419,8 +1417,7 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
             if (auto* item = monitor_attention_table_->item(row, 3))
                 item->setToolTip(development);
             set_plain_cell(monitor_attention_table_, row, 4,
-                           entry.report_date.isValid() ? entry.report_date.toString(Qt::ISODate)
-                                                       : QStringLiteral("—"),
+                           entry.report_date.isValid() ? entry.report_date.toString(Qt::ISODate) : QStringLiteral("—"),
                            Qt::AlignLeft | Qt::AlignVCenter);
         }
         monitor_attention_table_->setMinimumHeight(20 + order.size() * 21 + 8);
@@ -1448,9 +1445,8 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
         }
         set_plain_cell(monitor_table_, row, 2, report_text, Qt::AlignLeft | Qt::AlignVCenter);
 
-        const QString net_pct = entry.has_net_pct_oi
-                                    ? cftc_signed_decimal(entry.net_pct_oi, 2) + QLatin1Char('%')
-                                    : QStringLiteral("—");
+        const QString net_pct =
+            entry.has_net_pct_oi ? cftc_signed_decimal(entry.net_pct_oi, 2) + QLatin1Char('%') : QStringLiteral("—");
         set_plain_cell(monitor_table_, row, 3, net_pct, Qt::AlignRight | Qt::AlignVCenter);
         if (auto* item = monitor_table_->item(row, 3)) {
             item->setToolTip(entry.has_net_pct_oi
@@ -1458,11 +1454,10 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
                                  : tr("Net %OI was not formed for this report."));
         }
 
-        const QString percentile_text =
-            entry.has_percentile
-                ? QString::number(entry.percentile * 100.0, 'f', 1) + QLatin1Char('%') + QStringLiteral(" (n=%1)")
-                                                                                         .arg(entry.percentile_reference_count)
-                : QStringLiteral("—");
+        const QString percentile_text = entry.has_percentile
+                                            ? QString::number(entry.percentile * 100.0, 'f', 1) + QLatin1Char('%') +
+                                                  QStringLiteral(" (n=%1)").arg(entry.percentile_reference_count)
+                                            : QStringLiteral("—");
         set_plain_cell(monitor_table_, row, 4, percentile_text, Qt::AlignRight | Qt::AlignVCenter);
         if (auto* item = monitor_table_->item(row, 4)) {
             item->setToolTip(entry.has_percentile
@@ -1471,8 +1466,8 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
                                  : tr("The 156-prior-report historical reference is unavailable for this market."));
         }
 
-        const QString principal_name = cftc_metric_participant_display_name(
-            entry.family, entry.principal_participant_key, entry.principal_label);
+        const QString principal_name =
+            cftc_metric_participant_display_name(entry.family, entry.principal_participant_key, entry.principal_label);
         for (int column = 5; column <= 7; ++column) {
             const int horizon = column == 5 ? 1 : column == 6 ? 4 : 13;
             const auto* reading = monitor_flow_at(entry, horizon);
@@ -1512,10 +1507,9 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
             item->setToolTip(tr("Total Open Interest reported by CFTC for the latest report."));
 
         const auto* oi_reading = monitor_oi_at(entry, 1);
-        const QString oi_change_text =
-            (oi_reading && oi_reading->evaluated && oi_reading->has_oi_change)
-                ? cftc_signed_decimal(oi_reading->oi_change, 2) + QLatin1Char('%')
-                : QStringLiteral("—");
+        const QString oi_change_text = (oi_reading && oi_reading->evaluated && oi_reading->has_oi_change)
+                                           ? cftc_signed_decimal(oi_reading->oi_change, 2) + QLatin1Char('%')
+                                           : QStringLiteral("—");
         set_plain_cell(monitor_table_, row, 9, oi_change_text, Qt::AlignRight | Qt::AlignVCenter);
         if (auto* item = monitor_table_->item(row, 9))
             item->setToolTip(tr("Open Interest change versus the prior report, as % of prior Open Interest."));
@@ -1549,8 +1543,8 @@ void CftcPanel::open_monitor_market(int entry_index) {
     const int family_index = report_combo_->findData(services::cftc_family_code(entry.family));
     if (family_index >= 0)
         report_combo_->setCurrentIndex(family_index);
-    const int type_index = type_combo_->findData(entry.futures_only ? QStringLiteral("futures_only")
-                                                                    : QStringLiteral("combined"));
+    const int type_index =
+        type_combo_->findData(entry.futures_only ? QStringLiteral("futures_only") : QStringLiteral("combined"));
     if (type_index >= 0)
         type_combo_->setCurrentIndex(type_index);
     on_fetch();
@@ -1662,9 +1656,9 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
             const QJsonObject data = result.data.value(QStringLiteral("data")).toObject();
             const CftcFamily family = cftc_family_from_code(monitor_request_family_code_);
             const bool futures_only = monitor_request_futures_only_;
-            const services::CftcMonitorModel model = services::cftc_parse_monitor_payload(
-                data, family, futures_only, QDateTime::currentDateTimeUtc().date(),
-                cftc_principal_participant_key(family));
+            const services::CftcMonitorModel model =
+                services::cftc_parse_monitor_payload(data, family, futures_only, QDateTime::currentDateTimeUtc().date(),
+                                                     cftc_principal_participant_key(family));
             if (!model.error.isEmpty()) {
                 clear_monitor_display(model.error);
             } else {
@@ -1672,15 +1666,15 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
                     monitor_archive_lbl_->setText(
                         monitor_archive_text(data.value(QStringLiteral("archive")).toObject()));
                 render_monitor(model);
-                const QString retrieved_at =
-                    result.data.value(QStringLiteral("parameters")).toObject()
-                        .value(QStringLiteral("retrieved_at")).toString();
+                const QString retrieved_at = result.data.value(QStringLiteral("parameters"))
+                                                 .toObject()
+                                                 .value(QStringLiteral("retrieved_at"))
+                                                 .toString();
                 if (!retrieved_at.isEmpty()) {
                     set_monitor_status(tr("Scan complete: %1 markets read for %2 · %3 · retrieved %4.")
                                            .arg(model.entries.size())
-                                           .arg(family_label(family), futures_only ? tr("Futures Only")
-                                                                                   : tr("Combined"),
-                                                retrieved_at));
+                                           .arg(family_label(family),
+                                                futures_only ? tr("Futures Only") : tr("Combined"), retrieved_at));
                 }
             }
         }
@@ -1708,8 +1702,7 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
                     ? tr("Backfill complete (%1–%2): %3 new observations, %4 revised, %5 rejected rows.")
                     : tr("Backfill finished with failures (%1–%2): %3 new observations, %4 revised, "
                          "%5 rejected rows.");
-            QString text = headline
-                               .arg(parameters.value(QStringLiteral("start_year")).toInt())
+            QString text = headline.arg(parameters.value(QStringLiteral("start_year")).toInt())
                                .arg(parameters.value(QStringLiteral("end_year")).toInt())
                                .arg(data.value(QStringLiteral("rows_inserted")).toInt())
                                .arg(data.value(QStringLiteral("rows_updated")).toInt())
@@ -1717,15 +1710,13 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
             if (!skipped_years.isEmpty())
                 text += tr(" No official annual file: %1.").arg(skipped_years.join(QStringLiteral(", ")));
             if (!no_data_years.isEmpty())
-                text += tr(" No data for the selected markets: %1.")
-                            .arg(no_data_years.join(QStringLiteral(", ")));
+                text += tr(" No data for the selected markets: %1.").arg(no_data_years.join(QStringLiteral(", ")));
             if (!failed_years.isEmpty())
                 text += tr(" Failed or malformed years: %1.").arg(failed_years.join(QStringLiteral(", ")));
             text += tr(" Press SCAN MARKETS to refresh the monitor.");
             set_monitor_status(text);
             if (monitor_archive_lbl_)
-                monitor_archive_lbl_->setText(
-                    monitor_archive_text(data.value(QStringLiteral("archive")).toObject()));
+                monitor_archive_lbl_->setText(monitor_archive_text(data.value(QStringLiteral("archive")).toObject()));
         }
         show_monitor_tab();
         return;
@@ -3153,9 +3144,9 @@ void CftcPanel::retranslateUi() {
             {tr("MARKET"), tr("GROUP"), tr("CLASS"), tr("DEVELOPMENT"), tr("REPORT")});
     }
     if (monitor_table_ && monitor_table_->columnCount() == 12) {
-        monitor_table_->setHorizontalHeaderLabels(
-            {tr("MARKET"), tr("GROUP"), tr("LATEST REPORT"), tr("NET %OI"), tr("%ILE (156R)"), tr("NET 1R"),
-             tr("NET 4R"), tr("NET 13R"), tr("OPEN INTEREST"), tr("OI 1R"), tr("DEVELOPMENTS"), tr("STATUS")});
+        monitor_table_->setHorizontalHeaderLabels({tr("MARKET"), tr("GROUP"), tr("LATEST REPORT"), tr("NET %OI"),
+                                                   tr("%ILE (156R)"), tr("NET 1R"), tr("NET 4R"), tr("NET 13R"),
+                                                   tr("OPEN INTEREST"), tr("OI 1R"), tr("DEVELOPMENTS"), tr("STATUS")});
     }
     if (snapshot_title_)
         snapshot_title_->setText(tr("CURRENT SNAPSHOT"));

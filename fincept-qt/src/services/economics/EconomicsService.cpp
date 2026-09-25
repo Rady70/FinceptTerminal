@@ -126,8 +126,7 @@ void EconomicsService::execute(const QString& source_id, const QString& script, 
             res.success = true;
             if (!bypass_cache) {
                 fincept::CacheManager::instance().put(
-                    key,
-                    QVariant(QString::fromUtf8(QJsonDocument(res.data).toJson(QJsonDocument::Compact))),
+                    key, QVariant(QString::fromUtf8(QJsonDocument(res.data).toJson(QJsonDocument::Compact))),
                     kCacheTtlSec, "economics");
             }
             LOG_INFO("EconomicsService", "Result ready: " + request_id);
