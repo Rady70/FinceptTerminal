@@ -19,12 +19,19 @@ The module is also registered as the CTest `marketlab_cftc_fixtures`.
 """
 
 import copy
+import csv
+import io
 import json
 import os
+import re
+import shutil
+import sqlite3
 import sys
+import tempfile
 import types
 import unittest
 import urllib.parse
+import zipfile
 from datetime import datetime, timedelta
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +76,7 @@ def raw_legacy_row(report_date="2026-09-01", oi="1000", comm_long="300", comm_sh
         "market_and_exchange_names": market,
         "commodity": "GOLD",
         "cftc_contract_market_code": code,
+        "futonly_or_combined": "FutOnly",
         "open_interest_all": oi,
         "comm_positions_long_all": comm_long,
         "comm_positions_short_all": comm_short,
@@ -85,6 +93,7 @@ def raw_disaggregated_row(report_date="2026-09-01", oi="2000", prod_long="500", 
         "report_date_as_yyyy_mm_dd": report_date,
         "market_and_exchange_names": "GOLD - COMMODITY EXCHANGE INC.",
         "cftc_contract_market_code": "088691",
+        "futonly_or_combined": "FutOnly",
         "open_interest_all": oi,
         "prod_merc_positions_long": prod_long,
         "prod_merc_positions_short": prod_short,
@@ -532,6 +541,1011 @@ class CftcFixtureTest(unittest.TestCase):
         for result in (bad_family, sweep):
             self.assertNotIn("success", result)
             self.assertIn("error", result)
+
+
+ANNUAL_LEGACY_HEADER = [
+    "Market and Exchange Names",
+    "As of Date in Form YYMMDD",
+    "As of Date in Form YYYY-MM-DD",
+    "CFTC Contract Market Code",
+    "Open Interest (All)",
+    "Noncommercial Positions-Long (All)",
+    "Noncommercial Positions-Short (All)",
+    "Noncommercial Positions-Spreading (All)",
+    "Commercial Positions-Long (All)",
+    "Commercial Positions-Short (All)",
+    "Nonreportable Positions-Long (All)",
+    "Nonreportable Positions-Short (All)",
+    "Traders-Total (All)",
+    "Traders-Total Reportable-Long (All)",
+    "Traders-Total Reportable-Short (All)",
+    "Traders-Noncommercial-Long (All)",
+    "Traders-Noncommercial-Short (All)",
+    "Traders-Noncommercial-Spreading (All)",
+    "Traders-Commercial-Long (All)",
+    "Traders-Commercial-Short (All)",
+    "Concentration-Gross LT = 4 TDR-Long (All)",
+    "Concentration-Gross LT =4 TDR-Short (All)",
+    "Concentration-Gross LT =8 TDR-Long (All)",
+    "Concentration-Gross LT =8 TDR-Short (All)",
+    "Concentration-Net LT =4 TDR-Long (All)",
+    "Concentration-Net LT =4 TDR-Short (All)",
+    "Concentration-Net LT =8 TDR-Long (All)",
+    "Concentration-Net LT =8 TDR-Short (All)",
+    "Contract Units",
+]
+
+ANNUAL_DISAGG_HEADER = [
+    "Market_and_Exchange_Names",
+    "As_of_Date_In_Form_YYMMDD",
+    "Report_Date_as_MM_DD_YYYY",
+    "CFTC_Contract_Market_Code",
+    "Open_Interest_All",
+    "Prod_Merc_Positions_Long_All",
+    "Prod_Merc_Positions_Short_All",
+    "Swap_Positions_Long_All",
+    "Swap__Positions_Short_All",
+    "Swap__Positions_Spread_All",
+    "M_Money_Positions_Long_All",
+    "M_Money_Positions_Short_All",
+    "M_Money_Positions_Spread_All",
+    "Other_Rept_Positions_Long_All",
+    "Other_Rept_Positions_Short_All",
+    "Other_Rept_Positions_Spread_All",
+    "NonRept_Positions_Long_All",
+    "NonRept_Positions_Short_All",
+    "Traders_Tot_All",
+    "Traders_Tot_Rept_Long_All",
+    "Traders_Tot_Rept_Short_All",
+    "Traders_Prod_Merc_Long_All",
+    "Traders_Prod_Merc_Short_All",
+    "Traders_Swap_Long_All",
+    "Traders_Swap_Short_All",
+    "Traders_Swap_Spread_All",
+    "Traders_M_Money_Long_All",
+    "Traders_M_Money_Short_All",
+    "Traders_M_Money_Spread_All",
+    "Traders_Other_Rept_Long_All",
+    "Traders_Other_Rept_Short_All",
+    "Traders_Other_Rept_Spread_All",
+    "Conc_Gross_LE_4_TDR_Long_All",
+    "Contract_Units",
+]
+
+ANNUAL_TFF_HEADER = [
+    "Market_and_Exchange_Names",
+    "As_of_Date_In_Form_YYMMDD",
+    "Report_Date_as_YYYY-MM-DD",
+    "CFTC_Contract_Market_Code",
+    "Open_Interest_All",
+    "Dealer_Positions_Long_All",
+    "Dealer_Positions_Short_All",
+    "Dealer_Positions_Spread_All",
+    "Asset_Mgr_Positions_Long_All",
+    "Asset_Mgr_Positions_Short_All",
+    "Asset_Mgr_Positions_Spread_All",
+    "Lev_Money_Positions_Long_All",
+    "Lev_Money_Positions_Short_All",
+    "Lev_Money_Positions_Spread_All",
+    "Other_Rept_Positions_Long_All",
+    "Other_Rept_Positions_Short_All",
+    "Other_Rept_Positions_Spread_All",
+    "NonRept_Positions_Long_All",
+    "NonRept_Positions_Short_All",
+    "Traders_Tot_All",
+    "Traders_Tot_Rept_Long_All",
+    "Traders_Tot_Rept_Short_All",
+    "Traders_Dealer_Long_All",
+    "Traders_Dealer_Short_All",
+    "Traders_Dealer_Spread_All",
+    "Traders_Asset_Mgr_Long_All",
+    "Traders_Asset_Mgr_Short_All",
+    "Traders_Asset_Mgr_Spread_All",
+    "Traders_Lev_Money_Long_All",
+    "Traders_Lev_Money_Short_All",
+    "Traders_Lev_Money_Spread_All",
+    "Traders_Other_Rept_Long_All",
+    "Traders_Other_Rept_Short_All",
+    "Traders_Other_Rept_Spread_All",
+    "Conc_Net_LE_4_TDR_Long_All",
+    "Contract_Units",
+]
+
+ANNUAL_FILES = {
+    "legacy": ("annual.txt", ANNUAL_LEGACY_HEADER),
+    "disaggregated": ("f_year.txt", ANNUAL_DISAGG_HEADER),
+    "tff": ("FinFutYY.txt", ANNUAL_TFF_HEADER),
+}
+
+_CATALOG_HEADER = os.path.abspath(
+    os.path.join(_HERE, "..", "..", "src", "services", "economics", "CftcMarketCatalog.h"))
+
+
+def annual_zip(family, rows, entry=None, header=None):
+    """Build an official-format annual ZIP in memory from a list of records.
+
+    `rows` are dicts keyed by the exact header names; unknown columns are left
+    empty so a test can exercise missing-cell behavior explicitly.
+    """
+    entry_name, default_header = ANNUAL_FILES[family]
+    header = header or default_header
+    buffer = io.BytesIO()
+    text = io.StringIO()
+    writer = csv.writer(text)
+    writer.writerow(header)
+    for record in rows:
+        writer.writerow([record.get(column, "") for column in header])
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry or entry_name, text.getvalue())
+    return buffer.getvalue()
+
+
+def legacy_annual_record(report_date="2024-06-25", code="088691", oi="452190",
+                         market="GOLD - COMMODITY EXCHANGE INC."):
+    return {
+        "Market and Exchange Names": market,
+        "As of Date in Form YYMMDD": "240625",
+        "As of Date in Form YYYY-MM-DD": report_date,
+        "CFTC Contract Market Code": code,
+        "Open Interest (All)": oi,
+        "Noncommercial Positions-Long (All)": "284885",
+        "Noncommercial Positions-Short (All)": "38656",
+        "Commercial Positions-Long (All)": "86551",
+        "Commercial Positions-Short (All)": "358039",
+        "Nonreportable Positions-Long (All)": "48436",
+        "Nonreportable Positions-Short (All)": "23177",
+        "Traders-Total (All)": "300",
+        "Traders-Total Reportable-Long (All)": "243",
+        "Traders-Total Reportable-Short (All)": "158",
+        "Concentration-Gross LT = 4 TDR-Long (All)": "17.7",
+        "Concentration-Gross LT =4 TDR-Short (All)": "42.6",
+        "Concentration-Gross LT =8 TDR-Long (All)": "27.9",
+        "Concentration-Gross LT =8 TDR-Short (All)": "58.7",
+        "Concentration-Net LT =4 TDR-Long (All)": "17.5",
+        "Concentration-Net LT =4 TDR-Short (All)": "40.3",
+        "Concentration-Net LT =8 TDR-Long (All)": "26.5",
+        "Concentration-Net LT =8 TDR-Short (All)": "56.4",
+        "Contract Units": "(CONTRACTS OF 100 TROY OUNCES)",
+    }
+
+
+class CftcBackfillMonitorTest(unittest.TestCase):
+    """Batch 5: the annual-ZIP archive, canonical convergence and the monitor.
+
+    No network access: the annual download and the monitor's per-market Socrata
+    page are replaced with fixtures.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cftc-cot-batch5-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.wrapper = cftc_data.CFTCDataWrapper(archive_dir=self.tmp)
+        self.captured_urls = []
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    def _serve_annual(self, payload):
+        def fake_download(url, timeout=180):
+            self.captured_urls.append(url)
+            return payload
+        self.captured_urls = []
+        self.wrapper._download_annual = fake_download
+
+    def _serve_monitor(self, rows, fail=None):
+        def fake_get(url):
+            self.captured_urls.append(url)
+            if fail is not None:
+                raise RuntimeError(fail)
+            return copy.deepcopy(rows)
+        self.wrapper._monitor_get = fake_get
+
+    def _archive_rows(self):
+        conn = sqlite3.connect(os.path.join(self.tmp, "cot_archive.db"))
+        conn.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in conn.execute(
+                "SELECT report_date, contract_code, report_family, report_basis, row_json, "
+                "first_source, last_source FROM cot_observations ORDER BY report_date")]
+        finally:
+            conn.close()
+
+    def _monitor_rows(self, rows):
+        """Merge legacy Socrata rows through the fixture stubbed page."""
+        self._serve_monitor(rows)
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        self.assertTrue(result.get("success"), result)
+        return result["data"]["markets"][0]
+
+    # ── annual backfill ─────────────────────────────────────────────────────
+
+    def test_annual_legacy_zip_maps_to_canonical_rows_exactly(self):
+        micro = legacy_annual_record(code="999999", market="MICRO GOLD - COMEX")
+        corn = legacy_annual_record(code="002602", market="CORN - CBOT")
+        malformed = legacy_annual_record(report_date="not-a-date")
+        missing_cell = legacy_annual_record(report_date="2024-06-18")
+        missing_cell.pop("Nonreportable Positions-Long (All)")
+        self._serve_annual(annual_zip(
+            "legacy", [legacy_annual_record(), micro, corn, malformed, missing_cell]))
+
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        self.assertTrue(result.get("success"), result)
+        self.assertEqual(result["data"]["years"][0]["status"], "ok")
+        self.assertEqual(result["data"]["rows_inserted"], 2)
+        self.assertEqual(result["data"]["rows_rejected"], 1)
+        # Rows for other CFTC contracts (micro gold) and for curated markets
+        # outside the requested subset (corn) are filtered, not ingested.
+        self.assertEqual(result["data"]["years"][0]["rows_filtered"], 2)
+        rows = self._archive_rows()
+        self.assertEqual([row["contract_code"] for row in rows], ["088691", "088691"])
+        self.assertEqual([row["report_date"] for row in rows], ["2024-06-18", "2024-06-25"])
+        first = json.loads(rows[0]["row_json"])
+        self.assertIsNone(first["non_reportable_long"])
+        self.assertEqual(first["futonly_or_combined"], "FutOnly")
+        self.assertEqual(first["open_interest_all"], 452190)
+        self.assertEqual(first["concentration_gross_4_long"], 17.7)
+        self.assertTrue(rows[0]["first_source"].startswith("cftc-annual:https://www.cftc.gov/"))
+
+    def test_annual_disaggregated_and_tff_headers_are_supported(self):
+        disagg = annual_zip("disaggregated", [{
+            "Market_and_Exchange_Names": "GOLD - COMMODITY EXCHANGE INC.",
+            "As_of_Date_In_Form_YYMMDD": "100601",
+            "Report_Date_as_MM_DD_YYYY": "06/01/2010",
+            "CFTC_Contract_Market_Code": "088691",
+            "Open_Interest_All": "1000",
+            "Prod_Merc_Positions_Long_All": "300",
+            "Prod_Merc_Positions_Short_All": "100",
+            "Swap_Positions_Long_All": "100",
+            "Swap__Positions_Short_All": "50",
+            "M_Money_Positions_Long_All": "400",
+            "M_Money_Positions_Short_All": "200",
+            "Other_Rept_Positions_Long_All": "50",
+            "Other_Rept_Positions_Short_All": "50",
+            "NonRept_Positions_Long_All": "150",
+            "NonRept_Positions_Short_All": "200",
+            "Traders_Tot_All": "100",
+            "Traders_Tot_Rept_Long_All": "80",
+            "Traders_Tot_Rept_Short_All": "70",
+            "Swap__Positions_Spread_All": "40",
+            "M_Money_Positions_Spread_All": "60",
+            "Traders_Swap_Spread_All": "5",
+            "Traders_M_Money_Spread_All": "7",
+            "Conc_Gross_LE_4_TDR_Long_All": "20.0",
+            "Contract_Units": "OUNCES",
+        }])
+        self._serve_annual(disagg)
+        result = self.wrapper.cot_backfill("disaggregated", True, 2010, 2010, ["gold"])
+        self.assertTrue(result.get("success"), result)
+        rows = self._archive_rows()
+        self.assertEqual(len(rows), 1)
+        row = json.loads(rows[0]["row_json"])
+        self.assertEqual(row["report_date_as_yyyy_mm_dd"], "2010-06-01")
+        self.assertEqual(row["producer_merchant_long"], 300)
+        self.assertEqual(row["swap_dealer_long"], 100)
+        self.assertEqual(row["swap_dealer_short"], 50)
+        self.assertEqual(row["managed_money_long"], 400)
+        self.assertEqual(row["other_reportable_long"], 50)
+        self.assertEqual(row["non_reportable_long"], 150)
+        self.assertEqual(row["swap_dealer_spread"], 40)
+        self.assertEqual(row["managed_money_spread"], 60)
+        self.assertEqual(row["swap_dealer_traders_spread"], 5)
+        self.assertEqual(row["managed_money_traders_spread"], 7)
+        # Disaggregated rows are never relabelled into the legacy classes.
+        self.assertNotIn("commercial_long", row)
+
+    def test_annual_tff_zip_maps_to_tff_participants(self):
+        tff = annual_zip("tff", [{
+            "Market_and_Exchange_Names": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+            "As_of_Date_In_Form_YYMMDD": "240625",
+            "Report_Date_as_YYYY-MM-DD": "2024-06-25",
+            "CFTC_Contract_Market_Code": "099741",
+            "Open_Interest_All": "5000",
+            "Dealer_Positions_Long_All": "1000",
+            "Dealer_Positions_Short_All": "900",
+            "Asset_Mgr_Positions_Long_All": "1200",
+            "Asset_Mgr_Positions_Short_All": "300",
+            "Lev_Money_Positions_Long_All": "800",
+            "Lev_Money_Positions_Short_All": "1400",
+            "Other_Rept_Positions_Long_All": "250",
+            "Other_Rept_Positions_Short_All": "150",
+            "NonRept_Positions_Long_All": "400",
+            "NonRept_Positions_Short_All": "900",
+            "Traders_Tot_All": "140",
+            "Traders_Tot_Rept_Long_All": "100",
+            "Traders_Tot_Rept_Short_All": "90",
+            "Dealer_Positions_Spread_All": "11",
+            "Traders_Lev_Money_Spread_All": "9",
+            "Conc_Net_LE_4_TDR_Long_All": "35.0",
+            "Contract_Units": "EURO (125,000 EURO)",
+        }])
+        self._serve_annual(tff)
+        result = self.wrapper.cot_backfill("tff", True, 2024, 2024, ["euro"])
+        self.assertTrue(result.get("success"), result)
+        rows = self._archive_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["report_family"], "tff")
+        self.assertEqual(rows[0]["report_basis"], "futures_only")
+        row = json.loads(rows[0]["row_json"])
+        self.assertEqual(row["leveraged_funds_short"], 1400)
+        self.assertEqual(row["dealer_spread"], 11)
+        self.assertEqual(row["leveraged_funds_traders_spread"], 9)
+        self.assertEqual(row["futonly_or_combined"], "FutOnly")
+        # TFF is never reconstructed into legacy commercial/non-commercial.
+        self.assertNotIn("commercial_long", row)
+
+    def test_repeated_backfill_is_idempotent_and_adopts_revisions(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        first = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        second = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertEqual(first["data"]["rows_inserted"], 1)
+        self.assertEqual(second["data"]["rows_inserted"], 0)
+        self.assertEqual(second["data"]["rows_updated"], 0)
+        self.assertEqual(len(self._archive_rows()), 1)
+
+        revised = legacy_annual_record(oi="999999")
+        self._serve_annual(annual_zip("legacy", [revised]))
+        third = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertEqual(third["data"]["rows_inserted"], 0)
+        self.assertEqual(third["data"]["rows_updated"], 1)
+        rows = self._archive_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0]["row_json"])["open_interest_all"], 999999)
+        # The first writer's provenance is retained; the latest writer is tracked.
+        self.assertIn("first_source", rows[0])
+
+    def test_backfill_year_without_an_official_file_is_reported(self):
+        def not_published(url, timeout=180):
+            raise cftc_data.CFTCAnnualNotPublished(url)
+        self.wrapper._download_annual = not_published
+        result = self.wrapper.cot_backfill("disaggregated", True, 2010, 2010, ["gold"])
+        self.assertTrue(result.get("success"), result)
+        self.assertEqual(result["data"]["years"][0]["status"], "not_published")
+        self.assertEqual(result["data"]["skipped_years"], [2010])
+        self.assertEqual(self._archive_rows(), [])
+
+    def test_combined_annual_urls_and_entries_are_exact(self):
+        combined_legacy = annual_zip(
+            "legacy", [legacy_annual_record()], entry="annualof.txt")
+        self._serve_annual(combined_legacy)
+        result = self.wrapper.cot_backfill("legacy", False, 2024, 2024, ["gold"])
+        self.assertTrue(result.get("success"), result)
+        self.assertIn("deahistfo2024.zip", self.captured_urls[-1])
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(row["futonly_or_combined"], "Combined")
+
+        disagg = annual_zip("disaggregated", [{
+            "Market_and_Exchange_Names": "GOLD - COMMODITY EXCHANGE INC.",
+            "As_of_Date_In_Form_YYMMDD": "240625",
+            "Report_Date_as_MM_DD_YYYY": "06/25/2024",
+            "CFTC_Contract_Market_Code": "088691",
+            "Open_Interest_All": "1000",
+            "Prod_Merc_Positions_Long_All": "300",
+            "Prod_Merc_Positions_Short_All": "100",
+            "Swap_Positions_Long_All": "100",
+            "Swap__Positions_Short_All": "50",
+            "M_Money_Positions_Long_All": "400",
+            "M_Money_Positions_Short_All": "200",
+            "Other_Rept_Positions_Long_All": "50",
+            "Other_Rept_Positions_Short_All": "50",
+            "NonRept_Positions_Long_All": "150",
+            "NonRept_Positions_Short_All": "200",
+            "Traders_Tot_All": "100",
+            "Traders_Tot_Rept_Long_All": "80",
+            "Traders_Tot_Rept_Short_All": "70",
+            "Conc_Gross_LE_4_TDR_Long_All": "20.0",
+            "Contract_Units": "OUNCES",
+        }], entry="c_year.txt")
+        self._serve_annual(disagg)
+        disagg_result = self.wrapper.cot_backfill("disaggregated", False, 2024, 2024, ["gold"])
+        self.assertTrue(disagg_result.get("success"), disagg_result)
+        self.assertIn("com_disagg_txt_2024.zip", self.captured_urls[0])
+
+        tff = annual_zip("tff", [{
+            "Market_and_Exchange_Names": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+            "As_of_Date_In_Form_YYMMDD": "240625",
+            "Report_Date_as_YYYY-MM-DD": "2024-06-25",
+            "CFTC_Contract_Market_Code": "099741",
+            "Open_Interest_All": "5000",
+            "Dealer_Positions_Long_All": "1000",
+            "Dealer_Positions_Short_All": "900",
+            "Asset_Mgr_Positions_Long_All": "1200",
+            "Asset_Mgr_Positions_Short_All": "300",
+            "Lev_Money_Positions_Long_All": "800",
+            "Lev_Money_Positions_Short_All": "1400",
+            "Other_Rept_Positions_Long_All": "250",
+            "Other_Rept_Positions_Short_All": "150",
+            "NonRept_Positions_Long_All": "400",
+            "NonRept_Positions_Short_All": "900",
+            "Traders_Tot_All": "140",
+            "Traders_Tot_Rept_Long_All": "100",
+            "Traders_Tot_Rept_Short_All": "90",
+            "Conc_Net_LE_4_TDR_Long_All": "35.0",
+            "Contract_Units": "EURO (125,000 EURO)",
+        }], entry="FinComYY.txt")
+        self._serve_annual(tff)
+        tff_result = self.wrapper.cot_backfill("tff", False, 2024, 2024, ["euro"])
+        self.assertTrue(tff_result.get("success"), tff_result)
+        self.assertIn("com_fin_txt_2024.zip", self.captured_urls[0])
+
+    def test_cross_path_metadata_does_not_churn_the_archive(self):
+        # The annual path stores null display names; the Socrata path carries
+        # commodity/contract_market_name. A monitor refresh with identical
+        # analytical values must count as unchanged and keep the first writer's
+        # stored row and provenance.
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record(report_date="2024-06-25")]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        matching_socrata = raw_legacy_row(
+            report_date="2024-06-25", oi="452190", comm_long="86551", comm_short="358039",
+            noncomm_long="284885", noncomm_short="38656", nonrept_long="48436", nonrept_short="23177")
+        matching_socrata.update({
+            "contract_units": "(CONTRACTS OF 100 TROY OUNCES)",
+            "contract_market_name": "GOLD",
+            "traders_tot_all": "300",
+            "traders_tot_rept_long_all": "243",
+            "traders_tot_rept_short_all": "158",
+            "conc_gross_le_4_tdr_long": "17.7",
+            "conc_gross_le_4_tdr_short": "42.6",
+            "conc_gross_le_8_tdr_long": "27.9",
+            "conc_gross_le_8_tdr_short": "58.7",
+            "conc_net_le_4_tdr_long_all": "17.5",
+            "conc_net_le_4_tdr_short_all": "40.3",
+            "conc_net_le_8_tdr_long_all": "26.5",
+            "conc_net_le_8_tdr_short_all": "56.4",
+        })
+        self._serve_monitor([matching_socrata])
+        market = self._monitor_rows([matching_socrata])
+        self.assertEqual(market["inserted"], 0)
+        self.assertEqual(market["updated"], 0)
+        self.assertEqual(len(self._archive_rows()), 1)
+        stored = self._archive_rows()[0]
+        self.assertEqual(json.loads(stored["row_json"])["commodity"], None)
+        self.assertTrue(stored["first_source"].startswith("cftc-annual:"))
+
+    def test_sparse_recent_history_expands_the_transport_window(self):
+        rows = []
+        report_date = datetime(2019, 1, 1)
+        for i in range(400):
+            row = raw_legacy_row(report_date=report_date.strftime("%Y-%m-%d"))
+            row["conc_gross_le_4_tdr_long"] = str(10.0 + 0.02 * i)
+            if i % 2 == 1 and i >= 200:
+                # The most recent 200 reports carry every other market's legs
+                # missing; only the older dense block holds the full reference.
+                row["noncomm_positions_long_all"] = None
+                row["noncomm_positions_short_all"] = None
+            rows.append(row)
+            report_date += timedelta(days=7)
+        market = self._monitor_rows(rows)
+        # 200 rows would leave only 100 valid points; the window must expand
+        # past 200 so every trailing engine reference is exactly reproducible.
+        self.assertGreater(len(market["rows"]), 200)
+        self.assertLessEqual(len(market["rows"]), 400)
+
+    def test_transport_window_covers_disjoint_sparse_references(self):
+        # Adversarial sparsity: in the last 400 reports of 1000, leg-valid rows
+        # and Open-Interest-valid rows are disjoint. A window that only counts
+        # legs would declare itself sufficient while the engine's Net %OI
+        # reference is under-populated.
+        rows = []
+        report_date = datetime(2014, 1, 7)
+        for i in range(1000):
+            row = raw_legacy_row(report_date=report_date.strftime("%Y-%m-%d"))
+            row["conc_gross_le_4_tdr_long"] = str(10.0 + 0.01 * i)
+            if i >= 600 and i % 2 == 1:
+                row["noncomm_positions_long_all"] = None
+                row["noncomm_positions_short_all"] = None
+            if i >= 600 and i % 2 == 0:
+                row["open_interest_all"] = None
+            rows.append(row)
+            report_date += timedelta(days=7)
+        market = self._monitor_rows(rows)
+        recent = market["rows"]
+        valid_points = [row for row in recent
+                        if row.get("open_interest_all") and row.get("non_commercial_long") is not None]
+        # Either the whole history is carried, or the window carries at least
+        # the 157 valid Net %OI points the engine's reference needs.
+        self.assertTrue(len(recent) == 1000 or len(valid_points) >= 157)
+
+    def test_duplicate_provider_rows_fail_the_market_not_the_scan(self):
+        duplicate = raw_legacy_row(report_date="2026-09-01")
+        second = raw_legacy_row(report_date="2026-09-01", oi="2000")
+        self._serve_monitor([duplicate, second])
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        self.assertTrue(result.get("success"), result)
+        market = result["data"]["markets"][0]
+        self.assertIn(market["status"], ("unavailable", "archive_only"))
+        self.assertIn("two rows for the same report date", market["refresh_error"])
+
+    def test_archive_upsert_collapses_identical_duplicates_and_rejects_conflicts(self):
+        archive = self.wrapper._open_archive()
+        row = {
+            "report_date_as_yyyy_mm_dd": "2024-06-25",
+            "cftc_contract_market_code": "088691",
+            "open_interest_all": 100,
+        }
+        inserted, updated, _unchanged = archive.upsert_observations(
+            [row, dict(row)], "legacy", "futures_only", "test", "2024-06-26T00:00:00+00:00")
+        self.assertEqual((inserted, updated), (1, 0))
+        conflicting = dict(row)
+        conflicting["open_interest_all"] = 999
+        with self.assertRaises(ValueError):
+            archive.upsert_observations(
+                [row, conflicting], "legacy", "futures_only", "test", "2024-06-26T00:00:00+00:00")
+
+    def test_provider_empty_read_keeps_stored_history_current(self):
+        # An empty full read for a contract whose archive already holds rows
+        # (for example a delisted market) is not a fabricated success: the
+        # stored history is shown as current, and the engine's report-age
+        # freshness flag marks a genuinely stale contract as outdated.
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record(report_date="2024-06-25")]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self._serve_monitor([])
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["status"], "current")
+        self.assertEqual(market["refresh_error"], "")
+        self.assertEqual(len(market["rows"]), 1)
+
+    def test_backfill_rejects_years_before_the_family_starts(self):
+        result = self.wrapper.cot_backfill("disaggregated", True, 2005, 2005, ["gold"])
+        self.assertNotIn("success", result)
+        self.assertIn("begin in 2010", result["error"]["error"])
+
+    def test_malformed_annual_data_fails_closed_without_writing(self):
+        for payload, expected in (
+                (b"not a zip", "not a ZIP"),
+                (annual_zip("legacy", [legacy_annual_record()], header=["wrong", "columns"]), "missing required")):
+            self._serve_annual(payload)
+            result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+            self.assertTrue(result.get("success"), result)
+            self.assertEqual(result["data"]["years"][0]["status"], "malformed")
+            self.assertIn(expected, result["data"]["years"][0]["error"])
+            self.assertEqual(self._archive_rows(), [])
+
+    def test_conflicting_annual_duplicates_fail_the_year_without_writing(self):
+        first = legacy_annual_record(report_date="2024-06-25", oi="452190")
+        conflicting = legacy_annual_record(report_date="2024-06-25", oi="999999")
+        self._serve_annual(annual_zip("legacy", [first, conflicting]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        self.assertTrue(result.get("success"), result)
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "malformed")
+        self.assertIn("conflicting duplicate rows", year["error"])
+        self.assertEqual(self._archive_rows(), [])
+
+    def test_conflicting_duplicate_run_keeps_earlier_counters(self):
+        # An early terminal exit must keep the rejected/filtered counts already
+        # accumulated in that file rather than recording zeros.
+        bad_gold = legacy_annual_record(report_date="not-a-date")
+        unrequested = legacy_annual_record(report_date="2024-06-25", code="073732",
+                                           market="COCOA - ICE FUTURES U.S.")
+        corn_a = legacy_annual_record(report_date="2024-06-25", code="002602", market="CORN - CBOT")
+        corn_b = legacy_annual_record(report_date="2024-06-25", code="002602", market="CORN - CBOT",
+                                      oi="999999")
+        self._serve_annual(annual_zip("legacy", [bad_gold, unrequested, corn_a, corn_b]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold", "corn"])
+
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "malformed")
+        self.assertIn("conflicting duplicate rows", year["error"])
+        self.assertEqual(year["rows_rejected"], 1)
+        self.assertEqual(year["rows_filtered"], 1)
+        self.assertEqual(self._archive_rows(), [])
+        runs = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"]
+        run = next(item for item in runs if item["years"] == "2024")
+        self.assertEqual(run["status"], "malformed")
+        self.assertEqual(run["rows_rejected"], 1)
+        self.assertEqual(run["detail"]["rows_filtered"], 1)
+
+    def test_identical_annual_duplicates_collapse_and_are_counted(self):
+        duplicate = legacy_annual_record(report_date="2024-06-25")
+        self._serve_annual(annual_zip("legacy", [duplicate, dict(duplicate)]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        self.assertEqual(result["data"]["years"][0]["status"], "ok")
+        self.assertEqual(result["data"]["rows_inserted"], 1)
+        self.assertEqual(result["data"]["years"][0]["rows_collapsed"], 1)
+        self.assertEqual(len(self._archive_rows()), 1)
+
+    def test_all_rejected_records_are_malformed_not_no_market_data(self):
+        bad = legacy_annual_record(report_date="not-a-date")
+        self._serve_annual(annual_zip("legacy", [bad]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "malformed")
+        self.assertIn("could not be ingested", year["error"])
+        self.assertEqual(year["rows_rejected"], 1)
+        self.assertEqual(self._archive_rows(), [])
+
+    def test_year_without_selected_market_rows_is_no_market_data(self):
+        other = legacy_annual_record(code="999999", market="MICRO GOLD - COMEX")
+        self._serve_annual(annual_zip("legacy", [other]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "no_market_data")
+        self.assertEqual(year["rows_rejected"], 0)
+        self.assertEqual(year["rows_filtered"], 1)
+
+    def test_every_backfill_year_status_is_recorded_durably(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        def not_published(url, timeout=180):
+            raise cftc_data.CFTCAnnualNotPublished(url)
+        self.wrapper._download_annual = not_published
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        def failed(url, timeout=180):
+            raise RuntimeError("provider offline")
+        self.wrapper._download_annual = failed
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        self._serve_annual(b"not a zip")
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        self._serve_annual(annual_zip(
+            "legacy", [legacy_annual_record(code="999999", market="MICRO GOLD - COMEX")]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+
+        runs = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"]
+        statuses = {run["status"] for run in runs}
+        self.assertEqual(statuses, {"ok", "not_published", "failed", "malformed", "no_market_data"})
+        self.assertEqual(next(run for run in runs if run["status"] == "failed")["detail"]["error"],
+                         "provider offline")
+        self.assertIn("not a ZIP",
+                      next(run for run in runs if run["status"] == "malformed" and
+                           run["years"] == "2024")["detail"]["error"])
+
+    def test_legacy_combined_starts_in_1995_with_both_official_url_patterns(self):
+        rejected = self.wrapper.cot_backfill("legacy", False, 1986, 1986, ["gold"])
+        self.assertNotIn("success", rejected)
+        self.assertIn("begin in 1995", rejected["error"]["error"])
+
+        calls = []
+
+        def download(url, timeout=180):
+            calls.append(url)
+            if url.endswith("deahistfo1995.zip"):
+                raise cftc_data.CFTCAnnualNotPublished(url)
+            return annual_zip(
+                "legacy", [legacy_annual_record(report_date="1995-03-21")], entry="annualof.txt")
+
+        self.wrapper._download_annual = download
+        result = self.wrapper.cot_backfill("legacy", False, 1995, 1995, ["gold"])
+        self.assertEqual(result["data"]["years"][0]["status"], "ok")
+        self.assertTrue(calls[0].endswith("deahistfo1995.zip"), calls)
+        self.assertTrue(calls[-1].endswith("deahistfo_1995.zip"), calls)
+        self.assertEqual(calls.count(calls[0]), 1, "the alternate is only tried when the primary 404s")
+
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record(report_date="1986-01-15")]))
+        futonly = self.wrapper.cot_backfill("legacy", True, 1986, 1986, ["gold"])
+        self.assertEqual(futonly["data"]["years"][0]["status"], "ok")
+        self.assertIn("deacot1986.zip", self.captured_urls[0])
+
+    def test_spreading_and_participant_trader_counts_survive_both_ingestion_paths(self):
+        annual = legacy_annual_record(report_date="2024-06-25")
+        annual.update({
+            "Noncommercial Positions-Spreading (All)": "1234",
+            "Traders-Noncommercial-Long (All)": "111",
+            "Traders-Noncommercial-Short (All)": "222",
+            "Traders-Noncommercial-Spreading (All)": "333",
+            "Traders-Commercial-Long (All)": "444",
+            "Traders-Commercial-Short (All)": "555",
+        })
+        self._serve_annual(annual_zip("legacy", [annual]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertEqual(result["data"]["years"][0]["status"], "ok")
+
+        stored = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(stored["non_commercial_spread"], 1234)
+        self.assertEqual(stored["non_commercial_traders_long"], 111)
+        self.assertEqual(stored["non_commercial_traders_short"], 222)
+        self.assertEqual(stored["non_commercial_traders_spread"], 333)
+        self.assertEqual(stored["commercial_traders_long"], 444)
+        self.assertEqual(stored["commercial_traders_short"], 555)
+        self.assertIsNone(stored["commercial_traders_spread"],
+                          "the legacy commercial count has no published spread column")
+        self.assertNotIn("managed_money_spread", stored)
+
+        # The current path must produce the identical row for the same report,
+        # so the two ingestion paths do not churn each other's new fields.
+        current = raw_legacy_row(
+            report_date="2024-06-25", oi="452190", comm_long="86551", comm_short="358039",
+            noncomm_long="284885", noncomm_short="38656", nonrept_long="48436", nonrept_short="23177")
+        current.update({
+            "contract_units": "(CONTRACTS OF 100 TROY OUNCES)",
+            "contract_market_name": "GOLD",
+            "traders_tot_all": "300",
+            "traders_tot_rept_long_all": "243",
+            "traders_tot_rept_short_all": "158",
+            "conc_gross_le_4_tdr_long": "17.7",
+            "conc_gross_le_4_tdr_short": "42.6",
+            "conc_gross_le_8_tdr_long": "27.9",
+            "conc_gross_le_8_tdr_short": "58.7",
+            "conc_net_le_4_tdr_long_all": "17.5",
+            "conc_net_le_4_tdr_short_all": "40.3",
+            "conc_net_le_8_tdr_long_all": "26.5",
+            "conc_net_le_8_tdr_short_all": "56.4",
+            "noncomm_postions_spread_all": "1234",
+            "traders_noncomm_long_all": "111",
+            "traders_noncomm_short_all": "222",
+            "traders_noncomm_spread_all": "333",
+            "traders_comm_long_all": "444",
+            "traders_comm_short_all": "555",
+        })
+        market = self._monitor_rows([current])
+        self.assertEqual(market["inserted"], 0)
+        self.assertEqual(market["updated"], 0)
+        persisted = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(persisted["non_commercial_spread"], 1234)
+        self.assertEqual(persisted["non_commercial_traders_spread"], 333)
+        self.assertEqual(persisted["commercial_traders_short"], 555)
+
+    def test_subset_backfill_ignores_unrequested_supported_rows(self):
+        # A supported-but-unrequested market with malformed data is filtered,
+        # not validated: it must not turn a legitimate no-data year into
+        # `malformed`, nor inflate the requested market's rejected count.
+        corn_bad = legacy_annual_record(report_date="not-a-date", code="002602", market="CORN - CBOT")
+        self._serve_annual(annual_zip("legacy", [corn_bad]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "no_market_data")
+        self.assertEqual(year["rows_rejected"], 0)
+        self.assertEqual(year["rows_filtered"], 1)
+
+        gold = legacy_annual_record()
+        self._serve_annual(annual_zip("legacy", [gold, corn_bad]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "ok")
+        self.assertEqual(result["data"]["rows_inserted"], 1)
+        self.assertEqual(year["rows_rejected"], 0)
+        self.assertEqual(year["rows_filtered"], 1)
+
+    def test_quoted_old_contract_units_normalize_and_do_not_churn(self):
+        # The pre-2011 TFF Socrata resource wraps Contract Units in literal
+        # quotes while the annual file does not. Both paths must store the same
+        # canonical text, and neither may rewrite the other's row.
+        annual = {
+            "Market_and_Exchange_Names": "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+            "As_of_Date_In_Form_YYMMDD": "100720",
+            "Report_Date_as_YYYY-MM-DD": "2010-07-20",
+            "CFTC_Contract_Market_Code": "099741",
+            "Open_Interest_All": "5000",
+            "Dealer_Positions_Long_All": "1000",
+            "Dealer_Positions_Short_All": "900",
+            "Dealer_Positions_Spread_All": "10",
+            "Asset_Mgr_Positions_Long_All": "1200",
+            "Asset_Mgr_Positions_Short_All": "300",
+            "Lev_Money_Positions_Long_All": "800",
+            "Lev_Money_Positions_Short_All": "1400",
+            "Other_Rept_Positions_Long_All": "250",
+            "Other_Rept_Positions_Short_All": "150",
+            "NonRept_Positions_Long_All": "400",
+            "NonRept_Positions_Short_All": "900",
+            "Traders_Tot_All": "140",
+            "Traders_Tot_Rept_Long_All": "100",
+            "Traders_Tot_Rept_Short_All": "90",
+            "Traders_Dealer_Spread_All": "4",
+            "Conc_Net_LE_4_TDR_Long_All": "35.0",
+            "Contract_Units": "(CONTRACTS OF EUR 125,000)",
+        }
+        self._serve_annual(annual_zip("tff", [annual]))
+        first = self.wrapper.cot_backfill("tff", True, 2010, 2010, ["euro"])
+        self.assertEqual(first["data"]["years"][0]["status"], "ok")
+        stored = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(stored["contract_units"], "(CONTRACTS OF EUR 125,000)")
+
+        current = raw_tff_row(report_date="2010-07-20")
+        current.update({
+            "contract_units": "'(CONTRACTS OF EUR 125,000)'",
+            "traders_tot_all": "140",
+            "traders_tot_rept_long_all": "100",
+            "traders_tot_rept_short_all": "90",
+            "traders_dealer_spread_all": "4",
+            "dealer_positions_spread_all": "10",
+            "conc_net_le_4_tdr_long_all": "35.0",
+        })
+        self._serve_monitor([current])
+        current_result = self.wrapper.get_cot_monitor("tff", True, ["euro"], 25000, refresh=True)
+        market = current_result["data"]["markets"][0]
+        self.assertEqual(market["inserted"], 0)
+        self.assertEqual(market["updated"], 0)
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(row["contract_units"], "(CONTRACTS OF EUR 125,000)")
+
+        # An annual re-ingestion after the current path must also be a no-op.
+        second = self.wrapper.cot_backfill("tff", True, 2010, 2010, ["euro"])
+        self.assertEqual(second["data"]["rows_inserted"], 0)
+        self.assertEqual(second["data"]["rows_updated"], 0)
+        self.assertEqual(len(self._archive_rows()), 1)
+
+    def test_monitor_wrong_contract_code_fails_the_market_and_writes_nothing(self):
+        wrong = raw_legacy_row(report_date="2026-09-01", code="999999")
+        self._serve_monitor([wrong])
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+
+        self.assertTrue(result.get("success"), result)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["status"], "unavailable")
+        self.assertIn("while 088691 was requested", market["refresh_error"])
+        self.assertEqual(market["rows"], [])
+        self.assertEqual(self._archive_rows(), [])
+
+    def test_backfill_unknown_market_fails_closed(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["micro_gold"])
+        self.assertNotIn("success", result)
+        self.assertIn("Unknown market", result["error"]["error"])
+
+    def test_futures_only_and_combined_are_separate_archive_identities(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        combined = legacy_annual_record()
+        self._serve_annual(annual_zip("legacy", [combined]))
+        self.wrapper.cot_backfill("legacy", False, 2024, 2024, ["gold"])
+        rows = self._archive_rows()
+        self.assertEqual(sorted(row["report_basis"] for row in rows),
+                         ["futures_and_options_combined", "futures_only"])
+        self.assertEqual({json.loads(row["row_json"])["futonly_or_combined"] for row in rows},
+                         {"FutOnly", "Combined"})
+
+    # ── monitor ─────────────────────────────────────────────────────────────
+
+    def test_monitor_merges_and_persists_incremental_rows(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record(report_date="2024-06-18")]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        # The next monitor refresh returns the full current history, including
+        # the already-archived week and a new one.
+        market = self._monitor_rows([
+            raw_legacy_row(report_date="2024-06-18"),
+            raw_legacy_row(report_date="2024-06-25"),
+        ])
+        self.assertEqual(market["status"], "updated")
+        self.assertEqual(market["inserted"], 1)
+        rows = self._archive_rows()
+        self.assertEqual([row["report_date"] for row in rows], ["2024-06-18", "2024-06-25"])
+        # The same full-history response twice must not duplicate anything.
+        again = self._monitor_rows([
+            raw_legacy_row(report_date="2024-06-18"),
+            raw_legacy_row(report_date="2024-06-25"),
+        ])
+        # Nothing new on the second, incremental read: the stored history is
+        # current and is not rewritten.
+        self.assertEqual(again["status"], "current")
+        self.assertEqual(again["inserted"], 0)
+        self.assertEqual(len(self._archive_rows()), 2)
+        # The second read is a bounded increment from the stored latest date,
+        # not another full-history download.
+        self.assertIn(">= '2024-06-25'", urllib.parse.unquote(self.captured_urls[-1]))
+
+    def test_monitor_refresh_failure_uses_archive_with_explicit_status(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self._serve_monitor([], fail="provider offline")
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["status"], "archive_only")
+        self.assertIn("provider offline", market["refresh_error"])
+        self.assertEqual(len(market["rows"]), 1)
+        self.assertEqual(market["rows"][0]["report_date_as_yyyy_mm_dd"], "2024-06-25")
+
+    def test_monitor_without_archive_and_failed_refresh_is_unavailable(self):
+        self._serve_monitor([], fail="provider offline")
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["status"], "unavailable")
+        self.assertEqual(market["rows"], [])
+
+    def test_monitor_no_data_and_unknown_market_are_distinct(self):
+        self._serve_monitor([])
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold", "micro_gold"], 25000, refresh=True)
+        by_key = {market["market_key"]: market for market in result["data"]["markets"]}
+        self.assertEqual(by_key["gold"]["status"], "no_data")
+        self.assertEqual(by_key["micro_gold"]["status"], "unknown_market")
+        self.assertEqual(by_key["micro_gold"]["rows"], [])
+
+    def test_monitor_bounds_full_history_and_transports_the_concentration_series(self):
+        # 320 weekly rows: the monitor must return the last 200 full rows and the
+        # older primary-concentration values, not a silently truncated history.
+        rows = []
+        report_date = datetime(2020, 1, 7)
+        for i in range(320):
+            row = raw_legacy_row(report_date=report_date.strftime("%Y-%m-%d"))
+            row["conc_gross_le_4_tdr_long"] = str(10.0 + 0.05 * i)
+            rows.append(row)
+            report_date += timedelta(days=7)
+        market = self._monitor_rows(rows)
+        self.assertEqual(len(market["rows"]), 200)
+        history = market["concentration_history"]
+        self.assertEqual(history["field"], "concentration_gross_4_long")
+        self.assertEqual(len(history["dates"]), 120)
+        self.assertEqual(history["dates"][0], "2020-01-07")
+        self.assertEqual(history["dates"][-1], rows[119]["report_date_as_yyyy_mm_dd"])
+        self.assertAlmostEqual(history["values"][-1], 10.0 + 0.05 * 119)
+        # The recent rows and the older series must not overlap.
+        self.assertLess(history["dates"][-1], market["rows"][0]["report_date_as_yyyy_mm_dd"])
+
+    def test_monitor_rows_are_canonical_for_the_family_and_basis(self):
+        self._serve_monitor([raw_tff_row(report_date="2026-09-01"),
+                             raw_tff_row(report_date="2026-09-08")])
+        result = self.wrapper.get_cot_monitor("tff", True, ["euro"], 25000, refresh=True)
+        self.assertTrue(result.get("success"), result)
+        market = result["data"]["markets"][0]
+        row = market["rows"][-1]
+        self.assertEqual(market["status"], "updated")
+        self.assertEqual(row["futonly_or_combined"], "FutOnly")
+        self.assertEqual(row["cftc_contract_market_code"], "099741")
+        self.assertEqual(row["leveraged_funds_long"], 800)
+        self.assertEqual(row["leveraged_funds_short"], 1400)
+        self.assertEqual(row["dealer_long"], 1000)
+        self.assertEqual(result["data"]["report_basis"], "futures_only")
+
+    def test_monitor_missing_cells_stay_missing(self):
+        incomplete = raw_legacy_row(report_date="2026-09-01")
+        incomplete["noncomm_positions_long_all"] = None
+        self._serve_monitor([incomplete])
+        market = self._monitor_rows([incomplete])
+        row = market["rows"][0]
+        self.assertIsNone(row["non_commercial_long"])
+        self.assertIsNotNone(row["non_commercial_short"])
+
+    def test_annual_text_metadata_is_trimmed_to_match_the_current_path(self):
+        # The older annual files pad Contract Units / market names with trailing
+        # spaces; the Socrata resources do not. Both canonical paths must store
+        # the same identity text.
+        padded = legacy_annual_record()
+        padded["Market and Exchange Names"] = "GOLD - COMMODITY EXCHANGE INC. "
+        padded["Contract Units"] = "(CONTRACTS OF 100 TROY OUNCES) "
+        self._serve_annual(annual_zip("legacy", [padded]))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertTrue(result.get("success"), result)
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertEqual(row["market_and_exchange_names"], "GOLD - COMMODITY EXCHANGE INC.")
+        self.assertEqual(row["contract_units"], "(CONTRACTS OF 100 TROY OUNCES)")
+
+        spaced = raw_legacy_row(report_date="2026-09-01")
+        spaced["market_and_exchange_names"] = "GOLD - COMMODITY EXCHANGE INC. "
+        self._serve_monitor([spaced])
+        market = self._monitor_rows([spaced])
+        self.assertEqual(market["rows"][0]["market_and_exchange_names"], "GOLD - COMMODITY EXCHANGE INC.")
+
+    def test_monitor_refresh_disabled_reports_stored_only(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=False)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["status"], "archive_only")
+        self.assertEqual(len(market["rows"]), 1)
+
+    def test_archive_status_reports_coverage_and_provenance(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        status = self.wrapper.cot_archive_status()
+        self.assertTrue(status.get("success"), status)
+        self.assertEqual(status["data"]["total_observations"], 1)
+        self.assertEqual(status["data"]["groups"][0]["report_family"], "legacy")
+        self.assertEqual(status["data"]["groups"][0]["report_basis"], "futures_only")
+        runs = status["data"]["recent_backfill_runs"]
+        self.assertTrue(any(run["status"] == "ok" for run in runs))
+
+    # ── catalog consistency ─────────────────────────────────────────────────
+
+    @unittest.skipUnless(os.path.exists(_CATALOG_HEADER), "application market catalog not present")
+    def test_market_keys_match_the_cpp_catalog_header(self):
+        with open(_CATALOG_HEADER, encoding="utf-8") as handle:
+            text = handle.read()
+        entries = re.findall(
+            r'\{\s*QStringLiteral\("([^"]+)"\)\s*,\s*QStringLiteral\("([^"]+)"\)\s*,\s*'
+            r'QStringLiteral\("([^"]+)"\)\s*\}',
+            text)
+        self.assertEqual(len(entries), 37)
+        self.assertEqual({key for key, _label, _asset in entries}, set(self.wrapper.cot_codes))
+        for _key, label, asset_class in entries:
+            self.assertTrue(label)
+            self.assertTrue(asset_class)
 
 
 if __name__ == "__main__":

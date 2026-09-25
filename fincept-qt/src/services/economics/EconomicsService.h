@@ -37,8 +37,13 @@ class EconomicsService : public QObject, public fincept::datahub::Producer {
     /// @param command    first CLI argument
     /// @param args       additional arguments
     /// @param request_id unique id to correlate response
+    /// @param bypass_cache skip the 10-minute result cache in both directions.
+    ///        Used by callers whose contract is a fresh observation (the CFTC
+    ///        cross-market monitor and its annual backfill): a cached replay
+    ///        would present a previous scan as the current state and hide a
+    ///        provider outage behind a "successful" copy.
     void execute(const QString& source_id, const QString& script, const QString& command, const QStringList& args,
-                 const QString& request_id);
+                 const QString& request_id, bool bypass_cache = false);
 
     /// Invalidate cache for a given request key (force re-fetch).
     void invalidate(const QString& request_id);
