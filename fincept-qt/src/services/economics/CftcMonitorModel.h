@@ -526,7 +526,12 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
                                                    const QString& principal_participant_key) {
     CftcMonitorModel model;
     const QString declared_family = data.value(QStringLiteral("report_family")).toString();
-    if (!declared_family.isEmpty() && declared_family != cftc_family_code(family)) {
+    if (declared_family.isEmpty()) {
+        model.error = QCoreApplication::translate("CftcMonitorModel",
+                                                  "The monitor payload does not state its report family.");
+        return model;
+    }
+    if (declared_family != cftc_family_code(family)) {
         model.error = QCoreApplication::translate(
             "CftcMonitorModel", "The monitor returned the %1 report family, not the requested %2.")
                           .arg(declared_family, cftc_family_code(family));
@@ -535,7 +540,12 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
     const QString basis_code = data.value(QStringLiteral("report_basis")).toString();
     const QString expected_basis =
         futures_only ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined");
-    if (!basis_code.isEmpty() && basis_code != expected_basis) {
+    if (basis_code.isEmpty()) {
+        model.error = QCoreApplication::translate("CftcMonitorModel",
+                                                  "The monitor payload does not state its report basis.");
+        return model;
+    }
+    if (basis_code != expected_basis) {
         model.error = QCoreApplication::translate(
             "CftcMonitorModel", "The monitor returned the %1 report basis, not the requested %2.")
                           .arg(basis_code, expected_basis);
@@ -599,8 +609,37 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
             model.entries.append(entry);
             continue;
         }
+        // The market entry and every observation must agree on one exact CFTC
+        // contract-market code. The frozen engine only verifies that a history
+        // is internally consistent, so a payload that consistently labels the
+        // wrong contract would otherwise be interpreted as the requested
+        // market.
+        QString history_code = entry.contract_code;
+        bool code_conflict = false;
+        for (const CftcObservation& observation : merged.observations) {
+            if (observation.contract_code.isEmpty()) {
+                code_conflict = true;
+                break;
+            }
+            if (history_code.isEmpty())
+                history_code = observation.contract_code;
+            else if (observation.contract_code != history_code) {
+                code_conflict = true;
+                break;
+            }
+        }
+        if (code_conflict) {
+            entry.status = CftcMonitorStatus::Unavailable;
+            entry.status_detail = QCoreApplication::translate(
+                "CftcMonitorModel",
+                "The market entry and its observations do not carry one CFTC contract-market code.");
+            entry.alerts = cftc_build_alerts(entry);
+            entry.requires_attention = !entry.alerts.isEmpty();
+            model.entries.append(entry);
+            continue;
+        }
         if (entry.contract_code.isEmpty())
-            entry.contract_code = merged.observations.last().contract_code;
+            entry.contract_code = history_code;
 
         CftcInterpretationInput input;
         input.family = family;

@@ -1694,7 +1694,15 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
             QStringList skipped_years;
             for (const QJsonValue& value : data.value(QStringLiteral("skipped_years")).toArray())
                 skipped_years << QString::number(value.toInt());
-            QString text = tr("Backfill complete (%1–%2): %3 new observations, %4 revised, %5 rejected rows.")
+            QStringList no_data_years;
+            for (const QJsonValue& value : data.value(QStringLiteral("no_data_years")).toArray())
+                no_data_years << QString::number(value.toInt());
+            const QString headline =
+                failed_years.isEmpty()
+                    ? tr("Backfill complete (%1–%2): %3 new observations, %4 revised, %5 rejected rows.")
+                    : tr("Backfill finished with failures (%1–%2): %3 new observations, %4 revised, "
+                         "%5 rejected rows.");
+            QString text = headline
                                .arg(parameters.value(QStringLiteral("start_year")).toInt())
                                .arg(parameters.value(QStringLiteral("end_year")).toInt())
                                .arg(data.value(QStringLiteral("rows_inserted")).toInt())
@@ -1702,6 +1710,9 @@ void CftcPanel::on_result(const QString& request_id, const services::EconomicsRe
                                .arg(data.value(QStringLiteral("rows_rejected")).toInt());
             if (!skipped_years.isEmpty())
                 text += tr(" No official annual file: %1.").arg(skipped_years.join(QStringLiteral(", ")));
+            if (!no_data_years.isEmpty())
+                text += tr(" No data for the selected markets: %1.")
+                            .arg(no_data_years.join(QStringLiteral(", ")));
             if (!failed_years.isEmpty())
                 text += tr(" Failed or malformed years: %1.").arg(failed_years.join(QStringLiteral(", ")));
             text += tr(" Press SCAN MARKETS to refresh the monitor.");

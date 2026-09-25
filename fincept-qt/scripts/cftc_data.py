@@ -320,11 +320,18 @@ class CftcCotArchive:
                     "last_report_date": row["last_report_date"],
                 })
             total = conn.execute("SELECT COUNT(*) AS rows FROM cot_observations").fetchone()["rows"]
-            years = [dict(row) for row in conn.execute(
-                "SELECT years, status, rows_inserted, rows_updated, rows_rejected, finished_at, source_detail "
-                "FROM cot_ingest_runs WHERE command = 'cot_backfill' "
+            years = []
+            for row in conn.execute(
+                "SELECT years, status, rows_inserted, rows_updated, rows_rejected, finished_at, "
+                "source_detail, detail_json FROM cot_ingest_runs WHERE command = 'cot_backfill' "
                 "ORDER BY id DESC LIMIT 400"
-            )]
+            ):
+                entry = dict(row)
+                try:
+                    entry["detail"] = json.loads(entry.pop("detail_json") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    entry["detail"] = {}
+                years.append(entry)
         finally:
             conn.close()
         return {
@@ -732,6 +739,59 @@ class CFTCDataWrapper:
         ("concentration_net_8_short", ("conc_net_le_8_tdr_short_all",)),
     )
 
+    # Participant spreading positions actually published by the current
+    # Socrata resources, per family. Legacy publishes non-commercial spreading
+    # only; Producer/Merchant and Non-Reportable never carry a spread column.
+    # A participant without a published column stores None, never 0.
+    _SPREAD_FIELDS = {
+        "legacy": {
+            "non_commercial": ("noncomm_postions_spread_all", "noncomm_positions_spread"),
+        },
+        "disaggregated": {
+            "swap_dealer": ("swap__positions_spread_all",),
+            "managed_money": ("m_money_positions_spread", "m_money_positions_spread_1"),
+            "other_reportable": ("other_rept_positions_spread", "other_rept_positions_spread_1"),
+        },
+        "tff": {
+            "dealer": ("dealer_positions_spread_all",),
+            "asset_manager": ("asset_mgr_positions_spread",),
+            "leveraged_funds": ("lev_money_positions_spread",),
+            "other_reportable": ("other_rept_positions_spread",),
+        },
+    }
+
+    # Per-participant reportable-trader counts actually published, per family:
+    # (long aliases, short aliases, spread aliases or None). Field names were
+    # verified against all six resources (2026-09); e.g. the disaggregated
+    # Other Reportable short count really is `traders_other_rept_short` (no
+    # `_all` suffix) while Producer/Merchant is `traders_prod_merc_long_all`.
+    _PARTICIPANT_TRADER_FIELDS = {
+        "legacy": {
+            "commercial": (("traders_comm_long_all",), ("traders_comm_short_all",), None),
+            "non_commercial": (("traders_noncomm_long_all",), ("traders_noncomm_short_all",),
+                               ("traders_noncomm_spread_all",)),
+        },
+        "disaggregated": {
+            "producer_merchant": (("traders_prod_merc_long_all",), ("traders_prod_merc_short_all",), None),
+            "swap_dealer": (("traders_swap_long_all",), ("traders_swap_short_all",),
+                            ("traders_swap_spread_all",)),
+            "managed_money": (("traders_m_money_long_all",), ("traders_m_money_short_all",),
+                              ("traders_m_money_spread_all",)),
+            "other_reportable": (("traders_other_rept_long_all",), ("traders_other_rept_short",),
+                                 ("traders_other_rept_spread",)),
+        },
+        "tff": {
+            "dealer": (("traders_dealer_long_all",), ("traders_dealer_short_all",),
+                       ("traders_dealer_spread_all",)),
+            "asset_manager": (("traders_asset_mgr_long_all",), ("traders_asset_mgr_short_all",),
+                              ("traders_asset_mgr_spread",)),
+            "leveraged_funds": (("traders_lev_money_long_all",), ("traders_lev_money_short_all",),
+                                ("traders_lev_money_spread",)),
+            "other_reportable": (("traders_other_rept_long_all",), ("traders_other_rept_short",),
+                                 ("traders_other_rept_spread",)),
+        },
+    }
+
     # ── Official CFTC annual historical files ───────────────────────────────
     #
     # The annual files are the historical bootstrap path. Each (family, basis)
@@ -749,12 +809,28 @@ class CFTCDataWrapper:
         ("tff", True): ("fut_fin_txt_{year}.zip", ("FinFutYY.txt",)),
         ("tff", False): ("com_fin_txt_{year}.zip", ("FinComYY.txt",)),
     }
-    # First year each annual file layout is available for the family. Legacy
-    # annual files begin in 1986; the disaggregated and TFF annual files begin
-    # in 2010 (the combined 2006-2016 archives are deliberately not used: the
-    # 156-report reference window does not require them, and using both the
-    # per-year and combined archives would ingest the same reports twice).
-    ANNUAL_FIRST_YEAR = {"legacy": 1986, "disaggregated": 2010, "tff": 2010}
+    # The Legacy Combined per-year file was published as `deahistfo_YYYY.zip`
+    # from 1995 through 2003 and as `deahistfoYYYY.zip` from 2004 on. The
+    # alternate is attempted only when the primary is not published, and the
+    # URL actually used (or last attempted) is what the run records.
+    ANNUAL_ALTERNATE_SOURCES = {
+        ("legacy", False): ("deahistfo_{year}.zip",),
+    }
+    # First year the official history exists for each (family, basis). Legacy
+    # Futures Only starts in 1986 and Legacy Combined in 1995 (the combined
+    # series begins with the 1995-03-21 report); the disaggregated and TFF
+    # per-year files begin in 2010 -- their 2006-2016 combined archives are
+    # deliberately not used (the 156-report reference window does not require
+    # them, and mixing archives would ingest the same reports twice). A year
+    # with no published file is recorded as `not_published`, never skipped.
+    ANNUAL_FIRST_YEAR = {
+        ("legacy", True): 1986,
+        ("legacy", False): 1995,
+        ("disaggregated", True): 2010,
+        ("disaggregated", False): 2010,
+        ("tff", True): 2010,
+        ("tff", False): 2010,
+    }
 
     # The monitor transports at most this many full canonical observations per
     # market; the engine's longest participant/OI reference is 156 prior
@@ -830,6 +906,58 @@ class CFTCDataWrapper:
             "leveraged_funds": (("Lev_Money_Positions_Long_All",), ("Lev_Money_Positions_Short_All",)),
             "other_reportable": (("Other_Rept_Positions_Long_All",), ("Other_Rept_Positions_Short_All",)),
             "non_reportable": (("NonRept_Positions_Long_All",), ("NonRept_Positions_Short_All",)),
+        },
+    }
+
+    # Annual-file spread and per-participant trader-count aliases, keyed by
+    # family and participant. Only columns present in the real official files
+    # are listed (verified 2026-09 against the per-year ZIPs); a participant
+    # without a published column stores None in both paths.
+    _ANNUAL_SPREAD_ALIASES = {
+        "legacy": {
+            "non_commercial": ("Noncommercial Positions-Spreading (All)",),
+        },
+        "disaggregated": {
+            "swap_dealer": ("Swap__Positions_Spread_All", "Swap_Positions_Spread_All"),
+            "managed_money": ("M_Money_Positions_Spread_All",),
+            "other_reportable": ("Other_Rept_Positions_Spread_All",),
+        },
+        "tff": {
+            "dealer": ("Dealer_Positions_Spread_All",),
+            "asset_manager": ("Asset_Mgr_Positions_Spread_All",),
+            "leveraged_funds": ("Lev_Money_Positions_Spread_All",),
+            "other_reportable": ("Other_Rept_Positions_Spread_All",),
+        },
+    }
+    _ANNUAL_TRADER_ALIASES = {
+        "legacy": {
+            "commercial": (("Traders-Commercial-Long (All)",),
+                           ("Traders-Commercial-Short (All)",), None),
+            "non_commercial": (("Traders-Noncommercial-Long (All)",),
+                               ("Traders-Noncommercial-Short (All)",),
+                               ("Traders-Noncommercial-Spreading (All)",)),
+        },
+        "disaggregated": {
+            "producer_merchant": (("Traders_Prod_Merc_Long_All",),
+                                  ("Traders_Prod_Merc_Short_All",), None),
+            "swap_dealer": (("Traders_Swap_Long_All",), ("Traders_Swap_Short_All",),
+                            ("Traders_Swap_Spread_All",)),
+            "managed_money": (("Traders_M_Money_Long_All",), ("Traders_M_Money_Short_All",),
+                              ("Traders_M_Money_Spread_All",)),
+            "other_reportable": (("Traders_Other_Rept_Long_All",),
+                                 ("Traders_Other_Rept_Short_All",),
+                                 ("Traders_Other_Rept_Spread_All",)),
+        },
+        "tff": {
+            "dealer": (("Traders_Dealer_Long_All",), ("Traders_Dealer_Short_All",),
+                       ("Traders_Dealer_Spread_All",)),
+            "asset_manager": (("Traders_Asset_Mgr_Long_All",), ("Traders_Asset_Mgr_Short_All",),
+                              ("Traders_Asset_Mgr_Spread_All",)),
+            "leveraged_funds": (("Traders_Lev_Money_Long_All",), ("Traders_Lev_Money_Short_All",),
+                                ("Traders_Lev_Money_Spread_All",)),
+            "other_reportable": (("Traders_Other_Rept_Long_All",),
+                                 ("Traders_Other_Rept_Short_All",),
+                                 ("Traders_Other_Rept_Spread_All",)),
         },
     }
 
@@ -1161,9 +1289,12 @@ class CFTCDataWrapper:
     def _canonical_history_row(self, record: Dict[str, Any], family: str) -> Dict[str, Any]:
         """One Socrata record projected to the canonical workspace row shape.
 
-        Shared by the current `cot_history` path and the cross-market monitor so
-        both supply exactly the fields services/economics/CftcMetricModel.h
-        parses - and nothing else.
+        Shared by the current `cot_history` path and the cross-market monitor.
+        The row carries the frozen engine's fields plus the participant
+        spreading positions and per-participant trader counts the provider
+        publishes; the engine ignores the extra keys, but the durable archive
+        retains them as published. A cell the report does not carry stays None,
+        never zero.
         """
         participants = self._PARTICIPANT_FIELDS[family]
         row: Dict[str, Any] = {}
@@ -1179,6 +1310,14 @@ class CFTCDataWrapper:
         for key, long_aliases, short_aliases in participants:
             row[f"{key}_long"] = self._pick(record, long_aliases)
             row[f"{key}_short"] = self._pick(record, short_aliases)
+        for key, aliases in self._SPREAD_FIELDS.get(family, {}).items():
+            row[f"{key}_spread"] = self._pick(record, aliases)
+        for key, (long_aliases, short_aliases, spread_aliases) in self._PARTICIPANT_TRADER_FIELDS.get(
+                family, {}).items():
+            row[f"{key}_traders_long"] = self._pick(record, long_aliases)
+            row[f"{key}_traders_short"] = self._pick(record, short_aliases)
+            row[f"{key}_traders_spread"] = (
+                self._pick(record, spread_aliases) if spread_aliases else None)
         for key, aliases in self._TRADER_CONTEXT_FIELDS:
             row[key] = self._pick(record, aliases)
         for key, aliases in self._CONCENTRATION_FIELDS:
@@ -1316,6 +1455,14 @@ class CFTCDataWrapper:
         for key, (long_aliases, short_aliases) in self._ANNUAL_LEG_ALIASES[family].items():
             row[f"{key}_long"] = self._to_int(self._annual_first(normalized, long_aliases))
             row[f"{key}_short"] = self._to_int(self._annual_first(normalized, short_aliases))
+        for key, aliases in self._ANNUAL_SPREAD_ALIASES.get(family, {}).items():
+            row[f"{key}_spread"] = self._to_int(self._annual_first(normalized, aliases))
+        for key, (long_aliases, short_aliases, spread_aliases) in self._ANNUAL_TRADER_ALIASES.get(
+                family, {}).items():
+            row[f"{key}_traders_long"] = self._to_int(self._annual_first(normalized, long_aliases))
+            row[f"{key}_traders_short"] = self._to_int(self._annual_first(normalized, short_aliases))
+            row[f"{key}_traders_spread"] = (
+                self._to_int(self._annual_first(normalized, spread_aliases)) if spread_aliases else None)
         for key in ("traders_total", "traders_reportable_long", "traders_reportable_short"):
             row[key] = self._to_int(self._annual_first(normalized, self._ANNUAL_FIELD_ALIASES[key]))
         for key in ("concentration_gross_4_long", "concentration_gross_4_short",
@@ -1329,6 +1476,17 @@ class CFTCDataWrapper:
             for leg in (row[f"{key}_long"], row[f"{key}_short"]):
                 if leg is not None and leg < 0:
                     return None, f"negative {key} position"
+        for key in self._ANNUAL_SPREAD_ALIASES.get(family, {}):
+            spread = row[f"{key}_spread"]
+            if spread is not None and spread < 0:
+                return None, f"negative {key} spreading position"
+        for key, (_long, _short, spread_aliases) in self._ANNUAL_TRADER_ALIASES.get(family, {}).items():
+            counts = [row[f"{key}_traders_long"], row[f"{key}_traders_short"]]
+            if spread_aliases:
+                counts.append(row[f"{key}_traders_spread"])
+            for count in counts:
+                if count is not None and count < 0:
+                    return None, f"negative {key} trader count"
         return row, None
 
     def _download_annual(self, url: str, timeout: int = 180) -> bytes:
@@ -1346,29 +1504,55 @@ class CFTCDataWrapper:
     def _backfill_one_year(self, archive: CftcCotArchive, family: str, futures_only: bool, year: int,
                            wanted_codes: frozenset) -> Dict[str, Any]:
         pattern, preferred = self.ANNUAL_SOURCES[(family, futures_only)]
-        filename = pattern.format(year=year)
-        url = f"{self.ANNUAL_HISTORY_BASE}/{filename}"
+        patterns = [pattern]
+        for alternate in self.ANNUAL_ALTERNATE_SOURCES.get((family, futures_only), ()):
+            if alternate not in patterns:
+                patterns.append(alternate)
+        basis_text = "futures_only" if futures_only else "futures_and_options_combined"
         started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         outcome: Dict[str, Any] = {
-            "year": year, "url": url, "entry": None,
+            "year": year, "url": None, "entry": None,
             "rows_inserted": 0, "rows_updated": 0, "rows_rejected": 0,
-            "rows_filtered": 0, "rows_unchanged": 0, "status": "failed", "error": None,
+            "rows_filtered": 0, "rows_unchanged": 0, "rows_collapsed": 0,
+            "status": "failed", "error": None,
         }
-        try:
-            content = self._download_annual(url)
-        except CFTCAnnualNotPublished:
-            outcome["status"] = "not_published"
-            outcome["error"] = "no official annual file exists for this year"
-            return outcome
-        except Exception as exc:
-            outcome["status"] = "failed"
-            outcome["error"] = str(exc)
+
+        def finish(status: str, error: Optional[str] = None) -> Dict[str, Any]:
+            """Record every terminal per-year result durably.
+
+            `not_published`, download `failed` and `malformed` exits are
+            ingestion attempts an operator needs to see, so they are written to
+            `cot_ingest_runs` exactly like `ok` and `no_market_data`.
+            """
+            outcome["status"] = status
+            outcome["error"] = error
+            archive.record_run(
+                "cot_backfill", outcome["url"] or "", family, basis_text, str(year), status,
+                rows_inserted=outcome["rows_inserted"], rows_updated=outcome["rows_updated"],
+                rows_rejected=outcome["rows_rejected"],
+                detail={"entry": outcome["entry"], "rows_filtered": outcome["rows_filtered"],
+                        "rows_collapsed": outcome["rows_collapsed"], "error": error},
+                started_at=started_at)
             return outcome
 
+        content = None
+        for candidate in patterns:
+            candidate_url = f"{self.ANNUAL_HISTORY_BASE}/{candidate.format(year=year)}"
+            outcome["url"] = candidate_url
+            try:
+                content = self._download_annual(candidate_url)
+                break
+            except CFTCAnnualNotPublished:
+                continue
+            except Exception as exc:
+                # A real download failure is not retried against another
+                # official filename; it is recorded as failed for this year.
+                return finish("failed", str(exc))
+        if content is None:
+            return finish("not_published", "no official annual file exists for this year")
+
         if not content.startswith(b"PK\x03\x04"):
-            outcome["status"] = "malformed"
-            outcome["error"] = "the downloaded annual file is not a ZIP archive"
-            return outcome
+            return finish("malformed", "the downloaded annual file is not a ZIP archive")
 
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -1379,9 +1563,7 @@ class CFTCDataWrapper:
                     if len(candidates) == 1:
                         entry = candidates[0]
                 if entry is None:
-                    outcome["status"] = "malformed"
-                    outcome["error"] = "the annual ZIP carries no expected text entry"
-                    return outcome
+                    return finish("malformed", "the annual ZIP carries no expected text entry")
                 outcome["entry"] = entry
                 with zf.open(entry) as raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
@@ -1389,17 +1571,14 @@ class CFTCDataWrapper:
                     try:
                         header = next(reader)
                     except StopIteration:
-                        outcome["status"] = "malformed"
-                        outcome["error"] = "the annual file is empty"
-                        return outcome
+                        return finish("malformed", "the annual file is empty")
                     header_error = self._annual_header_error(header, family)
                     if header_error:
-                        outcome["status"] = "malformed"
-                        outcome["error"] = header_error
-                        return outcome
+                        return finish("malformed", header_error)
                     rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
                     rejected = 0
                     filtered = 0
+                    collapsed = 0
                     for fields in reader:
                         if not fields or all(not str(field).strip() for field in fields):
                             continue
@@ -1415,48 +1594,45 @@ class CFTCDataWrapper:
                             filtered += 1
                             continue
                         key = (row["report_date_as_yyyy_mm_dd"], row["cftc_contract_market_code"])
-                        if key in rows:
-                            rejected += 1
+                        previous = rows.get(key)
+                        if previous is not None:
+                            if CftcCotArchive._comparison_key(previous) != CftcCotArchive._comparison_key(row):
+                                # Two contradictory official observations for
+                                # one report: fail closed for the year instead
+                                # of storing whichever row happened to appear
+                                # first while reporting success.
+                                return finish(
+                                    "malformed",
+                                    "conflicting duplicate rows for report {0} contract {1}".format(*key))
+                            collapsed += 1
                             continue
                         rows[key] = row
         except zipfile.BadZipFile:
-            outcome["status"] = "malformed"
-            outcome["error"] = "the annual ZIP could not be read"
-            return outcome
+            return finish("malformed", "the annual ZIP could not be read")
         except Exception as exc:
-            outcome["status"] = "malformed"
-            outcome["error"] = f"the annual file could not be parsed: {exc}"
-            return outcome
+            return finish("malformed", f"the annual file could not be parsed: {exc}")
 
+        outcome["rows_rejected"] = rejected
+        outcome["rows_filtered"] = filtered
+        outcome["rows_collapsed"] = collapsed
         if not rows:
-            outcome["status"] = "no_market_data"
-            outcome["rows_rejected"] = rejected
-            outcome["rows_filtered"] = filtered
-            archive.record_run("cot_backfill", url, family,
-                               "futures_only" if futures_only else "futures_and_options_combined",
-                               str(year), "no_market_data", rows_rejected=rejected,
-                               detail={"entry": entry, "rows_filtered": filtered}, started_at=started_at)
-            return outcome
+            if rejected:
+                # Records existed but none could be safely ingested; that is
+                # unusable data, not a market genuinely absent from the year.
+                return finish("malformed",
+                              f"{rejected} record(s) for the selected markets could not be ingested")
+            return finish("no_market_data", None)
 
         retrieval_time = datetime.now(timezone.utc).isoformat(timespec="seconds")
         inserted, updated, unchanged = archive.upsert_observations(
-            list(rows.values()), family,
-            "futures_only" if futures_only else "futures_and_options_combined",
-            source=f"cftc-annual:{url}", retrieval_time=retrieval_time)
+            list(rows.values()), family, basis_text,
+            source=f"cftc-annual:{outcome['url']}", retrieval_time=retrieval_time)
         outcome.update({
-            "status": "ok",
             "rows_inserted": inserted,
             "rows_updated": updated,
             "rows_unchanged": unchanged,
-            "rows_rejected": rejected,
-            "rows_filtered": filtered,
         })
-        archive.record_run("cot_backfill", url, family,
-                           "futures_only" if futures_only else "futures_and_options_combined",
-                           str(year), "ok", rows_inserted=inserted, rows_updated=updated,
-                           rows_rejected=rejected,
-                           detail={"entry": entry, "rows_filtered": filtered}, started_at=started_at)
-        return outcome
+        return finish("ok", None)
 
     def _resolve_markets(self, markets: Union[str, List[str], None]) -> Tuple[List[Tuple[str, str]], List[str]]:
         """Resolve market tokens to (key, code); return (resolved, unknown).
@@ -1507,7 +1683,7 @@ class CFTCDataWrapper:
                     "Supported families are legacy, disaggregated and financial (TFF)."
                 ).to_dict()}
             current_year = datetime.now(timezone.utc).year
-            first_year = self.ANNUAL_FIRST_YEAR[family]
+            first_year = self.ANNUAL_FIRST_YEAR[(family, bool(futures_only))]
             resolved, unknown = self._resolve_markets(markets)
             if unknown:
                 return {"error": CFTCError(
@@ -1535,6 +1711,7 @@ class CFTCDataWrapper:
             ok_years = [item["year"] for item in years if item["status"] == "ok"]
             failed_years = [item["year"] for item in years if item["status"] in ("failed", "malformed")]
             skipped_years = [item["year"] for item in years if item["status"] == "not_published"]
+            no_data_years = [item["year"] for item in years if item["status"] == "no_market_data"]
             return {
                 "success": True,
                 "data": {
@@ -1546,6 +1723,7 @@ class CFTCDataWrapper:
                     "ok_years": ok_years,
                     "failed_years": failed_years,
                     "skipped_years": skipped_years,
+                    "no_data_years": no_data_years,
                     "archive": archive.coverage(),
                 },
                 "parameters": {
@@ -1646,8 +1824,19 @@ class CFTCDataWrapper:
                 raise Exception(f"the contract history reached the {max_rows}-row monitor cap")
         rows = [self._canonical_history_row(record, family) for record in records]
         for row in rows:
-            if not row.get("report_date_as_yyyy_mm_dd") or not row.get("cftc_contract_market_code"):
-                raise Exception("a provider row is missing its report date or contract market code")
+            if not row.get("report_date_as_yyyy_mm_dd"):
+                raise Exception("a provider row is missing its report date")
+            identity = row.get("cftc_contract_market_code")
+            if not identity:
+                raise Exception("a provider row is missing its contract market code")
+            if str(identity) != code:
+                # The exact-code filter is part of the request. A row carrying
+                # another contract must never reach the durable archive, where
+                # the frozen engine would only check that the history is
+                # internally consistent.
+                raise Exception(
+                    "the provider returned a row for contract {0} while {1} was requested".format(
+                        identity, code))
         rows.sort(key=lambda item: item["report_date_as_yyyy_mm_dd"])
         for index in range(1, len(rows)):
             if rows[index]["report_date_as_yyyy_mm_dd"] == rows[index - 1]["report_date_as_yyyy_mm_dd"]:

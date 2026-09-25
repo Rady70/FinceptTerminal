@@ -463,6 +463,19 @@ void TstCftcMonitor::payload_identity_fails_closed() {
         CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QVERIFY(!wrong_basis.error.isEmpty());
 
+    // An omitted family or basis is not "unspecified": the payload must state
+    // the identity it was requested for, or it is refused.
+    QJsonObject without_family = make_payload(markets);
+    without_family.remove(QStringLiteral("report_family"));
+    QVERIFY(!cftc_parse_monitor_payload(without_family, CftcFamily::Legacy, true, evaluation_date,
+                                        cftc_principal_participant_key(CftcFamily::Legacy))
+                 .error.isEmpty());
+    QJsonObject without_basis = make_payload(markets);
+    without_basis.remove(QStringLiteral("report_basis"));
+    QVERIFY(!cftc_parse_monitor_payload(without_basis, CftcFamily::Legacy, true, evaluation_date,
+                                        cftc_principal_participant_key(CftcFamily::Legacy))
+                 .error.isEmpty());
+
     // Empty market list is an error, never an empty success.
     QVERIFY(!cftc_parse_monitor_payload(make_payload(QJsonArray()), CftcFamily::Legacy, true, evaluation_date,
                                         cftc_principal_participant_key(CftcFamily::Legacy))
@@ -491,6 +504,35 @@ void TstCftcMonitor::payload_identity_fails_closed() {
         CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(basis_model.entries.size(), 1);
     QCOMPARE(basis_model.entries.first().status, CftcMonitorStatus::Unavailable);
+
+    // The market entry's declared contract code must match every observation.
+    QJsonArray wrong_history = to_array(rows, 0, 10);
+    for (int i = 0; i < wrong_history.size(); ++i) {
+        QJsonObject row = wrong_history.at(i).toObject();
+        row[QStringLiteral("cftc_contract_market_code")] = QStringLiteral("999999");
+        wrong_history.replace(i, row);
+    }
+    const CftcMonitorModel code_model = cftc_parse_monitor_payload(
+        make_payload(QJsonArray{make_market(QStringLiteral("gold"), QStringLiteral("updated"), wrong_history)}),
+        CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
+    QCOMPARE(code_model.entries.size(), 1);
+    QCOMPARE(code_model.entries.first().status, CftcMonitorStatus::Unavailable);
+    QVERIFY(!code_model.entries.first().status_detail.isEmpty());
+
+    // Without a declared code, two conflicting observation identities are
+    // still refused instead of letting the last row decide.
+    QJsonArray mixed_codes = to_array(rows, 0, 10);
+    QJsonObject mixedfirst = mixed_codes.first().toObject();
+    mixedfirst[QStringLiteral("cftc_contract_market_code")] = QStringLiteral("999999");
+    mixed_codes.replace(0, mixedfirst);
+    QJsonObject undeclared =
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), mixed_codes);
+    undeclared.remove(QStringLiteral("contract_code"));
+    const CftcMonitorModel mixed_model = cftc_parse_monitor_payload(
+        make_payload(QJsonArray{undeclared}), CftcFamily::Legacy, true, evaluation_date,
+        cftc_principal_participant_key(CftcFamily::Legacy));
+    QCOMPARE(mixed_model.entries.size(), 1);
+    QCOMPARE(mixed_model.entries.first().status, CftcMonitorStatus::Unavailable);
 
     // A concentration series that names a different field than the engine's
     // primary is refused rather than silently accepted.
