@@ -38,6 +38,7 @@
 #include "screens/economics/panels/CftcNetFormat.h"
 #include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "services/economics/CftcInterpretationModel.h"
+#include "services/economics/CftcMonitorModel.h"
 
 #include <QCoreApplication>
 #include <QDate>
@@ -2613,6 +2614,36 @@ cftc_compose_horizon_interpretation(const services::CftcInterpretationResult& re
 }
 
 // ── Panel-facing input construction ─────────────────────────────────────────
+
+/// One deterministic display line for a monitor alert. State alerts reuse the
+/// finalized Batch 4A state wording and add the participant and report horizon;
+/// data-quality records state their concrete condition and, when the engine
+/// produced one, the engine reason. Nothing here recalculates a classification.
+inline QString cftc_alert_summary(const services::CftcAlert& alert, const QString& participant_label) {
+    if (alert.state_id.isEmpty()) {
+        if (alert.reason != services::CftcUnavailableReason::None) {
+            const QString reason = cftc_unavailable_reason_wording(alert.reason);
+            if (alert.detail_reason.isEmpty())
+                return reason;
+            return cftc_presentation_tr("%1 (%2)").arg(alert.detail_reason, reason);
+        }
+        return alert.detail_reason;
+    }
+    QString text = cftc_state_short_wording(alert.state_id);
+    if (text.isEmpty())
+        text = alert.state_id;
+    // Only a participant state may carry a participant label; a market-level
+    // record (Open Interest, concentration) is never attributed to a category.
+    if (!participant_label.isEmpty() && !alert.participant_key.isEmpty())
+        text = participant_label + QStringLiteral(": ") + text;
+    if (alert.has_horizon)
+        text += QStringLiteral(" · ") + cftc_horizon_button_label(alert.horizon_reports);
+    if (alert.has_percentile) {
+        text += QStringLiteral(" · ") + QString::number(alert.percentile * 100.0, 'f', 1) + QLatin1Char('%') +
+                cftc_presentation_tr(" (n=%1)").arg(alert.percentile_reference_count);
+    }
+    return text;
+}
 
 /// Build the Batch 4A input from the FULL validated observation history. The
 /// visible chart range is a presentation filter and must never be passed here:

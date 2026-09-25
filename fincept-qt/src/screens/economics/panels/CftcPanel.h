@@ -27,6 +27,7 @@
 #include "screens/economics/panels/EconPanelBase.h"
 #include "services/economics/CftcInterpretationModel.h"
 #include "services/economics/CftcMetricModel.h"
+#include "services/economics/CftcMonitorModel.h"
 
 #include <QComboBox>
 #include <QJsonObject>
@@ -84,6 +85,7 @@ class CftcPanel : public EconPanelBase {
     // ── construction ────────────────────────────────────────────────────────
     void build_result_tabs(QVBoxLayout* root);
     void build_analysis_page();
+    void build_monitor_page();
     struct Section {
         QWidget* frame = nullptr;
         QVBoxLayout* body = nullptr;
@@ -91,12 +93,14 @@ class CftcPanel : public EconPanelBase {
     };
     Section make_section(const QString& title);
     static QTableWidget* make_table(QWidget* parent);
+    static QTableWidget* make_monitor_table(QWidget* parent);
     SnapshotCard make_snapshot_card();
     void apply_responsive_layout();
 
     // ── workspace state ─────────────────────────────────────────────────────
     void clear_workspace();
     void build_participant_controls();
+    void show_monitor_tab();
     void show_analysis_tab();
     void show_raw_tab();
     void apply_range(services::CftcRange range);
@@ -116,6 +120,17 @@ class CftcPanel : public EconPanelBase {
     void update_divergence();
     void update_heatmap();
     void refresh_range_buttons();
+
+    // ── cross-market monitor ────────────────────────────────────────────────
+    void on_markets_button();
+    void on_scan_markets();
+    void on_backfill_history();
+    void render_monitor(const services::CftcMonitorModel& model);
+    void set_monitor_status(const QString& text);
+    void clear_monitor_display(const QString& status);
+    void open_monitor_market(int entry_index);
+    QString monitor_alert_text(const services::CftcAlert& alert, const QString& participant_label) const;
+    QString monitor_descriptive_text(const services::CftcMonitorEntry& entry) const;
 
     // ── price context ───────────────────────────────────────────────────────
     void request_price(const QString& market_key);
@@ -143,12 +158,38 @@ class CftcPanel : public EconPanelBase {
     QLabel* market_lbl_ = nullptr;
     QLabel* report_lbl_ = nullptr;
     QLabel* type_lbl_ = nullptr;
+    QPushButton* markets_btn_ = nullptr;
 
     // ── result tabs ─────────────────────────────────────────────────────────
     QWidget* result_tabs_ = nullptr;
+    QPushButton* monitor_tab_ = nullptr;
     QPushButton* analysis_tab_ = nullptr;
     QPushButton* raw_tab_ = nullptr;
     int analysis_page_ = -1;
+    int monitor_page_ = -1;
+
+    // ── monitor page ────────────────────────────────────────────────────────
+    QWidget* monitor_content_ = nullptr;
+    QComboBox* monitor_family_combo_ = nullptr;
+    QComboBox* monitor_type_combo_ = nullptr;
+    QLabel* monitor_family_lbl_ = nullptr;
+    QLabel* monitor_type_lbl_ = nullptr;
+    QPushButton* monitor_scan_btn_ = nullptr;
+    QPushButton* monitor_backfill_btn_ = nullptr;
+    QLabel* monitor_status_lbl_ = nullptr;
+    QLabel* monitor_archive_lbl_ = nullptr;
+    QLabel* monitor_attention_title_ = nullptr;
+    QLabel* monitor_all_title_ = nullptr;
+    QTableWidget* monitor_attention_table_ = nullptr;
+    QTableWidget* monitor_table_ = nullptr;
+    QVector<services::CftcMonitorEntry> monitor_entries_; // provider order
+    bool monitor_rendered_ = false;
+    QString pending_monitor_request_;
+    QString pending_backfill_request_;
+    // The request-time identity: a selector change while a scan/backfill is in
+    // flight must not reinterpret the response against the new selection.
+    QString monitor_request_family_code_;
+    bool monitor_request_futures_only_ = false;
 
     // ── analysis page chrome ────────────────────────────────────────────────
     QScrollArea* analysis_scroll_ = nullptr;

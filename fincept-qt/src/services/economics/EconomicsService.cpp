@@ -33,14 +33,14 @@ void EconomicsService::invalidate(const QString& request_id) {
 // ── Execute ───────────────────────────────────────────────────────────────────
 
 void EconomicsService::execute(const QString& source_id, const QString& script, const QString& command,
-                               const QStringList& args, const QString& request_id) {
+                               const QStringList& args, const QString& request_id, bool bypass_cache) {
     const QString key = cache_key(script, command, args);
 
     // Remember the dispatch so hub-driven refresh() can replay it later.
     const QString topic = hub_topic(source_id, request_id);
     dispatch_records_.insert(topic, DispatchRecord{source_id, script, command, args, request_id});
 
-    {
+    if (!bypass_cache) {
         const QVariant cached = fincept::CacheManager::instance().get(key);
         if (!cached.isNull()) {
             LOG_DEBUG("EconomicsService", "Cache hit: " + key);
@@ -72,7 +72,7 @@ void EconomicsService::execute(const QString& source_id, const QString& script, 
 
     QPointer<EconomicsService> self = this;
     python::PythonRunner::instance().run(
-        script, full_args, [self, source_id, request_id, key](python::PythonResult py) {
+        script, full_args, [self, source_id, request_id, key, bypass_cache](python::PythonResult py) {
             if (!self)
                 return;
 
@@ -124,9 +124,12 @@ void EconomicsService::execute(const QString& source_id, const QString& script, 
             }
 
             res.success = true;
-            fincept::CacheManager::instance().put(
-                key, QVariant(QString::fromUtf8(QJsonDocument(res.data).toJson(QJsonDocument::Compact))), kCacheTtlSec,
-                "economics");
+            if (!bypass_cache) {
+                fincept::CacheManager::instance().put(
+                    key,
+                    QVariant(QString::fromUtf8(QJsonDocument(res.data).toJson(QJsonDocument::Compact))),
+                    kCacheTtlSec, "economics");
+            }
             LOG_INFO("EconomicsService", "Result ready: " + request_id);
             emit self->result_ready(request_id, res);
             if (self->hub_registered_) {
