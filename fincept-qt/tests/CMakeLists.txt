@@ -323,4 +323,16 @@ fincept_add_test(tst_cftc_workspace_contract
 fincept_add_test(tst_cftc_monitor
     tst_cftc_monitor.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor")
+# MarketLab: CFTC UI/UX batch - the presentation-only cross-market visual
+# model (screens/economics/panels/CftcMonitorVisualModel.h): the primary
+# metric readings taken from the qualified monitor fields (missing stays
+# missing, exact zero stays a formed zero), catalog-order asset-class grouping
+# that never drops an unknown-class market, the shared cross-group bar scale,
+# the auditable attention-class tone mapping, the summary counts that keep
+# stored/outdated/unavailable separate from current, and the no-directional-
+# vocabulary contract over every label. Header-only over Qt Core; no app
+# sources.
+fincept_add_test(tst_cftc_monitor_visual
+    tst_cftc_monitor_visual.cpp)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual")

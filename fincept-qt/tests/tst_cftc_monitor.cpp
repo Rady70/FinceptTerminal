@@ -177,6 +177,7 @@ class TstCftcMonitor : public QObject {
     void payload_identity_fails_closed();
     void attention_order_is_class_then_label();
     void alerts_are_descriptive_and_traceable();
+    void principal_history_retains_trailing_net_pct_oi();
 };
 
 void TstCftcMonitor::catalog_is_the_supported_universe() {
@@ -644,6 +645,78 @@ void TstCftcMonitor::alerts_are_descriptive_and_traceable() {
     for (const CftcAlert& alert : again.alerts)
         second << cftc_alert_summary(alert, again.principal_label);
     QCOMPARE(first, second);
+}
+
+void TstCftcMonitor::principal_history_retains_trailing_net_pct_oi() {
+    const QDate evaluation_date = QDate(2026, 9, 25);
+    const QVector<QJsonObject> rows = make_monotone_series(200, QDate(2022, 11, 1));
+    const CftcMonitorEntry entry = parse_single_market(
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(rows)), evaluation_date);
+    QVERIFY(entry.interpreted);
+    // Every report in this series carries a formable Net %OI.
+    QCOMPARE(entry.principal_history.size(), 200);
+    QVERIFY(entry.principal_history.last().has_net_pct_oi);
+    QCOMPARE(entry.principal_history.last().date,
+             QDate::fromString(rows.last().value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString(), Qt::ISODate));
+    // The retained last value is exactly the engine-projected Net %OI: the
+    // retainer reuses the metric helper and performs no second interpretation.
+    QVERIFY(entry.has_net_pct_oi);
+    QCOMPARE(entry.principal_history.last().net_pct_oi, entry.net_pct_oi);
+
+    // The retained window is bounded, and the bound keeps the newest reports.
+    const QVector<QJsonObject> long_series = make_monotone_series(300, QDate(2020, 1, 7));
+    const CftcMonitorEntry long_entry = parse_single_market(
+        make_market(QStringLiteral("gold"), QStringLiteral("updated"), to_array(long_series)), evaluation_date);
+    QVERIFY(long_entry.interpreted);
+    QCOMPARE(long_entry.principal_history.size(), kCftcMonitorHistoryMaxPoints);
+    QCOMPARE(long_entry.principal_history.first().date,
+             QDate::fromString(long_series.at(300 - kCftcMonitorHistoryMaxPoints)
+                                   .value(QStringLiteral("report_date_as_yyyy_mm_dd"))
+                                   .toString(),
+                               Qt::ISODate));
+    QCOMPARE(long_entry.principal_history.last().date,
+             QDate::fromString(long_series.last().value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString(),
+                               Qt::ISODate));
+
+    // A data-quality entry (no rows) has no retained history and no fabricated
+    // Net %OI series.
+    const CftcMonitorEntry no_data = parse_single_market(
+        make_market(QStringLiteral("gold"), QStringLiteral("no_data"), QJsonArray()), evaluation_date);
+    QVERIFY(no_data.principal_history.isEmpty());
+    QVERIFY(!no_data.has_net_pct_oi);
+
+    // Directly over canonical observations: a report with no Open Interest or
+    // zero Open Interest cannot form Net %OI, so the retained point is
+    // explicitly unavailable instead of a zero substitute.
+    const QVector<CftcParticipant> participants = cftc_family_participants(CftcFamily::Legacy);
+    int principal_index = -1;
+    for (int i = 0; i < participants.size(); ++i) {
+        if (participants.at(i).key == cftc_principal_participant_key(CftcFamily::Legacy))
+            principal_index = i;
+    }
+    QVERIFY(principal_index >= 0);
+    QVector<CftcObservation> observations;
+    for (int i = 0; i < 3; ++i) {
+        CftcObservation observation;
+        observation.date = QDate(2024, 1, 5).addDays(i * 7);
+        observation.date_label = observation.date.toString(Qt::ISODate);
+        observation.contract_code = QStringLiteral("088691");
+        observation.longs = QVector<std::optional<double>>(participants.size(), 1000.0);
+        observation.shorts = QVector<std::optional<double>>(participants.size(), 500.0);
+        observation.longs[principal_index] = 6000.0;
+        observation.shorts[principal_index] = 1000.0;
+        if (i != 1)
+            observation.open_interest = 100000.0;
+        else
+            observation.open_interest = 0.0;
+        observations.append(observation);
+    }
+    const QVector<CftcMonitorHistoryPoint> history = cftc_monitor_history_series(observations, principal_index);
+    QCOMPARE(history.size(), 3);
+    QVERIFY(history.at(0).has_net_pct_oi);
+    QVERIFY(!history.at(1).has_net_pct_oi);
+    QCOMPARE(history.at(1).net_pct_oi, 0.0);
+    QVERIFY(history.at(2).has_net_pct_oi);
 }
 
 QTEST_GUILESS_MAIN(TstCftcMonitor)

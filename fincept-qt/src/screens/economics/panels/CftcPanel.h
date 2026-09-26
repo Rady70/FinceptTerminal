@@ -23,6 +23,7 @@
 // section deferred until a supported free strip source exists.
 #pragma once
 
+#include "screens/economics/panels/CftcMonitorVisualModel.h"
 #include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "screens/economics/panels/EconPanelBase.h"
 #include "services/economics/CftcInterpretationModel.h"
@@ -54,6 +55,8 @@ enum class CftcPriceContextState;
 class CftcHeatmap;
 class CftcPositioningChart;
 class CftcPricePositioningChart;
+class CftcGroupBars;
+class CftcSparkline;
 
 /// Which participant leg the historical chart and statistics plot.
 enum class CftcChartMetric { Net, Long, Short };
@@ -70,6 +73,7 @@ class CftcPanel : public EconPanelBase {
     void on_result(const QString& request_id, const services::EconomicsResult& result) override;
     void refresh_panel_theme() override;
     void resizeEvent(QResizeEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void retranslateUi() override;
 
   private:
@@ -94,7 +98,7 @@ class CftcPanel : public EconPanelBase {
     Section make_section(const QString& title);
     static QTableWidget* make_table(QWidget* parent);
     static QTableWidget* make_monitor_table(QWidget* parent);
-    SnapshotCard make_snapshot_card();
+    SnapshotCard make_snapshot_card(QWidget* parent);
     void apply_responsive_layout();
 
     // ── workspace state ─────────────────────────────────────────────────────
@@ -126,11 +130,20 @@ class CftcPanel : public EconPanelBase {
     void on_scan_markets();
     void on_backfill_history();
     void render_monitor(const services::CftcMonitorModel& model);
+    void rebuild_monitor_views();
+    void render_monitor_summary();
+    void render_monitor_attention();
+    void render_monitor_groups();
+    void clear_monitor_views();
     void set_monitor_status(const QString& text);
     void clear_monitor_display(const QString& status);
     void open_monitor_market(int entry_index);
+    void open_monitor_entry(const QString& market_key);
+    void fill_monitor_row(QTableWidget* table, int row, const services::CftcMonitorEntry& entry);
     QString monitor_alert_text(const services::CftcAlert& alert, const QString& participant_label) const;
     QString monitor_descriptive_text(const services::CftcMonitorEntry& entry) const;
+    QString monitor_bar_tooltip(const services::CftcMonitorEntry& entry) const;
+    static void clear_layout(QLayout* layout);
 
     // ── price context ───────────────────────────────────────────────────────
     void request_price(const QString& market_key);
@@ -179,9 +192,24 @@ class CftcPanel : public EconPanelBase {
     QLabel* monitor_status_lbl_ = nullptr;
     QLabel* monitor_archive_lbl_ = nullptr;
     QLabel* monitor_attention_title_ = nullptr;
-    QLabel* monitor_all_title_ = nullptr;
-    QTableWidget* monitor_attention_table_ = nullptr;
-    QTableWidget* monitor_table_ = nullptr;
+    QLabel* monitor_attention_meta_ = nullptr;
+    QLabel* monitor_groups_title_ = nullptr;
+    QGridLayout* monitor_summary_grid_ = nullptr;
+    QVector<SnapshotCard> monitor_summary_cards_;
+    QVBoxLayout* monitor_attention_list_ = nullptr;
+    QScrollArea* monitor_attention_scroll_ = nullptr;
+    QLabel* monitor_attention_empty_ = nullptr;
+    QComboBox* monitor_group_combo_ = nullptr;
+    QLabel* monitor_group_lbl_ = nullptr;
+    QComboBox* monitor_metric_combo_ = nullptr;
+    QLabel* monitor_metric_lbl_ = nullptr;
+    QPushButton* monitor_notable_btn_ = nullptr;
+    QLabel* monitor_scale_lbl_ = nullptr;
+    QLabel* monitor_groups_empty_ = nullptr;
+    QVBoxLayout* monitor_groups_layout_ = nullptr;
+    CftcMonitorMetric monitor_metric_ = CftcMonitorMetric::NetPctOi;
+    QString monitor_group_filter_;
+    bool monitor_notable_only_ = false;
     QVector<services::CftcMonitorEntry> monitor_entries_; // provider order
     bool monitor_rendered_ = false;
     QString pending_monitor_request_;

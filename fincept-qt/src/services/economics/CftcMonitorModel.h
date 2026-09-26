@@ -239,6 +239,47 @@ struct CftcAlert {
 
 // ── Monitor entry ───────────────────────────────────────────────────────────
 
+/// One report-date point of the principal participant's Net %OI inside the
+/// transported monitor window. `has_net_pct_oi` is false when the engine's own
+/// normalization could not be formed for that report (missing leg or
+/// non-positive Open Interest); the point is kept so the chart can break the
+/// line instead of interpolating across the gap. This is a presentation-only
+/// retainer built with the same metric helpers the interpretation uses; it
+/// changes no engine output.
+struct CftcMonitorHistoryPoint {
+    QDate date;
+    bool has_net_pct_oi = false;
+    double net_pct_oi = 0.0;
+};
+
+/// Upper bound on the retained trailing Net %OI points per market (five years
+/// of weekly reports). The monitor transport never carries more than the
+/// bounded suffix plus the compact concentration series, so this is a safety
+/// bound rather than a truncation of usable history.
+inline constexpr int kCftcMonitorHistoryMaxPoints = 260;
+
+inline QVector<CftcMonitorHistoryPoint> cftc_monitor_history_series(const QVector<CftcObservation>& observations,
+                                                                    int participant_index) {
+    QVector<CftcMonitorHistoryPoint> out;
+    if (participant_index < 0)
+        return out;
+    out.reserve(observations.size());
+    for (const CftcObservation& observation : observations) {
+        if (!observation.date.isValid())
+            continue;
+        CftcMonitorHistoryPoint point;
+        point.date = observation.date;
+        const std::optional<double> value = cftc_metric_value(observation, participant_index, CftcMetricKind::NetPctOi);
+        point.has_net_pct_oi = value.has_value();
+        if (value)
+            point.net_pct_oi = *value;
+        out.append(point);
+    }
+    if (out.size() > kCftcMonitorHistoryMaxPoints)
+        out = out.mid(out.size() - kCftcMonitorHistoryMaxPoints);
+    return out;
+}
+
 struct CftcMonitorEntry {
     QString market_key;
     QString label;
@@ -279,6 +320,10 @@ struct CftcMonitorEntry {
     QVector<CftcHorizonFlowReading> flow_readings;
     bool principal_historical_unavailable = false;
     CftcUnavailableReason principal_historical_unavailable_reason = CftcUnavailableReason::None;
+    /// Trailing Net %OI points of the principal participant over the
+    /// transported window, ascending by report date. Presentation context for
+    /// the cross-market overview; the detailed workspace remains authoritative.
+    QVector<CftcMonitorHistoryPoint> principal_history;
 
     QVector<CftcInterpretationState> principal_states;
     QVector<CftcInterpretationState> market_states;
@@ -681,6 +726,14 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
             }
         }
         if (!principal_participant_key.isEmpty()) {
+            int principal_index = -1;
+            const QVector<CftcParticipant> participants = cftc_family_participants(family);
+            for (int i = 0; i < participants.size(); ++i) {
+                if (participants[i].key == principal_participant_key) {
+                    principal_index = i;
+                    break;
+                }
+            }
             for (const CftcParticipantInterpretation& participant : result.participants) {
                 if (participant.participant_key != principal_participant_key)
                     continue;
@@ -701,6 +754,8 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
                 }
                 break;
             }
+            if (entry.principal_available && !entry.report_unavailable)
+                entry.principal_history = cftc_monitor_history_series(merged.observations, principal_index);
             if (!entry.report_unavailable) {
                 for (const CftcUnavailableRecord& record : result.unavailable) {
                     if (record.participant_key == principal_participant_key &&
