@@ -717,7 +717,9 @@ QTableWidget* CftcPanel::make_monitor_table(QWidget* parent) {
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
-    table->setFocusPolicy(Qt::NoFocus);
+    // StrongFocus keeps the tables keyboard-navigable: a selected market row
+    // activates with Enter exactly as it does with a double-click.
+    table->setFocusPolicy(Qt::StrongFocus);
     table->setShowGrid(false);
     table->setWordWrap(false);
     table->verticalHeader()->setVisible(false);
@@ -1787,11 +1789,15 @@ void CftcPanel::render_monitor_groups() {
         for (int row = 0; row < group.entry_indexes.size(); ++row)
             fill_monitor_row(table, row, monitor_entries_.at(group.entry_indexes.at(row)));
         table->setMinimumHeight(20 + group.entry_indexes.size() * 21 + 8);
-        connect(table, &QTableWidget::cellDoubleClicked, this, [this, table](int row, int) {
+        const auto open_row = [this, table](int row) {
             auto* item = table->item(row, 0);
             if (item)
                 open_monitor_entry(item->data(Qt::UserRole).toString());
-        });
+        };
+        connect(table, &QTableWidget::cellDoubleClicked, this, [open_row](int row, int) { open_row(row); });
+        // Keyboard activation (Enter/Return on the selected row) matches the
+        // double-click navigation for keyboard users.
+        connect(table, &QTableWidget::cellActivated, this, [open_row](int row, int) { open_row(row); });
         section_layout->addWidget(table);
         monitor_groups_layout_->addWidget(section);
     }
