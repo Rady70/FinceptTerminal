@@ -253,6 +253,18 @@ inline QByteArray series_index_atom(const QString& cik10, const QString& name, c
     return x.toLatin1();
 }
 
+/// EDGAR's answer to a series id it does not know: HTTP 200, text/html, no
+/// feed. Trimmed from the live response to
+/// browse-edgar?action=getcompany&CIK=S000999999&...&output=atom (2026-09-26):
+/// the document type, the title and the message are verbatim; the banner
+/// tables and analytics script between them are left out.
+inline QByteArray edgar_no_match_page() {
+    return QByteArrayLiteral("\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n"
+                             "<html lang=\"ENG\">\n\n<head>\n<title>Company Information: </title>\n</head>\n\n"
+                             "<body style=\"margin: 0\">\n<br>\n<div style=\"margin-left: 10px\">\n"
+                             "<p><center><h1>No matching CIK.</h1></center></p>\n</table>");
+}
+
 // ── IBKR ─────────────────────────────────────────────────────────────────────
 
 struct BarSpec {

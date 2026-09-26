@@ -262,8 +262,25 @@ struct SecSeriesIndex {
     QVector<SecIndexEntry> entries;
 };
 
+/// An HTML page where the Atom feed was asked for.
+inline bool sec_body_is_html(const QByteArray& body) {
+    const QByteArray head = body.left(512).trimmed().toLower();
+    return head.startsWith("<!doctype html") || head.startsWith("<html");
+}
+
 inline SecSeriesIndex parse_sec_series_index(const QByteArray& body) {
     SecSeriesIndex out;
+    if (sec_body_is_html(body)) {
+        // EDGAR answers a series id it does not know with HTTP 200 and an HTML
+        // page reading "No matching CIK." instead of the feed (observed live on
+        // 2026-09-26 for S000999999): the identity requested is unknown to the
+        // SEC. That is kept apart from a malformed or unexpected answer, and
+        // from a known series with no filings yet (an Atom feed, no entries).
+        out.error = body.contains("No matching CIK.")
+                        ? QStringLiteral("series_not_found: EDGAR has no series with this id (\"No matching CIK.\")")
+                        : QStringLiteral("index_not_atom_feed: an HTML page instead of the Atom feed");
+        return out;
+    }
     QXmlStreamReader xml(body);
     QStringList path;
     SecIndexEntry current;
@@ -317,9 +334,9 @@ inline SecSeriesIndex parse_sec_series_index(const QByteArray& body) {
         return out;
     }
     if (out.company_cik.isEmpty()) {
-        // EDGAR answers an unknown series with no company block: the identity
-        // requested is not known to the SEC, which is not the same as a series
-        // with no filings yet.
+        // A feed without a company block names no registrant, so nothing in it
+        // can be attributed: refused. (EDGAR's own answer to an unknown series
+        // id is the HTML page handled above.)
         out.error = QStringLiteral("index_without_company: the SEC returned no registrant for this series id");
         return out;
     }

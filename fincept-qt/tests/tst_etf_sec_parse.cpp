@@ -200,7 +200,18 @@ void TstEtfSecParse::unknown_series_index_is_an_error() {
     const SecSeriesIndex none = parse_sec_series_index(series_index_atom(QString(), QString(), {}));
     QVERIFY(!none.ok);
     QVERIFY(none.error.startsWith(QLatin1String("index_without_company")));
-    QVERIFY(!parse_sec_series_index("<html><body>No matching CIK.</body></html>").ok);
+    // What EDGAR actually returns for an unknown series id: an HTML page, not a feed.
+    const SecSeriesIndex unknown = parse_sec_series_index(edgar_no_match_page());
+    QVERIFY(!unknown.ok);
+    QVERIFY2(unknown.error.startsWith(QLatin1String("series_not_found:")), qPrintable(unknown.error));
+    const SecSeriesIndex other_page = parse_sec_series_index("<html><body>Service unavailable</body></html>");
+    QVERIFY(!other_page.ok);
+    QVERIFY2(other_page.error.startsWith(QLatin1String("index_not_atom_feed:")), qPrintable(other_page.error));
+    // A known series with no filings yet is a feed with a company and no entries: not an error.
+    const SecSeriesIndex empty =
+        parse_sec_series_index(series_index_atom(QStringLiteral("0001100663"), QStringLiteral("iSHARES TRUST"), {}));
+    QVERIFY(empty.ok);
+    QVERIFY(empty.entries.isEmpty());
     QVERIFY(!parse_sec_series_index("{\"not\":\"xml\"}").ok);
 }
 

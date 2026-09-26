@@ -443,6 +443,19 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
         QCOMPARE(sec.requested.size(), 1);
     }
     {
+        // EDGAR's real answer to an unknown series id (HTTP 200, an HTML page):
+        // recorded as the identity the SEC does not know, with nothing stored.
+        FakeSec sec;
+        sec.ok(kIvvIndex, edgar_no_match_page());
+        const int entities_before = count("etf_reporting_entities");
+        const SecNportRunSummary s = run_sec(sec, request("1100663", "S000004310"), "2026-09-26T10:30:00.000Z");
+        QCOMPARE(s.status, RetrievalStatus::SourceError);
+        QCOMPARE(s.detail_code, QStringLiteral("series_not_found"));
+        QCOMPARE(sec.requested.size(), 1);
+        QCOMPARE(count("etf_retrievals", "detail_code = 'series_not_found' AND http_status = 200"), 1);
+        QCOMPARE(count("etf_reporting_entities"), entities_before);
+    }
+    {
         FakeSec sec;
         sec.ok(kIvvIndex, series_index_atom(QStringLiteral("0001064642"), QStringLiteral("SPDR SERIES TRUST"), {}));
         const SecNportRunSummary s = run_sec(sec, request("1100663", "S000004310"), "2026-09-26T11:00:00.000Z");
