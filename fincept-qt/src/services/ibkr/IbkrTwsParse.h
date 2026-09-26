@@ -37,9 +37,15 @@ inline constexpr const char* kIbkrSource = "ibkr_tws";
 /// Non-secret local configuration. Credentials and account identifiers are
 /// never part of this structure (FINCEPT_FORK_PLAN.md §8).
 struct IbkrTwsConfig {
-    QString config_path;       ///< ignored local JSON file actually read
-    QString trading_desk_root; ///< configured TRADING_DESK checkout
-    QString trading_desk_commit;
+    QString config_path;    ///< ignored local JSON file actually read
+    QString adapter_root;   ///< clean checkout of Rady70/Market_Lab, which holds MarketLab's adapter (ibkr_tws/)
+    QString adapter_commit; ///< the commit that checkout is pinned to
+    /// The file still names the retired TRADING_DESK adapter
+    /// (`trading_desk_root`). It counts as configured, so the wrapper's
+    /// explicit configuration error reaches every consumer, instead of IBKR
+    /// silently becoming "not configured" and routed symbols moving to another
+    /// provider.
+    bool names_retired_adapter = false;
     QString ibapi_path;
     QString host = QStringLiteral("127.0.0.1");
     int port = 7496;
@@ -51,7 +57,7 @@ struct IbkrTwsConfig {
     /// still name a symbol directly.
     QStringList symbols;
 
-    bool is_configured() const { return !trading_desk_root.trimmed().isEmpty(); }
+    bool is_configured() const { return !adapter_root.trimmed().isEmpty() || names_retired_adapter; }
 };
 
 /// Runtime identity observed for one command, as reported by the adapter.

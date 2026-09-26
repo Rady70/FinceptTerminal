@@ -1018,9 +1018,13 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v048_instruments_exchange_unique.cpp
     src/storage/sqlite/migrations/v049_order_baskets.cpp
     src/storage/sqlite/migrations/v051_drop_duplicate_indexes.cpp
+    src/storage/sqlite/migrations/v052_etf_data_foundation.cpp
 
     # Historical OHLCV data store (Historify, Phase 3 §13)
     src/storage/HistoricalDataStore.cpp
+
+    # MarketLab ETF Capital Flows data foundation (Batch B)
+    src/storage/repositories/EtfDataRepository.cpp
 
     # Cloud sync — durable outbox + device-local flags + id map (see CLOUD_SYNC_PLAN.md)
     src/storage/sync/SyncOutbox.cpp
@@ -1238,6 +1242,9 @@ set(SERVICE_SOURCES
     src/services/markets/MarketDataService.cpp
     src/services/markets/MarketSearchService.cpp
     src/services/ibkr/IbkrTwsService.cpp
+    src/services/etf/EtfSecNportIngestor.cpp
+    src/services/etf/EtfIbkrDailyIngestor.cpp
+    src/services/etf/EtfDataService.cpp
     src/services/options/OptionChainService.cpp
     src/services/options/OISnapshotter.cpp
     src/services/options/StrategyTemplates.cpp
@@ -1932,6 +1939,8 @@ set(APP_SOURCES
     src/app/InstanceLock.cpp
     src/app/MarketLabBoundarySelftest.cpp
     src/app/IbkrTwsSelftest.cpp
+    src/app/EtfDataCli.cpp
+    src/app/EtfDataSelftest.cpp
     src/app/ScreenSmokeTest.cpp
     # WindowFrame is split across multiple files; see WindowFrame.cpp header
     # comment for the layout. All variants stay outside unity build (see
@@ -2549,6 +2558,22 @@ set_source_files_properties(
     src/storage/workspace/WorkspaceFwspImporter.cpp
     src/app/InstanceLock.cpp
     src/python/OptionGreeksWorker.cpp
+    PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
+)
+
+# MarketLab ETF Capital Flows data foundation (Batch B). Kept out of unity for
+# the reason given for v051 above: a file that JOINS a unity batch re-batches
+# every source after it, which can collide two files that were previously fine,
+# and only on the unity-ON release/CI presets. Several of these also carry
+# file-scope helpers and log tags.
+set_source_files_properties(
+    src/storage/sqlite/migrations/v052_etf_data_foundation.cpp
+    src/storage/repositories/EtfDataRepository.cpp
+    src/services/etf/EtfSecNportIngestor.cpp
+    src/services/etf/EtfIbkrDailyIngestor.cpp
+    src/services/etf/EtfDataService.cpp
+    src/app/EtfDataCli.cpp
+    src/app/EtfDataSelftest.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
 )
 

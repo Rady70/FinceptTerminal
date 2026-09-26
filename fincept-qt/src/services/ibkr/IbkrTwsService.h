@@ -5,8 +5,9 @@
 //
 // This service never talks to TWS itself. It invokes the project-owned Python
 // wrapper (scripts/ibkr_tws_data.py) through the existing bounded
-// PythonRunner process route; the wrapper imports the unchanged TRADING_DESK
-// adapter from the configured checkout. There is deliberately no daemon, no
+// PythonRunner process route; the wrapper imports MarketLab's read-only
+// adapter from the configured, pinned checkout of the private Market_Lab
+// repository (ibkr_tws/). There is deliberately no daemon, no
 // connection pool, and no fallback to another market-data provider: a failed
 // IBKR request stays an IBKR failure.
 //
@@ -65,6 +66,18 @@ class IbkrTwsService : public QObject {
 
     /// Read bounded historical bars for a completed market window.
     void fetch_history(const QString& symbol, const QString& duration, const QString& bar_size, HistoryCallback cb);
+
+    using EnvelopeCallback = std::function<void(const QJsonObject& payload)>;
+    /// Read bounded historical bars with an explicit completed end time and the
+    /// request parameters stated, and hand back the wrapper envelope itself
+    /// after the usual validation (a typed failure envelope when the process or
+    /// its output failed). Used by the ETF data foundation, which must keep the
+    /// bar dates exactly as IBKR reported them and check the echoed request
+    /// parameters. Uses only arguments the wrapper already supports; the
+    /// read-only boundary is unchanged.
+    void fetch_history_envelope(const QString& symbol, const QString& duration, const QString& bar_size,
+                                const QString& end_date_time, const QString& what_to_show, bool use_rth,
+                                EnvelopeCallback cb);
 
   private:
     explicit IbkrTwsService(QObject* parent = nullptr);

@@ -2,17 +2,21 @@
 
 These tests run the real ``scripts/ibkr_tws_data.py`` CLI as a subprocess, but
 the pinned checkout they import contains a deterministic fake adapter instead of
-the real TRADING_DESK package. No TWS connection, no ``ibapi`` install and no
-network access are required: the fake adapter reproduces the adapter's
-documented read-only result shapes and failure modes, and the tests assert that
-the wrapper preserves those shapes, classifications, and missing values.
+MarketLab's real one (``ibkr_tws/`` in the private Rady70/Market_Lab
+repository, which has its own offline suite). No TWS connection, no ``ibapi``
+install and no network access are required: the fake adapter reproduces the
+adapter's documented read-only result shapes and failure modes, and the tests
+assert that the wrapper preserves those shapes, classifications, and missing
+values.
 
-The checkout is a genuine temporary git repository so the wrapper's commit pin
-and clean-tree verification are exercised for real rather than bypassed.
+The checkout is a genuine temporary git repository with the Market_Lab layout,
+so the wrapper's commit pin and clean-tree verification are exercised for real
+rather than bypassed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -35,7 +39,7 @@ IBAPI_PLACEHOLDER = "ibapi-placeholder"
 HISTORY_MAX_AGE_DAYS = 45
 
 FAKE_ADAPTER = '''
-"""Deterministic offline stand-in for the pinned TRADING_DESK adapter."""
+"""Deterministic offline stand-in for MarketLab's pinned adapter."""
 
 from __future__ import annotations
 
@@ -84,6 +88,8 @@ def _contract_row(con_id: int, symbol: str) -> dict:
         "last_trade_date_or_contract_month": "",
         "strike": None,
         "right": None,
+        # IBKR's classification: AAPL is an ordinary share.
+        "stock_type": "COMMON",
     }
 
 
@@ -204,6 +210,14 @@ class IBKRTWSReadOnlyAdapter:
         if scenario == "contract_missing_exchange":
             row = _contract_row(265598, contract.symbol)
             row["exchange"] = ""
+            return [row]
+        if scenario == "stock_type_etf":
+            row = _contract_row(756733, contract.symbol)
+            row["stock_type"] = "ETF"
+            return [row]
+        if scenario == "stock_type_absent":
+            row = _contract_row(265598, contract.symbol)
+            del row["stock_type"]
             return [row]
         return [_contract_row(265598, contract.symbol)]
 
@@ -338,8 +352,8 @@ class IbkrWrapperTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory(prefix="marketlab_ibkr_")
         cls.root = Path(cls._tmp.name)
-        checkout = cls.root / "trading_desk"
-        package = checkout / "scripts" / "ibkr_tws"
+        checkout = cls.root / "market_lab"
+        package = checkout / "ibkr_tws"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text(
             "from .adapter import IBKRTWSReadOnlyAdapter\n\n__all__ = [\"IBKRTWSReadOnlyAdapter\"]\n",
@@ -372,8 +386,8 @@ class IbkrWrapperTest(unittest.TestCase):
 
     def _write_config(self, **overrides) -> Path:
         config = {
-            "trading_desk_root": str(self.checkout),
-            "trading_desk_commit": self.commit,
+            "adapter_root": str(self.checkout),
+            "adapter_commit": self.commit,
             "ibapi_path": str(self.ibapi_dir),
             "host": "127.0.0.1",
             "port": 7496,
@@ -648,14 +662,14 @@ class IbkrWrapperTest(unittest.TestCase):
                 self.assertTrue(payload["classification"]["validation_reason"])
 
     def test_pin_mismatch_fails_closed(self) -> None:
-        config = self._write_config(trading_desk_commit="0" * 40)
+        config = self._write_config(adapter_commit="0" * 40)
         code, payload = self._run(config, "probe")
         self.assertEqual(code, 1)
         self.assertEqual(payload["failure"]["type"], "IBKR_ADAPTER_PIN_MISMATCH")
         self.assertEqual(payload["failure"]["details"]["observed"], self.commit)
 
     def test_dirty_checkout_fails_closed(self) -> None:
-        dirty_file = self.checkout / "scripts" / "ibkr_tws" / "scratch.txt"
+        dirty_file = self.checkout / "ibkr_tws" / "scratch.txt"
         dirty_file.write_text("uncommitted", encoding="utf-8")
         try:
             code, payload = self._run(self._write_config(), "probe")
@@ -705,6 +719,52 @@ class IbkrWrapperTest(unittest.TestCase):
         )
         for name in forbidden:
             self.assertNotIn(name, source, f"wrapper must not reference {name}")
+
+    def test_identity_names_the_pinned_checkout_and_the_imported_adapter(self) -> None:
+        # Every envelope carries the pinned commit and the SHA-256 of the very
+        # adapter file the wrapper imported from that checkout.
+        code, payload = self._run(self._write_config(), "probe")
+        self.assertEqual(code, 0, payload)
+        adapter_file = self.checkout / "ibkr_tws" / "adapter.py"
+        self.assertEqual(payload["adapter"]["commit"], self.commit)
+        self.assertEqual(
+            payload["adapter"]["adapter_sha256"], hashlib.sha256(adapter_file.read_bytes()).hexdigest().upper()
+        )
+
+    def test_stock_type_is_forwarded_exactly_as_the_adapter_reported(self) -> None:
+        # IBKR's classification reaches the consumers untouched: never
+        # synthesized, never defaulted, and absent when the adapter reports none.
+        for scenario, expected in (("ok", "COMMON"), ("stock_type_etf", "ETF"), ("stock_type_absent", None)):
+            for command in ("contract", "history"):
+                with self.subTest(scenario=scenario, command=command):
+                    code, payload = self._run(self._write_config(), command, "SPY", scenario=scenario)
+                    self.assertEqual(code, 0, payload)
+                    row = payload["resolved"] if command == "contract" else payload["contract"]
+                    self.assertEqual(row.get("stock_type"), expected)
+                    self.assertEqual(row["security_type"], "STK")
+                    if expected is None:
+                        self.assertNotIn("stock_type", row)
+
+    def test_retired_trading_desk_keys_are_named_but_never_used(self) -> None:
+        # A configuration from before the move names the retired adapter keys
+        # in its error; beside the adapter keys they are ignored, and the
+        # pinned Market_Lab checkout is the one imported.
+        retired = {"trading_desk_root": str(self.root / "no_such_checkout"), "trading_desk_commit": "1" * 40}
+        path = self.root / "config_retired_only.json"
+        config = json.loads(self._write_config().read_text(encoding="utf-8"))
+        del config["adapter_root"]
+        del config["adapter_commit"]
+        config.update(retired)
+        path.write_text(json.dumps(config), encoding="utf-8")
+        code, payload = self._run(path, "probe")
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["failure"]["type"], "IBKR_CONFIG_INVALID")
+        self.assertIn("adapter_root is required", payload["failure"]["message"])
+        self.assertIn("trading_desk_root and trading_desk_commit", payload["failure"]["message"])
+
+        code, payload = self._run(self._write_config(**retired), "probe")
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["adapter"]["commit"], self.commit)
 
 
 if __name__ == "__main__":

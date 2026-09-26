@@ -323,4 +323,79 @@ fincept_add_test(tst_cftc_workspace_contract
 fincept_add_test(tst_cftc_monitor
     tst_cftc_monitor.cpp)
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor")
+# MarketLab ETF Capital Flows, Batch B — the pure rules of the data foundation:
+# the U.S. equity session calendar (NYSE's published holidays and early closes,
+# checked against the 501-session window Batch A2 observed), the SEC and IBKR
+# timing rules, the route policy and the vintage read model
+# (services/etf/EtfSessionCalendar.h, EtfTiming.h, EtfRoutePolicy.h,
+# EtfReadModel.h). Header-only over Qt Core; no app sources.
+fincept_add_test(tst_etf_calendar_timing
+    tst_etf_calendar_timing.cpp)
+
+# MarketLab ETF Batch B — the SEC EDGAR boundary over trimmed real N-PORT
+# filings (services/etf/SecEdgarParse.h): exact values and identity, missing
+# versus unparseable, amendments, share classes, acceptance times, refusal of
+# malformed documents, the declared User-Agent rule. Header-only over Qt Core.
+fincept_add_test(tst_etf_sec_parse
+    tst_etf_sec_parse.cpp)
+
+# MarketLab ETF Batch B — the IBKR daily-bar boundary
+# (services/etf/EtfIbkrDaily.h): in-progress rejection, holidays versus missing
+# sessions, stale history, entitlement and wrapper failures, parameter and
+# identity checks. Header-only over Qt Core.
+fincept_add_test(tst_etf_ibkr_daily
+    tst_etf_ibkr_daily.cpp)
+
+# MarketLab ETF Batch B — persistence and ingestion.
+#
+# A SECOND EXCEPTION to "no Sql here", on the same footing as the Network one
+# for tst_redirect_guard above and for the same kind of reason: these suites
+# assert what a SQLite FILE holds — an upgrade of an existing v51 schema with
+# its data intact, a reload after the connection is reopened, vintages kept
+# instead of overwritten, and the database's own CHECK constraints refusing a
+# backfilled value labelled "observed" or a missing value stored as zero. No
+# predicate's return value can prove that; only a real database can.
+#
+# Qt6::Sql is added AFTER fincept_add_test(), as Qt6::Network is above, so every
+# other target keeps Qt6::Test + Qt6::Core alone. The link line stays leaf-only:
+# the storage core the repositories already share (Database, MigrationRunner,
+# Logger), the v052 migration, the ETF repository and — for tst_etf_ingest —
+# the two ingestors, whose transports are injected, so neither Qt6::Network nor
+# the Python runner is linked and no test reaches the network or TWS.
+set(_FINCEPT_ETF_STORE_SOURCES
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/Database.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/MigrationRunner.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v052_etf_data_foundation.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/repositories/EtfDataRepository.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+# tst_etf_store also runs the shipped --selftest-etf-data body against its
+# database, to pin that the self-test writes nothing without its transaction.
+fincept_add_test(tst_etf_store
+    tst_etf_store.cpp
+    ${_FINCEPT_ETF_STORE_SOURCES}
+    "${PROJECT_SOURCE_DIR}/src/app/EtfDataSelftest.cpp")
+target_link_libraries(tst_etf_store PRIVATE Qt6::Sql)
+
+fincept_add_test(tst_etf_ingest
+    tst_etf_ingest.cpp
+    ${_FINCEPT_ETF_STORE_SOURCES}
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfSecNportIngestor.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfIbkrDailyIngestor.cpp")
+target_link_libraries(tst_etf_ingest PRIVATE Qt6::Sql)
+
+# MarketLab ETF Batch B — HttpClient::get_raw, the raw GET the SEC N-PORT route
+# uses: the declared User-Agent replaces the client's default on the wire, the
+# body arrives byte for byte, an HTTP error keeps its status and body, and a
+# transport failure carries no status. Like tst_redirect_guard it asserts
+# TRANSPORT behaviour over loopback sockets it starts itself, so it links
+# Qt6::Network (added after fincept_add_test(), as above); the leaf sources are
+# HttpClient and the guard it calls.
+fincept_add_test(tst_http_get_raw
+    tst_http_get_raw.cpp
+    "${PROJECT_SOURCE_DIR}/src/network/http/HttpClient.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/GuardedNetworkAccessManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_http_get_raw PRIVATE Qt6::Network)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_http_get_raw")
