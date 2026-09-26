@@ -73,6 +73,10 @@ QSize CftcGroupBars::minimumSizeHint() const {
 int CftcGroupBars::row_at(const QPoint& pos) const {
     if (rows_.isEmpty() || pos.x() < 0 || pos.x() > width())
         return -1;
+    // Reject the padding above the first row and the axis strip below the last
+    // row before the division truncates toward zero.
+    if (pos.y() < pad_top_ || pos.y() >= pad_top_ + rows_.size() * row_height_)
+        return -1;
     const int row = (pos.y() - pad_top_) / row_height_;
     if (row < 0 || row >= rows_.size())
         return -1;

@@ -556,6 +556,10 @@ CftcPanel::CftcPanel(QWidget* parent) : EconPanelBase(kCftcSourceId, kCftcColor,
     auto* base_host = new QWidget(this);
     root->addWidget(base_host, 1);
     build_base_ui(base_host);
+    // The base result title/count line belongs to the single-market workspace;
+    // it is hidden while the cross-market monitor is shown and restored for
+    // Analysis and Raw Data.
+    result_identity_bar_ = findChild<QWidget*>(QStringLiteral("econTitleBar"));
     set_stats_visible(false);
     build_analysis_page();
     build_monitor_page();
@@ -657,11 +661,22 @@ void CftcPanel::build_result_tabs(QVBoxLayout* root) {
     root->addWidget(result_tabs_);
 }
 
+void CftcPanel::set_result_identity_visible(bool visible) {
+    if (!result_identity_bar_)
+        result_identity_bar_ = findChild<QWidget*>(QStringLiteral("econTitleBar"));
+    if (result_identity_bar_)
+        result_identity_bar_->setVisible(visible);
+}
+
 void CftcPanel::show_monitor_tab() {
     if (monitor_page_ >= 0)
         show_content_page(monitor_page_);
     if (monitor_tab_)
         monitor_tab_->setChecked(true);
+    // The cross-market overview is not a single-market result: a stale
+    // market identity above the content stack would be misleading.
+    if (monitor_rendered_)
+        set_result_identity_visible(false);
 }
 
 void CftcPanel::show_analysis_tab() {
@@ -669,12 +684,14 @@ void CftcPanel::show_analysis_tab() {
         show_content_page(analysis_page_);
     if (analysis_tab_)
         analysis_tab_->setChecked(true);
+    set_result_identity_visible(true);
 }
 
 void CftcPanel::show_raw_tab() {
     show_content_page(1);
     if (raw_tab_)
         raw_tab_->setChecked(true);
+    set_result_identity_visible(true);
 }
 
 // ── Analysis page construction ──────────────────────────────────────────────
@@ -1062,24 +1079,6 @@ const services::CftcOpenInterestReading* monitor_oi_at(const services::CftcMonit
             return &reading;
     }
     return nullptr;
-}
-
-QString monitor_status_label(services::CftcMonitorStatus status) {
-    switch (status) {
-        case services::CftcMonitorStatus::Ok:
-            return QCoreApplication::translate("CftcPanel", "OK");
-        case services::CftcMonitorStatus::ArchiveOnly:
-            return QCoreApplication::translate("CftcPanel", "Stored history");
-        case services::CftcMonitorStatus::NoData:
-            return QCoreApplication::translate("CftcPanel", "No data");
-        case services::CftcMonitorStatus::NoLocalHistory:
-            return QCoreApplication::translate("CftcPanel", "No stored history");
-        case services::CftcMonitorStatus::Unavailable:
-            return QCoreApplication::translate("CftcPanel", "Unavailable");
-        case services::CftcMonitorStatus::UnknownMarket:
-            return QCoreApplication::translate("CftcPanel", "Unknown market");
-    }
-    return QCoreApplication::translate("CftcPanel", "Unavailable");
 }
 
 QString monitor_archive_text(const QJsonObject& archive) {
@@ -1635,7 +1634,7 @@ void CftcPanel::render_monitor_attention() {
                                                    : tr("No report date"));
         if (entry.report_outdated)
             meta_parts << tr("%1 days old").arg(entry.report_age_days);
-        meta_parts << monitor_status_label(entry.status);
+        meta_parts << cftc_monitor_status_text(entry);
         const QString participant =
             cftc_metric_participant_display_name(entry.family, entry.principal_participant_key, entry.principal_label);
         if (!participant.isEmpty())
@@ -1916,10 +1915,15 @@ void CftcPanel::fill_monitor_row(QTableWidget* table, int row, const services::C
         item->setToolTip(developments);
     }
 
-    set_plain_cell(table, row, 10, monitor_status_label(entry.status), Qt::AlignLeft | Qt::AlignVCenter);
+    set_plain_cell(table, row, 10, cftc_monitor_status_text(entry), Qt::AlignLeft | Qt::AlignVCenter);
     if (auto* item = table->item(row, 10)) {
         item->setForeground(cftc_monitor_status_color(cftc_monitor_status_tone(entry)));
-        item->setToolTip(entry.status_detail.isEmpty() ? tr("Current canonical data.") : entry.status_detail);
+        if (entry.report_unavailable) {
+            item->setToolTip(tr("The report could not be interpreted (engine reason: %1).")
+                                 .arg(services::cftc_unavailable_reason_code(entry.report_unavailable_reason)));
+        } else {
+            item->setToolTip(entry.status_detail.isEmpty() ? tr("Current canonical data.") : entry.status_detail);
+        }
     }
 
     if (tone != CftcMonitorTone::Ordinary) {
@@ -1949,9 +1953,13 @@ QString CftcPanel::monitor_bar_tooltip(const services::CftcMonitorEntry& entry) 
             report += tr(" (%1 days old)").arg(entry.report_age_days);
         parts << report;
     }
-    parts << tr("Status: %1").arg(monitor_status_label(entry.status));
-    if (!entry.status_detail.isEmpty())
+    parts << tr("Status: %1").arg(cftc_monitor_status_text(entry));
+    if (entry.report_unavailable) {
+        parts << tr("The report could not be interpreted (engine reason: %1).")
+                     .arg(services::cftc_unavailable_reason_code(entry.report_unavailable_reason));
+    } else if (!entry.status_detail.isEmpty()) {
         parts << entry.status_detail;
+    }
     if (!entry.alerts.isEmpty()) {
         QStringList classes;
         QSet<int> seen;

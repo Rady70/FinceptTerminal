@@ -103,6 +103,7 @@ class TstCftcMonitorVisual : public QObject {
     void summary_counts_states_separately();
     void attention_tone_is_the_top_class();
     void status_tone_is_fail_closed();
+    void uninterpretable_report_is_not_current();
     void labels_are_descriptive_only();
 };
 
@@ -328,6 +329,39 @@ void TstCftcMonitorVisual::status_tone_is_fail_closed() {
                                            CftcMonitorStatus::Unavailable, CftcMonitorStatus::UnknownMarket}) {
         QCOMPARE(cftc_monitor_status_tone(make_entry(QStringLiteral("vix"), status)), CftcMonitorStatusTone::Problem);
     }
+}
+
+void TstCftcMonitorVisual::uninterpretable_report_is_not_current() {
+    // A fresh provider refresh does not authorize "current" when the frozen
+    // engine could not interpret the report: the entry keeps status Ok but
+    // carries report_unavailable, and the presentation must stay fail-closed.
+    CftcMonitorEntry uninterpretable = make_valued_entry(QStringLiteral("gold"));
+    uninterpretable.report_unavailable = true;
+    uninterpretable.report_unavailable_reason = CftcUnavailableReason::MissingOpenInterest;
+
+    QVERIFY(!cftc_monitor_report_is_current(uninterpretable));
+    QCOMPARE(cftc_monitor_status_tone(uninterpretable), CftcMonitorStatusTone::Problem);
+    const QString text = cftc_monitor_status_text(uninterpretable);
+    QVERIFY2(text != QStringLiteral("OK"), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("unavailable"), Qt::CaseInsensitive), qPrintable(text));
+
+    QVector<CftcMonitorEntry> entries;
+    entries.append(uninterpretable);
+    const CftcMonitorSummary summary = cftc_monitor_summary(entries, CftcMonitorMetric::NetPctOi);
+    QCOMPARE(summary.total, 1);
+    QCOMPARE(summary.current, 0);
+    QCOMPARE(summary.problem, 1);
+    QCOMPARE(summary.outdated, 0);
+
+    // The ordinary case is unchanged.
+    CftcMonitorEntry ordinary = make_valued_entry(QStringLiteral("silver"));
+    QVERIFY(cftc_monitor_report_is_current(ordinary));
+    QCOMPARE(cftc_monitor_status_tone(ordinary), CftcMonitorStatusTone::Ordinary);
+    QCOMPARE(cftc_monitor_status_text(ordinary), QStringLiteral("OK"));
+    entries.append(ordinary);
+    const CftcMonitorSummary mixed = cftc_monitor_summary(entries, CftcMonitorMetric::NetPctOi);
+    QCOMPARE(mixed.current, 1);
+    QCOMPARE(mixed.problem, 1);
 }
 
 void TstCftcMonitorVisual::labels_are_descriptive_only() {

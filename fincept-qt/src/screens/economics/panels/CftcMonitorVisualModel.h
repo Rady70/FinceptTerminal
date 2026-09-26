@@ -201,6 +201,42 @@ inline QString cftc_monitor_group_label(const QString& asset_class) {
     return services::cftc_asset_class_label(asset_class);
 }
 
+/// The provider/freshness status label. Presentation only; the fail-closed
+/// report-level condition is applied by `cftc_monitor_status_text`.
+inline QString cftc_monitor_status_label(services::CftcMonitorStatus status) {
+    switch (status) {
+        case services::CftcMonitorStatus::Ok:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "OK");
+        case services::CftcMonitorStatus::ArchiveOnly:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "Stored history");
+        case services::CftcMonitorStatus::NoData:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "No data");
+        case services::CftcMonitorStatus::NoLocalHistory:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "No stored history");
+        case services::CftcMonitorStatus::Unavailable:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "Unavailable");
+        case services::CftcMonitorStatus::UnknownMarket:
+            return QCoreApplication::translate("CftcMonitorVisualModel", "Unknown market");
+    }
+    return QCoreApplication::translate("CftcMonitorVisualModel", "Unavailable");
+}
+
+/// Whether the entry is ordinary validated current data: the provider refresh
+/// succeeded AND the engine actually interpreted the report. A fresh provider
+/// status does not authorize "current" when the report itself could not be
+/// interpreted (`report_unavailable`).
+inline bool cftc_monitor_report_is_current(const services::CftcMonitorEntry& entry) {
+    return entry.status == services::CftcMonitorStatus::Ok && !entry.report_unavailable;
+}
+
+/// The effective displayed status: a report the engine could not interpret is
+/// never shown as OK, whatever the provider refresh status says.
+inline QString cftc_monitor_status_text(const services::CftcMonitorEntry& entry) {
+    if (entry.report_unavailable)
+        return QCoreApplication::translate("CftcMonitorVisualModel", "Report unavailable");
+    return cftc_monitor_status_label(entry.status);
+}
+
 /// Whether an entry passes the presentation filters. `asset_class_filter` empty
 /// means all groups; `notable_only` keeps only markets requiring attention
 /// (data-quality conditions are themselves notable, so they are never hidden).
@@ -322,7 +358,11 @@ inline CftcMonitorSummary cftc_monitor_summary(const QVector<services::CftcMonit
     for (const services::CftcMonitorEntry& entry : entries) {
         switch (entry.status) {
             case services::CftcMonitorStatus::Ok:
-                if (entry.report_outdated) {
+                if (entry.report_unavailable) {
+                    // A fresh provider read does not make an uninterpretable
+                    // report current: it is an availability problem.
+                    ++summary.problem;
+                } else if (entry.report_outdated) {
                     ++summary.outdated;
                 } else {
                     ++summary.current;
@@ -433,6 +473,8 @@ enum class CftcMonitorStatusTone { Ordinary, Warning, Problem };
 inline CftcMonitorStatusTone cftc_monitor_status_tone(const services::CftcMonitorEntry& entry) {
     switch (entry.status) {
         case services::CftcMonitorStatus::Ok:
+            if (entry.report_unavailable)
+                return CftcMonitorStatusTone::Problem;
             return entry.report_outdated ? CftcMonitorStatusTone::Warning : CftcMonitorStatusTone::Ordinary;
         case services::CftcMonitorStatus::ArchiveOnly:
             return CftcMonitorStatusTone::Warning;

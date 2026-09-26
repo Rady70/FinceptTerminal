@@ -103,6 +103,7 @@ class CftcPanel : public EconPanelBase {
 
     // ── workspace state ─────────────────────────────────────────────────────
     void clear_workspace();
+    void set_result_identity_visible(bool visible);
     void build_participant_controls();
     void show_monitor_tab();
     void show_analysis_tab();
@@ -178,6 +179,7 @@ class CftcPanel : public EconPanelBase {
     QPushButton* monitor_tab_ = nullptr;
     QPushButton* analysis_tab_ = nullptr;
     QPushButton* raw_tab_ = nullptr;
+    QWidget* result_identity_bar_ = nullptr; // base result title/count line
     int analysis_page_ = -1;
     int monitor_page_ = -1;
 
