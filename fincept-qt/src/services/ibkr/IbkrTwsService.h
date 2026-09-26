@@ -5,8 +5,9 @@
 //
 // This service never talks to TWS itself. It invokes the project-owned Python
 // wrapper (scripts/ibkr_tws_data.py) through the existing bounded
-// PythonRunner process route; the wrapper imports the unchanged TRADING_DESK
-// adapter from the configured checkout. There is deliberately no daemon, no
+// PythonRunner process route; the wrapper imports MarketLab's read-only
+// adapter from the configured, pinned checkout of the private Market_Lab
+// repository (ibkr_tws/). There is deliberately no daemon, no
 // connection pool, and no fallback to another market-data provider: a failed
 // IBKR request stays an IBKR failure.
 //

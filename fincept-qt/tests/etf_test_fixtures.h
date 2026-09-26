@@ -20,9 +20,8 @@
 // IBKR fixtures reproduce the wrapper's envelope shape
 // (scripts/ibkr_tws_data.py command_history) with synthetic prices: no IBKR
 // market data is copied into the repository. The contract row carries the
-// stock_type the TRADING_DESK adapter reports from IBKR's contract details
-// (TRADING_DESK fix/ibkr-contract-stock-type); the adapter pinned before it
-// reports none.
+// stock_type MarketLab's adapter (Market_Lab ibkr_tws/) reports from IBKR's
+// contract details; an adapter that does not report it leaves the key out.
 #pragma once
 #include "services/etf/EtfSessionCalendar.h"
 

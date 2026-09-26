@@ -1037,7 +1037,7 @@ void WatchlistScreen::on_ibkr_quote() {
         QMessageBox::information(
             this, tr("IBKR TWS"),
             tr("IBKR TWS is not configured. Create an ignored local %1 under the application state root with "
-               "trading_desk_root, trading_desk_commit, ibapi_path, host, port, client_id and the explicitly "
+               "adapter_root, adapter_commit, ibapi_path, host, port, client_id and the explicitly "
                "routed symbols. No credentials are needed or accepted; the login stays inside the user-owned TWS "
                "session.")
                 .arg(QStringLiteral("ibkr_tws.json")));

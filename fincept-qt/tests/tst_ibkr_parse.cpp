@@ -79,6 +79,7 @@ class TstIbkrParse : public QObject {
     void wrapper_shape_validator_accepts_valid_envelopes();
     void wrapper_shape_validator_rejects_malformed_envelopes();
     void wrapper_process_result_fails_closed();
+    void config_needs_the_marketlab_adapter_checkout();
 };
 
 void TstIbkrParse::identity_reads_observed_runtime_facts() {
@@ -541,6 +542,23 @@ void TstIbkrParse::wrapper_process_result_fails_closed() {
     QVERIFY(garbage.payload.isEmpty());
     QCOMPARE(garbage.failure_type, QStringLiteral("IBKR_PROCESS_FAILED"));
     QVERIFY(garbage.failure_message.contains(QLatin1String("137")));
+}
+
+void TstIbkrParse::config_needs_the_marketlab_adapter_checkout() {
+    // IBKR counts as configured when the file names the pinned Market_Lab
+    // adapter checkout. A file that still names only the retired TRADING_DESK
+    // adapter counts as configured too, so the wrapper refuses it with an
+    // explicit configuration error rather than IBKR silently becoming "not
+    // configured" and its routed symbols moving to another provider.
+    IbkrTwsConfig cfg;
+    QVERIFY(!cfg.is_configured());
+    cfg.adapter_root = QStringLiteral("   ");
+    QVERIFY(!cfg.is_configured());
+    cfg.adapter_root = QStringLiteral("E:/MarketLab-IBKR");
+    QVERIFY(cfg.is_configured());
+    IbkrTwsConfig retired;
+    retired.names_retired_adapter = true;
+    QVERIFY(retired.is_configured());
 }
 
 QTEST_GUILESS_MAIN(TstIbkrParse)

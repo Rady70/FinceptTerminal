@@ -1,13 +1,17 @@
-"""MarketLab's thin read-only wrapper over the TRADING_DESK IBKR TWS adapter.
+"""MarketLab's thin read-only wrapper over MarketLab's IBKR TWS adapter.
 
-This script is the only MarketLab-owned IBKR connection surface. It:
+This script is the only IBKR connection surface of the application. The
+adapter it drives is MarketLab's own read-only ``IBKRTWSReadOnlyAdapter``,
+which lives in the private ``Rady70/Market_Lab`` repository (``ibkr_tws/``),
+not in this public repository. The script:
 
   * reads a non-secret local JSON configuration (no credentials and no account
     identifiers are requested, copied, or persisted);
-  * verifies the configured TRADING_DESK checkout identity (exact commit and a
-    clean working tree) before importing anything from it;
-  * imports the unchanged ``scripts.ibkr_tws.IBKRTWSReadOnlyAdapter`` from that
-    checkout;
+  * verifies the configured adapter checkout -- a checkout of Market_Lab -- at
+    the exact pinned commit and with a clean working tree before importing
+    anything from it;
+  * imports ``ibkr_tws.IBKRTWSReadOnlyAdapter`` from that checkout, by file
+    location;
   * invokes only the adapter's documented read-only methods;
   * re-applies the value and identity validation the reference qualification
     used before it certified a feed (the production adapter reports transport
@@ -30,17 +34,18 @@ as observed. If the repository pin, official dependency, local configuration,
 or output shape cannot be verified, the command fails closed with a typed
 failure instead of falling back to another provider.
 
-The value/identity checks below are adapted from the already-qualified
-``qualify_ibkr_tws.py`` validators in the pinned checkout (contract identity,
-snapshot value sanity, recent-daily-bar sanity and freshness). They are
-re-implemented here rather than imported because that qualifier is control
-machinery MarketLab deliberately does not consume; the rules are the same.
+The value/identity checks below are adapted from the qualified
+``qualify_ibkr_tws.py`` validators of the retired TRADING_DESK project
+(contract identity, snapshot value sanity, recent-daily-bar sanity and
+freshness). They were re-implemented here, not imported, because that
+qualifier was control machinery MarketLab deliberately never consumed; the
+rules are the same.
 
 Configuration (default ``%FINCEPT_DATA_DIR%/ibkr_tws.json``, or ``--config``)::
 
     {
-      "trading_desk_root": "E:\\\\TRADING_DESK",
-      "trading_desk_commit": "<40-hex commit>",
+      "adapter_root": "<clean checkout of Rady70/Market_Lab>",
+      "adapter_commit": "<40-hex commit>",
       "ibapi_path": "C:\\\\TWS API\\\\source\\\\pythonclient",
       "host": "127.0.0.1",
       "port": 7496,
@@ -98,7 +103,11 @@ CONTRACT_SECURITY_TYPES = frozenset({"STK", "ETF", "FUND"})
 IBKR_UNSET_DOUBLE = 1.7976931348623157e308
 IBKR_UNSET_INTEGER = 2147483647
 HISTORY_MAX_AGE_DAYS = 45
-ADAPTER_PACKAGE_RELATIVE = Path("scripts") / "ibkr_tws"
+ADAPTER_PACKAGE_RELATIVE = Path("ibkr_tws")
+# Configuration keys of the retired TRADING_DESK adapter. They are never read;
+# when adapter_root is missing, the error names them, so a configuration from
+# before the move is recognized at once.
+RETIRED_CONFIG_KEYS = ("trading_desk_root", "trading_desk_commit")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENTITLEMENT_HINTS = (
     "not subscribed",
@@ -146,8 +155,8 @@ class WrapperError(Exception):
 @dataclass
 class Config:
     config_path: Path
-    trading_desk_root: Path
-    trading_desk_commit: str
+    adapter_root: Path
+    adapter_commit: str
     ibapi_path: Path
     host: str
     port: int
@@ -226,15 +235,22 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Co
 
     overrides = overrides or {}
 
-    root_raw = _pick(overrides, raw, "trading_desk_root")
+    root_raw = _pick(overrides, raw, "adapter_root")
     if not isinstance(root_raw, str) or not root_raw.strip():
-        raise WrapperError("IBKR_CONFIG_INVALID", "config", "trading_desk_root is required")
+        retired = [name for name in RETIRED_CONFIG_KEYS if name in raw]
+        hint = (
+            f"; {' and '.join(retired)} name the retired TRADING_DESK adapter and are not used: set adapter_root to "
+            "a clean checkout of Rady70/Market_Lab and adapter_commit to its pinned commit"
+            if retired
+            else ""
+        )
+        raise WrapperError("IBKR_CONFIG_INVALID", "config", "adapter_root is required" + hint)
     root = Path(root_raw).expanduser()
 
-    commit = raw.get("trading_desk_commit")
+    commit = raw.get("adapter_commit")
     if not isinstance(commit, str) or not COMMIT_PATTERN.fullmatch(commit.strip().lower()):
         raise WrapperError(
-            "IBKR_CONFIG_INVALID", "config", "trading_desk_commit must be a 40-character lowercase hex commit"
+            "IBKR_CONFIG_INVALID", "config", "adapter_commit must be a 40-character lowercase hex commit"
         )
 
     ibapi_raw = _pick(overrides, raw, "ibapi_path")
@@ -263,8 +279,8 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Co
 
     return Config(
         config_path=config_path,
-        trading_desk_root=root,
-        trading_desk_commit=commit.strip().lower(),
+        adapter_root=root,
+        adapter_commit=commit.strip().lower(),
         ibapi_path=ibapi_path,
         host=host,
         port=port,
@@ -286,44 +302,44 @@ def _run_git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[st
         raise WrapperError(
             "IBKR_ADAPTER_IDENTITY_UNAVAILABLE",
             "pin",
-            f"Unable to inspect the configured TRADING_DESK checkout: {exc}",
+            f"Unable to inspect the configured adapter checkout: {exc}",
         ) from exc
 
 
 def verify_checkout_identity(config: Config) -> dict[str, Any]:
     """Pin the configured checkout to the exact recorded commit and a clean tree."""
 
-    adapter_dir = config.trading_desk_root / ADAPTER_PACKAGE_RELATIVE
+    adapter_dir = config.adapter_root / ADAPTER_PACKAGE_RELATIVE
     adapter_file = adapter_dir / "adapter.py"
     init_file = adapter_dir / "__init__.py"
     if not adapter_file.is_file() or not init_file.is_file():
         raise WrapperError(
             "IBKR_ADAPTER_MISSING",
             "pin",
-            f"Configured checkout has no {ADAPTER_PACKAGE_RELATIVE / 'adapter.py'} at {config.trading_desk_root}",
+            f"Configured checkout has no {ADAPTER_PACKAGE_RELATIVE / 'adapter.py'} at {config.adapter_root}",
         )
-    if not config.trading_desk_root.is_dir():
+    if not config.adapter_root.is_dir():
         raise WrapperError(
-            "IBKR_ADAPTER_MISSING", "pin", f"Configured TRADING_DESK checkout not found at {config.trading_desk_root}"
+            "IBKR_ADAPTER_MISSING", "pin", f"Configured adapter checkout not found at {config.adapter_root}"
         )
 
-    head = _run_git(config.trading_desk_root, ["rev-parse", "HEAD"])
+    head = _run_git(config.adapter_root, ["rev-parse", "HEAD"])
     if head.returncode != 0:
         raise WrapperError(
             "IBKR_ADAPTER_IDENTITY_UNAVAILABLE",
             "pin",
-            f"Configured checkout at {config.trading_desk_root} is not a readable git repository",
+            f"Configured checkout at {config.adapter_root} is not a readable git repository",
         )
     observed = head.stdout.strip().lower()
-    if observed != config.trading_desk_commit:
+    if observed != config.adapter_commit:
         raise WrapperError(
             "IBKR_ADAPTER_PIN_MISMATCH",
             "pin",
-            "Configured TRADING_DESK checkout is not at the pinned commit",
-            details={"expected": config.trading_desk_commit, "observed": observed or "UNKNOWN"},
+            "Configured adapter checkout is not at the pinned commit",
+            details={"expected": config.adapter_commit, "observed": observed or "UNKNOWN"},
         )
 
-    status = _run_git(config.trading_desk_root, ["status", "--porcelain"])
+    status = _run_git(config.adapter_root, ["status", "--porcelain"])
     if status.returncode != 0:
         raise WrapperError(
             "IBKR_ADAPTER_IDENTITY_UNAVAILABLE", "pin", "Unable to read the configured checkout working-tree state"
@@ -332,14 +348,14 @@ def verify_checkout_identity(config: Config) -> dict[str, Any]:
         raise WrapperError(
             "IBKR_ADAPTER_TREE_DIRTY",
             "pin",
-            "Configured TRADING_DESK checkout has uncommitted changes; refusing to import it",
+            "Configured adapter checkout has uncommitted changes; refusing to import it",
         )
 
     return {
         "commit": observed,
         "adapter_sha256": _sha256_file(adapter_file),
         "init_sha256": _sha256_file(init_file),
-        "checkout_root": str(config.trading_desk_root),
+        "checkout_root": str(config.adapter_root),
     }
 
 
@@ -351,7 +367,7 @@ def load_adapter_module(config: Config) -> types.ModuleType:
     adapter's own relative import from its package directory.
     """
 
-    package_dir = (config.trading_desk_root / ADAPTER_PACKAGE_RELATIVE).resolve()
+    package_dir = (config.adapter_root / ADAPTER_PACKAGE_RELATIVE).resolve()
     init_file = package_dir / "__init__.py"
     package_name = "marketlab_ibkr_tws_producer"
     if package_name in sys.modules:
@@ -374,7 +390,7 @@ def load_adapter_module(config: Config) -> types.ModuleType:
     except Exception as exc:
         sys.modules.pop(package_name, None)
         raise WrapperError(
-            "IBKR_ADAPTER_IMPORT_FAILED", "dependency", f"Unable to import the pinned TRADING_DESK adapter: {exc}"
+            "IBKR_ADAPTER_IMPORT_FAILED", "dependency", f"Unable to import the pinned MarketLab adapter: {exc}"
         ) from exc
     finally:
         sys.dont_write_bytecode = previous_dont_write
