@@ -222,11 +222,12 @@ inline QString cftc_monitor_status_label(services::CftcMonitorStatus status) {
 }
 
 /// Whether the entry is ordinary validated current data: the provider refresh
-/// succeeded AND the engine actually interpreted the report. A fresh provider
-/// status does not authorize "current" when the report itself could not be
-/// interpreted (`report_unavailable`).
+/// succeeded, the engine actually interpreted the report, and the report is
+/// inside the freshness limit. A fresh provider status does not authorize
+/// "current" when the report could not be interpreted (`report_unavailable`)
+/// or is outdated.
 inline bool cftc_monitor_report_is_current(const services::CftcMonitorEntry& entry) {
-    return entry.status == services::CftcMonitorStatus::Ok && !entry.report_unavailable;
+    return entry.status == services::CftcMonitorStatus::Ok && !entry.report_unavailable && !entry.report_outdated;
 }
 
 /// The effective displayed status: a report the engine could not interpret is

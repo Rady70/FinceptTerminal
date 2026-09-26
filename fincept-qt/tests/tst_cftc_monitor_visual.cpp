@@ -362,6 +362,15 @@ void TstCftcMonitorVisual::uninterpretable_report_is_not_current() {
     const CftcMonitorSummary mixed = cftc_monitor_summary(entries, CftcMonitorMetric::NetPctOi);
     QCOMPARE(mixed.current, 1);
     QCOMPARE(mixed.problem, 1);
+
+    // An outdated report stays a warning, and the helper that documents
+    // "ordinary current data" must not call it current either.
+    CftcMonitorEntry outdated = make_valued_entry(QStringLiteral("copper"));
+    outdated.report_outdated = true;
+    outdated.report_age_available = true;
+    outdated.report_age_days = 30;
+    QVERIFY(!cftc_monitor_report_is_current(outdated));
+    QCOMPARE(cftc_monitor_status_tone(outdated), CftcMonitorStatusTone::Warning);
 }
 
 void TstCftcMonitorVisual::labels_are_descriptive_only() {

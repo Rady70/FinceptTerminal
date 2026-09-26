@@ -673,10 +673,10 @@ void CftcPanel::show_monitor_tab() {
         show_content_page(monitor_page_);
     if (monitor_tab_)
         monitor_tab_->setChecked(true);
-    // The cross-market overview is not a single-market result: a stale
-    // market identity above the content stack would be misleading.
-    if (monitor_rendered_)
-        set_result_identity_visible(false);
+    // The cross-market overview is never a single-market result: hide the
+    // result identity line unconditionally while this tab is shown, including
+    // the first scan (when monitor_rendered_ is still false) and a re-scan.
+    set_result_identity_visible(false);
 }
 
 void CftcPanel::show_analysis_tab() {
