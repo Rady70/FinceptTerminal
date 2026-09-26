@@ -53,8 +53,9 @@ IbkrTwsConfig IbkrTwsService::load_config() const {
     if (!document.isObject())
         return cfg;
     const QJsonObject object = document.object();
-    cfg.trading_desk_root = object.value(QLatin1String("trading_desk_root")).toString();
-    cfg.trading_desk_commit = object.value(QLatin1String("trading_desk_commit")).toString();
+    cfg.adapter_root = object.value(QLatin1String("adapter_root")).toString();
+    cfg.adapter_commit = object.value(QLatin1String("adapter_commit")).toString();
+    cfg.names_retired_adapter = object.contains(QLatin1String("trading_desk_root"));
     cfg.ibapi_path = object.value(QLatin1String("ibapi_path")).toString();
     cfg.host = object.value(QLatin1String("host")).toString(cfg.host);
     cfg.port = object.value(QLatin1String("port")).toInt(cfg.port);
@@ -179,6 +180,33 @@ void IbkrTwsService::fetch_history(const QString& symbol, const QString& duratio
     run(cfg, arguments, kHistoryWatchdogMs,
         [cb = std::move(cb)](bool ok, const QJsonObject& payload, const QString& error) {
             cb(ibkr_history_result_from_payload(payload, ok, error));
+        });
+}
+
+void IbkrTwsService::fetch_history_envelope(const QString& symbol, const QString& duration, const QString& bar_size,
+                                            const QString& end_date_time, const QString& what_to_show, bool use_rth,
+                                            EnvelopeCallback cb) {
+    const IbkrTwsConfig cfg = config();
+    QStringList arguments{QStringLiteral("history"),         symbol,
+                          QStringLiteral("--duration"),      duration,
+                          QStringLiteral("--bar-size"),      bar_size,
+                          QStringLiteral("--what-to-show"),  what_to_show,
+                          QStringLiteral("--use-rth"),       use_rth ? QStringLiteral("true") : QStringLiteral("false"),
+                          QStringLiteral("--end-date-time"), end_date_time};
+    arguments.append({QStringLiteral("--timeout"), QStringLiteral("30")});
+    run(cfg, arguments, kHistoryWatchdogMs,
+        [cb = std::move(cb)](bool, const QJsonObject& payload, const QString& error) {
+            if (payload.isEmpty()) {
+                // No configuration: run() produced no envelope at all.
+                cb(QJsonObject{{"source", QLatin1String(kIbkrSource)},
+                               {"command", QStringLiteral("history")},
+                               {"ok", false},
+                               {"failure", QJsonObject{{"type", QStringLiteral("IBKR_NOT_CONFIGURED")},
+                                                       {"stage", QStringLiteral("config")},
+                                                       {"message", error}}}});
+                return;
+            }
+            cb(payload);
         });
 }
 

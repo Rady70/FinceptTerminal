@@ -2,17 +2,21 @@
 
 These tests run the real ``scripts/ibkr_tws_data.py`` CLI as a subprocess, but
 the pinned checkout they import contains a deterministic fake adapter instead of
-the real TRADING_DESK package. No TWS connection, no ``ibapi`` install and no
-network access are required: the fake adapter reproduces the adapter's
-documented read-only result shapes and failure modes, and the tests assert that
-the wrapper preserves those shapes, classifications, and missing values.
+MarketLab's real one (``ibkr_tws/`` in the private Rady70/Market_Lab
+repository, which has its own offline suite). No TWS connection, no ``ibapi``
+install and no network access are required: the fake adapter reproduces the
+adapter's documented read-only result shapes and failure modes, and the tests
+assert that the wrapper preserves those shapes, classifications, and missing
+values.
 
-The checkout is a genuine temporary git repository so the wrapper's commit pin
-and clean-tree verification are exercised for real rather than bypassed.
+The checkout is a genuine temporary git repository with the Market_Lab layout,
+so the wrapper's commit pin and clean-tree verification are exercised for real
+rather than bypassed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -21,19 +25,27 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 FINCEPT_QT = Path(__file__).resolve().parents[2]
 WRAPPER = FINCEPT_QT / "scripts" / "ibkr_tws_data.py"
 IBAPI_PLACEHOLDER = "ibapi-placeholder"
 
+# The wrapper refuses daily history whose newest bar is more than this many
+# days older than its own UTC clock (HISTORY_MAX_AGE_DAYS in the wrapper). The
+# freshness-window tests pin the rule from both sides: loosening it makes the
+# stale test fail, tightening it makes the inside-the-window test fail.
+HISTORY_MAX_AGE_DAYS = 45
+
 FAKE_ADAPTER = '''
-"""Deterministic offline stand-in for the pinned TRADING_DESK adapter."""
+"""Deterministic offline stand-in for MarketLab's pinned adapter."""
 
 from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timedelta
 
 
 class IBKRConnectionError(RuntimeError):
@@ -56,6 +68,12 @@ def _scenario() -> str:
     return os.environ.get("FAKE_IBKR_SCENARIO", "ok")
 
 
+def _history_last_date():
+    # The test harness dates the newest bar relative to the day the test run
+    # started, so the fixture never ages out of the wrapper's freshness window.
+    return datetime.strptime(os.environ["FAKE_IBKR_HISTORY_LAST"], "%Y%m%d").date()
+
+
 def _contract_row(con_id: int, symbol: str) -> dict:
     return {
         "con_id": con_id,
@@ -70,6 +88,8 @@ def _contract_row(con_id: int, symbol: str) -> dict:
         "last_trade_date_or_contract_month": "",
         "strike": None,
         "right": None,
+        # IBKR's classification: AAPL is an ordinary share.
+        "stock_type": "COMMON",
     }
 
 
@@ -191,6 +211,14 @@ class IBKRTWSReadOnlyAdapter:
             row = _contract_row(265598, contract.symbol)
             row["exchange"] = ""
             return [row]
+        if scenario == "stock_type_etf":
+            row = _contract_row(756733, contract.symbol)
+            row["stock_type"] = "ETF"
+            return [row]
+        if scenario == "stock_type_absent":
+            row = _contract_row(265598, contract.symbol)
+            del row["stock_type"]
+            return [row]
         return [_contract_row(265598, contract.symbol)]
 
     def set_market_data_type(self, market_data_type: int) -> None:
@@ -297,10 +325,12 @@ class IBKRTWSReadOnlyAdapter:
             )
         if scenario == "conid_check" and getattr(contract, "conId", 0) != 265598:
             raise IBKRRequestError("history did not use the resolved conId: %r" % getattr(contract, "conId", None))
+        last = _history_last_date()
+        first = last - timedelta(days=1)
         rows = [
-            {"date": "20260806", "open": 224.5, "high": 227.0, "low": 223.9,
+            {"date": first.strftime("%Y%m%d"), "open": 224.5, "high": 227.0, "low": 223.9,
              "close": 226.0, "volume": 1000.5},
-            {"date": "20260807", "open": 226.0, "high": 228.4, "low": 225.1,
+            {"date": last.strftime("%Y%m%d"), "open": 226.0, "high": 228.4, "low": 225.1,
              "close": 227.3, "volume": 1100.0},
         ]
         if scenario == "history_zero_close":
@@ -322,8 +352,8 @@ class IbkrWrapperTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._tmp = tempfile.TemporaryDirectory(prefix="marketlab_ibkr_")
         cls.root = Path(cls._tmp.name)
-        checkout = cls.root / "trading_desk"
-        package = checkout / "scripts" / "ibkr_tws"
+        checkout = cls.root / "market_lab"
+        package = checkout / "ibkr_tws"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text(
             "from .adapter import IBKRTWSReadOnlyAdapter\n\n__all__ = [\"IBKRTWSReadOnlyAdapter\"]\n",
@@ -344,6 +374,11 @@ class IbkrWrapperTest(unittest.TestCase):
         cls.ibapi_dir = cls.root / IBAPI_PLACEHOLDER
         cls.ibapi_dir.mkdir()
         cls.checkout = checkout
+        # Every history fixture is dated relative to this day. The wrapper
+        # judges freshness against its own UTC clock, so a run that crosses
+        # midnight sees the fixtures one day older; the tests keep at least a
+        # day of margin on each side of the window for that reason.
+        cls.reference = datetime.now(timezone.utc).date()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -351,8 +386,8 @@ class IbkrWrapperTest(unittest.TestCase):
 
     def _write_config(self, **overrides) -> Path:
         config = {
-            "trading_desk_root": str(self.checkout),
-            "trading_desk_commit": self.commit,
+            "adapter_root": str(self.checkout),
+            "adapter_commit": self.commit,
             "ibapi_path": str(self.ibapi_dir),
             "host": "127.0.0.1",
             "port": 7496,
@@ -364,9 +399,11 @@ class IbkrWrapperTest(unittest.TestCase):
         path.write_text(json.dumps(config), encoding="utf-8")
         return path
 
-    def _run(self, config: Path, *arguments: str, scenario: str = "ok") -> tuple[int, dict]:
+    def _run(self, config: Path, *arguments: str, scenario: str = "ok",
+             history_last: date | None = None) -> tuple[int, dict]:
         env = dict(os.environ)
         env["FAKE_IBKR_SCENARIO"] = scenario
+        env["FAKE_IBKR_HISTORY_LAST"] = (history_last or self.reference - timedelta(days=1)).strftime("%Y%m%d")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run(
             [sys.executable, str(WRAPPER), "--config", str(config), *arguments],
@@ -568,9 +605,34 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertEqual(code, 0, payload)
         self.assertTrue(payload["classification"]["usable"])
         self.assertEqual(len(payload["bars"]), 2)
-        self.assertEqual(payload["bars"][0]["date"], "20260806")
-        self.assertAlmostEqual(payload["bars"][0]["timestamp"], 1785974400.0, places=0)
+        first = self.reference - timedelta(days=2)
+        self.assertEqual(payload["bars"][0]["date"], first.strftime("%Y%m%d"))
+        self.assertEqual(payload["bars"][1]["date"], (first + timedelta(days=1)).strftime("%Y%m%d"))
+        # A date-only daily bar is mapped to UTC midnight of its date.
+        midnight = datetime(first.year, first.month, first.day, tzinfo=timezone.utc).timestamp()
+        self.assertAlmostEqual(payload["bars"][0]["timestamp"], midnight, places=0)
         self.assertEqual(payload["bars"][1]["close"], 227.3)
+
+    def test_history_inside_the_freshness_window_is_usable(self) -> None:
+        # One day inside the window, so crossing midnight cannot push it out.
+        last = self.reference - timedelta(days=HISTORY_MAX_AGE_DAYS - 1)
+        code, payload = self._run(self._write_config(), "history", "AAPL", history_last=last)
+        self.assertEqual(code, 0, payload)
+        self.assertTrue(payload["classification"]["usable"])
+        self.assertEqual(payload["bars"][-1]["date"], last.strftime("%Y%m%d"))
+
+    def test_history_older_than_the_freshness_window_is_stale(self) -> None:
+        # The staleness rule itself is unchanged: history whose newest bar is
+        # older than the window is refused as STALE, and none of its bars is
+        # returned as usable data.
+        last = self.reference - timedelta(days=HISTORY_MAX_AGE_DAYS + 1)
+        code, payload = self._run(self._write_config(), "history", "AAPL", history_last=last)
+        self.assertEqual(code, 0, payload)
+        self.assertFalse(payload["classification"]["usable"])
+        self.assertEqual(payload["classification"]["status"], "STALE")
+        self.assertEqual(payload["classification"]["validation_reason"], "HISTORY_STALE")
+        self.assertTrue(payload["classification"]["value_present"])
+        self.assertEqual(payload["bars"], [])
 
     def test_history_empty_is_classified_not_a_success(self) -> None:
         code, payload = self._run(self._write_config(), "history", "AAPL", scenario="history_empty")
@@ -600,14 +662,14 @@ class IbkrWrapperTest(unittest.TestCase):
                 self.assertTrue(payload["classification"]["validation_reason"])
 
     def test_pin_mismatch_fails_closed(self) -> None:
-        config = self._write_config(trading_desk_commit="0" * 40)
+        config = self._write_config(adapter_commit="0" * 40)
         code, payload = self._run(config, "probe")
         self.assertEqual(code, 1)
         self.assertEqual(payload["failure"]["type"], "IBKR_ADAPTER_PIN_MISMATCH")
         self.assertEqual(payload["failure"]["details"]["observed"], self.commit)
 
     def test_dirty_checkout_fails_closed(self) -> None:
-        dirty_file = self.checkout / "scripts" / "ibkr_tws" / "scratch.txt"
+        dirty_file = self.checkout / "ibkr_tws" / "scratch.txt"
         dirty_file.write_text("uncommitted", encoding="utf-8")
         try:
             code, payload = self._run(self._write_config(), "probe")
@@ -657,6 +719,52 @@ class IbkrWrapperTest(unittest.TestCase):
         )
         for name in forbidden:
             self.assertNotIn(name, source, f"wrapper must not reference {name}")
+
+    def test_identity_names_the_pinned_checkout_and_the_imported_adapter(self) -> None:
+        # Every envelope carries the pinned commit and the SHA-256 of the very
+        # adapter file the wrapper imported from that checkout.
+        code, payload = self._run(self._write_config(), "probe")
+        self.assertEqual(code, 0, payload)
+        adapter_file = self.checkout / "ibkr_tws" / "adapter.py"
+        self.assertEqual(payload["adapter"]["commit"], self.commit)
+        self.assertEqual(
+            payload["adapter"]["adapter_sha256"], hashlib.sha256(adapter_file.read_bytes()).hexdigest().upper()
+        )
+
+    def test_stock_type_is_forwarded_exactly_as_the_adapter_reported(self) -> None:
+        # IBKR's classification reaches the consumers untouched: never
+        # synthesized, never defaulted, and absent when the adapter reports none.
+        for scenario, expected in (("ok", "COMMON"), ("stock_type_etf", "ETF"), ("stock_type_absent", None)):
+            for command in ("contract", "history"):
+                with self.subTest(scenario=scenario, command=command):
+                    code, payload = self._run(self._write_config(), command, "SPY", scenario=scenario)
+                    self.assertEqual(code, 0, payload)
+                    row = payload["resolved"] if command == "contract" else payload["contract"]
+                    self.assertEqual(row.get("stock_type"), expected)
+                    self.assertEqual(row["security_type"], "STK")
+                    if expected is None:
+                        self.assertNotIn("stock_type", row)
+
+    def test_retired_trading_desk_keys_are_named_but_never_used(self) -> None:
+        # A configuration from before the move names the retired adapter keys
+        # in its error; beside the adapter keys they are ignored, and the
+        # pinned Market_Lab checkout is the one imported.
+        retired = {"trading_desk_root": str(self.root / "no_such_checkout"), "trading_desk_commit": "1" * 40}
+        path = self.root / "config_retired_only.json"
+        config = json.loads(self._write_config().read_text(encoding="utf-8"))
+        del config["adapter_root"]
+        del config["adapter_commit"]
+        config.update(retired)
+        path.write_text(json.dumps(config), encoding="utf-8")
+        code, payload = self._run(path, "probe")
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["failure"]["type"], "IBKR_CONFIG_INVALID")
+        self.assertIn("adapter_root is required", payload["failure"]["message"])
+        self.assertIn("trading_desk_root and trading_desk_commit", payload["failure"]["message"])
+
+        code, payload = self._run(self._write_config(**retired), "probe")
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["adapter"]["commit"], self.commit)
 
 
 if __name__ == "__main__":

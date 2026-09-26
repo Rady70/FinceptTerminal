@@ -44,6 +44,24 @@ class HttpClient : public QObject {
     void del(const QString& url, const QJsonObject& body, JsonCallback callback, const QObject* context = nullptr,
              const Headers& extra_headers = {});
 
+    /// A response delivered as it arrived, for callers that must keep the exact
+    /// bytes (a digest of the body, or a non-JSON document such as XML).
+    /// `transport_ok` is true when an HTTP status arrived, whatever it was; the
+    /// caller judges the status. Otherwise `error` carries the transport error.
+    struct RawResponse {
+        bool transport_ok = false;
+        int status = 0;
+        QByteArray body;
+        QString error;
+    };
+    using RawCallback = std::function<void(const RawResponse&)>;
+
+    /// GET returning the raw response. It goes through the same manager, the
+    /// same deny-list check, redirect containment and transfer timeout as get():
+    /// no new outbound path, only a different way of handing back the reply.
+    void get_raw(const QString& url, RawCallback callback, const QObject* context = nullptr,
+                 const Headers& extra_headers = {});
+
     /// Error strings produced by this client are `"HTTP_<status>"` or
     /// `"HTTP_<status>: <server message>"`. These two recover the halves —
     /// use them instead of re-implementing the parse at each call site.
