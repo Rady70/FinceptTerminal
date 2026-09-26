@@ -552,7 +552,6 @@
         "scripts/boi_data.py",
         "scripts/canada_gov_api.py",
         "scripts/census_data.py",
-        "scripts/cftc_data.py",
         "scripts/cnb_data.py",
         "scripts/congress_gov_data.py",
         "scripts/data_gov_hk_api.py",
@@ -648,6 +647,14 @@
         "scripts/Analytics/economics/data_handler.py"
       ],
       "note": "requests calls to fixed third-party economic-data endpoints (the economics data handler launched by its own cli entry point). The destinations are code constants, not configuration-derived; there is no Fincept-owned route through this file."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/cftc_data.py"
+      ],
+      "note": "The CFTC Commitments of Traders provider, launched as a child process by the C++ layer. It is pinned on its own because CFTC Batch 5 (commits 7a3b99958..a7ddd35c4) raised its count from 2 to 3, and each site was judged. (1) The requests import. (2) The wrapper's shared requests.Session, built in CFTCDataWrapper.__init__. It reaches exactly two destinations, both fixed by the source. The first is the CFTC public-reporting Socrata API at the literal base_url https://publicreporting.cftc.gov, with resource ids from the fixed reports_dict. The second, added by Batch 5, is the official annual history files under the class constant ANNUAL_HISTORY_BASE = https://www.cftc.gov/files/dea/history, fetched by _download_annual; the file names come from the fixed ANNUAL_SOURCES and ANNUAL_ALTERNATE_SOURCES tables formatted with an integer year. (3) The per-thread requests.Session that Batch 5 added in _thread_session(), which is the site that raised the count. It copies the shared session's headers and is used only by _monitor_get, for the cross-market monitor's Socrata pages built from the same literal base_url. No scheme, host or path prefix is taken from configuration, arguments or the environment. The environment supplies only the optional Socrata app token (CFTC_APP_TOKEN, sent as a query parameter) and the local archive directory. requests follows HTTP redirects, so the final host is whatever these two CFTC hosts redirect to; that is decided by the CFTC's servers, never by anything a Fincept configuration can set. None of these routes can reach a Fincept-owned destination, so there is nothing to guard. The literal-host scan covers this file as well."
     }
   ],
   "sink_counts_note": "Pinned occurrence count of every (file, sink) pair in the scanned sink scopes (under src/, and the reachable production Python under scripts/), exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included \u2014 editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
@@ -698,7 +705,7 @@
       "py_http_client": 2
     },
     "scripts/cftc_data.py": {
-      "py_http_client": 2
+      "py_http_client": 3
     },
     "scripts/cnb_data.py": {
       "py_http_client": 2

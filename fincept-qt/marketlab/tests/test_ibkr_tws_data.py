@@ -21,11 +21,18 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 FINCEPT_QT = Path(__file__).resolve().parents[2]
 WRAPPER = FINCEPT_QT / "scripts" / "ibkr_tws_data.py"
 IBAPI_PLACEHOLDER = "ibapi-placeholder"
+
+# The wrapper refuses daily history whose newest bar is more than this many
+# days older than its own UTC clock (HISTORY_MAX_AGE_DAYS in the wrapper). The
+# freshness-window tests pin the rule from both sides: loosening it makes the
+# stale test fail, tightening it makes the inside-the-window test fail.
+HISTORY_MAX_AGE_DAYS = 45
 
 FAKE_ADAPTER = '''
 """Deterministic offline stand-in for the pinned TRADING_DESK adapter."""
@@ -34,6 +41,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, timedelta
 
 
 class IBKRConnectionError(RuntimeError):
@@ -54,6 +62,12 @@ class IBKRDataError(RuntimeError):
 
 def _scenario() -> str:
     return os.environ.get("FAKE_IBKR_SCENARIO", "ok")
+
+
+def _history_last_date():
+    # The test harness dates the newest bar relative to the day the test run
+    # started, so the fixture never ages out of the wrapper's freshness window.
+    return datetime.strptime(os.environ["FAKE_IBKR_HISTORY_LAST"], "%Y%m%d").date()
 
 
 def _contract_row(con_id: int, symbol: str) -> dict:
@@ -297,10 +311,12 @@ class IBKRTWSReadOnlyAdapter:
             )
         if scenario == "conid_check" and getattr(contract, "conId", 0) != 265598:
             raise IBKRRequestError("history did not use the resolved conId: %r" % getattr(contract, "conId", None))
+        last = _history_last_date()
+        first = last - timedelta(days=1)
         rows = [
-            {"date": "20260806", "open": 224.5, "high": 227.0, "low": 223.9,
+            {"date": first.strftime("%Y%m%d"), "open": 224.5, "high": 227.0, "low": 223.9,
              "close": 226.0, "volume": 1000.5},
-            {"date": "20260807", "open": 226.0, "high": 228.4, "low": 225.1,
+            {"date": last.strftime("%Y%m%d"), "open": 226.0, "high": 228.4, "low": 225.1,
              "close": 227.3, "volume": 1100.0},
         ]
         if scenario == "history_zero_close":
@@ -344,6 +360,11 @@ class IbkrWrapperTest(unittest.TestCase):
         cls.ibapi_dir = cls.root / IBAPI_PLACEHOLDER
         cls.ibapi_dir.mkdir()
         cls.checkout = checkout
+        # Every history fixture is dated relative to this day. The wrapper
+        # judges freshness against its own UTC clock, so a run that crosses
+        # midnight sees the fixtures one day older; the tests keep at least a
+        # day of margin on each side of the window for that reason.
+        cls.reference = datetime.now(timezone.utc).date()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -364,9 +385,11 @@ class IbkrWrapperTest(unittest.TestCase):
         path.write_text(json.dumps(config), encoding="utf-8")
         return path
 
-    def _run(self, config: Path, *arguments: str, scenario: str = "ok") -> tuple[int, dict]:
+    def _run(self, config: Path, *arguments: str, scenario: str = "ok",
+             history_last: date | None = None) -> tuple[int, dict]:
         env = dict(os.environ)
         env["FAKE_IBKR_SCENARIO"] = scenario
+        env["FAKE_IBKR_HISTORY_LAST"] = (history_last or self.reference - timedelta(days=1)).strftime("%Y%m%d")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run(
             [sys.executable, str(WRAPPER), "--config", str(config), *arguments],
@@ -568,9 +591,34 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertEqual(code, 0, payload)
         self.assertTrue(payload["classification"]["usable"])
         self.assertEqual(len(payload["bars"]), 2)
-        self.assertEqual(payload["bars"][0]["date"], "20260806")
-        self.assertAlmostEqual(payload["bars"][0]["timestamp"], 1785974400.0, places=0)
+        first = self.reference - timedelta(days=2)
+        self.assertEqual(payload["bars"][0]["date"], first.strftime("%Y%m%d"))
+        self.assertEqual(payload["bars"][1]["date"], (first + timedelta(days=1)).strftime("%Y%m%d"))
+        # A date-only daily bar is mapped to UTC midnight of its date.
+        midnight = datetime(first.year, first.month, first.day, tzinfo=timezone.utc).timestamp()
+        self.assertAlmostEqual(payload["bars"][0]["timestamp"], midnight, places=0)
         self.assertEqual(payload["bars"][1]["close"], 227.3)
+
+    def test_history_inside_the_freshness_window_is_usable(self) -> None:
+        # One day inside the window, so crossing midnight cannot push it out.
+        last = self.reference - timedelta(days=HISTORY_MAX_AGE_DAYS - 1)
+        code, payload = self._run(self._write_config(), "history", "AAPL", history_last=last)
+        self.assertEqual(code, 0, payload)
+        self.assertTrue(payload["classification"]["usable"])
+        self.assertEqual(payload["bars"][-1]["date"], last.strftime("%Y%m%d"))
+
+    def test_history_older_than_the_freshness_window_is_stale(self) -> None:
+        # The staleness rule itself is unchanged: history whose newest bar is
+        # older than the window is refused as STALE, and none of its bars is
+        # returned as usable data.
+        last = self.reference - timedelta(days=HISTORY_MAX_AGE_DAYS + 1)
+        code, payload = self._run(self._write_config(), "history", "AAPL", history_last=last)
+        self.assertEqual(code, 0, payload)
+        self.assertFalse(payload["classification"]["usable"])
+        self.assertEqual(payload["classification"]["status"], "STALE")
+        self.assertEqual(payload["classification"]["validation_reason"], "HISTORY_STALE")
+        self.assertTrue(payload["classification"]["value_present"])
+        self.assertEqual(payload["bars"], [])
 
     def test_history_empty_is_classified_not_a_success(self) -> None:
         code, payload = self._run(self._write_config(), "history", "AAPL", scenario="history_empty")
