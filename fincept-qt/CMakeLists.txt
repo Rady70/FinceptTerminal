@@ -824,6 +824,7 @@ set(CORE_SOURCES
     src/core/config/AppPaths.cpp
     src/core/config/ProfileManager.cpp
     src/core/logging/Logger.cpp
+    src/core/logging/QtMessageRouting.cpp
     src/core/events/EventBus.cpp
     src/core/HealthMonitor.cpp
     src/core/layout/LayoutTypes.cpp

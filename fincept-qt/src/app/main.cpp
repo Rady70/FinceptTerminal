@@ -24,6 +24,7 @@
 #include "core/keys/KeyConfigManager.h"
 #include "core/layout/DockLayoutSelftest.h"
 #include "core/logging/Logger.h"
+#include "core/logging/QtMessageRouting.h"
 #include "core/session/ScreenStateManager.h"
 #include "core/session/SessionManager.h"
 #include "core/symbol/SymbolGroup.h"
@@ -522,28 +523,10 @@ int main(int argc, char* argv[]) {
     fincept::services::NotebookLibraryService::instance().seed_into_files();
 
     // P3.18 — route Qt's own qDebug/qWarning/qCritical messages into our log
-    // file so framework/3rd-party warnings are visible in Release builds.
-    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& ctx, const QString& msg) {
-        const char* category = (ctx.category && *ctx.category) ? ctx.category : "Qt";
-        switch (type) {
-            case QtDebugMsg:
-                fincept::Logger::instance().debug(category, msg);
-                break;
-            case QtInfoMsg:
-                fincept::Logger::instance().info(category, msg);
-                break;
-            case QtWarningMsg:
-                fincept::Logger::instance().warn(category, msg);
-                break;
-            case QtCriticalMsg:
-                fincept::Logger::instance().error(category, msg);
-                break;
-            case QtFatalMsg:
-                fincept::Logger::instance().error(category, msg);
-                fincept::Logger::instance().flush_and_close();
-                break;
-        }
-    });
+    // file so framework/3rd-party warnings are visible in Release builds, until
+    // the application object is destroyed (QtMessageRouting.h says why the
+    // routing stops there).
+    fincept::install_qt_message_routing();
     {
         auto& log = fincept::Logger::instance();
         auto& cfg = fincept::AppConfig::instance();
