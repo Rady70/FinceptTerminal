@@ -1568,8 +1568,10 @@ void CftcPanel::render_monitor_summary() {
                                .arg(count.markets)
                                .arg(services::cftc_attention_class_label(count.classification).toLower());
     }
-    set_card(monitor_summary_cards_[4], tr("REQUIRING ATTENTION"), QString::number(summary.attention),
-             class_parts.isEmpty() ? tr("no alerting market") : class_parts.join(QStringLiteral(" · ")),
+    QString attention_sub = class_parts.isEmpty() ? tr("no alerting market") : class_parts.join(QStringLiteral(" · "));
+    if (class_parts.size() > 1)
+        attention_sub += tr(" (class counts overlap)");
+    set_card(monitor_summary_cards_[4], tr("REQUIRING ATTENTION"), QString::number(summary.attention), attention_sub,
              summary.attention > 0 ? ui::colors::AMBER() : QString());
     set_card(monitor_summary_cards_[5], tr("METRIC AVAILABLE"),
              QStringLiteral("%1/%2").arg(summary.metric_available).arg(summary.total),
@@ -1649,6 +1651,7 @@ void CftcPanel::render_monitor_attention() {
         int valid_points = 0;
         QDate first_date;
         QDate last_date;
+        QString trajectory_note;
         for (const services::CftcMonitorHistoryPoint& point : entry.principal_history) {
             CftcSparkPoint spark;
             spark.date = point.date;
@@ -1666,19 +1669,24 @@ void CftcPanel::render_monitor_attention() {
             auto* spark = new CftcSparkline(card);
             spark->set_points(points);
             spark->setFixedSize(190, 40);
-            spark->setToolTip(
+            // The sparkline is mouse-transparent so a double-click on the strip
+            // still reaches the card; its context lives in the card tooltip.
+            spark->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            card_layout->addWidget(spark, 0, Qt::AlignVCenter);
+            trajectory_note =
                 tr("Retained Net %OI trajectory of %1: %2 → %3, %4 valid reports in the transported window. The "
                    "line breaks where a report or the measure is missing; it is never interpolated. Context only — "
                    "the detailed workspace remains authoritative.")
                     .arg(participant.isEmpty() ? tr("the principal participant") : participant,
                          first_date.toString(Qt::ISODate), last_date.toString(Qt::ISODate))
-                    .arg(valid_points));
-            card_layout->addWidget(spark, 0, Qt::AlignVCenter);
+                    .arg(valid_points);
         }
 
         QString tooltip = tr("Double-click to open the detailed COT workspace for %1.").arg(entry.label);
         if (!entry.status_detail.isEmpty())
             tooltip += QStringLiteral("\n") + entry.status_detail;
+        if (!trajectory_note.isEmpty())
+            tooltip += QStringLiteral("\n") + trajectory_note;
         card->setToolTip(tooltip);
         monitor_attention_list_->addWidget(card);
     }

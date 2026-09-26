@@ -166,13 +166,18 @@ inline QString cftc_monitor_metric_text(const CftcMonitorMetricReading& reading,
     return cftc_monitor_signed_percent(reading.value, cftc_monitor_metric_decimals(metric)) + QLatin1Char('%');
 }
 
-/// The shared bar scale for the whole scanned universe: the largest absolute
-/// reading of the selected metric, with a small non-zero floor so an all-zero
-/// universe still renders a baseline instead of dividing by zero. The same
+/// The shared bar scale for the whole scanned universe. Signed metrics use the
+/// largest absolute reading, with a small non-zero floor so an all-zero
+/// universe still renders a baseline instead of dividing by zero. The
+/// percentile is a bounded rank, so its shared axis is the full 0..100 range
+/// regardless of the largest value observed in a given scan: a bar can never
+/// reach the labelled end of the axis without the reading to match it. The same
 /// extent is passed to every group chart so bars are comparable across groups
 /// even while the group filter shows a subset.
 inline double cftc_monitor_metric_scale_extent(const QVector<services::CftcMonitorEntry>& entries,
                                                CftcMonitorMetric metric, double minimum = 1.0) {
+    if (cftc_monitor_metric_is_percentile(metric))
+        return 100.0;
     double extent = 0.0;
     for (const services::CftcMonitorEntry& entry : entries) {
         const CftcMonitorMetricReading reading = cftc_monitor_metric_reading(entry, metric);

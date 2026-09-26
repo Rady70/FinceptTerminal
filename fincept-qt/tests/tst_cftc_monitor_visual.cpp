@@ -25,6 +25,7 @@
 #include "services/economics/CftcMarketCatalog.h"
 #include "services/economics/CftcMonitorModel.h"
 
+#include <QRegularExpression>
 #include <QtTest>
 
 #include <cmath>
@@ -75,14 +76,18 @@ CftcMonitorEntry make_valued_entry(const QString& key) {
 
 bool contains_forbidden(const QString& text) {
     const QString lower = text.toLower();
-    for (const QString& word :
+    for (const QString& phrase :
          {QStringLiteral("buy"), QStringLiteral("sell"), QStringLiteral("hold"), QStringLiteral("bullish"),
           QStringLiteral("bearish"), QStringLiteral("forecast"), QStringLiteral("expected return"),
-          QStringLiteral("confidence"), QStringLiteral("recommend")}) {
-        if (lower.contains(word))
+          QStringLiteral("confidence"), QStringLiteral("recommend"), QStringLiteral("trade today"),
+          QStringLiteral("sit out"), QStringLiteral("caution"), QStringLiteral("opportunity"),
+          QStringLiteral("conviction"), QStringLiteral("composite score"), QStringLiteral("ranking")}) {
+        if (lower.contains(phrase))
             return true;
     }
-    return false;
+    // The standalone strategy token "GO" must not appear as a judgment either.
+    static const QRegularExpression standalone_go(QStringLiteral("\\bgo\\b"));
+    return standalone_go.match(lower).hasMatch();
 }
 
 } // namespace
@@ -245,8 +250,12 @@ void TstCftcMonitorVisual::scale_extent_is_shared_across_groups() {
     none.append(make_entry(QStringLiteral("gold"), CftcMonitorStatus::NoData));
     QCOMPARE(cftc_monitor_metric_scale_extent(none, CftcMonitorMetric::NetPctOi), 1.0);
 
-    // Percentile uses its own 0..100 units, independent of the flow scale.
-    QVERIFY(std::abs(cftc_monitor_metric_scale_extent(entries, CftcMonitorMetric::Percentile) - 87.5) < 1e-9);
+    // The percentile axis is the bounded 0..100 rank, not the largest value
+    // observed in the scan: the labelled 100% end must always mean 100%.
+    QCOMPARE(cftc_monitor_metric_scale_extent(entries, CftcMonitorMetric::Percentile), 100.0);
+    QVector<CftcMonitorEntry> high_only;
+    high_only.append(make_valued_entry(QStringLiteral("corn"))); // percentile 87.5
+    QCOMPARE(cftc_monitor_metric_scale_extent(high_only, CftcMonitorMetric::Percentile), 100.0);
 }
 
 void TstCftcMonitorVisual::summary_counts_states_separately() {

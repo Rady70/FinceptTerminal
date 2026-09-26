@@ -82,9 +82,9 @@ void CftcSparkline::paintEvent(QPaintEvent*) {
         return left + static_cast<int>(static_cast<double>(index) / (points_.size() - 1) * plot_width);
     };
 
-    // Zero reference (only when the series spans it), then the trajectory with
-    // explicit breaks: a missing value or a gap longer than a normal weekly
-    // step ends the segment instead of being bridged.
+    // Zero reference, then the trajectory with explicit breaks: a missing value
+    // or a gap longer than a normal weekly step ends the segment instead of
+    // being bridged.
     const int zero_y = y_for(0.0);
     painter.setPen(QPen(QColor(ui::colors::BORDER_MED()), 1));
     painter.drawLine(left, zero_y, right, zero_y);
