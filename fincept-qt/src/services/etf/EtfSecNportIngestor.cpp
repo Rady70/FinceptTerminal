@@ -175,7 +175,13 @@ qint64 EtfSecNportIngestor::record_response(SourceType source, const QString& en
                               .toJson(QJsonDocument::Compact));
     auto id = EtfDataRepository::instance().record_retrieval(r);
     if (id.is_err()) {
-        LOG_ERROR(kSecIngestTag, QString("could not record retrieval: %1").arg(QString::fromStdString(id.error())));
+        // Every stored fact traces back to a recorded response (the
+        // acceptance times to the submissions, the values to their document):
+        // a response that cannot be recorded ends the run, whatever it held.
+        const QString error = QString::fromStdString(id.error());
+        LOG_ERROR(kSecIngestTag, QString("could not record retrieval: %1").arg(error));
+        finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
+               QStringLiteral("the %1 response could not be recorded: %2").arg(endpoint, error));
         return 0;
     }
     ++summary_.retrievals;
@@ -207,10 +213,10 @@ qint64 EtfSecNportIngestor::record_refusal(RetrievalStatus status, const QString
     return id.value();
 }
 
-void EtfSecNportIngestor::record_issue(qint64 retrieval_id, QualityState state, const QString& code,
-                                       const QString& detail, qint64 entity_id, const QDate& effective_date) {
+Result<void> EtfSecNportIngestor::record_issue(qint64 retrieval_id, QualityState state, const QString& code,
+                                               const QString& detail, qint64 entity_id, const QDate& effective_date) {
     if (retrieval_id <= 0)
-        return;
+        return Result<void>::err("no recorded retrieval to attach the issue to");
     etf_store::IssueRecord issue;
     if (entity_id > 0) {
         issue.subject_type = SubjectType::ReportingEntity;
@@ -220,8 +226,10 @@ void EtfSecNportIngestor::record_issue(qint64 retrieval_id, QualityState state, 
     issue.state = state;
     issue.code = code;
     issue.detail = detail;
-    if (EtfDataRepository::instance().record_issue(retrieval_id, issue).is_ok())
+    auto stored = EtfDataRepository::instance().record_issue(retrieval_id, issue);
+    if (stored.is_ok())
         ++summary_.issues;
+    return stored;
 }
 
 // ── Discovery ────────────────────────────────────────────────────────────────
@@ -334,10 +342,15 @@ void EtfSecNportIngestor::fetch_page_then(const SecOlderPage& page, std::functio
                       finish(RetrievalStatus::SourceError, problem, QStringLiteral("the SEC throttled the run"));
                       return;
                   }
+                  // The run goes on with what it has, but it cannot know what
+                  // the page listed: it will not end OK.
+                  ++pages_unreadable_;
                   next();
                   return;
               }
               const SecSubmissions page = parse_sec_submissions(r.body, /*older_page=*/true);
+              if (!page.ok)
+                  ++pages_unreadable_;
               record_response(SourceType::SecSubmissions, QStringLiteral("submissions_page"), url, r, requested_at,
                               retrieved_at, page.ok ? RetrievalStatus::Ok : RetrievalStatus::SourceError,
                               page.ok ? QString() : page.error.section(QLatin1Char(':'), 0, 0),
@@ -425,17 +438,20 @@ void EtfSecNportIngestor::fetch_next_document() {
     if (document_cursor_ >= selected_.size()) {
         const QString stored =
             QStringLiteral("%1 of %2 selected filings stored").arg(summary_.filings_stored).arg(selected_.size());
-        if (summary_.filings_skipped > 0 || summary_.observations_refused > 0) {
+        if (summary_.filings_skipped > 0 || summary_.observations_refused > 0 || pages_unreadable_ > 0) {
             // What was stored stays stored; the run still did not ingest
-            // everything it selected, as delivered.
-            finish(RetrievalStatus::SourceError,
-                   summary_.filings_skipped > 0 ? QStringLiteral("filings_not_stored")
-                                                : QStringLiteral("filed_values_refused"),
-                   QStringLiteral("%1; %2 filing(s) not stored, %3 value(s) refused (see this run's retrievals and "
-                                  "issues)")
+            // everything it selected, as delivered, or could not read every
+            // submissions page it needed to select from.
+            const QString code = summary_.filings_skipped > 0        ? QStringLiteral("filings_not_stored")
+                                 : summary_.observations_refused > 0 ? QStringLiteral("filed_values_refused")
+                                                                     : QStringLiteral("submissions_incomplete");
+            finish(RetrievalStatus::SourceError, code,
+                   QStringLiteral("%1; %2 filing(s) not stored, %3 value(s) refused, %4 submissions page(s) "
+                                  "unreadable (see this run's retrievals and issues)")
                        .arg(stored)
                        .arg(summary_.filings_skipped)
-                       .arg(summary_.observations_refused));
+                       .arg(summary_.observations_refused)
+                       .arg(pages_unreadable_));
             return;
         }
         finish(RetrievalStatus::Ok, selected_.isEmpty() ? QStringLiteral("no_nport_filings_selected") : QString(),
@@ -490,6 +506,26 @@ void EtfSecNportIngestor::fetch_next_document() {
         else if (doc.submission_type == QLatin1String("NPORT-P/A") && !doc.amended_accession.isEmpty() &&
                  !sec_valid_accession(doc.amended_accession))
             refusal = QStringLiteral("amended_accession_invalid: '%1'").arg(doc.amended_accession);
+        if (refusal.isEmpty()) {
+            // A filed document does not change. An accession already stored
+            // from other bytes is refused here, before anything is written:
+            // the stored filing, its entity attributes and its values stay as
+            // they are, and nothing of this delivery is applied, not even a
+            // confirmation of a number it happens to repeat.
+            auto stored = EtfDataRepository::instance().stored_filing_sha256(ref.accession);
+            if (stored.is_err()) {
+                finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
+                       QStringLiteral("the stored document of %1 could not be read: %2")
+                           .arg(ref.accession, QString::fromStdString(stored.error())));
+                return;
+            }
+            const QString delivered = sec_sha256_hex(r.body);
+            if (stored.value() && *stored.value() != delivered)
+                refusal = QStringLiteral("filing_document_changed: %1 is stored from a document with SHA-256 %2, "
+                                         "this delivery has SHA-256 %3; a filed document does not change, so nothing "
+                                         "of this delivery is applied")
+                              .arg(ref.accession, *stored.value(), delivered);
+        }
         if (!refusal.isEmpty()) {
             record_response(SourceType::SecNport, QStringLiteral("nport_primary_doc"), url, r, requested_at,
                             retrieved_at, RetrievalStatus::SourceError, refusal.section(QLatin1Char(':'), 0, 0),
@@ -577,15 +613,12 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     filing.returns_block_present = doc.returns_block_present;
     filing.class_ids = doc.return_class_ids.join(QLatin1Char(','));
     filing.document_sha256 = sec_sha256_hex(body);
+    // The repository refuses an accession stored from other bytes as well, so
+    // such a delivery can never commit (the caller refused it already).
     auto filing_r = repo.upsert_sec_filing(filing, retrieval_id, seen_at);
     if (filing_r.is_err())
         return fail(filing_r.error(), true);
     const qint64 filing_id = filing_r.value().first;
-    if (filing_r.value().second == etf_store::FilingOutcome::DocumentChanged)
-        record_issue(
-            retrieval_id, QualityState::SourceError, QStringLiteral("filing_document_changed"),
-            QStringLiteral("%1 was re-delivered with different bytes; changed values are refused").arg(ref.accession),
-            entity_id);
 
     auto record = [&](MeasurementKind kind, const QString& measure, const QString& basis, const QDate& effective,
                       const QDate& period_start, const QDate& period_end, const FieldValue& value) -> bool {
@@ -627,14 +660,20 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
             case etf_store::ObservationOutcome::AlreadyRecorded:
                 ++summary_.observations_already_recorded;
                 break;
-            case etf_store::ObservationOutcome::RefusedDocumentChanged:
+            case etf_store::ObservationOutcome::RefusedDocumentChanged: {
+                // The same bytes read with another meaning (the document
+                // itself is unchanged: changed bytes never get here).
                 ++summary_.observations_refused;
-                record_issue(retrieval_id, QualityState::SourceError, QStringLiteral("filed_observation_changed"),
-                             QStringLiteral("%1 %2 %3: the value, or its kind, units, basis, period or acceptance "
-                                            "time, differs from the stored vintage of this accession")
-                                 .arg(ref.accession, measure, effective.toString(Qt::ISODate)),
-                             entity_id, effective);
+                auto issue =
+                    record_issue(retrieval_id, QualityState::SourceError, QStringLiteral("filed_observation_changed"),
+                                 QStringLiteral("%1 %2 %3: the value, or its kind, units, basis, period or acceptance "
+                                                "time, differs from the stored vintage of this accession")
+                                     .arg(ref.accession, measure, effective.toString(Qt::ISODate)),
+                                 entity_id, effective);
+                if (issue.is_err())
+                    return fail(issue.error(), true);
                 break;
+            }
         }
         return true;
     };
@@ -648,9 +687,13 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     // Monthly flows, per calendar month. Only defined for a month-end report
     // date; anything else is refused rather than mapped by guesswork.
     if (!nport_report_date_is_month_end(doc.rep_pd_date)) {
-        record_issue(retrieval_id, QualityState::SourceError, QStringLiteral("report_date_not_month_end"),
-                     QStringLiteral("repPdDate %1: monthly flows not mapped").arg(doc.rep_pd_date_raw), entity_id,
-                     doc.rep_pd_date);
+        // Part of the filing's unit: a filing is never stored without the
+        // issue that says its flows are unmapped.
+        auto issue = record_issue(retrieval_id, QualityState::SourceError, QStringLiteral("report_date_not_month_end"),
+                                  QStringLiteral("repPdDate %1: monthly flows not mapped").arg(doc.rep_pd_date_raw),
+                                  entity_id, doc.rep_pd_date);
+        if (issue.is_err())
+            return fail(issue.error(), true);
     } else {
         for (const NportFlowMonth& m : doc.months) {
             const auto bounds = nport_flow_month_bounds(doc.rep_pd_date, m.month_index);

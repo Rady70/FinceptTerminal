@@ -15,11 +15,17 @@
 // parsed and checked against the requested identity before anything is
 // stored, and each is written in its own transaction.
 //
-// A run is OK only when every filing it selected was stored as delivered. A
-// filing that could not be fetched, parsed or identified, or a value refused
-// because a filed document changed, makes the run a SOURCE_ERROR, while the
-// filings that were stored stay stored. A storage failure ends the run at
-// once, as a SOURCE_ERROR storage_error.
+// A run is OK only when every filing it selected was stored as delivered and
+// every submissions page it needed was read. A filing that could not be
+// fetched, parsed or identified, an accession re-delivered with bytes other
+// than the stored ones, a value refused because its meaning changed, or an
+// unreadable submissions page makes the run a SOURCE_ERROR, while the filings
+// that were stored stay stored. A re-delivered accession with other bytes is
+// refused before anything is written: the stored filing, its entity
+// attributes and its values stay exactly as they were, and the refusal is a
+// SOURCE_ERROR retrieval carrying the refused bytes' SHA-256. A storage
+// failure, including a retrieval or an issue that cannot be recorded, ends the
+// run at once, as a SOURCE_ERROR storage_error.
 //
 // Respectful access: one request at a time, a minimum interval between
 // requests (the production configuration clamps it to at least 150 ms, well
@@ -30,6 +36,7 @@
 // The HTTP transport and the clock are injected: production passes the shared
 // HttpClient and the wall clock; tests pass fixtures and a fixed clock.
 #pragma once
+#include "core/result/Result.h"
 #include "services/etf/EtfDataModel.h"
 #include "services/etf/SecEdgarParse.h"
 
@@ -111,13 +118,15 @@ class EtfSecNportIngestor : public QObject {
         std::function<void(const SecHttpResponse&, const QDateTime& requested_at, const QDateTime& retrieved_at)>;
 
     void fetch(const QString& url, Handler handler);
+    /// Record one response. When it cannot be recorded, the run ends as a
+    /// storage error (nothing further is requested) and 0 is returned.
     qint64 record_response(SourceType source, const QString& endpoint, const QString& url,
                            const SecHttpResponse& response, const QDateTime& requested_at,
                            const QDateTime& retrieved_at, RetrievalStatus status, const QString& detail_code,
                            const QString& detail, const QString& interpretation);
     qint64 record_refusal(RetrievalStatus status, const QString& code, const QString& detail);
-    void record_issue(qint64 retrieval_id, QualityState state, const QString& code, const QString& detail,
-                      qint64 entity_id = 0, const QDate& effective_date = QDate());
+    Result<void> record_issue(qint64 retrieval_id, QualityState state, const QString& code, const QString& detail,
+                              qint64 entity_id = 0, const QDate& effective_date = QDate());
     /// SOURCE_ERROR for a response that is not a usable 200; empty otherwise.
     static QString http_problem(const SecHttpResponse& r);
     static bool is_throttle(const SecHttpResponse& r);
@@ -155,6 +164,7 @@ class EtfSecNportIngestor : public QObject {
     QVector<SecOlderPage> older_pages_;
     QSet<QString> fetched_pages_;
     int pages_fetched_ = 0;
+    int pages_unreadable_ = 0; ///< older submissions pages the run needed and could not read
     QVector<SecFilingRef> selected_;
     int document_cursor_ = 0;
 };

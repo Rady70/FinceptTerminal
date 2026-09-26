@@ -379,7 +379,10 @@ EtfDataRepository::upsert_sec_filing(const etf_store::SecFilingFacts& f, qint64 
     if (q.next()) {
         const qint64 id = q.value(0).toLongLong();
         if (q.value(1).toString() != f.document_sha256)
-            return R::ok({id, etf_store::FilingOutcome::DocumentChanged});
+            return R::err(QStringLiteral("accession %1 is stored from a different document (SHA-256 %2, not %3); a "
+                                         "filed document does not change, so this delivery is not applied")
+                              .arg(f.accession, q.value(1).toString(), f.document_sha256)
+                              .toStdString());
         auto upd = exec_write("UPDATE etf_sec_filings SET last_seen_at = ?, last_retrieval_id = ? WHERE filing_id = ? "
                               "AND last_retrieval_id < ?",
                               {seen, retrieval_id, id, retrieval_id});
@@ -400,6 +403,15 @@ EtfDataRepository::upsert_sec_filing(const etf_store::SecFilingFacts& f, qint64 
     if (ins.is_err())
         return R::err(ins.error());
     return R::ok({ins.value(), etf_store::FilingOutcome::Inserted});
+}
+
+Result<std::optional<QString>> EtfDataRepository::stored_filing_sha256(const QString& accession) {
+    auto r = db().execute("SELECT document_sha256 FROM etf_sec_filings WHERE accession = ?", {etf_text(accession)});
+    if (r.is_err())
+        return Result<std::optional<QString>>::err(r.error());
+    if (!r.value().next())
+        return Result<std::optional<QString>>::ok(std::nullopt);
+    return Result<std::optional<QString>>::ok(r.value().value(0).toString());
 }
 
 // ── Observation start ────────────────────────────────────────────────────────

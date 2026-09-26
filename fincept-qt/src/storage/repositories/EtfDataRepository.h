@@ -110,10 +110,12 @@ struct SecFilingFacts {
     QString document_sha256;
 };
 
+/// An accession seen again with DIFFERENT bytes is not an outcome but an
+/// error of upsert_sec_filing: a filed document does not change, so nothing of
+/// such a delivery may be written (see upsert_sec_filing).
 enum class FilingOutcome {
-    Inserted,        ///< first time this accession was seen
-    Confirmed,       ///< seen again with the same document bytes
-    DocumentChanged, ///< seen again with DIFFERENT bytes: an anomaly for an immutable filing
+    Inserted,  ///< first time this accession was seen
+    Confirmed, ///< seen again with the same document bytes
 };
 
 struct ListedInstrumentFacts {
@@ -193,8 +195,16 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
     Result<std::optional<services::etf::LinkRelationship>> nport_link_relationship(qint64 instrument_id);
 
     // ── SEC filings ──────────────────────────────────────────────────────────
+    /// Store a filing, or add a sighting when its accession is stored with the
+    /// same document bytes. An accession stored with OTHER bytes is refused
+    /// with an error and nothing is written, so the caller's transaction for
+    /// that delivery cannot commit: a filed document does not change, and the
+    /// stored filing, its entity attributes and its values stay as they were.
     Result<std::pair<qint64, etf_store::FilingOutcome>>
     upsert_sec_filing(const etf_store::SecFilingFacts& f, qint64 retrieval_id, const QDateTime& seen_at);
+    /// The document SHA-256 stored for an accession, or nullopt when the
+    /// accession is not stored.
+    Result<std::optional<QString>> stored_filing_sha256(const QString& accession);
 
     // ── Observation start ────────────────────────────────────────────────────
     /// The stored observation start for (source, subject); stores `candidate`

@@ -17,7 +17,10 @@
 // a run as OK, a run that did not store every selected filing is not OK, an
 // older filing backfilled later leaves the entity's newer attributes alone,
 // an ordinary share never enters the ETF store, and the duration is bounded in
-// every unit.
+// every unit. After the second review: an accession re-delivered with other
+// bytes changes nothing stored and the run says so, and neither an issue nor
+// a retrieval that cannot be stored, nor an unreadable submissions page, lets
+// a run end OK.
 
 #include "etf_test_fixtures.h"
 #include "services/etf/EtfIbkrDailyIngestor.h"
@@ -28,8 +31,10 @@
 #include "storage/sqlite/Database.h"
 #include "storage/sqlite/migrations/MigrationRunner.h"
 
+#include <QCryptographicHash>
 #include <QEventLoop>
 #include <QHash>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -213,6 +218,35 @@ bool break_observation_storage() {
         .is_ok();
 }
 
+QString sha256_hex(const QByteArray& bytes) {
+    return QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+}
+
+/// Every stored fact, every column of every row, without the retrieval log:
+/// what a refused delivery must leave exactly as it was.
+QJsonObject stored_facts() {
+    auto all = EtfDataRepository::instance().export_all();
+    if (all.is_err())
+        return QJsonObject{{"export_failed", QString::fromStdString(all.error())}};
+    QJsonObject facts = all.value();
+    facts.remove(QStringLiteral("etf_retrievals"));
+    facts.remove(QStringLiteral("etf_retrieval_issues"));
+    return facts;
+}
+
+const QString kSpyPage = QStringLiteral("https://data.sec.gov/submissions/CIK0000884394-submissions-001.json");
+
+/// SPY's submissions with an older page listed: the recent window holds two
+/// N-PORT filings, so a run asked for more reads the page.
+void serve_spy_with_older_page(FakeSec& sec) {
+    serve_spy(sec);
+    sec.ok(kSpySubs, submissions_json(
+                         QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                         {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", "2026-08-28T12:25:47.000Z"},
+                          {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}},
+                         {{"CIK0000884394-submissions-001.json", "2024-01-26", "2026-02-27"}}));
+}
+
 } // namespace
 
 class TstEtfIngest : public QObject {
@@ -242,6 +276,10 @@ class TstEtfIngest : public QObject {
     void sec_invalid_request_touches_nothing();
     void sec_storage_failure_is_not_ok();
     void sec_older_filing_ingested_later_keeps_the_newer_attributes();
+    void sec_changed_document_is_refused_as_delivered();
+    void sec_issue_storage_failure_is_not_ok();
+    void sec_unrecorded_retrieval_is_not_ok();
+    void sec_unreadable_older_page_is_not_ok();
 
     void ibkr_backfill_is_stored_with_sessions_and_identity();
     void ibkr_replay_confirms_and_revision_is_kept();
@@ -594,6 +632,153 @@ void TstEtfIngest::sec_older_filing_ingested_later_keeps_the_newer_attributes() 
     QCOMPARE(scalar("SELECT registrant_name || '|' || registrant_lei FROM etf_reporting_entities"), june);
     QCOMPARE(scalar("SELECT last_seen_at FROM etf_reporting_entities").left(10), QStringLiteral("2026-09-27"));
     QCOMPARE(count("etf_reporting_entities"), 1);
+}
+
+void TstEtfIngest::sec_changed_document_is_refused_as_delivered() {
+    FakeSec sec;
+    serve_spy(sec);
+    QCOMPARE(run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z").status, RetrievalStatus::Ok);
+    QCOMPARE(count("etf_observations"), 20);
+    // Control: the stored bytes of the newest accession, delivered again, are
+    // a confirmation.
+    SecNportRunSummary s = run_sec(sec, request("884394", "", 1), "2026-09-27T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.observations_confirmed, 10);
+
+    // The newest accession re-delivered with other bytes: every filed number
+    // as stored, other entity attributes. Nothing of it may reach the stored
+    // state: not the names, not a sighting, not a confirmation.
+    NportSpec june = spy_2026_06();
+    june.reg_name = QStringLiteral("Changed Trust Name");
+    june.reg_lei = QStringLiteral("5493000CHANGEDLEI001");
+    const QByteArray changed = nport_xml(june);
+    sec.ok(kSpyDocJune, changed);
+    const QJsonObject confirmed = stored_facts();
+    s = run_sec(sec, request("884394", "", 1), "2026-09-28T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("filings_not_stored"));
+    QCOMPARE(s.filings_selected, 1);
+    QCOMPARE(s.filings_stored, 0);
+    QCOMPARE(s.filings_skipped, 1);
+    QCOMPARE(s.observations_confirmed + s.observations_inserted + s.observations_amended + s.observations_refused, 0);
+    QVERIFY(s.accessions.isEmpty());
+    QCOMPARE(stored_facts(), confirmed);
+    // The refusal names the bytes it refused; the filing keeps the original's.
+    QCOMPARE(scalar("SELECT status || '|' || response_sha256 FROM etf_retrievals WHERE detail_code = "
+                    "'filing_document_changed'"),
+             QStringLiteral("SOURCE_ERROR|") + sha256_hex(changed));
+    QCOMPARE(scalar("SELECT document_sha256 FROM etf_sec_filings WHERE accession = '0001410368-26-089410'"),
+             sha256_hex(nport_xml(spy_2026_06())));
+    QVERIFY(!scalar("SELECT registrant_name FROM etf_reporting_entities").startsWith(QLatin1String("Changed")));
+
+    // A changed value under the older accession is refused the same way, as a
+    // whole document: no value of it is compared, refused or confirmed.
+    NportSpec march = spy_2026_03();
+    march.months[0].sales = QStringLiteral("1.00000000");
+    sec.ok(kSpyDocMarch, nport_xml(march));
+    s = run_sec(sec, request("884394", "", 2), "2026-09-29T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.filings_stored, 0);
+    QCOMPARE(s.filings_skipped, 2);
+    QCOMPARE(s.observations_refused, 0);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'filed_observation_changed'"), 0);
+    QCOMPARE(count("etf_retrievals", "detail_code = 'filing_document_changed'"), 3);
+    QCOMPARE(stored_facts(), confirmed);
+
+    // The stored bytes are still confirmed: the refusal is about changed
+    // bytes, not about seeing an accession again.
+    serve_spy(sec);
+    s = run_sec(sec, request("884394"), "2026-09-30T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.observations_confirmed, 20);
+    // Sightings: the June vintages by the first run, the control and this
+    // run; the March vintages by the first run and this run. None by a refusal.
+    QCOMPARE(scalar("SELECT MIN(seen_count) || '|' || MAX(seen_count) FROM etf_observations WHERE source_document = "
+                    "'0001410368-26-089410'"),
+             QStringLiteral("3|3"));
+    QCOMPARE(scalar("SELECT MIN(seen_count) || '|' || MAX(seen_count) FROM etf_observations WHERE source_document = "
+                    "'0001410368-26-055357'"),
+             QStringLiteral("2|2"));
+}
+
+void TstEtfIngest::sec_issue_storage_failure_is_not_ok() {
+    // A report date that is not a month end is stored with an issue saying
+    // the flows are unmapped. The issue belongs to the filing's unit: when it
+    // cannot be stored, neither is the filing, and the run is not OK.
+    FakeSec sec;
+    NportSpec odd = spy_2026_06();
+    odd.rep_pd_date = QStringLiteral("2026-06-15");
+    sec.ok(kSpySubs, submissions_json(QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                                      {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-15",
+                                        "2026-08-28T12:25:47.000Z"}}));
+    sec.ok(kSpyDocJune, nport_xml(odd));
+    QVERIFY(Database::instance()
+                .execute("CREATE TRIGGER etf_test_break_issues BEFORE INSERT ON etf_retrieval_issues "
+                         "BEGIN SELECT RAISE(ABORT, 'forced issue storage failure'); END")
+                .is_ok());
+    const SecNportRunSummary s = run_sec(sec, request("884394", "", 1), "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("storage_error"));
+    QVERIFY(s.detail.contains(QLatin1String("forced issue storage failure")));
+    QCOMPARE(s.filings_stored, 0);
+    QCOMPARE(count("etf_reporting_entities"), 0);
+    QCOMPARE(count("etf_sec_filings"), 0);
+    QCOMPARE(count("etf_observations"), 0);
+}
+
+void TstEtfIngest::sec_unrecorded_retrieval_is_not_ok() {
+    // Acceptance times come from the submissions response. When that response
+    // cannot be recorded, the run cannot report success on it, even when the
+    // filings are already stored and would only be confirmed.
+    FakeSec sec;
+    serve_spy(sec);
+    QCOMPARE(run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z").status, RetrievalStatus::Ok);
+    const QJsonObject before = stored_facts();
+    QVERIFY(Database::instance()
+                .execute("CREATE TRIGGER etf_test_break_retrievals BEFORE INSERT ON etf_retrievals "
+                         "WHEN NEW.endpoint = 'submissions_json' "
+                         "BEGIN SELECT RAISE(ABORT, 'forced retrieval storage failure'); END")
+                .is_ok());
+    sec.requested.clear();
+    const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-27T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("storage_error"));
+    QVERIFY(s.detail.contains(QLatin1String("forced retrieval storage failure")));
+    QCOMPARE(s.filings_stored, 0);
+    QCOMPARE(sec.requested, QStringList{kSpySubs}); // no further SEC request
+    QCOMPARE(stored_facts(), before);
+}
+
+void TstEtfIngest::sec_unreadable_older_page_is_not_ok() {
+    // SPY's recent window holds two N-PORT filings; asked for four, the run
+    // reads the older page. When that page cannot be read, the run cannot know
+    // what it missed: what it stored stays stored, and the run is not OK.
+    for (const char* variant : {"http_500", "not_json", "transport"}) {
+        FakeSec sec;
+        serve_spy_with_older_page(sec);
+        if (qstrcmp(variant, "http_500") == 0)
+            sec.status(kSpyPage, 500);
+        else if (qstrcmp(variant, "not_json") == 0)
+            sec.ok(kSpyPage, "<html><body>Request Rate Threshold Exceeded</body></html>");
+        else
+            sec.fail(kSpyPage);
+        const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
+        QVERIFY2(sec.requested.contains(kSpyPage), variant);
+        QCOMPARE(s.status, RetrievalStatus::SourceError);
+        QCOMPARE(s.detail_code, QStringLiteral("submissions_incomplete"));
+        QCOMPARE(s.filings_selected, 2);
+        QCOMPARE(s.filings_stored, 2);
+    }
+    // Control: a page that is read, and lists no further N-PORT filing, leaves
+    // the run OK.
+    FakeSec sec;
+    serve_spy_with_older_page(sec);
+    sec.ok(kSpyPage,
+           submissions_page_json({{"0000000000-25-000001", "N-CSR", "2025-03-01", "", "2025-03-01T20:00:00.000Z"}}));
+    const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T11:00:00.000Z");
+    QVERIFY(sec.requested.contains(kSpyPage));
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.filings_stored, 2);
 }
 
 // ── IBKR ─────────────────────────────────────────────────────────────────────

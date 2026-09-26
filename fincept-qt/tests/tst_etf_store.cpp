@@ -198,7 +198,7 @@ class TstEtfStore : public QObject {
     void sec_amendment_is_its_own_vintage();
     void sec_value_change_under_one_accession_is_refused();
     void confirmation_needs_the_same_meaning();
-    void filing_document_change_is_detected();
+    void filing_document_change_is_refused();
     void missing_unparseable_and_zero_are_preserved();
     void instrument_identity_is_the_conid();
     void an_ordinary_stock_is_refused_twice();
@@ -573,7 +573,7 @@ void TstEtfStore::confirmation_needs_the_same_meaning() {
     QCOMPARE(bars.value()[1].units, QStringLiteral("EUR_per_share"));
 }
 
-void TstEtfStore::filing_document_change_is_detected() {
+void TstEtfStore::filing_document_change_is_refused() {
     QVERIFY(!open_fresh().isEmpty());
     const qint64 entity = add_entity("0000884394");
     const qint64 r1 = sec_retrieval("2026-09-01T10:00:00.000Z");
@@ -586,17 +586,25 @@ void TstEtfStore::filing_document_change_is_detected() {
     f.entity_id = entity;
     f.rep_pd_date = QDate(2026, 6, 30);
     f.document_sha256 = QStringLiteral("aaa");
+    QVERIFY(!repo().stored_filing_sha256(f.accession).value().has_value());
     QCOMPARE(repo().upsert_sec_filing(f, r1, utc("2026-09-01T10:00:00.000Z")).value().second,
              etf_store::FilingOutcome::Inserted);
+    QCOMPARE(repo().stored_filing_sha256(f.accession).value(), std::optional<QString>(QStringLiteral("aaa")));
     const qint64 r2 = sec_retrieval("2026-09-02T10:00:00.000Z");
     QCOMPARE(repo().upsert_sec_filing(f, r2, utc("2026-09-02T10:00:00.000Z")).value().second,
              etf_store::FilingOutcome::Confirmed);
+    // Other bytes under the stored accession: an error, so the caller's
+    // transaction cannot commit, and nothing written.
+    const qint64 r3 = sec_retrieval("2026-09-03T10:00:00.000Z");
     f.document_sha256 = QStringLiteral("bbb");
-    QCOMPARE(repo().upsert_sec_filing(f, r2, utc("2026-09-02T10:00:00.000Z")).value().second,
-             etf_store::FilingOutcome::DocumentChanged);
-    auto sha = Database::instance().execute("SELECT document_sha256 FROM etf_sec_filings");
-    QVERIFY(sha.is_ok() && sha.value().next());
-    QCOMPARE(sha.value().value(0).toString(), QStringLiteral("aaa"));
+    auto changed = repo().upsert_sec_filing(f, r3, utc("2026-09-03T10:00:00.000Z"));
+    QVERIFY(changed.is_err());
+    QVERIFY(QString::fromStdString(changed.error()).contains(QLatin1String("different document")));
+    auto row = Database::instance().execute(
+        "SELECT document_sha256 || '|' || last_retrieval_id || '|' || last_seen_at FROM etf_sec_filings");
+    QVERIFY(row.is_ok() && row.value().next());
+    QCOMPARE(row.value().value(0).toString(), QStringLiteral("aaa|%1|2026-09-02T10:00:00.000Z").arg(r2));
+    QCOMPARE(repo().stored_filing_sha256(f.accession).value(), std::optional<QString>(QStringLiteral("aaa")));
 }
 
 void TstEtfStore::missing_unparseable_and_zero_are_preserved() {
