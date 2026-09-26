@@ -244,6 +244,39 @@ void HttpClient::get(const QString& url, JsonCallback callback, const QObject* c
     handle_reply(reply, std::move(callback), context);
 }
 
+void HttpClient::get_raw(const QString& url, RawCallback callback, const QObject* context,
+                         const Headers& extra_headers) {
+    LOG_DEBUG("HTTP", "GET(raw) " + log_url(url));
+    const QString full_url = url.startsWith("http") ? url : (base_url_ + url);
+    const QUrl qurl(full_url);
+    const QObject* receiver = context ? context : static_cast<const QObject*>(this);
+    if (network::HostedPathGuard::is_fincept_destination(qurl)) {
+        // Same containment as reject_hosted_destination(): no network access,
+        // a typed error delivered on the event loop.
+        LOG_WARN("HTTP", QString("Rejected request to Fincept-owned destination (%1) — no network access attempted")
+                             .arg(qurl.host()));
+        RawResponse rejected;
+        rejected.error = network::HostedPathGuard::unavailable_error(qurl);
+        QTimer::singleShot(0, receiver, [callback, rejected]() { callback(rejected); });
+        return;
+    }
+    auto* reply = nam_->get(build_request(url, extra_headers));
+    connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+    connect(reply, &QNetworkReply::finished, receiver, [reply, cb = std::move(callback)]() {
+        reply->deleteLater();
+        RawResponse r;
+        const QVariant status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+        r.body = reply->readAll();
+        if (status.isValid()) {
+            r.transport_ok = true;
+            r.status = status.toInt();
+        } else {
+            r.error = reply->errorString();
+        }
+        cb(r);
+    });
+}
+
 void HttpClient::post(const QString& url, const QJsonObject& body, JsonCallback callback, const QObject* context,
                       const Headers& extra_headers) {
     LOG_DEBUG("HTTP", "POST " + log_url(url));

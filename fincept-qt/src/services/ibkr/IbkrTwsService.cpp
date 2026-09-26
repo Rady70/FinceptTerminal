@@ -182,4 +182,31 @@ void IbkrTwsService::fetch_history(const QString& symbol, const QString& duratio
         });
 }
 
+void IbkrTwsService::fetch_history_envelope(const QString& symbol, const QString& duration, const QString& bar_size,
+                                            const QString& end_date_time, const QString& what_to_show, bool use_rth,
+                                            EnvelopeCallback cb) {
+    const IbkrTwsConfig cfg = config();
+    QStringList arguments{QStringLiteral("history"),         symbol,
+                          QStringLiteral("--duration"),      duration,
+                          QStringLiteral("--bar-size"),      bar_size,
+                          QStringLiteral("--what-to-show"),  what_to_show,
+                          QStringLiteral("--use-rth"),       use_rth ? QStringLiteral("true") : QStringLiteral("false"),
+                          QStringLiteral("--end-date-time"), end_date_time};
+    arguments.append({QStringLiteral("--timeout"), QStringLiteral("30")});
+    run(cfg, arguments, kHistoryWatchdogMs,
+        [cb = std::move(cb)](bool, const QJsonObject& payload, const QString& error) {
+            if (payload.isEmpty()) {
+                // No configuration: run() produced no envelope at all.
+                cb(QJsonObject{{"source", QLatin1String(kIbkrSource)},
+                               {"command", QStringLiteral("history")},
+                               {"ok", false},
+                               {"failure", QJsonObject{{"type", QStringLiteral("IBKR_NOT_CONFIGURED")},
+                                                       {"stage", QStringLiteral("config")},
+                                                       {"message", error}}}});
+                return;
+            }
+            cb(payload);
+        });
+}
+
 } // namespace fincept::services::ibkr

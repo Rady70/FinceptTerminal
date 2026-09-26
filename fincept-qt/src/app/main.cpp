@@ -2,6 +2,8 @@
 #include "algo_engine/ScanMonitor.h"
 #include "algo_engine/UniverseScanSelftest.h"
 #include "algo_engine/fno/FnoAlgoSelftest.h"
+#include "app/EtfDataCli.h"
+#include "app/EtfDataSelftest.h"
 #include "app/IbkrTwsSelftest.h"
 #include "app/InstanceLock.h"
 #include "app/MarketLabBoundarySelftest.h"
@@ -617,6 +619,7 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v048();
     fincept::register_migration_v049();
     fincept::register_migration_v051();
+    fincept::register_migration_v052();
 
     // Open main database
     QString db_path = fincept::AppPaths::data() + "/fincept.db";
@@ -690,7 +693,8 @@ int main(int argc, char* argv[]) {
         // because smoke_mode is not computed until much later in main().
         const bool headless_run = [argc, argv]() {
             for (int i = 1; i < argc; ++i) {
-                if (qstrcmp(argv[i], "--smoke-test") == 0 || qstrncmp(argv[i], "--selftest", 10) == 0)
+                if (qstrcmp(argv[i], "--smoke-test") == 0 || qstrncmp(argv[i], "--selftest", 10) == 0 ||
+                    qstrcmp(argv[i], "--etf-data") == 0)
                     return true;
             }
             return false;
@@ -753,6 +757,19 @@ int main(int argc, char* argv[]) {
     // MarketLab: the one-time migration that copied settings from the legacy
     // Local\FinceptTerminal\fincept_settings.db is removed — official Fincept
     // storage is never read or written (FINCEPT_FORK_PLAN.md §5.1).
+
+    // MarketLab ETF Capital Flows (Batch B): the headless, on-demand data
+    // foundation command. It needs only the opened database, so it runs here,
+    // before the session manager, the MCP tool registration (whose deferred
+    // start would otherwise launch external MCP servers inside this short
+    // process) and any window. It returns without entering the GUI event loop,
+    // so the shell's clean-shutdown marker is written explicitly, exactly as
+    // the database-error path above does.
+    if (fincept::marketlab::etf_data_cli_requested(argc, argv)) {
+        const int etf_rc = fincept::marketlab::run_etf_data_cli(argc, argv);
+        fincept::TerminalShell::instance().shutdown();
+        return etf_rc;
+    }
 
     LOG_INFO("App", "Starting session manager...");
     // Start session
@@ -829,6 +846,7 @@ int main(int argc, char* argv[]) {
         {"--selftest-portfolio-replication", &fincept::trading::replication::run_portfolio_replication_selftest},
         {"--selftest-marketlab-boundary", &fincept::marketlab::run_marketlab_boundary_selftest},
         {"--selftest-ibkr", &fincept::marketlab::run_ibkr_tws_selftest},
+        {"--selftest-etf-data", &fincept::marketlab::run_etf_data_selftest},
     };
 
     for (int i = 1; i < argc; ++i) {
