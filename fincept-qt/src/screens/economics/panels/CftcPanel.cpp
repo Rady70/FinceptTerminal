@@ -1622,6 +1622,15 @@ void CftcPanel::render_monitor_attention() {
             title_row->addWidget(chip);
         }
         title_row->addStretch(1);
+        // An explicit affordance for the detailed workspace, reachable without
+        // discovering the double-click gesture and invokable by accessibility.
+        auto* open = new QPushButton(tr("OPEN"), text_column);
+        open->setObjectName("cftcOpenBtn");
+        open->setAccessibleName(tr("Open detailed COT workspace for %1").arg(entry.label));
+        open->setCursor(Qt::PointingHandCursor);
+        open->setToolTip(tr("Open the detailed COT workspace for %1.").arg(entry.label));
+        connect(open, &QPushButton::clicked, this, [this, key = entry.market_key]() { open_monitor_entry(key); });
+        title_row->addWidget(open);
         text_layout->addLayout(title_row);
 
         auto* development = new QLabel(monitor_descriptive_text(entry), text_column);
@@ -1766,10 +1775,10 @@ void CftcPanel::render_monitor_groups() {
         section_layout->addWidget(chart);
 
         auto* table = make_monitor_table(section);
-        table->setColumnCount(11);
+        table->setColumnCount(12);
         table->setHorizontalHeaderLabels({tr("MARKET"), tr("LATEST REPORT"), tr("NET %OI"), tr("%ILE (156R)"),
                                           tr("NET 1R"), tr("NET 4R"), tr("NET 13R"), tr("OPEN INTEREST"), tr("OI 1R"),
-                                          tr("DEVELOPMENTS"), tr("STATUS")});
+                                          tr("DEVELOPMENTS"), tr("STATUS"), tr("OPEN")});
         table->horizontalHeader()->setStretchLastSection(false);
         table->setColumnWidth(0, 150);
         table->setColumnWidth(1, 96);
@@ -1781,10 +1790,23 @@ void CftcPanel::render_monitor_groups() {
         table->setColumnWidth(8, 70);
         table->setColumnWidth(9, 240);
         table->setColumnWidth(10, 92);
+        table->setColumnWidth(11, 64);
         table->horizontalHeader()->setSectionResizeMode(9, QHeaderView::Stretch);
         table->setRowCount(group.entry_indexes.size());
-        for (int row = 0; row < group.entry_indexes.size(); ++row)
-            fill_monitor_row(table, row, monitor_entries_.at(group.entry_indexes.at(row)));
+        for (int row = 0; row < group.entry_indexes.size(); ++row) {
+            const services::CftcMonitorEntry& entry = monitor_entries_.at(group.entry_indexes.at(row));
+            fill_monitor_row(table, row, entry);
+            // An explicit per-row affordance, in addition to double-click, so
+            // the detailed workspace is reachable without discovering the
+            // double-click gesture.
+            auto* open = new QPushButton(tr("OPEN"), table);
+            open->setObjectName("cftcOpenBtn");
+            open->setAccessibleName(tr("Open detailed COT workspace for %1").arg(entry.label));
+            open->setCursor(Qt::PointingHandCursor);
+            open->setToolTip(tr("Open the detailed COT workspace for %1.").arg(entry.label));
+            connect(open, &QPushButton::clicked, this, [this, key = entry.market_key]() { open_monitor_entry(key); });
+            table->setCellWidget(row, 11, open);
+        }
         table->setMinimumHeight(20 + group.entry_indexes.size() * 21 + 8);
         connect(table, &QTableWidget::cellDoubleClicked, this, [this, table](int row, int) {
             auto* item = table->item(row, 0);
@@ -3548,6 +3570,9 @@ QString CftcPanel::workspace_style() const {
                    "#cftcRangeBtn:hover { color:%5; background:%6; }"
                    "#cftcRangeBtn:checked { background:%6; color:%5; border-color:%10; }"
                    "#cftcRangeBtn:disabled { color:%4; }"
+                   "#cftcOpenBtn { background:transparent; color:%3; border:1px solid %2;"
+                   " font-size:9px; font-weight:700; padding:1px 4px; }"
+                   "#cftcOpenBtn:hover { color:%5; background:%6; border-color:%10; }"
                    "#cftcHorizonBtn { background:transparent; color:%3; border:1px solid %2;"
                    " font-size:10px; font-weight:700; padding:3px 9px; }"
                    "#cftcHorizonBtn:hover { color:%5; background:%6; }"
