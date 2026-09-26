@@ -13,6 +13,11 @@
 // unavailable, throttled or malformed; missing N-PORT fields; unknown or
 // mismatched identity; TWS unavailable; entitlement failure; in-progress
 // session; stale history; missing expected session; historical revision.
+// Also, after the independent review of PR #29: a storage failure never ends
+// a run as OK, a run that did not store every selected filing is not OK, an
+// older filing backfilled later leaves the entity's newer attributes alone,
+// an ordinary share never enters the ETF store, and the duration is bounded in
+// every unit.
 
 #include "etf_test_fixtures.h"
 #include "services/etf/EtfIbkrDailyIngestor.h"
@@ -199,6 +204,15 @@ QString scalar(const QString& sql) {
     return r.is_ok() && r.value().next() ? r.value().value(0).toString() : QStringLiteral("<none>");
 }
 
+/// Make every observation insert fail, as a full disk or a damaged database
+/// would: the storage failure a run must never report as success.
+bool break_observation_storage() {
+    return Database::instance()
+        .execute("CREATE TRIGGER etf_test_break_storage BEFORE INSERT ON etf_observations "
+                 "BEGIN SELECT RAISE(ABORT, 'forced storage failure'); END")
+        .is_ok();
+}
+
 } // namespace
 
 class TstEtfIngest : public QObject {
@@ -226,6 +240,8 @@ class TstEtfIngest : public QObject {
     void sec_report_date_not_month_end_keeps_flows_unmapped();
     void sec_requires_a_declared_user_agent();
     void sec_invalid_request_touches_nothing();
+    void sec_storage_failure_is_not_ok();
+    void sec_older_filing_ingested_later_keeps_the_newer_attributes();
 
     void ibkr_backfill_is_stored_with_sessions_and_identity();
     void ibkr_replay_confirms_and_revision_is_kept();
@@ -234,6 +250,8 @@ class TstEtfIngest : public QObject {
     void ibkr_missing_session_and_stale_history_are_recorded();
     void ibkr_entitlement_and_tws_failures_store_no_data();
     void ibkr_not_configured_or_invalid_request_makes_no_request();
+    void ibkr_storage_failure_is_not_ok();
+    void ibkr_an_ordinary_stock_never_enters_the_etf_store();
 };
 
 void TstEtfIngest::initTestCase() {
@@ -407,7 +425,10 @@ void TstEtfIngest::sec_malformed_document_is_skipped_not_guessed() {
     broken.truncate(broken.size() - 40);
     sec.ok(kSpyDocMarch, broken);
     const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
-    QCOMPARE(s.status, RetrievalStatus::Ok);
+    // The valid filing is stored; the run is still not OK, because it did not
+    // store every filing it selected.
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("filings_not_stored"));
     QCOMPARE(s.filings_stored, 1);
     QCOMPARE(s.filings_skipped, 1);
     QCOMPARE(count("etf_retrievals", "detail_code = 'nport_xml_malformed'"), 1);
@@ -471,6 +492,8 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
                nport_xml(other));
         const SecNportRunSummary s = run_sec(sec, request("1100663", "S000004310", 3), "2026-09-26T12:00:00.000Z");
         QCOMPARE(s.filings_stored, 2);
+        QCOMPARE(s.status, RetrievalStatus::SourceError);
+        QCOMPARE(s.detail_code, QStringLiteral("filings_not_stored"));
         QCOMPARE(count("etf_retrievals", "detail_code = 'series_mismatch'"), 1);
     }
     {
@@ -486,6 +509,7 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
         const int observations_before = count("etf_observations"); // the blocks above share this database
         const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T13:00:00.000Z");
         QCOMPARE(s.filings_stored, 0);
+        QCOMPARE(s.status, RetrievalStatus::SourceError);
         QCOMPARE(count("etf_retrievals", "detail_code = 'registrant_mismatch'"), 1);
         QCOMPARE(count("etf_retrievals", "detail_code = 'form_mismatch'"), 1);
         QCOMPARE(count("etf_observations"), observations_before);
@@ -527,6 +551,49 @@ void TstEtfIngest::sec_invalid_request_touches_nothing() {
     }
     QVERIFY(sec.requested.isEmpty());
     QCOMPARE(count("etf_retrievals"), 0);
+}
+
+void TstEtfIngest::sec_storage_failure_is_not_ok() {
+    FakeSec sec;
+    serve_spy(sec);
+    QVERIFY(break_observation_storage());
+    const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("storage_error"));
+    QVERIFY(s.detail.contains(QLatin1String("forced storage failure")));
+    QCOMPARE(s.filings_stored, 0);
+    QCOMPARE(s.observations_inserted, 0);
+    // The run stops at the first failure and spends no further SEC request.
+    QCOMPARE(sec.requested, (QStringList{kSpySubs, kSpyDocMarch}));
+    // Nothing of the filing survives the rollback; the failure is recorded.
+    QCOMPARE(count("etf_reporting_entities"), 0);
+    QCOMPARE(count("etf_sec_filings"), 0);
+    QCOMPARE(count("etf_observation_starts"), 0);
+    QCOMPARE(count("etf_observations"), 0);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'storage_error' AND state = 'SOURCE_ERROR'"), 1);
+}
+
+void TstEtfIngest::sec_older_filing_ingested_later_keeps_the_newer_attributes() {
+    FakeSec sec;
+    serve_spy(sec);
+    NportSpec march = spy_2026_03();
+    march.reg_name = QStringLiteral("Former SPDR S&amp;P 500 ETF Trust name");
+    march.reg_lei = QStringLiteral("5493000FORMERLEI0001");
+    sec.ok(kSpyDocMarch, nport_xml(march));
+    // The newest filing first: the June report, accepted 2026-08-28.
+    QCOMPARE(run_sec(sec, request("884394", "", 1), "2026-09-26T10:00:00.000Z").filings_stored, 1);
+    const QString june = scalar("SELECT registrant_name || '|' || registrant_lei FROM etf_reporting_entities");
+    QVERIFY(!june.startsWith(QLatin1String("Former")));
+    // A backfill the next day of the older March report, accepted 2026-05-28:
+    // downloaded later, it is still the older statement of the entity.
+    SecNportRequest older = request("884394", "", 1);
+    older.report_period_to = QDate(2026, 3, 31);
+    const SecNportRunSummary s = run_sec(sec, older, "2026-09-27T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.accessions, QStringList{QStringLiteral("0001410368-26-055357")});
+    QCOMPARE(scalar("SELECT registrant_name || '|' || registrant_lei FROM etf_reporting_entities"), june);
+    QCOMPARE(scalar("SELECT last_seen_at FROM etf_reporting_entities").left(10), QStringLiteral("2026-09-27"));
+    QCOMPARE(count("etf_reporting_entities"), 1);
 }
 
 // ── IBKR ─────────────────────────────────────────────────────────────────────
@@ -655,10 +722,52 @@ void TstEtfIngest::ibkr_not_configured_or_invalid_request_makes_no_request() {
     QCOMPARE(count("etf_retrievals", "status = 'NOT_CONFIGURED' AND retrieved_at IS NULL"), 1);
     s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z", true, QStringLiteral("SPY;DEL"));
     QCOMPARE(s.detail_code, QStringLiteral("invalid_request"));
-    s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z", true, QStringLiteral("SPY"), QStringLiteral("20 Y"));
-    QCOMPARE(s.detail_code, QStringLiteral("invalid_request"));
+    // At most seven years in every unit, not only in years.
+    for (const char* too_long : {"20 Y", "8 Y", "85 M", "365 W", "2556 D", "9999 D", "9999 W", "9999 M"}) {
+        s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z", true, QStringLiteral("SPY"), QString::fromLatin1(too_long));
+        QCOMPARE(s.detail_code, QStringLiteral("invalid_request"));
+    }
+    for (const char* within : {"7 Y", "84 M", "364 W", "2555 D", "2 Y", "1 D"})
+        QVERIFY2(EtfIbkrDailyIngestor::valid_duration(QString::fromLatin1(within)), within);
     QVERIFY(ibkr.requests.isEmpty());
     QCOMPARE(count("etf_retrievals"), 1);
+}
+
+void TstEtfIngest::ibkr_storage_failure_is_not_ok() {
+    FakeIbkr ibkr;
+    ibkr.payload = ibkr_history_envelope("SPY", 756733, bars_for_sessions(QDate(2026, 9, 21), QDate(2026, 9, 25)),
+                                         QStringLiteral("20260925 23:59:59 US/Eastern"));
+    QVERIFY(break_observation_storage());
+    const IbkrDailyRunSummary s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z");
+    // IBKR's answer was usable; the run is still not OK, because it was not stored.
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("storage_error"));
+    QVERIFY(s.detail.contains(QLatin1String("forced storage failure")));
+    QCOMPARE(s.bars_accepted, 0);
+    QCOMPARE(s.observations_inserted, 0);
+    QCOMPARE(s.instrument_id, qint64(0));
+    // Nothing of the response survives the rollback; the failure is recorded.
+    QCOMPARE(count("etf_listed_instruments"), 0);
+    QCOMPARE(count("etf_market_sessions"), 0);
+    QCOMPARE(count("etf_observation_starts"), 0);
+    QCOMPARE(count("etf_observations"), 0);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'storage_error' AND state = 'SOURCE_ERROR'"), 1);
+}
+
+void TstEtfIngest::ibkr_an_ordinary_stock_never_enters_the_etf_store() {
+    FakeIbkr ibkr;
+    // A perfectly valid, resolved ordinary-share contract: secType STK, like
+    // every ETF, but IBKR classifies it as COMMON.
+    ibkr.payload =
+        with_stock_type(ibkr_history_envelope("AAPL", 265598, bars_for_sessions(QDate(2026, 9, 21), QDate(2026, 9, 25)),
+                                              QStringLiteral("20260925 23:59:59 US/Eastern")),
+                        "COMMON");
+    const IbkrDailyRunSummary s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z", true, QStringLiteral("AAPL"));
+    QCOMPARE(s.status, RetrievalStatus::SourceError);
+    QCOMPARE(s.detail_code, QStringLiteral("etf_identity_not_established"));
+    QCOMPARE(count("etf_listed_instruments"), 0);
+    QCOMPARE(count("etf_observations"), 0);
+    QCOMPARE(count("etf_retrievals", "status = 'SOURCE_ERROR' AND detail_code = 'etf_identity_not_established'"), 1);
 }
 
 QTEST_GUILESS_MAIN(TstEtfIngest)

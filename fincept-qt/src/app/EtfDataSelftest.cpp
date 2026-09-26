@@ -64,7 +64,15 @@ int run_etf_data_selftest() {
     if (rows_before < 0)
         return 1;
 
-    etf_check("transaction opened", db.begin_transaction().is_ok());
+    // Every write below relies on this transaction being rolled back at the
+    // end. Without it they would land in the profile's real tables: stop.
+    const bool in_transaction = db.begin_transaction().is_ok();
+    etf_check("transaction opened", in_transaction);
+    if (!in_transaction) {
+        std::printf("etf-data selftest: FAIL (no transaction, nothing written)\n");
+        std::fflush(stdout);
+        return 1;
+    }
 
     // ── SEC: original, replay, later retrieval, amendment, missing value ─────
     auto retrieval = [&](SourceType source, AcquisitionMode mode, const char* at) {
@@ -86,6 +94,7 @@ int run_etf_data_selftest() {
     etf_store::ReportingEntityFacts facts;
     facts.cik = QStringLiteral("9999999999");
     facts.registrant_name = QStringLiteral("MarketLab self-test registrant");
+    facts.source_accepted_at = etf_utc("2026-08-28T12:25:47.000Z");
     auto entity = repo.upsert_reporting_entity(facts, etf_utc("2026-09-01T10:00:00.000Z"));
     etf_check("registrant-level entity stored with an empty series id", entity.is_ok());
     const qint64 entity_id = entity.is_ok() ? entity.value() : 0;
@@ -192,6 +201,7 @@ int run_etf_data_selftest() {
     inst.con_id = 999999991;
     inst.symbol = QStringLiteral("ZZSELFTEST");
     inst.security_type = QStringLiteral("STK");
+    inst.stock_type = QStringLiteral("ETF");
     inst.currency = QStringLiteral("USD");
     auto instrument = repo.upsert_listed_instrument(inst, etf_utc("2026-09-25T15:00:00.000Z"));
     etf_check("instrument stored by conId", instrument.is_ok());
@@ -266,6 +276,11 @@ int run_etf_data_selftest() {
             "'2026-09-25T15:00:00.000Z', ?, ?)"),
         {instrument_id, r4, r4});
     etf_check("the database refuses a missing value stored as zero", zero_missing.is_err());
+    auto ordinary_stock = db.execute(
+        QStringLiteral("INSERT INTO etf_listed_instruments (ibkr_con_id, symbol, security_type, stock_type, currency, "
+                       "first_seen_at, last_seen_at) VALUES (999999992, 'ZZCOMMON', 'STK', 'COMMON', 'USD', "
+                       "'2026-09-25T15:00:00.000Z', '2026-09-25T15:00:00.000Z')"));
+    etf_check("the database refuses an instrument IBKR does not classify as an ETF", ordinary_stock.is_err());
 
     etf_check("transaction rolled back", db.rollback().is_ok());
     etf_check("the self-test left no ETF row behind", etf_row_total() == rows_before);

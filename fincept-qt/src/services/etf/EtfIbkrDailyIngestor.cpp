@@ -71,7 +71,16 @@ bool EtfIbkrDailyIngestor::valid_duration(const QString& duration) {
     const auto m = kDuration.match(duration);
     if (!m.hasMatch())
         return false;
-    return m.captured(2) != QLatin1String("Y") || m.captured(1).toInt() <= 7;
+    // Seven years in every unit, not only in years.
+    const int n = m.captured(1).toInt();
+    const QChar unit = m.captured(2).at(0);
+    if (unit == QLatin1Char('D'))
+        return n <= 7 * 365;
+    if (unit == QLatin1Char('W'))
+        return n <= 7 * 52;
+    if (unit == QLatin1Char('M'))
+        return n <= 7 * 12;
+    return n <= 7;
 }
 
 qint64 EtfIbkrDailyIngestor::record_retrieval(RetrievalStatus status, const QString& code, const QString& detail,
@@ -115,8 +124,8 @@ void EtfIbkrDailyIngestor::run(const QString& symbol, const QString& duration, D
 
     if (!valid_symbol(summary_.symbol) || !valid_duration(duration)) {
         finish(RetrievalStatus::SourceError, QStringLiteral("invalid_request"),
-               QStringLiteral("a symbol (A-Z, 0-9, '.', '-') and a duration '<n> D|W|M|Y' (at most 7 Y) are "
-                              "required"));
+               QStringLiteral("a symbol (A-Z, 0-9, '.', '-') and a duration '<n> D|W|M|Y' of at most seven years "
+                              "(2555 D, 364 W, 84 M, 7 Y) are required"));
         return;
     }
     const RouteDecision route = acquisition_route(SourceType::IbkrTwsReadonly, AcquisitionMode::IbkrReadonlyWrapper);
@@ -172,45 +181,58 @@ void EtfIbkrDailyIngestor::run(const QString& symbol, const QString& duration, D
         // Accepted bars, and the issues found in a usable response (an
         // in-progress bar, a missing session), are stored with the instrument.
         // A refused or failed response is recorded by its retrieval row alone.
-        if (!assessment.accepted.isEmpty() || !assessment.issues.isEmpty())
-            self->persist(envelope, assessment, retrieval_id, requested_at, retrieved_at);
+        if (!assessment.accepted.isEmpty() || !assessment.issues.isEmpty()) {
+            QString storage_error;
+            if (!self->persist(envelope, assessment, retrieval_id, requested_at, retrieved_at, &storage_error)) {
+                self->finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
+                             QStringLiteral("the response was not stored: %1").arg(storage_error));
+                return;
+            }
+        }
         self->finish(assessment.status, assessment.detail_code, assessment.detail);
     });
 }
 
-void EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const IbkrDailyAssessment& assessment,
-                                   qint64 retrieval_id, const QDateTime& requested_at, const QDateTime& seen_at) {
+bool EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const IbkrDailyAssessment& assessment,
+                                   qint64 retrieval_id, const QDateTime& requested_at, const QDateTime& seen_at,
+                                   QString* error) {
     auto& repo = EtfDataRepository::instance();
     auto& db = Database::instance();
-    auto begin = db.begin_transaction();
-    if (begin.is_err()) {
-        summary_.other_issues++;
-        return;
-    }
-    auto fail = [&](const std::string& what) {
-        db.rollback();
-        LOG_ERROR(kIbkrIngestTag,
-                  QString("could not store %1 bars: %2").arg(summary_.symbol, QString::fromStdString(what)));
+    const IbkrDailyRunSummary before = summary_;
+    // Nothing of the response survives a failure: the transaction is rolled
+    // back, the counts go back to what they were, and a storage_error issue is
+    // recorded against the retrieval when the database still takes one.
+    auto fail = [&](const std::string& what, bool rollback) {
+        if (rollback)
+            db.rollback();
+        const QString text = QString::fromStdString(what);
+        LOG_ERROR(kIbkrIngestTag, QString("could not store %1 bars: %2").arg(summary_.symbol, text));
+        summary_ = before;
         etf_store::IssueRecord issue;
         issue.state = QualityState::SourceError;
         issue.code = QStringLiteral("storage_error");
-        issue.detail = QString::fromStdString(what);
+        issue.detail = text;
         repo.record_issue(retrieval_id, issue);
         summary_.other_issues++;
-        summary_.observations_inserted = summary_.observations_revised = summary_.observations_confirmed = 0;
-        summary_.bars_accepted = 0;
+        if (error)
+            *error = text;
+        return false;
     };
+    auto begin = db.begin_transaction();
+    if (begin.is_err())
+        return fail(begin.error(), false);
 
     etf_store::ListedInstrumentFacts facts;
     facts.con_id = envelope.con_id;
     facts.symbol = envelope.contract_symbol.toUpper();
     facts.security_type = envelope.security_type;
+    facts.stock_type = envelope.stock_type;
     facts.exchange = envelope.exchange;
     facts.primary_exchange = envelope.primary_exchange;
     facts.currency = envelope.currency;
     auto instrument = repo.upsert_listed_instrument(facts, seen_at);
     if (instrument.is_err())
-        return fail(instrument.error());
+        return fail(instrument.error(), true);
     summary_.instrument_id = instrument.value();
 
     QDateTime observation_start;
@@ -218,11 +240,11 @@ void EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const Ibkr
         auto start = repo.observation_start(SourceType::IbkrTwsReadonly, SubjectType::ListedInstrument,
                                             instrument.value(), requested_at, retrieval_id);
         if (start.is_err())
-            return fail(start.error());
+            return fail(start.error(), true);
         observation_start = start.value();
         auto sessions = repo.upsert_sessions(assessment.window_days);
         if (sessions.is_err())
-            return fail(sessions.error());
+            return fail(sessions.error(), true);
     }
 
     for (const IbkrDailyIssue& i : assessment.issues) {
@@ -235,7 +257,7 @@ void EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const Ibkr
         issue.detail = i.detail;
         auto r = repo.record_issue(retrieval_id, issue);
         if (r.is_err())
-            return fail(r.error());
+            return fail(r.error(), true);
         if (i.state == QualityState::Missing)
             summary_.missing_sessions++;
         else if (i.state == QualityState::InProgressSession)
@@ -271,7 +293,7 @@ void EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const Ibkr
             in.observation_start = observation_start;
             auto outcome = repo.record_observation(in);
             if (outcome.is_err())
-                return fail(outcome.error());
+                return fail(outcome.error(), true);
             switch (outcome.value()) {
                 case etf_store::ObservationOutcome::InsertedOriginal:
                 case etf_store::ObservationOutcome::InsertedAmendment:
@@ -292,8 +314,9 @@ void EtfIbkrDailyIngestor::persist(const IbkrDailyEnvelope& envelope, const Ibkr
     }
     auto commit = db.commit();
     if (commit.is_err())
-        return fail(commit.error());
+        return fail(commit.error(), true);
     summary_.bars_accepted = assessment.accepted.size();
+    return true;
 }
 
 void EtfIbkrDailyIngestor::finish(RetrievalStatus status, const QString& code, const QString& detail) {

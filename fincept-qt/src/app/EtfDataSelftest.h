@@ -13,7 +13,8 @@ namespace fincept::marketlab {
 /// backfilled "observed" value and a zero-filled missing value.
 ///
 /// Everything runs in one transaction that is rolled back, so the self-test
-/// leaves no row behind; it needs no network, no SEC access and no TWS, so CI
+/// leaves no row behind; when that transaction cannot be opened it writes
+/// nothing and fails. It needs no network, no SEC access and no TWS, so CI
 /// can run it with the rest of the --selftest-list suites.
 int run_etf_data_selftest();
 

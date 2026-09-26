@@ -72,16 +72,20 @@ class EtfIbkrDailyIngestor : public QObject {
 
     /// A symbol the wrapper can be asked for: 1-12 characters of A-Z, 0-9, '.', '-'.
     static bool valid_symbol(const QString& symbol);
-    /// "<n> D|W|M|Y" with n >= 1; years at most 7 so the window stays inside
-    /// the verified session calendar (which starts 2019-01-01).
+    /// "<n> D|W|M|Y" with n >= 1 and at most seven years in any unit (2555 D,
+    /// 364 W, 84 M, 7 Y), so the window stays inside the verified session
+    /// calendar (which starts 2019-01-01).
     static bool valid_duration(const QString& duration);
 
   private:
     qint64 record_retrieval(RetrievalStatus status, const QString& code, const QString& detail,
                             const QString& request_ref, const QDateTime& requested_at, const QDateTime& retrieved_at,
                             const QJsonObject* payload);
-    void persist(const IbkrDailyEnvelope& envelope, const IbkrDailyAssessment& assessment, qint64 retrieval_id,
-                 const QDateTime& requested_at, const QDateTime& seen_at);
+    /// Store one usable response in one transaction. False when anything could
+    /// not be stored: nothing of the response is then left behind, and `error`
+    /// says why; the run must not report success.
+    bool persist(const IbkrDailyEnvelope& envelope, const IbkrDailyAssessment& assessment, qint64 retrieval_id,
+                 const QDateTime& requested_at, const QDateTime& seen_at, QString* error);
     void finish(RetrievalStatus status, const QString& code, const QString& detail);
 
     IbkrDailyFetch fetch_;

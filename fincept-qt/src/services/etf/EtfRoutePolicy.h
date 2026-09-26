@@ -58,8 +58,11 @@ inline RouteDecision acquisition_route(SourceType source, AcquisitionMode mode) 
     if (mode == AcquisitionMode::UserInitiatedImport)
         return {false, QStringLiteral("d1d_no_permission_basis: user-initiated issuer import stays disabled until a "
                                       "sufficient permission or use basis is established (A2 section 4)")};
-    return {false, QStringLiteral("issuer_automation_not_permitted: no issuer permits automated collection "
-                                  "(A2 section 3)")};
+    // A2 established the absence of a permission, not a universal prohibition:
+    // four examined issuers prohibit automated collection, three grant no
+    // permission for it, and others were not examined.
+    return {false, QStringLiteral("issuer_automation_permission_not_established: no permission or use basis for "
+                                  "automated collection from an issuer site is established (A2 sections 2 and 3)")};
 }
 
 // ── Flow-route availability per listed ETF (A2 section 10) ───────────────────

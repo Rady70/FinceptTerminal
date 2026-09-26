@@ -293,6 +293,12 @@ int main(int argc, char* argv[]) {
 
     // ── Secondary instance: argv was already shipped to the primary. Exit. ──
     if (lock_status == fincept::InstanceLock::Status::Secondary) {
+        // MarketLab ETF (Batch B): a headless ETF command needs this profile's
+        // database, which the running instance owns, and forwarding argv to it
+        // runs nothing. Refuse (exit 1) instead of exiting 0 as if it had run.
+        if (fincept::marketlab::etf_headless_command_requested(argc, argv))
+            return fincept::marketlab::refuse_etf_command_profile_in_use(argc, argv,
+                                                                         fincept::ProfileManager::instance().active());
 #ifdef Q_OS_WIN
         // Grant the primary process permission to bring its new window to
         // the foreground — Windows blocks focus-steal without this. Pre-

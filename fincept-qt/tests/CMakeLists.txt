@@ -368,9 +368,12 @@ set(_FINCEPT_ETF_STORE_SOURCES
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v052_etf_data_foundation.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/repositories/EtfDataRepository.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+# tst_etf_store also runs the shipped --selftest-etf-data body against its
+# database, to pin that the self-test writes nothing without its transaction.
 fincept_add_test(tst_etf_store
     tst_etf_store.cpp
-    ${_FINCEPT_ETF_STORE_SOURCES})
+    ${_FINCEPT_ETF_STORE_SOURCES}
+    "${PROJECT_SOURCE_DIR}/src/app/EtfDataSelftest.cpp")
 target_link_libraries(tst_etf_store PRIVATE Qt6::Sql)
 
 fincept_add_test(tst_etf_ingest

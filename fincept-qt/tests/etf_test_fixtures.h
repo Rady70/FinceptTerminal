@@ -19,7 +19,10 @@
 //
 // IBKR fixtures reproduce the wrapper's envelope shape
 // (scripts/ibkr_tws_data.py command_history) with synthetic prices: no IBKR
-// market data is copied into the repository.
+// market data is copied into the repository. The contract row carries the
+// stock_type the TRADING_DESK adapter reports from IBKR's contract details
+// (TRADING_DESK fix/ibkr-contract-stock-type); the adapter pinned before it
+// reports none.
 #pragma once
 #include "services/etf/EtfSessionCalendar.h"
 
@@ -306,6 +309,7 @@ inline QJsonObject ibkr_history_envelope(const QString& symbol, qint64 con_id, c
                        {"contract", QJsonObject{{"con_id", static_cast<double>(con_id)},
                                                 {"symbol", symbol},
                                                 {"security_type", "STK"},
+                                                {"stock_type", "ETF"},
                                                 {"exchange", "SMART"},
                                                 {"primary_exchange", "ARCA"},
                                                 {"currency", "USD"}}},
@@ -331,6 +335,18 @@ inline QJsonObject ibkr_failure_envelope(const QString& type, const QString& sta
                        {"ok", false},
                        {"retrieved_at", "2026-09-26T09:00:00Z"},
                        {"failure", QJsonObject{{"type", type}, {"stage", stage}, {"message", message}}}};
+}
+
+/// The same envelope with the contract's stock_type replaced. An undefined
+/// value removes the key, as the adapter pinned before the field reports it.
+inline QJsonObject with_stock_type(QJsonObject payload, const QJsonValue& stock_type) {
+    QJsonObject contract = payload.value("contract").toObject();
+    if (stock_type.isUndefined())
+        contract.remove("stock_type");
+    else
+        contract.insert("stock_type", stock_type);
+    payload.insert("contract", contract);
+    return payload;
 }
 
 /// One synthetic bar for every calendar session from `first` to `last`.

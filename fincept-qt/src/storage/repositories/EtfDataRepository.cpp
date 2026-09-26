@@ -87,6 +87,15 @@ const QString& etf_observation_columns() {
     return kColumns;
 }
 
+/// A stored vintage and an incoming observation mean the same thing: the same
+/// kind, units, basis, period and (SEC) acceptance time. A later retrieval
+/// confirms a vintage only when its value AND its meaning agree.
+bool etf_same_meaning(const StoredObservation& v, const etf_store::ObservationInput& in) {
+    return v.measurement_kind == QLatin1String(measurement_kind_id(in.kind)) && v.units == in.units &&
+           v.basis == in.basis && v.period_start == in.period_start && v.period_end == in.period_end &&
+           v.report_period == in.report_period && v.accepted_at == in.accepted_at;
+}
+
 QJsonValue etf_json_value(const QVariant& v) {
     if (v.isNull() || !v.isValid())
         return QJsonValue(QJsonValue::Null);
@@ -185,26 +194,39 @@ Result<qint64> EtfDataRepository::upsert_reporting_entity(const etf_store::Repor
                                                           const QDateTime& seen_at) {
     if (f.cik.size() != 10)
         return Result<qint64>::err("reporting entity CIK is not 10 digits");
+    if (!f.source_accepted_at.isValid())
+        return Result<qint64>::err("reporting entity attributes need the acceptance time of the filing that "
+                                   "reported them");
     const QString seen = etf_store::iso_utc(seen_at);
-    auto found = db().execute("SELECT entity_id, last_seen_at FROM etf_reporting_entities WHERE cik = ? AND "
-                              "series_id = ?",
+    auto found = db().execute("SELECT entity_id FROM etf_reporting_entities WHERE cik = ? AND series_id = ?",
                               {etf_text(f.cik), etf_text(f.series_id)});
     if (found.is_err())
         return Result<qint64>::err(found.error());
     auto& q = found.value();
     if (q.next()) {
         const qint64 id = q.value(0).toLongLong();
-        // Names and LEIs are attributes: keep the most recently seen values, so
-        // an older filing processed later does not overwrite newer ones.
-        if (seen >= q.value(1).toString()) {
+        // Names and LEIs are attributes of the filing that reported them. The
+        // entity keeps those of its newest filing by SEC acceptance time: an
+        // older filing ingested later (a backfill) must not overwrite them,
+        // whenever MarketLab happened to download it.
+        auto newest = db().execute("SELECT MAX(accepted_at) FROM etf_sec_filings WHERE entity_id = ?", {id});
+        if (newest.is_err())
+            return Result<qint64>::err(newest.error());
+        const QString newest_accepted = newest.value().next() ? newest.value().value(0).toString() : QString();
+        if (newest_accepted.isEmpty() || etf_store::iso_utc(f.source_accepted_at) >= newest_accepted) {
             auto upd = exec_write("UPDATE etf_reporting_entities SET registrant_name = ?, series_name = ?, "
-                                  "reg_file_number = ?, registrant_lei = ?, series_lei = ?, last_seen_at = ? "
-                                  "WHERE entity_id = ?",
+                                  "reg_file_number = ?, registrant_lei = ?, series_lei = ? WHERE entity_id = ?",
                                   {etf_text(f.registrant_name), etf_text(f.series_name), etf_text(f.reg_file_number),
-                                   etf_text(f.registrant_lei), etf_text(f.series_lei), seen, id});
+                                   etf_text(f.registrant_lei), etf_text(f.series_lei), id});
             if (upd.is_err())
                 return Result<qint64>::err(upd.error());
         }
+        // last_seen_at is the latest sighting, whichever filing it came from.
+        auto touch = exec_write("UPDATE etf_reporting_entities SET last_seen_at = ? WHERE entity_id = ? AND "
+                                "last_seen_at < ?",
+                                {seen, id, seen});
+        if (touch.is_err())
+            return Result<qint64>::err(touch.error());
         return Result<qint64>::ok(id);
     }
     return exec_insert("INSERT INTO etf_reporting_entities (cik, series_id, reporting_level, registrant_name, "
@@ -220,6 +242,10 @@ Result<qint64> EtfDataRepository::upsert_listed_instrument(const etf_store::List
                                                            const QDateTime& seen_at) {
     if (f.con_id <= 0)
         return Result<qint64>::err("listed instrument has no positive IBKR conId");
+    // secType STK covers an ETF and an ordinary share alike; only IBKR's own
+    // classification establishes an ETF (v052 refuses anything else as well).
+    if (f.stock_type != QLatin1String("ETF"))
+        return Result<qint64>::err("a listed instrument of the ETF store needs IBKR stockType ETF");
     const QString seen = etf_store::iso_utc(seen_at);
     qint64 id = 0;
     auto found = db().execute("SELECT instrument_id, last_seen_at FROM etf_listed_instruments WHERE ibkr_con_id = ?",
@@ -229,20 +255,23 @@ Result<qint64> EtfDataRepository::upsert_listed_instrument(const etf_store::List
     auto& q = found.value();
     if (q.next()) {
         id = q.value(0).toLongLong();
+        // IBKR answers with the contract's current details, so the latest
+        // sighting is also the newest source statement of these attributes.
         if (seen >= q.value(1).toString()) {
-            auto upd = exec_write("UPDATE etf_listed_instruments SET symbol = ?, security_type = ?, exchange = ?, "
-                                  "primary_exchange = ?, currency = ?, last_seen_at = ? WHERE instrument_id = ?",
-                                  {etf_text(f.symbol), etf_text(f.security_type), etf_text(f.exchange),
-                                   etf_text(f.primary_exchange), etf_text(f.currency), seen, id});
+            auto upd = exec_write("UPDATE etf_listed_instruments SET symbol = ?, security_type = ?, stock_type = ?, "
+                                  "exchange = ?, primary_exchange = ?, currency = ?, last_seen_at = ? WHERE "
+                                  "instrument_id = ?",
+                                  {etf_text(f.symbol), etf_text(f.security_type), etf_text(f.stock_type),
+                                   etf_text(f.exchange), etf_text(f.primary_exchange), etf_text(f.currency), seen, id});
             if (upd.is_err())
                 return Result<qint64>::err(upd.error());
         }
     } else {
         auto ins =
-            exec_insert("INSERT INTO etf_listed_instruments (ibkr_con_id, symbol, security_type, exchange, "
-                        "primary_exchange, currency, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        {f.con_id, etf_text(f.symbol), etf_text(f.security_type), etf_text(f.exchange),
-                         etf_text(f.primary_exchange), etf_text(f.currency), seen, seen});
+            exec_insert("INSERT INTO etf_listed_instruments (ibkr_con_id, symbol, security_type, stock_type, exchange, "
+                        "primary_exchange, currency, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        {f.con_id, etf_text(f.symbol), etf_text(f.security_type), etf_text(f.stock_type),
+                         etf_text(f.exchange), etf_text(f.primary_exchange), etf_text(f.currency), seen, seen});
         if (ins.is_err())
             return ins;
         id = ins.value();
@@ -463,7 +492,7 @@ Result<etf_store::ObservationOutcome> EtfDataRepository::record_observation(cons
         // retrieval re-applied. Deterministically a no-op.
         if (in.retrieval_id <= same_doc_max_retrieval)
             return R::ok(ObservationOutcome::AlreadyRecorded);
-        if (latest_same->value.same_value(in.value)) {
+        if (latest_same->value.same_value(in.value) && etf_same_meaning(*latest_same, in)) {
             auto upd = exec_write("UPDATE etf_observations SET last_seen_at = ?, last_retrieval_id = ?, "
                                   "seen_count = seen_count + 1 WHERE observation_id = ?",
                                   {etf_store::iso_utc(in.seen_at), in.retrieval_id, latest_same->observation_id});
@@ -471,8 +500,9 @@ Result<etf_store::ObservationOutcome> EtfDataRepository::record_observation(cons
                 return R::err(upd.error());
             return R::ok(ObservationOutcome::Confirmed);
         }
-        // A filed SEC document does not change. A different value under the
-        // same accession is an anomaly: refused, and the caller records it.
+        // A filed SEC document does not change. A different value, or the same
+        // number with a different meaning, under the same accession is an
+        // anomaly: refused, and the caller records it.
         if (sec)
             return R::ok(ObservationOutcome::RefusedDocumentChanged);
     }

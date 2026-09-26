@@ -15,6 +15,12 @@
 // parsed and checked against the requested identity before anything is
 // stored, and each is written in its own transaction.
 //
+// A run is OK only when every filing it selected was stored as delivered. A
+// filing that could not be fetched, parsed or identified, or a value refused
+// because a filed document changed, makes the run a SOURCE_ERROR, while the
+// filings that were stored stay stored. A storage failure ends the run at
+// once, as a SOURCE_ERROR storage_error.
+//
 // Respectful access: one request at a time, a minimum interval between
 // requests (the production configuration clamps it to at least 150 ms, well
 // inside the SEC's 10 requests per second), a declared User-Agent with an
@@ -122,8 +128,11 @@ class EtfSecNportIngestor : public QObject {
     void select_next_candidate();
     void fetch_page_then(const SecOlderPage& page, std::function<void()> next);
     void fetch_next_document();
-    void persist_document(const SecFilingRef& ref, const NportDocument& doc, const QByteArray& body,
-                          qint64 retrieval_id, const QDateTime& seen_at);
+    /// Store one filing in one transaction. False when anything could not be
+    /// stored: nothing of the filing is then left behind, `error` says why, and
+    /// the caller ends the run as a storage error.
+    bool persist_document(const SecFilingRef& ref, const NportDocument& doc, const QByteArray& body,
+                          qint64 retrieval_id, const QDateTime& seen_at, QString* error);
     void finish(RetrievalStatus status, const QString& code, const QString& detail);
 
     SecHttpGet http_;

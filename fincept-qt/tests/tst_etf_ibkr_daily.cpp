@@ -2,11 +2,12 @@
 // boundary (services/etf/EtfIbkrDaily.h).
 //
 // Pins what reaches storage from a wrapper `history` envelope: bar dates kept
-// exactly as IBKR reported them; the in-progress session rejected; holidays,
-// weekends and uncovered dates refused; missing expected sessions and stale
-// history reported; entitlement, TWS/process failures and IBKR errors kept
-// apart; and any response whose parameters, identity or rows cannot be
-// trusted refused as a whole. Synthetic prices only.
+// exactly as IBKR reported them; the in-progress session rejected on its own;
+// missing expected sessions and stale history reported; entitlement,
+// TWS/process failures and IBKR errors kept apart; an ordinary share never
+// taken for an ETF; and any response whose parameters, identity, rows or bar
+// dates (a holiday, a weekend, an uncovered date, a session after the
+// requested end) cannot be trusted refused as a whole. Synthetic prices only.
 
 #include "etf_test_fixtures.h"
 #include "services/etf/EtfIbkrDaily.h"
@@ -51,13 +52,14 @@ class TstEtfIbkrDaily : public QObject {
     void newest_bar_before_last_completed_session_is_stale();
     void in_progress_session_is_rejected();
     void early_close_session_is_completed_at_one_pm();
-    void non_session_and_uncovered_bars_are_refused();
+    void untrusted_bar_dates_refuse_the_response();
     void wrapper_stale_rule_is_kept();
     void entitlement_block_is_not_an_error();
     void tws_unavailable_is_a_source_error();
     void ibkr_error_is_a_source_error();
     void parameter_mismatch_is_refused();
     void contract_identity_is_checked();
+    void an_ordinary_stock_is_not_an_etf();
     void malformed_or_duplicated_rows_refuse_the_response();
 };
 
@@ -127,11 +129,13 @@ void TstEtfIbkrDaily::in_progress_session_is_rejected() {
     QCOMPARE(a.accepted.size(), 4);
     QCOMPARE(a.accepted.last().session_date, kLast);
     QCOMPARE(count_state(a, QualityState::InProgressSession), 1);
-    // Even after the close, a bar after the requested end is not accepted.
+    // After the close, the same bar is a completed session the request did not
+    // ask for: IBKR did not answer as asked, so nothing is used.
     const auto after = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-25T21:00:00.000Z");
-    QCOMPARE(after.accepted.size(), 4);
-    QCOMPARE(after.issues.size(), 1);
-    QCOMPARE(after.issues[0].code, QStringLiteral("bar_after_requested_end"));
+    QCOMPARE(after.status, RetrievalStatus::SourceError);
+    QCOMPARE(after.detail_code, QStringLiteral("bar_after_requested_end"));
+    QVERIFY(after.accepted.isEmpty());
+    QVERIFY(after.issues.isEmpty());
     // A response that holds only the in-progress bar has nothing acceptable.
     const auto only = assess(ibkr_history_envelope("SPY", 756733, {BarSpec{QStringLiteral("20260925")}}, kEnd),
                              "2026-09-25T14:51:00.000Z");
@@ -158,20 +162,27 @@ void TstEtfIbkrDaily::early_close_session_is_completed_at_one_pm() {
     QCOMPARE(count_state(b, QualityState::InProgressSession), 1);
 }
 
-void TstEtfIbkrDaily::non_session_and_uncovered_bars_are_refused() {
-    QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
-    bars.append(BarSpec{QStringLiteral("20260907")}); // Labor Day
-    bars.append(BarSpec{QStringLiteral("20260920")}); // a Sunday
-    bars.append(BarSpec{QStringLiteral("20181228")}); // before the calendar's coverage
-    const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
-    QCOMPARE(a.accepted.size(), 9);
-    int non_session = 0, uncovered = 0;
-    for (const auto& i : a.issues) {
-        non_session += i.code == QLatin1String("bar_on_non_session_date") ? 1 : 0;
-        uncovered += i.code == QLatin1String("bar_outside_calendar_coverage") ? 1 : 0;
+void TstEtfIbkrDaily::untrusted_bar_dates_refuse_the_response() {
+    // One stray bar among nine valid sessions: the whole response is refused,
+    // never partially used, and the stray bar is never re-dated.
+    const struct {
+        const char* date;
+        const char* code;
+    } cases[] = {{"20260907", "bar_on_non_session_date"},       // Labor Day
+                 {"20260920", "bar_on_non_session_date"},       // a Sunday
+                 {"20181228", "bar_outside_calendar_coverage"}, // before the calendar's coverage
+                 {"20260925", "bar_after_requested_end"}};      // completed, but not asked for
+    for (const auto& c : cases) {
+        QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
+        bars.append(BarSpec{QString::fromLatin1(c.date)});
+        const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
+        QCOMPARE(a.status, RetrievalStatus::SourceError);
+        QCOMPARE(a.detail_code, QString::fromLatin1(c.code));
+        QVERIFY(a.detail.contains(QString::fromLatin1(c.date)));
+        QVERIFY(a.accepted.isEmpty());
+        QVERIFY(a.issues.isEmpty());
+        QVERIFY(a.window_days.isEmpty());
     }
-    QCOMPARE(non_session, 2);
-    QCOMPARE(uncovered, 1);
 }
 
 void TstEtfIbkrDaily::wrapper_stale_rule_is_kept() {
@@ -233,6 +244,33 @@ void TstEtfIbkrDaily::contract_identity_is_checked() {
     const auto other = assess_ibkr_daily(parse_ibkr_daily_envelope(ibkr_history_envelope("IVV", 1, bars, kEnd)), "SPY",
                                          "2 Y", kEnd, kLast, utc("2026-09-26T09:00:00.000Z"));
     QCOMPARE(other.detail_code, QStringLiteral("contract_identity_invalid"));
+}
+
+void TstEtfIbkrDaily::an_ordinary_stock_is_not_an_etf() {
+    // secType STK is an ETF and an ordinary share alike. A valid, resolved
+    // ordinary-share contract (AAPL-like) must not become ETF data.
+    const QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
+    const QJsonObject aapl = with_stock_type(ibkr_history_envelope("AAPL", 265598, bars, kEnd), "COMMON");
+    const auto common =
+        assess_ibkr_daily(parse_ibkr_daily_envelope(aapl), "AAPL", "2 Y", kEnd, kLast, utc("2026-09-26T09:00:00.000Z"));
+    QCOMPARE(common.status, RetrievalStatus::SourceError);
+    QCOMPARE(common.detail_code, QStringLiteral("etf_identity_not_established"));
+    QVERIFY(common.detail.contains(QLatin1String("COMMON")));
+    QVERIFY(common.accepted.isEmpty());
+    // An adapter that does not report stockType cannot establish an ETF,
+    // whatever the symbol: SPY is refused too, never assumed.
+    const auto unreported =
+        assess(with_stock_type(ibkr_history_envelope("SPY", 756733, bars, kEnd), QJsonValue(QJsonValue::Undefined)));
+    QCOMPARE(unreported.detail_code, QStringLiteral("etf_identity_not_established"));
+    QVERIFY(unreported.accepted.isEmpty());
+    for (const QJsonValue& blank : {QJsonValue(""), QJsonValue(QJsonValue::Null)})
+        QCOMPARE(assess(with_stock_type(ibkr_history_envelope("SPY", 756733, bars, kEnd), blank)).detail_code,
+                 QStringLiteral("etf_identity_not_established"));
+    // IBKR's own ETF classification is what makes it one.
+    const auto etf = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
+    QCOMPARE(etf.status, RetrievalStatus::Ok);
+    QCOMPARE(parse_ibkr_daily_envelope(ibkr_history_envelope("SPY", 756733, bars, kEnd)).stock_type,
+             QStringLiteral("ETF"));
 }
 
 void TstEtfIbkrDaily::malformed_or_duplicated_rows_refuse_the_response() {

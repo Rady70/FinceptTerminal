@@ -5,9 +5,11 @@
 // file holds before and after it is reopened, what an upgrade of an existing
 // schema leaves behind, and which rows the database itself refuses. It
 // therefore links Qt6::Sql and the leaf storage sources (Database,
-// MigrationRunner, Logger, v052, EtfDataRepository) — see tests/CMakeLists.txt.
-// Every database is a fresh file in a temporary directory.
+// MigrationRunner, Logger, v052, EtfDataRepository), plus the ETF self-test it
+// runs against its database — see tests/CMakeLists.txt. Every database is a
+// fresh file in a temporary directory.
 
+#include "app/EtfDataSelftest.h"
 #include "services/etf/EtfReadModel.h"
 #include "services/etf/EtfRoutePolicy.h"
 #include "services/etf/EtfSessionCalendar.h"
@@ -72,6 +74,7 @@ qint64 add_entity(const char* cik, const char* series = "") {
     f.cik = QString::fromLatin1(cik);
     f.series_id = QString::fromLatin1(series);
     f.registrant_name = QStringLiteral("Test Trust");
+    f.source_accepted_at = utc("2026-08-28T12:25:47.000Z");
     auto id = repo().upsert_reporting_entity(f, utc("2026-09-01T00:00:00.000Z"));
     return id.is_ok() ? id.value() : -1;
 }
@@ -124,6 +127,7 @@ qint64 add_instrument(qint64 con_id, const char* symbol, const char* seen = "202
     f.con_id = con_id;
     f.symbol = QString::fromLatin1(symbol);
     f.security_type = QStringLiteral("STK");
+    f.stock_type = QStringLiteral("ETF");
     f.exchange = QStringLiteral("SMART");
     f.primary_exchange = QStringLiteral("ARCA");
     f.currency = QStringLiteral("USD");
@@ -193,9 +197,11 @@ class TstEtfStore : public QObject {
     void a_value_that_flips_back_is_a_new_vintage();
     void sec_amendment_is_its_own_vintage();
     void sec_value_change_under_one_accession_is_refused();
+    void confirmation_needs_the_same_meaning();
     void filing_document_change_is_detected();
     void missing_unparseable_and_zero_are_preserved();
     void instrument_identity_is_the_conid();
+    void an_ordinary_stock_is_refused_twice();
     void reporting_entity_identity_is_cik_and_series();
     void identity_links_follow_the_class_structure();
     void observation_start_is_set_once();
@@ -204,6 +210,7 @@ class TstEtfStore : public QObject {
     void repository_refuses_disabled_routes();
     void vocabulary_matches_the_database();
     void export_is_deterministic();
+    void selftest_writes_nothing_without_its_transaction();
 };
 
 void TstEtfStore::initTestCase() {
@@ -510,6 +517,62 @@ void TstEtfStore::sec_value_change_under_one_accession_is_refused() {
     QCOMPARE(count("etf_observations"), 1);
 }
 
+void TstEtfStore::confirmation_needs_the_same_meaning() {
+    QVERIFY(!open_fresh().isEmpty());
+    // SEC: the same number under the same accession, delivered later with any
+    // part of its meaning changed, is refused, never taken as a confirmation.
+    const qint64 entity = add_entity("0000884394");
+    const qint64 r1 = sec_retrieval("2026-09-01T10:00:00.000Z");
+    const qint64 r2 = sec_retrieval("2026-09-02T10:00:00.000Z");
+    const qint64 filing = add_filing("0001410368-26-089410", "NPORT-P", "2026-08-28T12:25:47.000Z", entity, r1);
+    const auto first = sec_input(entity, filing, "0001410368-26-089410", false, parse_decimal_field("100", true), r1,
+                                 "2026-09-01T10:00:01.000Z", "2026-08-28T12:25:47.000Z");
+    QCOMPARE(repo().record_observation(first).value(), ObservationOutcome::InsertedOriginal);
+    void (*const changes[])(etf_store::ObservationInput&) = {
+        [](etf_store::ObservationInput& in) { in.basis = QStringLiteral("regulatory_report_date_net_assets"); },
+        [](etf_store::ObservationInput& in) { in.units = QStringLiteral("EUR"); },
+        [](etf_store::ObservationInput& in) { in.kind = MeasurementKind::AccountingObservation; },
+        [](etf_store::ObservationInput& in) { in.period_end = QDate(2026, 6, 30); },
+        [](etf_store::ObservationInput& in) { in.report_period = QDate(2026, 3, 31); },
+        [](etf_store::ObservationInput& in) { in.accepted_at = utc("2026-08-28T12:25:48.000Z"); },
+    };
+    for (auto change : changes) {
+        auto later = first;
+        later.retrieval_id = r2;
+        later.seen_at = utc("2026-09-02T10:00:01.000Z");
+        change(later);
+        QCOMPARE(repo().record_observation(later).value(), ObservationOutcome::RefusedDocumentChanged);
+    }
+    auto v = repo().vintages(SubjectType::ReportingEntity, entity, QStringLiteral("nport_net_assets"),
+                             QDate(2026, 6, 30), SourceType::SecNport);
+    QVERIFY(v.is_ok());
+    QCOMPARE(v.value().size(), 1);
+    QCOMPARE(v.value()[0].basis, first.basis); // the stored meaning is untouched...
+    QCOMPARE(v.value()[0].seen_count, 1);      // ...and no sighting was added to it
+    QCOMPARE(v.value()[0].last_retrieval_id, r1);
+    auto same = first; // the same number with the same meaning still confirms
+    same.retrieval_id = r2;
+    same.seen_at = utc("2026-09-02T10:00:01.000Z");
+    QCOMPARE(repo().record_observation(same).value(), ObservationOutcome::Confirmed);
+
+    // IBKR: the same close in other units is a new vintage beside the old one.
+    const qint64 instrument = add_instrument(756733, "SPY");
+    const qint64 b1 = ibkr_retrieval("2026-09-25T15:00:00.000Z");
+    const qint64 b2 = ibkr_retrieval("2026-09-26T15:00:00.000Z");
+    QCOMPARE(repo().record_observation(bar_input(instrument, 10.0, b1, "2026-09-25T15:00:05.000Z")).value(),
+             ObservationOutcome::InsertedOriginal);
+    auto other_units = bar_input(instrument, 10.0, b2, "2026-09-26T15:00:05.000Z");
+    other_units.units = QStringLiteral("EUR_per_share");
+    QCOMPARE(repo().record_observation(other_units).value(), ObservationOutcome::InsertedRevision);
+    auto bars = repo().vintages(SubjectType::ListedInstrument, instrument, QStringLiteral("bar_close"),
+                                QDate(2026, 9, 24), SourceType::IbkrTwsReadonly);
+    QVERIFY(bars.is_ok());
+    QCOMPARE(bars.value().size(), 2);
+    QCOMPARE(bars.value()[0].units, QStringLiteral("USD_per_share"));
+    QCOMPARE(bars.value()[0].seen_count, 1);
+    QCOMPARE(bars.value()[1].units, QStringLiteral("EUR_per_share"));
+}
+
 void TstEtfStore::filing_document_change_is_detected() {
     QVERIFY(!open_fresh().isEmpty());
     const qint64 entity = add_entity("0000884394");
@@ -595,6 +658,33 @@ void TstEtfStore::instrument_identity_is_the_conid() {
     QVERIFY(repo().upsert_listed_instrument({0, "X", "STK", "", "", "USD"}, utc("2026-01-01T00:00:00.000Z")).is_err());
 }
 
+void TstEtfStore::an_ordinary_stock_is_refused_twice() {
+    QVERIFY(!open_fresh().isEmpty());
+    // The repository refuses a listed instrument IBKR does not classify as an
+    // ETF, whatever its secType says...
+    etf_store::ListedInstrumentFacts aapl;
+    aapl.con_id = 265598;
+    aapl.symbol = QStringLiteral("AAPL");
+    aapl.security_type = QStringLiteral("STK");
+    aapl.currency = QStringLiteral("USD");
+    for (const char* stock_type : {"", "COMMON", "etf"}) {
+        aapl.stock_type = QString::fromLatin1(stock_type);
+        auto refused = repo().upsert_listed_instrument(aapl, utc("2026-09-25T15:00:00.000Z"));
+        QVERIFY2(refused.is_err(), stock_type);
+        // The repository's own check refuses first; the schema's CHECK is the
+        // second, independent guard behind it.
+        QCOMPARE(QString::fromStdString(refused.error()),
+                 QStringLiteral("a listed instrument of the ETF store needs IBKR stockType ETF"));
+    }
+    // ...and the database refuses it on its own, whoever writes the row.
+    const QString insert = QStringLiteral(
+        "INSERT INTO etf_listed_instruments (ibkr_con_id, symbol, security_type, stock_type, currency, first_seen_at, "
+        "last_seen_at) VALUES (?, ?, 'STK', ?, 'USD', '2026-09-25T15:00:00.000Z', '2026-09-25T15:00:00.000Z')");
+    QVERIFY(raw_insert_fails(insert, {265598, QStringLiteral("AAPL"), QStringLiteral("COMMON")}));
+    QVERIFY(!raw_insert_fails(insert, {756733, QStringLiteral("SPY"), QStringLiteral("ETF")})); // the rule, not the SQL
+    QCOMPARE(count("etf_listed_instruments"), 1);
+}
+
 void TstEtfStore::reporting_entity_identity_is_cik_and_series() {
     QVERIFY(!open_fresh().isEmpty());
     const qint64 registrant = add_entity("0001067839");
@@ -611,6 +701,11 @@ void TstEtfStore::reporting_entity_identity_is_cik_and_series() {
     QVERIFY(lvl.value().next());
     QCOMPARE(lvl.value().value(0).toString(), QStringLiteral("series"));
     QCOMPARE(*repo().find_reporting_entity(QStringLiteral("0001067839"), QString()).value(), registrant);
+    // Attributes without the acceptance time of their filing have no place in
+    // the entity's chronology: refused.
+    etf_store::ReportingEntityFacts undated;
+    undated.cik = QStringLiteral("0001067839");
+    QVERIFY(repo().upsert_reporting_entity(undated, utc("2026-09-01T00:00:00.000Z")).is_err());
 }
 
 void TstEtfStore::identity_links_follow_the_class_structure() {
@@ -893,6 +988,23 @@ void TstEtfStore::export_is_deterministic() {
     QCOMPARE(obs.size(), 1);
     QVERIFY(obs[0].toObject().value("accepted_at").isNull());
     QCOMPARE(obs[0].toObject().value("value").toDouble(), 10.0);
+}
+
+void TstEtfStore::selftest_writes_nothing_without_its_transaction() {
+    QVERIFY(!open_fresh().isEmpty());
+    // A normal run passes and leaves no row behind.
+    QCOMPARE(marketlab::run_etf_data_selftest(), 0);
+    QCOMPARE(count("etf_retrievals"), 0);
+    QCOMPARE(count("etf_observations"), 0);
+    // A transaction already open on this connection makes the self-test's own
+    // BEGIN fail. It must stop before its first write: going on would put its
+    // writes into a transaction it does not own, and its closing rollback
+    // would then end that transaction.
+    QVERIFY(Database::instance().begin_transaction().is_ok());
+    QCOMPARE(marketlab::run_etf_data_selftest(), 1);
+    QCOMPARE(count("etf_retrievals"), 0);
+    QCOMPARE(count("etf_reporting_entities"), 0);
+    QVERIFY(Database::instance().commit().is_ok()); // the open transaction is still the caller's
 }
 
 QTEST_GUILESS_MAIN(TstEtfStore)

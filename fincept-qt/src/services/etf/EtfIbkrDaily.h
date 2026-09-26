@@ -5,23 +5,34 @@
 // existing read-only wrapper (scripts/ibkr_tws_data.py), checked against the
 // U.S. equity session calendar before anything is stored.
 //
-// Batch A2 qualified the regular-hours close and IBKR's filtered regular-hours
-// volume as RAW inputs only (A2 section 7.2). This header stores neither a
-// rotation measure nor an adjusted price: open/high/low/close are IBKR's
-// split-adjusted, not dividend-adjusted TRADES prices, and volume is IBKR's
-// filtered volume, which is not consolidated volume and never ETF flow.
+// Stored is not the same as qualified. Batch A2 scopes Batch B to store IBKR
+// completed-session daily OHLCV with vintages (A2 section 10, measurement kind
+// market_bar), and qualifies two of those fields as RAW inputs for later
+// rotation work: the regular-hours close and IBKR's filtered regular-hours
+// volume (A2 section 7.2). Open, high and low are kept as IBKR delivered them
+// and are not qualified inputs; a later batch uses them only after qualifying
+// them. Nothing here is a rotation measure or an adjusted price: prices are
+// IBKR's split-adjusted, not dividend-adjusted TRADES prices, and volume is
+// IBKR's filtered volume, which is not consolidated volume and never ETF flow.
 // ADJUSTED_LAST and WAP are not read (not qualified).
 //
 // What the assessment guarantees:
+//   * the instrument is an ETF by IBKR's own classification: the contract
+//     details' stockType is "ETF". secType is "STK" for an ETF and an ordinary
+//     share alike, so it proves nothing, and a wrapper whose adapter does not
+//     report stockType cannot establish an ETF: the response is refused;
 //   * a bar of a session that had not closed when the request was made is
-//     never accepted (IN_PROGRESS_SESSION, A2 section 7.7);
-//   * a bar on a holiday, a weekend or a date the calendar does not cover is
-//     refused, never re-dated;
+//     never accepted (IN_PROGRESS_SESSION, A2 section 7.7); that bar alone is
+//     rejected, the completed sessions of the response are kept;
 //   * every calendar session in the returned window without a bar is recorded
 //     as MISSING, never filled;
 //   * history that ends before the last completed session is STALE;
 //   * a response whose parameters, contract identity or bar rows cannot be
-//     trusted is refused as a whole (SOURCE_ERROR), never partially used.
+//     trusted is refused as a whole (SOURCE_ERROR), never partially used. That
+//     includes a bar on a holiday, a weekend, a date the calendar does not
+//     cover, or a completed session after the requested last session: such a
+//     bar is never re-dated, and the rest of the response is not trusted
+//     either.
 //
 // Header-only over Qt Core.
 #pragma once
@@ -69,6 +80,7 @@ struct IbkrDailyEnvelope {
     qint64 con_id = 0;
     QString contract_symbol;
     QString security_type;
+    QString stock_type; ///< IBKR's classification from the contract details ("ETF"); empty when not reported
     QString exchange;
     QString primary_exchange;
     QString currency;
@@ -142,6 +154,7 @@ inline IbkrDailyEnvelope parse_ibkr_daily_envelope(const QJsonObject& payload) {
         e.con_id = 0; // a fractional conId is not an identity
     e.contract_symbol = text(contract, "symbol");
     e.security_type = text(contract, "security_type");
+    e.stock_type = text(contract, "stock_type");
     e.exchange = text(contract, "exchange");
     e.primary_exchange = text(contract, "primary_exchange");
     e.currency = text(contract, "currency");
@@ -223,11 +236,15 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
                                              const QDate& requested_last_session, const QDateTime& requested_at_utc) {
     IbkrDailyAssessment a;
     a.window_last = requested_last_session;
+    // A refused response keeps nothing: no bar, no issue, no calendar window.
     auto fail = [&a](RetrievalStatus status, const QString& code, const QString& detail) {
         a.status = status;
         a.detail_code = code;
         a.detail = detail;
         a.accepted.clear();
+        a.issues.clear();
+        a.window_days.clear();
+        a.window_first = QDate();
         return a;
     };
     if (!e.wrapper_ok) {
@@ -270,6 +287,17 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
                         .arg(e.con_id)
                         .arg(e.contract_symbol, e.currency, e.security_type));
     }
+    if (e.stock_type != QLatin1String("ETF")) {
+        return fail(RetrievalStatus::SourceError, QStringLiteral("etf_identity_not_established"),
+                    e.stock_type.isEmpty()
+                        ? QStringLiteral("IBKR reported no stockType for conId %1 (%2): the adapter in use does not "
+                                         "report it, so the instrument is not established as an ETF")
+                              .arg(e.con_id)
+                              .arg(e.contract_symbol)
+                        : QStringLiteral("IBKR classifies conId %1 (%2) as stockType '%3', not ETF")
+                              .arg(e.con_id)
+                              .arg(e.contract_symbol, e.stock_type));
+    }
     if (e.malformed_bars > 0) {
         return fail(
             RetrievalStatus::SourceError, QStringLiteral("bars_malformed"),
@@ -291,17 +319,15 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
               [](const IbkrDailyBarRow& l, const IbkrDailyBarRow& r) { return l.session_date < r.session_date; });
     for (const IbkrDailyBarRow& b : bars) {
         const MarketSessionDay day = UsEquityCalendar::day(b.session_date);
-        if (day.type == SessionDayType::OutsideCoverage) {
-            a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_outside_calendar_coverage"),
-                             QStringLiteral("no verified session calendar for %1").arg(b.date_text)});
-            continue;
-        }
-        if (!day.is_session()) {
-            a.issues.append(
-                {b.session_date, QualityState::SourceError, QStringLiteral("bar_on_non_session_date"),
-                 QStringLiteral("%1 is a %2").arg(b.date_text, QLatin1String(session_day_type_id(day.type)))});
-            continue;
-        }
+        // A bar the calendar cannot place, a bar on a non-session, or a
+        // completed session after the requested end means the response did not
+        // answer the request as asked: none of it is trusted.
+        if (day.type == SessionDayType::OutsideCoverage)
+            return fail(RetrievalStatus::SourceError, QStringLiteral("bar_outside_calendar_coverage"),
+                        QStringLiteral("no verified session calendar for %1").arg(b.date_text));
+        if (!day.is_session())
+            return fail(RetrievalStatus::SourceError, QStringLiteral("bar_on_non_session_date"),
+                        QStringLiteral("%1 is a %2").arg(b.date_text, QLatin1String(session_day_type_id(day.type))));
         if (day.close_utc > requested_at_utc) {
             a.issues.append({b.session_date, QualityState::InProgressSession,
                              QStringLiteral("session_not_completed_at_request"),
@@ -309,12 +335,10 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
                                  .arg(b.date_text, day.close_utc.toString(Qt::ISODate))});
             continue;
         }
-        if (b.session_date > requested_last_session) {
-            a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_after_requested_end"),
-                             QStringLiteral("%1 is after the requested last session %2")
-                                 .arg(b.date_text, requested_last_session.toString(Qt::ISODate))});
-            continue;
-        }
+        if (b.session_date > requested_last_session)
+            return fail(RetrievalStatus::SourceError, QStringLiteral("bar_after_requested_end"),
+                        QStringLiteral("%1 is after the requested last session %2")
+                            .arg(b.date_text, requested_last_session.toString(Qt::ISODate)));
         a.accepted.append(b);
     }
     if (a.accepted.isEmpty()) {

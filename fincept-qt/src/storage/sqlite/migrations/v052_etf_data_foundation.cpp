@@ -17,7 +17,8 @@
 //   etf_sec_filings         N-PORT filing identity: accession, form, exact
 //                           acceptance time, the accession an amendment amends
 //   etf_listed_instruments  IBKR instrument identity: conId (ticker is only an
-//   etf_instrument_symbols  attribute, with its own history)
+//   etf_instrument_symbols  attribute, with its own history); only instruments
+//                           IBKR classifies as stockType ETF
 //   etf_identity_links      listed instrument <-> SEC entity, with a stated
 //                           relationship and basis
 //   etf_observation_starts  when MarketLab began observing a subject per source
@@ -27,8 +28,10 @@
 // The CHECK constraints are the database's half of the fail-closed rules: only
 // enabled routes may hold observations, calculated and proxy kinds are not
 // source facts, a missing value is never a number, market backfill is never
-// "observed", an SEC value always names its accession and acceptance time, and
-// a value without an availability time is always not_point_in_time.
+// "observed", an SEC value always names its accession and acceptance time, a
+// value without an availability time is always not_point_in_time, and a listed
+// instrument is an ETF by IBKR's own classification (secType STK alone is an
+// ordinary share as much as an ETF).
 //
 // Historical migrations are never edited; later changes are new versions.
 
@@ -144,6 +147,7 @@ const char* const kV052Statements[] = {
     "  ibkr_con_id      INTEGER NOT NULL UNIQUE CHECK (ibkr_con_id > 0),"
     "  symbol           TEXT NOT NULL,"
     "  security_type    TEXT NOT NULL,"
+    "  stock_type       TEXT NOT NULL CHECK (stock_type = 'ETF'),"
     "  exchange         TEXT NOT NULL DEFAULT '',"
     "  primary_exchange TEXT NOT NULL DEFAULT '',"
     "  currency         TEXT NOT NULL,"

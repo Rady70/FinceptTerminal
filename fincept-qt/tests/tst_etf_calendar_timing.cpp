@@ -272,7 +272,11 @@ void TstEtfCalendarTiming::route_policy_enables_only_qualified_routes() {
     const RouteDecision import = acquisition_route(SourceType::IssuerFile, AcquisitionMode::UserInitiatedImport);
     QVERIFY(!import.enabled);
     QVERIFY(import.reason.startsWith(QLatin1String("d1d_")));
-    QVERIFY(!acquisition_route(SourceType::IssuerFile, AcquisitionMode::IssuerAutomated).enabled);
+    // The stored reason states what A2 established: no permission basis for
+    // automated issuer collection, not that every issuer prohibits it.
+    const RouteDecision automated = acquisition_route(SourceType::IssuerFile, AcquisitionMode::IssuerAutomated);
+    QVERIFY(!automated.enabled);
+    QVERIFY(automated.reason.startsWith(QLatin1String("issuer_automation_permission_not_established:")));
     QVERIFY(!acquisition_route(SourceType::SecNport, AcquisitionMode::IbkrReadonlyWrapper).enabled);
     QVERIFY(!acquisition_route(SourceType::IbkrTwsReadonly, AcquisitionMode::RegulatoryApi).enabled);
     QVERIFY(!acquisition_route(SourceType::IssuerFile, AcquisitionMode::RegulatoryApi).enabled);

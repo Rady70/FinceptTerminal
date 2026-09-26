@@ -3,10 +3,13 @@
 // (Batch B; schema in migration v052_etf_data_foundation).
 //
 // Writes are append-only for source values. A later retrieval that delivers
-// the same value confirms the stored vintage (last_seen_at, seen_count); a
-// different value is a NEW vintage and the earlier one stays exactly as it
-// was; an SEC amendment is a new vintage of its own filing. Nothing here
-// deletes or rewrites a stored value, its timing or its provenance.
+// the same value WITH THE SAME MEANING (kind, units, basis, period and, for
+// SEC, acceptance time) confirms the stored vintage (last_seen_at,
+// seen_count). Anything else is a NEW vintage and the earlier one stays exactly
+// as it was, except under one SEC accession, where a filed document cannot
+// change and the difference is refused; an SEC amendment is a new vintage of
+// its own filing. Nothing here deletes or rewrites a stored value, its timing
+// or its provenance.
 //
 // Callers own transactions: an ingestion unit (one filing, one bar response)
 // is written between Database::begin_transaction() and commit(), so a failure
@@ -86,6 +89,7 @@ struct ReportingEntityFacts {
     QString reg_file_number;
     QString registrant_lei;
     QString series_lei;
+    QDateTime source_accepted_at; ///< SEC acceptance time of the filing that reported these attributes
 };
 
 struct SecFilingFacts {
@@ -119,6 +123,7 @@ struct ListedInstrumentFacts {
     QString exchange;
     QString primary_exchange;
     QString currency;
+    QString stock_type; ///< IBKR contract-details classification; must be "ETF"
 };
 
 struct ObservationInput {
@@ -147,10 +152,10 @@ struct ObservationInput {
 enum class ObservationOutcome {
     InsertedOriginal,       ///< first vintage of the key (NPORT-P or first IBKR bar)
     InsertedAmendment,      ///< a new NPORT-P/A vintage; earlier vintages untouched
-    InsertedRevision,       ///< the same source re-delivered a different value; the earlier vintage kept
-    Confirmed,              ///< same value from a later retrieval: last_seen_at / seen_count updated
+    InsertedRevision,       ///< IBKR re-delivered a different value or meaning; the earlier vintage kept
+    Confirmed,              ///< same value and meaning from a later retrieval: last_seen_at / seen_count updated
     AlreadyRecorded,        ///< this very retrieval already recorded this value (exact replay): nothing changed
-    RefusedDocumentChanged, ///< an SEC accession re-delivered a different value: refused, nothing written
+    RefusedDocumentChanged, ///< an SEC accession re-delivered a different value or meaning: refused, nothing written
 };
 
 const char* observation_outcome_id(ObservationOutcome o);
@@ -166,11 +171,14 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
     Result<void> record_issue(qint64 retrieval_id, const etf_store::IssueRecord& issue);
 
     // ── Identity ─────────────────────────────────────────────────────────────
-    /// Identity is (cik, series_id); names and LEIs are attributes updated to
-    /// the latest seen values. Returns the entity id.
+    /// Identity is (cik, series_id). Names and LEIs are attributes of the
+    /// filing that reported them: the entity keeps those of its newest filing
+    /// by SEC acceptance time, so an older filing ingested later never
+    /// overwrites them. last_seen_at is the latest sighting. Returns the id.
     Result<qint64> upsert_reporting_entity(const etf_store::ReportingEntityFacts& f, const QDateTime& seen_at);
     /// Identity is the IBKR conId. The ticker is an attribute; every ticker
-    /// seen for the conId is kept in etf_instrument_symbols.
+    /// seen for the conId is kept in etf_instrument_symbols. Only an instrument
+    /// IBKR classifies as stockType ETF is accepted.
     Result<qint64> upsert_listed_instrument(const etf_store::ListedInstrumentFacts& f, const QDateTime& seen_at);
     /// Declare a listed instrument <-> reporting entity link. Refused when the
     /// relationship contradicts the class structure the stored N-PORT filings
