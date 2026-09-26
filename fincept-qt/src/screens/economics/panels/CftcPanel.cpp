@@ -11,11 +11,15 @@
 #include "core/logging/Logger.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/economics/panels/CftcGroupBars.h"
 #include "screens/economics/panels/CftcHeatmap.h"
 #include "screens/economics/panels/CftcInterpretationPresentation.h"
+#include "screens/economics/panels/CftcMonitorToneColors.h"
+#include "screens/economics/panels/CftcMonitorVisualModel.h"
 #include "screens/economics/panels/CftcNetFormat.h"
 #include "screens/economics/panels/CftcPositioningChart.h"
 #include "screens/economics/panels/CftcPricePositioningChart.h"
+#include "screens/economics/panels/CftcSparkline.h"
 #include "screens/economics/panels/CftcSyncChartData.h"
 #include "screens/economics/panels/CftcWorkspaceContract.h"
 #include "services/economics/EconomicsService.h"
@@ -25,6 +29,7 @@
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QEvent>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -37,6 +42,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QTableWidget>
@@ -550,6 +556,10 @@ CftcPanel::CftcPanel(QWidget* parent) : EconPanelBase(kCftcSourceId, kCftcColor,
     auto* base_host = new QWidget(this);
     root->addWidget(base_host, 1);
     build_base_ui(base_host);
+    // The base result title/count line belongs to the single-market workspace;
+    // it is hidden while the cross-market monitor is shown and restored for
+    // Analysis and Raw Data.
+    result_identity_bar_ = findChild<QWidget*>(QStringLiteral("econTitleBar"));
     set_stats_visible(false);
     build_analysis_page();
     build_monitor_page();
@@ -651,11 +661,22 @@ void CftcPanel::build_result_tabs(QVBoxLayout* root) {
     root->addWidget(result_tabs_);
 }
 
+void CftcPanel::set_result_identity_visible(bool visible) {
+    if (!result_identity_bar_)
+        result_identity_bar_ = findChild<QWidget*>(QStringLiteral("econTitleBar"));
+    if (result_identity_bar_)
+        result_identity_bar_->setVisible(visible);
+}
+
 void CftcPanel::show_monitor_tab() {
     if (monitor_page_ >= 0)
         show_content_page(monitor_page_);
     if (monitor_tab_)
         monitor_tab_->setChecked(true);
+    // The cross-market overview is never a single-market result: hide the
+    // result identity line unconditionally while this tab is shown, including
+    // the first scan (when monitor_rendered_ is still false) and a re-scan.
+    set_result_identity_visible(false);
 }
 
 void CftcPanel::show_analysis_tab() {
@@ -663,12 +684,14 @@ void CftcPanel::show_analysis_tab() {
         show_content_page(analysis_page_);
     if (analysis_tab_)
         analysis_tab_->setChecked(true);
+    set_result_identity_visible(true);
 }
 
 void CftcPanel::show_raw_tab() {
     show_content_page(1);
     if (raw_tab_)
         raw_tab_->setChecked(true);
+    set_result_identity_visible(true);
 }
 
 // ── Analysis page construction ──────────────────────────────────────────────
@@ -726,9 +749,9 @@ QTableWidget* CftcPanel::make_monitor_table(QWidget* parent) {
     return table;
 }
 
-CftcPanel::SnapshotCard CftcPanel::make_snapshot_card() {
+CftcPanel::SnapshotCard CftcPanel::make_snapshot_card(QWidget* parent) {
     SnapshotCard card;
-    card.frame = new QWidget(analysis_content_);
+    card.frame = new QWidget(parent);
     card.frame->setObjectName("cftcCard");
     card.frame->setMinimumWidth(118);
     auto* layout = new QVBoxLayout(card.frame);
@@ -831,7 +854,7 @@ void CftcPanel::build_analysis_page() {
     snapshot_grid_ = new QGridLayout;
     snapshot_grid_->setSpacing(8);
     for (int i = 0; i < 7; ++i) {
-        snapshot_cards_.append(make_snapshot_card());
+        snapshot_cards_.append(make_snapshot_card(analysis_content_));
         snapshot_grid_->addWidget(snapshot_cards_.last().frame, i / 4, i % 4);
     }
     snapshot.body->addLayout(snapshot_grid_);
@@ -1050,38 +1073,12 @@ void CftcPanel::build_analysis_page() {
 
 namespace {
 
-const services::CftcHorizonFlowReading* monitor_flow_at(const services::CftcMonitorEntry& entry, int horizon) {
-    for (const auto& reading : entry.flow_readings) {
-        if (reading.horizon_reports == horizon)
-            return &reading;
-    }
-    return nullptr;
-}
-
 const services::CftcOpenInterestReading* monitor_oi_at(const services::CftcMonitorEntry& entry, int horizon) {
     for (const auto& reading : entry.open_interest_readings) {
         if (reading.horizon_reports == horizon)
             return &reading;
     }
     return nullptr;
-}
-
-QString monitor_status_label(services::CftcMonitorStatus status) {
-    switch (status) {
-        case services::CftcMonitorStatus::Ok:
-            return QCoreApplication::translate("CftcPanel", "OK");
-        case services::CftcMonitorStatus::ArchiveOnly:
-            return QCoreApplication::translate("CftcPanel", "Stored history");
-        case services::CftcMonitorStatus::NoData:
-            return QCoreApplication::translate("CftcPanel", "No data");
-        case services::CftcMonitorStatus::NoLocalHistory:
-            return QCoreApplication::translate("CftcPanel", "No stored history");
-        case services::CftcMonitorStatus::Unavailable:
-            return QCoreApplication::translate("CftcPanel", "Unavailable");
-        case services::CftcMonitorStatus::UnknownMarket:
-            return QCoreApplication::translate("CftcPanel", "Unknown market");
-    }
-    return QCoreApplication::translate("CftcPanel", "Unavailable");
 }
 
 QString monitor_archive_text(const QJsonObject& archive) {
@@ -1145,19 +1142,25 @@ void CftcPanel::build_monitor_page() {
         return label;
     };
     monitor_family_combo_ = new QComboBox(header);
+    monitor_family_combo_->setObjectName("cftcMonitorFamilyCombo");
+    monitor_family_combo_->setAccessibleName(tr("Monitor report family"));
     monitor_family_combo_->addItem(QString(), QStringLiteral("legacy"));
     monitor_family_combo_->addItem(QString(), QStringLiteral("disaggregated"));
     monitor_family_combo_->addItem(QString(), QStringLiteral("tff"));
     monitor_family_combo_->setFixedHeight(24);
     monitor_type_combo_ = new QComboBox(header);
+    monitor_type_combo_->setObjectName("cftcMonitorTypeCombo");
+    monitor_type_combo_->setAccessibleName(tr("Monitor report basis"));
     monitor_type_combo_->addItem(QString(), QStringLiteral("futures_only"));
     monitor_type_combo_->addItem(QString(), QStringLiteral("combined"));
     monitor_type_combo_->setFixedHeight(24);
     monitor_scan_btn_ = new QPushButton(tr("SCAN MARKETS"), header);
     monitor_scan_btn_->setObjectName("cftcHorizonBtn");
+    monitor_scan_btn_->setAccessibleName(tr("Scan markets"));
     monitor_scan_btn_->setCursor(Qt::PointingHandCursor);
     monitor_backfill_btn_ = new QPushButton(tr("BACKFILL HISTORY"), header);
     monitor_backfill_btn_->setObjectName("cftcRangeBtn");
+    monitor_backfill_btn_->setAccessibleName(tr("Backfill annual history"));
     monitor_backfill_btn_->setCursor(Qt::PointingHandCursor);
     connect(monitor_scan_btn_, &QPushButton::clicked, this, &CftcPanel::on_scan_markets);
     connect(monitor_backfill_btn_, &QPushButton::clicked, this, &CftcPanel::on_backfill_history);
@@ -1182,7 +1185,48 @@ void CftcPanel::build_monitor_page() {
     header_layout->addWidget(monitor_archive_lbl_);
     content_layout->addWidget(header);
 
-    // 2. Markets requiring attention.
+    // 2. Scan summary: availability counts and attention count. A stored
+    // fallback, an outdated report and an unavailable market stay distinct
+    // states and are never merged into a "current" count.
+    auto* summary = new QWidget(monitor_content_);
+    summary->setObjectName("cftcSection");
+    auto* summary_layout = new QVBoxLayout(summary);
+    summary_layout->setContentsMargins(12, 10, 12, 10);
+    summary_layout->setSpacing(8);
+    auto* summary_title = new QLabel(tr("MONITOR SUMMARY"), summary);
+    summary_title->setObjectName("cftcSectionTitle");
+    auto* summary_meta =
+        new QLabel(tr("Counts over the scanned universe. Stored-history fallback, an outdated report and a missing or "
+                      "unavailable market remain separate states; none of them is presented as current data."),
+                   summary);
+    summary_meta->setObjectName("cftcSectionMeta");
+    summary_meta->setWordWrap(true);
+    monitor_summary_grid_ = new QGridLayout;
+    monitor_summary_grid_->setContentsMargins(0, 0, 0, 0);
+    monitor_summary_grid_->setHorizontalSpacing(8);
+    monitor_summary_grid_->setVerticalSpacing(8);
+    const int initial_summary_columns = narrow_layout_ ? 3 : 6;
+    for (int i = 0; i < 6; ++i) {
+        monitor_summary_cards_.append(make_snapshot_card(summary));
+        monitor_summary_grid_->addWidget(monitor_summary_cards_.last().frame, i / initial_summary_columns,
+                                         i % initial_summary_columns);
+    }
+    const QStringList summary_captions = {tr("MARKETS SCANNED"),     tr("CURRENT"),
+                                          tr("STORED / OUTDATED"),   tr("UNAVAILABLE / NO DATA"),
+                                          tr("REQUIRING ATTENTION"), tr("METRIC AVAILABLE")};
+    for (int i = 0; i < monitor_summary_cards_.size() && i < summary_captions.size(); ++i)
+        monitor_summary_cards_[i].caption->setText(summary_captions.at(i));
+    for (int column = 0; column < initial_summary_columns; ++column)
+        monitor_summary_grid_->setColumnStretch(column, 1);
+    summary_layout->addWidget(summary_title);
+    summary_layout->addWidget(summary_meta);
+    summary_layout->addLayout(monitor_summary_grid_);
+    content_layout->addWidget(summary);
+
+    // 3. Markets requiring attention: a compact card list carrying the exact
+    // development wording and a Net %OI trajectory for context. The list is
+    // deliberately independent of the group/notable controls so a data-quality
+    // or extreme condition can never be filtered out of the review view.
     auto* attention = new QWidget(monitor_content_);
     attention->setObjectName("cftcSection");
     auto* attention_layout = new QVBoxLayout(attention);
@@ -1190,69 +1234,149 @@ void CftcPanel::build_monitor_page() {
     attention_layout->setSpacing(8);
     monitor_attention_title_ = new QLabel(tr("MARKETS REQUIRING ATTENTION"), attention);
     monitor_attention_title_->setObjectName("cftcSectionTitle");
-    auto* attention_meta = new QLabel(
-        tr("Grouped by descriptive class in the fixed order data quality, historical extreme, extreme transition, "
-           "repositioning, Open Interest, concentration; markets inside a class are ordered by name. This is a "
-           "review list, not a ranking. Double-click a market to open its detailed COT workspace."),
+    monitor_attention_meta_ = new QLabel(
+        tr("Every market with at least one alert, ordered by the fixed descriptive class order (data quality, "
+           "historical extreme, extreme transition, repositioning, Open Interest, concentration) and then by name. "
+           "This review list is never filtered by the group or notable controls below, and it is not a ranking. "
+           "Double-click a card to open the market's detailed COT workspace."),
         attention);
-    attention_meta->setObjectName("cftcSectionMeta");
-    attention_meta->setWordWrap(true);
-    monitor_attention_table_ = make_monitor_table(attention);
-    monitor_attention_table_->setColumnCount(5);
-    monitor_attention_table_->setHorizontalHeaderLabels(
-        {tr("MARKET"), tr("GROUP"), tr("CLASS"), tr("DEVELOPMENT"), tr("REPORT")});
-    monitor_attention_table_->horizontalHeader()->setStretchLastSection(true);
-    monitor_attention_table_->setColumnWidth(0, 170);
-    monitor_attention_table_->setColumnWidth(1, 110);
-    monitor_attention_table_->setColumnWidth(2, 140);
-    monitor_attention_table_->setColumnWidth(3, 620);
-    connect(monitor_attention_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
-        auto* item = monitor_attention_table_->item(row, 0);
-        if (item)
-            open_monitor_market(item->data(Qt::UserRole).toInt());
-    });
+    monitor_attention_meta_->setObjectName("cftcSectionMeta");
+    monitor_attention_meta_->setWordWrap(true);
+    auto* attention_container = new QWidget;
+    attention_container->setObjectName("cftcAlertList");
+    monitor_attention_list_ = new QVBoxLayout(attention_container);
+    monitor_attention_list_->setContentsMargins(0, 0, 0, 0);
+    monitor_attention_list_->setSpacing(6);
+    // The review list can carry many markets on a broad scan; it scrolls in
+    // place so the grouped visual overview stays within reach instead of being
+    // pushed thousands of pixels down the page.
+    monitor_attention_scroll_ = new QScrollArea(attention);
+    monitor_attention_scroll_->setObjectName("cftcAlertScroll");
+    monitor_attention_scroll_->setWidgetResizable(true);
+    monitor_attention_scroll_->setFrameShape(QFrame::NoFrame);
+    monitor_attention_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    monitor_attention_scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    monitor_attention_scroll_->setMaximumHeight(430);
+    monitor_attention_scroll_->setWidget(attention_container);
+    monitor_attention_empty_ = new QLabel(attention);
+    monitor_attention_empty_->setObjectName("cftcSectionMeta");
+    monitor_attention_empty_->setWordWrap(true);
+    monitor_attention_empty_->setText(tr("No scanned market currently carries a notable descriptive development "
+                                         "or data-quality condition."));
     attention_layout->addWidget(monitor_attention_title_);
-    attention_layout->addWidget(attention_meta);
-    attention_layout->addWidget(monitor_attention_table_);
+    attention_layout->addWidget(monitor_attention_meta_);
+    attention_layout->addWidget(monitor_attention_scroll_);
+    attention_layout->addWidget(monitor_attention_empty_);
     content_layout->addWidget(attention);
 
-    // 3. Every market in the scanned universe.
-    auto* all = new QWidget(monitor_content_);
-    all->setObjectName("cftcSection");
-    auto* all_layout = new QVBoxLayout(all);
-    all_layout->setContentsMargins(12, 10, 12, 10);
-    all_layout->setSpacing(8);
-    monitor_all_title_ = new QLabel(tr("ALL MARKETS"), all);
-    monitor_all_title_->setObjectName("cftcSectionTitle");
-    auto* all_meta = new QLabel(
-        tr("Latest validated report per market. Net %OI is the principal participant's net position as a share of "
-           "current Open Interest; the percentile is against the previous 156 valid reports; the 1R/4R/13R columns "
-           "are that participant's net flow as a share of prior Open Interest. “—” always means the engine could "
-           "not form that measure (missing cell, broken weekly sequence or insufficient history) — never zero."),
-        all);
-    all_meta->setObjectName("cftcSectionMeta");
-    all_meta->setWordWrap(true);
-    monitor_table_ = make_monitor_table(all);
-    monitor_table_->setColumnCount(12);
-    monitor_table_->setHorizontalHeaderLabels({tr("MARKET"), tr("GROUP"), tr("LATEST REPORT"), tr("NET %OI"),
-                                               tr("%ILE (156R)"), tr("NET 1R"), tr("NET 4R"), tr("NET 13R"),
-                                               tr("OPEN INTEREST"), tr("OI 1R"), tr("DEVELOPMENTS"), tr("STATUS")});
-    monitor_table_->horizontalHeader()->setStretchLastSection(true);
-    monitor_table_->setColumnWidth(0, 170);
-    monitor_table_->setColumnWidth(1, 110);
-    monitor_table_->setColumnWidth(2, 105);
-    for (int column = 3; column <= 9; ++column)
-        monitor_table_->setColumnWidth(column, 92);
-    monitor_table_->setColumnWidth(10, 460);
-    connect(monitor_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
-        auto* item = monitor_table_->item(row, 0);
-        if (item)
-            open_monitor_market(item->data(Qt::UserRole).toInt());
+    // 4. Every market, grouped by the qualified asset class: one shared-scale
+    // positioning chart plus one compact exact-value table per group.
+    auto* groups = new QWidget(monitor_content_);
+    groups->setObjectName("cftcSection");
+    auto* groups_layout = new QVBoxLayout(groups);
+    groups_layout->setContentsMargins(12, 10, 12, 10);
+    groups_layout->setSpacing(8);
+    monitor_groups_title_ = new QLabel(tr("ALL MARKETS BY GROUP"), groups);
+    monitor_groups_title_->setObjectName("cftcSectionTitle");
+    auto* groups_meta = new QLabel(
+        tr("One positioning chart and one exact-value table per asset-class group, in the catalog's established "
+           "order. Bars share a single scale so markets stay comparable across groups; bar length is the selected "
+           "metric and the bar accent is the market's highest-priority descriptive attention class. “—” always "
+           "means the engine could not form that measure (missing cell, broken weekly sequence or insufficient "
+           "history) — never zero."),
+        groups);
+    groups_meta->setObjectName("cftcSectionMeta");
+    groups_meta->setWordWrap(true);
+
+    auto make_group_label = [&](const QString& text) {
+        auto* label = new QLabel(text, groups);
+        label->setObjectName("cftcSectionMeta");
+        return label;
+    };
+    auto* group_controls = new QHBoxLayout;
+    group_controls->setSpacing(8);
+    monitor_group_combo_ = new QComboBox(groups);
+    monitor_group_combo_->setObjectName("cftcMonitorGroupCombo");
+    monitor_group_combo_->setAccessibleName(tr("Group filter"));
+    monitor_group_combo_->addItem(QString(), QString());
+    for (const QString& asset_class : services::cftc_asset_class_order())
+        monitor_group_combo_->addItem(services::cftc_asset_class_label(asset_class), asset_class);
+    monitor_group_combo_->setFixedHeight(24);
+    monitor_metric_combo_ = new QComboBox(groups);
+    monitor_metric_combo_->setObjectName("cftcMonitorMetricCombo");
+    monitor_metric_combo_->setAccessibleName(tr("Chart metric"));
+    for (const CftcMonitorMetric metric :
+         {CftcMonitorMetric::NetPctOi, CftcMonitorMetric::Percentile, CftcMonitorMetric::Net1R,
+          CftcMonitorMetric::Net4R, CftcMonitorMetric::Net13R})
+        monitor_metric_combo_->addItem(cftc_monitor_metric_label(metric), static_cast<int>(metric));
+    monitor_metric_combo_->setFixedHeight(24);
+    monitor_notable_btn_ = new QPushButton(tr("NOTABLE ONLY"), groups);
+    monitor_notable_btn_->setObjectName("cftcEvidenceToggle");
+    monitor_notable_btn_->setAccessibleName(tr("Notable only filter"));
+    monitor_notable_btn_->setCheckable(true);
+    monitor_notable_btn_->setCursor(Qt::PointingHandCursor);
+    monitor_notable_btn_->setToolTip(
+        tr("Show only markets whose current validated state carries an alert. Data-quality "
+           "conditions are notable themselves, so they are never hidden by this filter."));
+    connect(monitor_group_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        monitor_group_filter_ = monitor_group_combo_ ? monitor_group_combo_->currentData().toString() : QString();
+        if (monitor_rendered_)
+            rebuild_monitor_views();
     });
-    all_layout->addWidget(monitor_all_title_);
-    all_layout->addWidget(all_meta);
-    all_layout->addWidget(monitor_table_);
-    content_layout->addWidget(all);
+    connect(monitor_metric_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
+        monitor_metric_ = monitor_metric_combo_
+                              ? static_cast<CftcMonitorMetric>(monitor_metric_combo_->currentData().toInt())
+                              : CftcMonitorMetric::NetPctOi;
+        if (monitor_rendered_)
+            rebuild_monitor_views();
+    });
+    connect(monitor_notable_btn_, &QPushButton::toggled, this, [this](bool checked) {
+        monitor_notable_only_ = checked;
+        if (monitor_rendered_)
+            rebuild_monitor_views();
+    });
+    group_controls->addWidget(monitor_group_lbl_ = make_group_label(tr("GROUP")));
+    group_controls->addWidget(monitor_group_combo_);
+    group_controls->addWidget(monitor_metric_lbl_ = make_group_label(tr("METRIC")));
+    group_controls->addWidget(monitor_metric_combo_);
+    group_controls->addWidget(monitor_notable_btn_);
+    group_controls->addStretch(1);
+    groups_layout->addWidget(monitor_groups_title_);
+    groups_layout->addWidget(groups_meta);
+    groups_layout->addLayout(group_controls);
+
+    auto* legend = new QHBoxLayout;
+    legend->setSpacing(6);
+    for (const services::CftcAttentionClass classification :
+         {services::CftcAttentionClass::DataQuality, services::CftcAttentionClass::Extreme,
+          services::CftcAttentionClass::ExtremeTransition, services::CftcAttentionClass::Repositioning,
+          services::CftcAttentionClass::OpenInterest, services::CftcAttentionClass::Concentration}) {
+        auto* chip = new QLabel(services::cftc_attention_class_label(classification), groups);
+        chip->setStyleSheet(cftc_monitor_chip_style(cftc_monitor_class_tone(classification)));
+        legend->addWidget(chip);
+    }
+    auto* legend_note = new QLabel(tr("neutral bar: no attention class"), groups);
+    legend_note->setObjectName("cftcSectionMeta");
+    legend->addWidget(legend_note);
+    legend->addStretch(1);
+    groups_layout->addLayout(legend);
+
+    monitor_scale_lbl_ = new QLabel(groups);
+    monitor_scale_lbl_->setObjectName("cftcSectionMeta");
+    monitor_scale_lbl_->setWordWrap(true);
+    groups_layout->addWidget(monitor_scale_lbl_);
+
+    auto* groups_container = new QWidget(groups);
+    monitor_groups_layout_ = new QVBoxLayout(groups_container);
+    monitor_groups_layout_->setContentsMargins(0, 0, 0, 0);
+    monitor_groups_layout_->setSpacing(10);
+    monitor_groups_empty_ = new QLabel(tr("No market matches the current group/notable filter."), groups);
+    monitor_groups_empty_->setObjectName("cftcSectionMeta");
+    monitor_groups_empty_->setWordWrap(true);
+    monitor_groups_empty_->hide();
+    groups_layout->addWidget(groups_container);
+    groups_layout->addWidget(monitor_groups_empty_);
+    content_layout->addWidget(groups);
 
     content_layout->addStretch(1);
     scroll->setWidget(monitor_content_);
@@ -1270,15 +1394,7 @@ void CftcPanel::set_monitor_status(const QString& text) {
 void CftcPanel::clear_monitor_display(const QString& status) {
     monitor_entries_.clear();
     monitor_rendered_ = false;
-    if (monitor_attention_table_) {
-        monitor_attention_table_->clearSpans();
-        monitor_attention_table_->clearContents();
-        monitor_attention_table_->setRowCount(0);
-    }
-    if (monitor_table_) {
-        monitor_table_->clearContents();
-        monitor_table_->setRowCount(0);
-    }
+    clear_monitor_views();
     if (monitor_archive_lbl_)
         monitor_archive_lbl_->clear();
     set_monitor_status(status);
@@ -1379,151 +1495,529 @@ void CftcPanel::render_monitor(const services::CftcMonitorModel& model) {
             .arg(monitor_entries_.size())
             .arg(family_label(cftc_family_from_code(family_code)), futures_only ? tr("Futures Only") : tr("Combined")));
 
-    // Markets requiring attention.
+    rebuild_monitor_views();
+}
+
+void CftcPanel::rebuild_monitor_views() {
+    render_monitor_summary();
+    render_monitor_attention();
+    render_monitor_groups();
+}
+
+void CftcPanel::clear_layout(QLayout* layout) {
+    if (!layout)
+        return;
+    while (QLayoutItem* item = layout->takeAt(0)) {
+        if (QWidget* widget = item->widget()) {
+            widget->hide();
+            widget->deleteLater();
+        }
+        delete item;
+    }
+}
+
+void CftcPanel::clear_monitor_views() {
+    clear_layout(monitor_attention_list_);
+    clear_layout(monitor_groups_layout_);
+    if (monitor_attention_empty_)
+        monitor_attention_empty_->setVisible(true);
+    if (monitor_attention_scroll_)
+        monitor_attention_scroll_->hide();
+    if (monitor_groups_empty_)
+        monitor_groups_empty_->hide();
+    if (monitor_scale_lbl_)
+        monitor_scale_lbl_->clear();
+    for (SnapshotCard& card : monitor_summary_cards_) {
+        if (card.caption)
+            card.caption->clear();
+        if (card.value) {
+            card.value->setText(QStringLiteral("—"));
+            card.value->setStyleSheet(QString());
+        }
+        if (card.sub)
+            card.sub->clear();
+    }
+}
+
+void CftcPanel::render_monitor_summary() {
+    if (monitor_summary_cards_.size() < 6)
+        return;
+    const CftcMonitorSummary summary = cftc_monitor_summary(monitor_entries_, monitor_metric_);
+    auto set_card = [](SnapshotCard& card, const QString& caption, const QString& value, const QString& sub,
+                       const QString& value_color) {
+        card.caption->setText(caption);
+        card.value->setText(value);
+        card.sub->setText(sub);
+        card.value->setStyleSheet(value_color.isEmpty() ? QString() : QStringLiteral("color:%1;").arg(value_color));
+    };
+    set_card(monitor_summary_cards_[0], tr("MARKETS SCANNED"), QString::number(summary.total), tr("supported universe"),
+             QString());
+    set_card(monitor_summary_cards_[1], tr("CURRENT"), QString::number(summary.current), tr("validated current data"),
+             QString());
+    set_card(
+        monitor_summary_cards_[2], tr("STORED / OUTDATED"), QString::number(summary.stored + summary.outdated),
+        tr("%1 stored-history fallback, %2 older than the freshness limit").arg(summary.stored).arg(summary.outdated),
+        (summary.stored + summary.outdated) > 0 ? ui::colors::WARNING() : QString());
+    set_card(monitor_summary_cards_[3], tr("UNAVAILABLE / NO DATA"), QString::number(summary.problem),
+             tr("never presented as current"), summary.problem > 0 ? ui::colors::NEGATIVE() : QString());
+    QStringList class_parts;
+    for (const CftcMonitorClassCount& count : summary.class_counts) {
+        if (count.markets > 0)
+            class_parts << tr("%1 %2")
+                               .arg(count.markets)
+                               .arg(services::cftc_attention_class_label(count.classification).toLower());
+    }
+    QString attention_sub = class_parts.isEmpty() ? tr("no alerting market") : class_parts.join(QStringLiteral(" · "));
+    if (class_parts.size() > 1)
+        attention_sub += tr(" (class counts overlap)");
+    set_card(monitor_summary_cards_[4], tr("REQUIRING ATTENTION"), QString::number(summary.attention), attention_sub,
+             summary.attention > 0 ? ui::colors::AMBER() : QString());
+    set_card(monitor_summary_cards_[5], tr("METRIC AVAILABLE"),
+             QStringLiteral("%1/%2").arg(summary.metric_available).arg(summary.total),
+             tr("%1 formed").arg(cftc_monitor_metric_label(monitor_metric_)), QString());
+}
+
+void CftcPanel::render_monitor_attention() {
+    if (!monitor_attention_list_)
+        return;
+    clear_layout(monitor_attention_list_);
     const QVector<int> order = services::cftc_attention_order(monitor_entries_);
-    monitor_attention_table_->clearSpans();
-    monitor_attention_table_->clearContents();
-    if (order.isEmpty()) {
-        monitor_attention_table_->setRowCount(1);
-        monitor_attention_table_->setColumnCount(5);
-        monitor_attention_table_->setSpan(0, 0, 1, 5);
-        set_plain_cell(monitor_attention_table_, 0, 0,
-                       tr("No scanned market currently carries a notable descriptive development or data-quality "
-                          "condition."),
-                       Qt::AlignLeft | Qt::AlignVCenter);
-        monitor_attention_table_->setMinimumHeight(21 + 8);
-    } else {
-        monitor_attention_table_->setRowCount(order.size());
-        for (int row = 0; row < order.size(); ++row) {
-            const services::CftcMonitorEntry& entry = monitor_entries_.at(order[row]);
-            QStringList classification_parts;
-            for (const auto& alert : entry.alerts) {
-                const QString label = services::cftc_attention_class_label(alert.attention_class);
-                if (!classification_parts.contains(label))
-                    classification_parts << label;
-            }
-            const QString classification = classification_parts.join(QStringLiteral(", "));
-            auto* market_item = new QTableWidgetItem(entry.label);
-            market_item->setData(Qt::UserRole, order[row]);
-            market_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-            monitor_attention_table_->setItem(row, 0, market_item);
-            set_plain_cell(monitor_attention_table_, row, 1, services::cftc_asset_class_label(entry.asset_class),
-                           Qt::AlignLeft | Qt::AlignVCenter);
-            set_plain_cell(monitor_attention_table_, row, 2, classification, Qt::AlignLeft | Qt::AlignVCenter);
-            if (auto* item = monitor_attention_table_->item(row, 2))
-                item->setToolTip(classification);
-            const QString development = monitor_descriptive_text(entry);
-            set_plain_cell(monitor_attention_table_, row, 3, development, Qt::AlignLeft | Qt::AlignVCenter);
-            if (auto* item = monitor_attention_table_->item(row, 3))
-                item->setToolTip(development);
-            set_plain_cell(monitor_attention_table_, row, 4,
-                           entry.report_date.isValid() ? entry.report_date.toString(Qt::ISODate) : QStringLiteral("—"),
-                           Qt::AlignLeft | Qt::AlignVCenter);
+    if (monitor_attention_empty_)
+        monitor_attention_empty_->setVisible(order.isEmpty());
+    if (monitor_attention_scroll_)
+        monitor_attention_scroll_->setVisible(!order.isEmpty());
+    auto* host = qobject_cast<QWidget*>(monitor_attention_list_->parent());
+    for (int index : order) {
+        const services::CftcMonitorEntry& entry = monitor_entries_.at(index);
+        auto* card = new QWidget(host);
+        card->setObjectName("cftcAlertCard");
+        card->setCursor(Qt::PointingHandCursor);
+        card->setProperty("cftcMarketKey", entry.market_key);
+        card->installEventFilter(this);
+        auto* card_layout = new QHBoxLayout(card);
+        card_layout->setContentsMargins(10, 8, 10, 8);
+        card_layout->setSpacing(12);
+
+        auto* text_column = new QWidget(card);
+        auto* text_layout = new QVBoxLayout(text_column);
+        text_layout->setContentsMargins(0, 0, 0, 0);
+        text_layout->setSpacing(3);
+
+        auto* title_row = new QHBoxLayout;
+        title_row->setSpacing(6);
+        auto* name = new QLabel(entry.label, text_column);
+        name->setObjectName("cftcAlertCardTitle");
+        title_row->addWidget(name);
+        auto* group = new QLabel(cftc_monitor_group_label(entry.asset_class), text_column);
+        group->setObjectName("cftcAlertCardMeta");
+        title_row->addWidget(group);
+        QSet<int> seen_classes;
+        for (const services::CftcAlert& alert : entry.alerts) {
+            const int priority = services::cftc_attention_class_priority(alert.attention_class);
+            if (seen_classes.contains(priority))
+                continue;
+            seen_classes.insert(priority);
+            auto* chip = new QLabel(services::cftc_attention_class_label(alert.attention_class), text_column);
+            chip->setStyleSheet(cftc_monitor_chip_style(cftc_monitor_class_tone(alert.attention_class)));
+            title_row->addWidget(chip);
         }
-        monitor_attention_table_->setMinimumHeight(20 + order.size() * 21 + 8);
-    }
+        title_row->addStretch(1);
+        // An explicit affordance for the detailed workspace, reachable without
+        // discovering the double-click gesture and invokable by accessibility.
+        auto* open = new QPushButton(tr("OPEN"), text_column);
+        open->setObjectName("cftcOpenBtn");
+        open->setAccessibleName(tr("Open detailed COT workspace for %1").arg(entry.label));
+        open->setCursor(Qt::PointingHandCursor);
+        open->setToolTip(tr("Open the detailed COT workspace for %1.").arg(entry.label));
+        connect(open, &QPushButton::clicked, this, [this, key = entry.market_key]() { open_monitor_entry(key); });
+        title_row->addWidget(open);
+        text_layout->addLayout(title_row);
 
-    // Every market.
-    monitor_table_->clearContents();
-    monitor_table_->setRowCount(monitor_entries_.size());
-    for (int row = 0; row < monitor_entries_.size(); ++row) {
-        const services::CftcMonitorEntry& entry = monitor_entries_.at(row);
-        auto* market_item = new QTableWidgetItem(entry.label);
-        market_item->setData(Qt::UserRole, row);
-        market_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        if (!entry.status_detail.isEmpty())
-            market_item->setToolTip(entry.status_detail);
-        monitor_table_->setItem(row, 0, market_item);
-        set_plain_cell(monitor_table_, row, 1, services::cftc_asset_class_label(entry.asset_class),
-                       Qt::AlignLeft | Qt::AlignVCenter);
+        auto* development = new QLabel(monitor_descriptive_text(entry), text_column);
+        development->setObjectName("cftcAlertCardText");
+        development->setWordWrap(true);
+        text_layout->addWidget(development);
 
-        QString report_text = QStringLiteral("—");
-        if (entry.report_date.isValid()) {
-            report_text = entry.report_date.toString(Qt::ISODate);
-            if (entry.report_outdated)
-                report_text += QStringLiteral(" (%1d)").arg(entry.report_age_days);
-        }
-        set_plain_cell(monitor_table_, row, 2, report_text, Qt::AlignLeft | Qt::AlignVCenter);
-
-        const QString net_pct =
-            entry.has_net_pct_oi ? cftc_signed_decimal(entry.net_pct_oi, 2) + QLatin1Char('%') : QStringLiteral("—");
-        set_plain_cell(monitor_table_, row, 3, net_pct, Qt::AlignRight | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 3)) {
-            item->setToolTip(entry.has_net_pct_oi
-                                 ? tr("Net position of the principal participant as % of current Open Interest.")
-                                 : tr("Net %OI was not formed for this report."));
-        }
-
-        const QString percentile_text = entry.has_percentile
-                                            ? QString::number(entry.percentile * 100.0, 'f', 1) + QLatin1Char('%') +
-                                                  QStringLiteral(" (n=%1)").arg(entry.percentile_reference_count)
-                                            : QStringLiteral("—");
-        set_plain_cell(monitor_table_, row, 4, percentile_text, Qt::AlignRight | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 4)) {
-            item->setToolTip(entry.has_percentile
-                                 ? tr("Net %OI against the previous %1 valid reports (midpoint-tie percentile).")
-                                       .arg(entry.percentile_reference_count)
-                                 : tr("The 156-prior-report historical reference is unavailable for this market."));
-        }
-
-        const QString principal_name =
+        QStringList meta_parts;
+        meta_parts << (entry.report_date.isValid() ? tr("Latest report %1").arg(entry.report_date.toString(Qt::ISODate))
+                                                   : tr("No report date"));
+        if (entry.report_outdated)
+            meta_parts << tr("%1 days old").arg(entry.report_age_days);
+        meta_parts << cftc_monitor_status_text(entry);
+        const QString participant =
             cftc_metric_participant_display_name(entry.family, entry.principal_participant_key, entry.principal_label);
-        for (int column = 5; column <= 7; ++column) {
-            const int horizon = column == 5 ? 1 : column == 6 ? 4 : 13;
-            const auto* reading = monitor_flow_at(entry, horizon);
-            QString text = QStringLiteral("—");
-            QString tooltip = tr("No %1-report net flow could be formed.").arg(horizon);
-            if (reading && reading->evaluated && reading->has_net_flow) {
-                text = cftc_signed_decimal(reading->net_flow, 2) + QLatin1Char('%');
-                if (reading->has_net_rank) {
-                    tooltip = principal_name.isEmpty()
-                                  ? tr("%1-report net flow as % of prior Open Interest; materiality rank %2 of the "
-                                       "previous %3 comparable moves.")
-                                        .arg(horizon)
-                                        .arg(QString::number(reading->net_rank, 'f', 2))
-                                        .arg(reading->net_rank_reference_count)
-                                  : tr("%4: %1-report net flow as % of prior Open Interest; materiality rank %2 of "
-                                       "the previous %3 comparable moves.")
-                                        .arg(horizon)
-                                        .arg(QString::number(reading->net_rank, 'f', 2))
-                                        .arg(reading->net_rank_reference_count)
-                                        .arg(principal_name);
-                } else {
-                    tooltip = principal_name.isEmpty()
-                                  ? tr("%1-report net flow as % of prior Open Interest.").arg(horizon)
-                                  : tr("%2: %1-report net flow as % of prior Open Interest.")
-                                        .arg(horizon)
-                                        .arg(principal_name);
-                }
+        if (!participant.isEmpty())
+            meta_parts << participant;
+        auto* meta = new QLabel(meta_parts.join(QStringLiteral(" · ")), text_column);
+        meta->setObjectName("cftcAlertCardMeta");
+        meta->setWordWrap(true);
+        text_layout->addWidget(meta);
+        card_layout->addWidget(text_column, 1);
+
+        QVector<CftcSparkPoint> points;
+        points.reserve(entry.principal_history.size());
+        int valid_points = 0;
+        QDate first_date;
+        QDate last_date;
+        QString trajectory_note;
+        for (const services::CftcMonitorHistoryPoint& point : entry.principal_history) {
+            CftcSparkPoint spark;
+            spark.date = point.date;
+            spark.has_value = point.has_net_pct_oi;
+            spark.value = point.net_pct_oi;
+            if (point.has_net_pct_oi) {
+                ++valid_points;
+                if (!first_date.isValid())
+                    first_date = point.date;
+                last_date = point.date;
             }
-            set_plain_cell(monitor_table_, row, column, text, Qt::AlignRight | Qt::AlignVCenter);
-            if (auto* item = monitor_table_->item(row, column))
-                item->setToolTip(tooltip);
+            points.append(spark);
+        }
+        if (valid_points >= 2) {
+            auto* spark = new CftcSparkline(card);
+            spark->set_points(points);
+            spark->setFixedSize(190, 40);
+            // The sparkline is mouse-transparent so a double-click on the strip
+            // still reaches the card; its context lives in the card tooltip.
+            spark->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            card_layout->addWidget(spark, 0, Qt::AlignVCenter);
+            trajectory_note =
+                tr("Retained Net %OI trajectory of %1: %2 → %3, %4 valid reports in the transported window. The "
+                   "line breaks where a report or the measure is missing; it is never interpolated. Context only — "
+                   "the detailed workspace remains authoritative.")
+                    .arg(participant.isEmpty() ? tr("the principal participant") : participant,
+                         first_date.toString(Qt::ISODate), last_date.toString(Qt::ISODate))
+                    .arg(valid_points);
         }
 
-        const QString oi_text = entry.has_open_interest ? position_text(entry.open_interest) : QStringLiteral("—");
-        set_plain_cell(monitor_table_, row, 8, oi_text, Qt::AlignRight | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 8))
-            item->setToolTip(tr("Total Open Interest reported by CFTC for the latest report."));
-
-        const auto* oi_reading = monitor_oi_at(entry, 1);
-        const QString oi_change_text = (oi_reading && oi_reading->evaluated && oi_reading->has_oi_change)
-                                           ? cftc_signed_decimal(oi_reading->oi_change, 2) + QLatin1Char('%')
-                                           : QStringLiteral("—");
-        set_plain_cell(monitor_table_, row, 9, oi_change_text, Qt::AlignRight | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 9))
-            item->setToolTip(tr("Open Interest change versus the prior report, as % of prior Open Interest."));
-
-        const QString developments = monitor_descriptive_text(entry);
-        set_plain_cell(monitor_table_, row, 10, developments, Qt::AlignLeft | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 10))
-            item->setToolTip(developments);
-
-        set_plain_cell(monitor_table_, row, 11, monitor_status_label(entry.status), Qt::AlignLeft | Qt::AlignVCenter);
-        if (auto* item = monitor_table_->item(row, 11))
-            item->setToolTip(entry.status_detail.isEmpty() ? tr("Current canonical data.") : entry.status_detail);
+        QString tooltip = tr("Double-click to open the detailed COT workspace for %1.").arg(entry.label);
+        if (!entry.status_detail.isEmpty())
+            tooltip += QStringLiteral("\n") + entry.status_detail;
+        if (!trajectory_note.isEmpty())
+            tooltip += QStringLiteral("\n") + trajectory_note;
+        card->setToolTip(tooltip);
+        monitor_attention_list_->addWidget(card);
     }
-    monitor_table_->setMinimumHeight(20 + monitor_entries_.size() * 21 + 8);
+}
+
+void CftcPanel::render_monitor_groups() {
+    if (!monitor_groups_layout_)
+        return;
+    clear_layout(monitor_groups_layout_);
+    const QVector<CftcMonitorGroup> groups =
+        cftc_monitor_groups(monitor_entries_, monitor_group_filter_, monitor_notable_only_);
+    if (monitor_groups_empty_)
+        monitor_groups_empty_->setVisible(groups.isEmpty());
+
+    const double extent = cftc_monitor_metric_scale_extent(monitor_entries_, monitor_metric_);
+    if (monitor_scale_lbl_) {
+        QString scale_text;
+        if (cftc_monitor_metric_is_percentile(monitor_metric_)) {
+            scale_text = tr("Bars span 0% to 100% on one shared scale.");
+        } else {
+            scale_text = tr("Bars share one scale of ±%1.")
+                             .arg(QString::number(extent, 'f', cftc_monitor_metric_decimals(monitor_metric_)) +
+                                  QLatin1Char('%'));
+        }
+        monitor_scale_lbl_->setText(scale_text + QStringLiteral(" ") +
+                                    tr("Hover a bar for exact values and the latest report date; double-click a bar "
+                                       "to open the market's detailed workspace."));
+    }
+
+    auto* host = qobject_cast<QWidget*>(monitor_groups_layout_->parent());
+    for (const CftcMonitorGroup& group : groups) {
+        int attention_count = 0;
+        QVector<CftcGroupBars::Row> rows;
+        rows.reserve(group.entry_indexes.size());
+        for (int index : group.entry_indexes) {
+            const services::CftcMonitorEntry& entry = monitor_entries_.at(index);
+            if (entry.requires_attention)
+                ++attention_count;
+            CftcGroupBars::Row row;
+            row.market_key = entry.market_key;
+            row.label = entry.label;
+            const CftcMonitorMetricReading reading = cftc_monitor_metric_reading(entry, monitor_metric_);
+            row.has_value = reading.has_value;
+            row.value = reading.value;
+            row.tone = cftc_monitor_entry_tone(entry);
+            row.tooltip = monitor_bar_tooltip(entry);
+            rows.append(row);
+        }
+        CftcGroupBars::Scale scale;
+        scale.percentile = cftc_monitor_metric_is_percentile(monitor_metric_);
+        scale.extent = extent;
+        scale.decimals = cftc_monitor_metric_decimals(monitor_metric_);
+
+        auto* section = new QWidget(host);
+        section->setObjectName("cftcGroupSection");
+        auto* section_layout = new QVBoxLayout(section);
+        section_layout->setContentsMargins(0, 0, 0, 0);
+        section_layout->setSpacing(6);
+
+        auto* header = new QHBoxLayout;
+        header->setSpacing(8);
+        auto* group_title = new QLabel(group.label.toUpper(), section);
+        group_title->setObjectName("cftcGroupTitle");
+        header->addWidget(group_title);
+        auto* group_meta = new QLabel(
+            tr("%1 markets · %2 requiring attention").arg(group.entry_indexes.size()).arg(attention_count), section);
+        group_meta->setObjectName("cftcSectionMeta");
+        header->addWidget(group_meta);
+        header->addStretch(1);
+        section_layout->addLayout(header);
+
+        auto* chart = new CftcGroupBars(section);
+        chart->setAccessibleName(tr("Cross-market positioning chart — %1").arg(group.label));
+        chart->setAccessibleDescription(cftc_monitor_metric_caption(monitor_metric_));
+        chart->set_scale(scale);
+        chart->set_rows(rows);
+        connect(chart, &CftcGroupBars::marketActivated, this, &CftcPanel::open_monitor_entry);
+        section_layout->addWidget(chart);
+
+        auto* table = make_monitor_table(section);
+        table->setColumnCount(12);
+        table->setHorizontalHeaderLabels({tr("MARKET"), tr("LATEST REPORT"), tr("NET %OI"), tr("%ILE (156R)"),
+                                          tr("NET 1R"), tr("NET 4R"), tr("NET 13R"), tr("OPEN INTEREST"), tr("OI 1R"),
+                                          tr("DEVELOPMENTS"), tr("STATUS"), tr("OPEN")});
+        table->horizontalHeader()->setStretchLastSection(false);
+        table->setColumnWidth(0, 150);
+        table->setColumnWidth(1, 96);
+        table->setColumnWidth(2, 82);
+        table->setColumnWidth(3, 92);
+        for (int column = 4; column <= 6; ++column)
+            table->setColumnWidth(column, 78);
+        table->setColumnWidth(7, 104);
+        table->setColumnWidth(8, 70);
+        table->setColumnWidth(9, 240);
+        table->setColumnWidth(10, 92);
+        table->setColumnWidth(11, 64);
+        table->horizontalHeader()->setSectionResizeMode(9, QHeaderView::Stretch);
+        table->setRowCount(group.entry_indexes.size());
+        for (int row = 0; row < group.entry_indexes.size(); ++row) {
+            const services::CftcMonitorEntry& entry = monitor_entries_.at(group.entry_indexes.at(row));
+            fill_monitor_row(table, row, entry);
+            // An explicit per-row affordance, in addition to double-click, so
+            // the detailed workspace is reachable without discovering the
+            // double-click gesture.
+            auto* open = new QPushButton(tr("OPEN"), table);
+            open->setObjectName("cftcOpenBtn");
+            open->setAccessibleName(tr("Open detailed COT workspace for %1").arg(entry.label));
+            open->setCursor(Qt::PointingHandCursor);
+            open->setToolTip(tr("Open the detailed COT workspace for %1.").arg(entry.label));
+            connect(open, &QPushButton::clicked, this, [this, key = entry.market_key]() { open_monitor_entry(key); });
+            table->setCellWidget(row, 11, open);
+        }
+        table->setMinimumHeight(20 + group.entry_indexes.size() * 21 + 8);
+        connect(table, &QTableWidget::cellDoubleClicked, this, [this, table](int row, int) {
+            auto* item = table->item(row, 0);
+            if (item)
+                open_monitor_entry(item->data(Qt::UserRole).toString());
+        });
+        section_layout->addWidget(table);
+        monitor_groups_layout_->addWidget(section);
+    }
+}
+
+void CftcPanel::fill_monitor_row(QTableWidget* table, int row, const services::CftcMonitorEntry& entry) {
+    const CftcMonitorTone tone = cftc_monitor_entry_tone(entry);
+    auto* market_item = new QTableWidgetItem(entry.label);
+    market_item->setData(Qt::UserRole, entry.market_key);
+    market_item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    if (!entry.status_detail.isEmpty())
+        market_item->setToolTip(entry.status_detail);
+    table->setItem(row, 0, market_item);
+
+    QString report_text = QStringLiteral("—");
+    if (entry.report_date.isValid()) {
+        report_text = entry.report_date.toString(Qt::ISODate);
+        if (entry.report_outdated)
+            report_text += QStringLiteral(" (%1d)").arg(entry.report_age_days);
+    }
+    set_plain_cell(table, row, 1, report_text, Qt::AlignLeft | Qt::AlignVCenter);
+    if (entry.report_outdated) {
+        if (auto* item = table->item(row, 1)) {
+            item->setForeground(QColor(ui::colors::WARNING()));
+            item->setToolTip(
+                tr("The latest report is %1 days old; the freshness limit was exceeded.").arg(entry.report_age_days));
+        }
+    }
+
+    const CftcMonitorMetricReading net_reading = cftc_monitor_metric_reading(entry, CftcMonitorMetric::NetPctOi);
+    set_plain_cell(table, row, 2, cftc_monitor_metric_text(net_reading, CftcMonitorMetric::NetPctOi),
+                   Qt::AlignRight | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 2)) {
+        if (!net_reading.has_value)
+            item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+        item->setToolTip(net_reading.has_value
+                             ? tr("Net position of the principal participant as % of current Open Interest.")
+                             : tr("Net %OI was not formed for this report."));
+    }
+
+    const CftcMonitorMetricReading percentile_reading =
+        cftc_monitor_metric_reading(entry, CftcMonitorMetric::Percentile);
+    const QString percentile_text = percentile_reading.has_value
+                                        ? QString::number(percentile_reading.value, 'f', 1) + QLatin1Char('%') +
+                                              QStringLiteral(" (n=%1)").arg(entry.percentile_reference_count)
+                                        : QStringLiteral("—");
+    set_plain_cell(table, row, 3, percentile_text, Qt::AlignRight | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 3)) {
+        if (!percentile_reading.has_value)
+            item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+        item->setToolTip(percentile_reading.has_value
+                             ? tr("Net %OI against the previous %1 valid reports (midpoint-tie percentile).")
+                                   .arg(entry.percentile_reference_count)
+                             : tr("The 156-prior-report historical reference is unavailable for this market."));
+    }
+
+    const QString principal_name =
+        cftc_metric_participant_display_name(entry.family, entry.principal_participant_key, entry.principal_label);
+    const CftcMonitorMetric flow_metrics[3] = {CftcMonitorMetric::Net1R, CftcMonitorMetric::Net4R,
+                                               CftcMonitorMetric::Net13R};
+    for (int i = 0; i < 3; ++i) {
+        const int column = 4 + i;
+        const int horizon = cftc_monitor_metric_horizon(flow_metrics[i]);
+        const CftcMonitorMetricReading reading = cftc_monitor_metric_reading(entry, flow_metrics[i]);
+        const auto* flow = cftc_monitor_flow_reading(entry, horizon);
+        QString tooltip = tr("No %1-report net flow could be formed.").arg(horizon);
+        if (reading.has_value) {
+            if (flow && flow->has_net_rank) {
+                tooltip =
+                    principal_name.isEmpty()
+                        ? tr("%1-report net flow as % of prior Open Interest; materiality rank %2 of the previous "
+                             "%3 comparable moves.")
+                              .arg(horizon)
+                              .arg(QString::number(flow->net_rank, 'f', 2))
+                              .arg(flow->net_rank_reference_count)
+                        : tr("%4: %1-report net flow as % of prior Open Interest; materiality rank %2 of the "
+                             "previous %3 comparable moves.")
+                              .arg(horizon)
+                              .arg(QString::number(flow->net_rank, 'f', 2))
+                              .arg(flow->net_rank_reference_count)
+                              .arg(principal_name);
+            } else {
+                tooltip =
+                    principal_name.isEmpty()
+                        ? tr("%1-report net flow as % of prior Open Interest.").arg(horizon)
+                        : tr("%2: %1-report net flow as % of prior Open Interest.").arg(horizon).arg(principal_name);
+            }
+        }
+        set_plain_cell(table, row, column, cftc_monitor_metric_text(reading, flow_metrics[i]),
+                       Qt::AlignRight | Qt::AlignVCenter);
+        if (auto* item = table->item(row, column)) {
+            if (!reading.has_value)
+                item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+            item->setToolTip(tooltip);
+        }
+    }
+
+    const QString oi_text = entry.has_open_interest ? position_text(entry.open_interest) : QStringLiteral("—");
+    set_plain_cell(table, row, 7, oi_text, Qt::AlignRight | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 7)) {
+        if (!entry.has_open_interest)
+            item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+        item->setToolTip(tr("Total Open Interest reported by CFTC for the latest report."));
+    }
+
+    const auto* oi_reading = monitor_oi_at(entry, 1);
+    const bool has_oi_change = oi_reading && oi_reading->evaluated && oi_reading->has_oi_change;
+    const QString oi_change_text =
+        has_oi_change ? cftc_signed_decimal(oi_reading->oi_change, 2) + QLatin1Char('%') : QStringLiteral("—");
+    set_plain_cell(table, row, 8, oi_change_text, Qt::AlignRight | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 8)) {
+        if (!has_oi_change)
+            item->setForeground(QColor(ui::colors::TEXT_SECONDARY()));
+        item->setToolTip(tr("Open Interest change versus the prior report, as % of prior Open Interest."));
+    }
+
+    const QString developments = monitor_descriptive_text(entry);
+    set_plain_cell(table, row, 9, developments, Qt::AlignLeft | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 9)) {
+        if (tone != CftcMonitorTone::Ordinary)
+            item->setForeground(cftc_monitor_tone_color(tone));
+        item->setToolTip(developments);
+    }
+
+    set_plain_cell(table, row, 10, cftc_monitor_status_text(entry), Qt::AlignLeft | Qt::AlignVCenter);
+    if (auto* item = table->item(row, 10)) {
+        item->setForeground(cftc_monitor_status_color(cftc_monitor_status_tone(entry)));
+        if (entry.report_unavailable) {
+            item->setToolTip(tr("The report could not be interpreted (engine reason: %1).")
+                                 .arg(services::cftc_unavailable_reason_code(entry.report_unavailable_reason)));
+        } else {
+            item->setToolTip(entry.status_detail.isEmpty() ? tr("Current canonical data.") : entry.status_detail);
+        }
+    }
+
+    if (tone != CftcMonitorTone::Ordinary) {
+        QColor tint = cftc_monitor_tone_color(tone);
+        tint.setAlpha(20);
+        for (int column = 0; column < table->columnCount(); ++column) {
+            if (auto* item = table->item(row, column))
+                item->setBackground(tint);
+        }
+    }
+}
+
+QString CftcPanel::monitor_bar_tooltip(const services::CftcMonitorEntry& entry) const {
+    QStringList parts;
+    parts << entry.label;
+    parts << cftc_monitor_group_label(entry.asset_class);
+    parts << cftc_monitor_metric_label(monitor_metric_) + QStringLiteral(": ") +
+                 cftc_monitor_metric_text(cftc_monitor_metric_reading(entry, monitor_metric_), monitor_metric_);
+    if (entry.has_percentile) {
+        parts << tr("Percentile (156R): %1% (n=%2)")
+                     .arg(QString::number(entry.percentile * 100.0, 'f', 1))
+                     .arg(entry.percentile_reference_count);
+    }
+    if (entry.report_date.isValid()) {
+        QString report = tr("Latest report: %1").arg(entry.report_date.toString(Qt::ISODate));
+        if (entry.report_outdated)
+            report += tr(" (%1 days old)").arg(entry.report_age_days);
+        parts << report;
+    }
+    parts << tr("Status: %1").arg(cftc_monitor_status_text(entry));
+    if (entry.report_unavailable) {
+        parts << tr("The report could not be interpreted (engine reason: %1).")
+                     .arg(services::cftc_unavailable_reason_code(entry.report_unavailable_reason));
+    } else if (!entry.status_detail.isEmpty()) {
+        parts << entry.status_detail;
+    }
+    if (!entry.alerts.isEmpty()) {
+        QStringList classes;
+        QSet<int> seen;
+        for (const services::CftcAlert& alert : entry.alerts) {
+            const int priority = services::cftc_attention_class_priority(alert.attention_class);
+            if (seen.contains(priority))
+                continue;
+            seen.insert(priority);
+            classes << services::cftc_attention_class_label(alert.attention_class);
+        }
+        parts << tr("Attention: %1").arg(classes.join(QStringLiteral(", ")));
+    }
+    parts << tr("Double-click to open the detailed COT workspace.");
+    return parts.join(QStringLiteral("\n"));
+}
+
+bool CftcPanel::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        const QString key = watched->property("cftcMarketKey").toString();
+        if (!key.isEmpty()) {
+            open_monitor_entry(key);
+            return true;
+        }
+    }
+    return EconPanelBase::eventFilter(watched, event);
+}
+
+void CftcPanel::open_monitor_entry(const QString& market_key) {
+    if (market_key.isEmpty())
+        return;
+    for (int index = 0; index < monitor_entries_.size(); ++index) {
+        if (monitor_entries_.at(index).market_key == market_key) {
+            open_monitor_market(index);
+            return;
+        }
+    }
 }
 
 void CftcPanel::open_monitor_market(int entry_index) {
@@ -1605,6 +2099,17 @@ void CftcPanel::apply_responsive_layout() {
     }
     stats_pair_layout_->setColumnStretch(0, 1);
     stats_pair_layout_->setColumnStretch(1, 1);
+
+    // The monitor summary strip follows the same narrow/wide rule.
+    if (monitor_summary_grid_) {
+        const int summary_columns = narrow_layout_ ? 3 : 6;
+        for (int i = 0; i < monitor_summary_cards_.size(); ++i) {
+            monitor_summary_grid_->removeWidget(monitor_summary_cards_[i].frame);
+            monitor_summary_grid_->addWidget(monitor_summary_cards_[i].frame, i / summary_columns, i % summary_columns);
+        }
+        for (int column = 0; column < 6; ++column)
+            monitor_summary_grid_->setColumnStretch(column, column < summary_columns ? 1 : 0);
+    }
 }
 
 void CftcPanel::resizeEvent(QResizeEvent* event) {
@@ -3035,6 +3540,8 @@ void CftcPanel::refresh_panel_theme() {
         heatmap_->refresh_theme();
     if (sync_chart_)
         sync_chart_->refresh_theme();
+    if (monitor_content_ && monitor_rendered_)
+        rebuild_monitor_views();
     render_interpretation();
     if (participant_check_layout_) {
         const auto palette = series_palette();
@@ -3063,6 +3570,9 @@ QString CftcPanel::workspace_style() const {
                    "#cftcRangeBtn:hover { color:%5; background:%6; }"
                    "#cftcRangeBtn:checked { background:%6; color:%5; border-color:%10; }"
                    "#cftcRangeBtn:disabled { color:%4; }"
+                   "#cftcOpenBtn { background:transparent; color:%3; border:1px solid %2;"
+                   " font-size:9px; font-weight:700; padding:1px 4px; }"
+                   "#cftcOpenBtn:hover { color:%5; background:%6; border-color:%10; }"
                    "#cftcHorizonBtn { background:transparent; color:%3; border:1px solid %2;"
                    " font-size:10px; font-weight:700; padding:3px 9px; }"
                    "#cftcHorizonBtn:hover { color:%5; background:%6; }"
@@ -3075,6 +3585,15 @@ QString CftcPanel::workspace_style() const {
                    "#cftcCardLabel { color:%3; font-size:8px; font-weight:700; letter-spacing:1px;"
                    " background:transparent; }"
                    "#cftcCardSub { color:%3; font-size:9px; background:transparent; }"
+                   "#cftcAlertCard { background:%9; border:1px solid %2; border-radius:3px; }"
+                   "#cftcAlertCard:hover { border-color:%10; }"
+                   "#cftcAlertCardTitle { color:%5; font-size:11px; font-weight:700; background:transparent; }"
+                   "#cftcAlertCardText { color:%5; font-size:10px; background:transparent; }"
+                   "#cftcAlertCardMeta { color:%3; font-size:9px; background:transparent; }"
+                   "#cftcAlertScroll { background:transparent; border:none; }"
+                   "#cftcAlertScroll > QWidget > QWidget { background:transparent; }"
+                   "#cftcGroupTitle { color:%5; font-size:11px; font-weight:700; letter-spacing:1px;"
+                   " background:transparent; }"
                    "#cftcInterpretationHeadline { color:%5; font-size:14px; font-weight:700;"
                    " background:transparent; }"
                    "#cftcInterpretationBody { color:%5; font-size:11px; background:transparent; }"
@@ -3137,17 +3656,29 @@ void CftcPanel::retranslateUi() {
         monitor_backfill_btn_->setText(tr("BACKFILL HISTORY"));
     if (monitor_attention_title_)
         monitor_attention_title_->setText(tr("MARKETS REQUIRING ATTENTION"));
-    if (monitor_all_title_)
-        monitor_all_title_->setText(tr("ALL MARKETS"));
-    if (monitor_attention_table_ && monitor_attention_table_->columnCount() == 5) {
-        monitor_attention_table_->setHorizontalHeaderLabels(
-            {tr("MARKET"), tr("GROUP"), tr("CLASS"), tr("DEVELOPMENT"), tr("REPORT")});
+    if (monitor_groups_title_)
+        monitor_groups_title_->setText(tr("ALL MARKETS BY GROUP"));
+    if (monitor_group_lbl_)
+        monitor_group_lbl_->setText(tr("GROUP"));
+    if (monitor_metric_lbl_)
+        monitor_metric_lbl_->setText(tr("METRIC"));
+    if (monitor_notable_btn_)
+        monitor_notable_btn_->setText(tr("NOTABLE ONLY"));
+    if (monitor_group_combo_ && monitor_group_combo_->count() == 9) {
+        monitor_group_combo_->setItemText(0, tr("All groups"));
+        for (int i = 0; i < services::cftc_asset_class_order().size(); ++i)
+            monitor_group_combo_->setItemText(
+                i + 1, services::cftc_asset_class_label(services::cftc_asset_class_order().at(i)));
     }
-    if (monitor_table_ && monitor_table_->columnCount() == 12) {
-        monitor_table_->setHorizontalHeaderLabels({tr("MARKET"), tr("GROUP"), tr("LATEST REPORT"), tr("NET %OI"),
-                                                   tr("%ILE (156R)"), tr("NET 1R"), tr("NET 4R"), tr("NET 13R"),
-                                                   tr("OPEN INTEREST"), tr("OI 1R"), tr("DEVELOPMENTS"), tr("STATUS")});
+    if (monitor_metric_combo_ && monitor_metric_combo_->count() == 5) {
+        const QVector<CftcMonitorMetric> metrics = {CftcMonitorMetric::NetPctOi, CftcMonitorMetric::Percentile,
+                                                    CftcMonitorMetric::Net1R, CftcMonitorMetric::Net4R,
+                                                    CftcMonitorMetric::Net13R};
+        for (int i = 0; i < metrics.size(); ++i)
+            monitor_metric_combo_->setItemText(i, cftc_monitor_metric_label(metrics.at(i)));
     }
+    if (monitor_rendered_)
+        rebuild_monitor_views();
     if (snapshot_title_)
         snapshot_title_->setText(tr("CURRENT SNAPSHOT"));
     if (interpretation_title_)

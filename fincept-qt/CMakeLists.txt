@@ -1803,6 +1803,8 @@ set(SCREEN_SOURCES
     src/screens/economics/panels/CftcPositioningChart.cpp
     src/screens/economics/panels/CftcPricePositioningChart.cpp
     src/screens/economics/panels/CftcHeatmap.cpp
+    src/screens/economics/panels/CftcGroupBars.cpp
+    src/screens/economics/panels/CftcSparkline.cpp
     src/screens/economics/panels/EiaPanel.cpp
     src/screens/economics/panels/WtoPanel.cpp
     src/screens/economics/panels/UnescoPanel.cpp
