@@ -63,11 +63,13 @@ void CftcGroupBars::refresh_theme() {
 }
 
 QSize CftcGroupBars::sizeHint() const {
-    return QSize(560, pad_top_ * 2 + rows_.size() * row_height_ + axis_height_);
+    const int rows_height = static_cast<int>(rows_.size()) * row_height_;
+    return QSize(560, pad_top_ * 2 + rows_height + axis_height_);
 }
 
 QSize CftcGroupBars::minimumSizeHint() const {
-    return QSize(260, pad_top_ * 2 + rows_.size() * row_height_ + axis_height_);
+    const int rows_height = static_cast<int>(rows_.size()) * row_height_;
+    return QSize(260, pad_top_ * 2 + rows_height + axis_height_);
 }
 
 int CftcGroupBars::row_at(const QPoint& pos) const {
