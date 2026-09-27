@@ -80,6 +80,10 @@ class DashboardCanvas : public QWidget {
     // Resize state
     WidgetTile* resizing_tile_ = nullptr;
     GridCell resize_origin_cell_;
+    // Pointer position relative to the origin tile's bottom-right corner, so a
+    // gesture that restores canonical geometry mid-flight resizes by the
+    // pointer's movement only (see resize_pointer_offset in GridLayout.h).
+    QPoint resize_pointer_offset_;
     GridLayout pre_resize_layout_;
 
     // Auto-scroll during drag

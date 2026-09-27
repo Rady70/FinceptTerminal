@@ -338,6 +338,135 @@ class TstDashboardLayout : public QObject {
         QCOMPARE(config_of(restored.items, QStringLiteral("news")).value(QStringLiteral("category")).toString(),
                  QStringLiteral("markets"));
     }
+
+    void configSurvivesNarrowToNarrowTransitions() {
+        // The UI config path only updates the live view. A 6 -> 9 / 9 -> 6
+        // transition must carry that edit into the canonical copy before
+        // re-deriving, or the edit vanishes from the layout state.
+        const auto saved = saved_arrangement();
+        ResponsiveLayoutState state;
+        state.reset(make_layout(saved, 12));
+        auto view6 = state.apply_view(make_layout(saved, 12), 6);
+        for (auto& item : view6.items) {
+            if (item.id == QStringLiteral("news"))
+                item.config.insert(QStringLiteral("category"), QStringLiteral("markets"));
+        }
+
+        const auto view9 = state.apply_view(view6, 9);
+        QCOMPARE(config_of(view9.items, QStringLiteral("news")).value(QStringLiteral("category")).toString(),
+                 QStringLiteral("markets"));
+
+        const auto back_to_6 = state.apply_view(view9, 6);
+        QCOMPARE(config_of(back_to_6.items, QStringLiteral("news")).value(QStringLiteral("category")).toString(),
+                 QStringLiteral("markets"));
+        QCOMPARE(config_of(state.for_save(back_to_6).items, QStringLiteral("news"))
+                     .value(QStringLiteral("category"))
+                     .toString(),
+                 QStringLiteral("markets"));
+
+        const auto restored = state.apply_view(back_to_6, 12);
+        assert_persisted_is_saved(make_layout(restored.items, 12), saved);
+        QCOMPARE(config_of(restored.items, QStringLiteral("news")).value(QStringLiteral("category")).toString(),
+                 QStringLiteral("markets"));
+    }
+
+    void widthBandChangeDuringEditDerivesTheView() {
+        // A gesture that begins at the design width and ends in a narrow band
+        // must still display the view for the width at completion: the canvas
+        // resize timer skips while a gesture is active, so nothing else would
+        // repair the display.
+        const auto saved = saved_arrangement();
+        ResponsiveLayoutState state;
+        state.reset(make_layout(saved, 12));
+
+        auto edited = state.begin_edit(make_layout(saved, 12));
+        QVERIFY(!state.view_active());
+        QCOMPARE(edited.cols, 12);
+
+        const auto redisplayed = state.end_edit(edited, 6);
+        QCOMPARE(redisplayed.cols, 6);
+        QVERIFY(state.view_active());
+        assert_within_grid(redisplayed.items, 6);
+        assert_no_overlap(redisplayed.items);
+        assert_persisted_is_saved(state.for_save(redisplayed), saved);
+
+        const auto restored = state.apply_view(redisplayed, 12);
+        for (const auto& item : saved)
+            QCOMPARE(cell_of(restored.items, item.id), item.cell);
+    }
+
+    // ── resize pointer geometry ──────────────────────────────────────────────
+
+    void resizePointerKeepsTheOriginCellSize() {
+        const GridCell origin{0, 0, 4, 5, 2, 3};
+        constexpr int kCols = 12;
+        constexpr int kWidth = 1200;
+        constexpr int kRowH = 60;
+        constexpr int kMargin = 4;
+        const QRect origin_rect = grid_to_rect(origin, kCols, kWidth, kRowH, kMargin);
+
+        // An unchanged pointer held on the origin cell's bottom-right keeps the
+        // origin size. Reading it absolutely made the tile jump wider when a
+        // responsive view restored canonical geometry underneath the gesture.
+        QCOMPARE(resize_target_from_pointer(origin, origin_rect.right(), origin_rect.bottom(), kCols, kWidth, kRowH,
+                                            kMargin),
+                 origin);
+
+        // Moving one column width to the right grows the span by exactly one.
+        const int col_w = (kWidth - kMargin * (kCols + 1)) / kCols;
+        const GridCell grown = resize_target_from_pointer(origin, origin_rect.right() + col_w + kMargin,
+                                                          origin_rect.bottom(), kCols, kWidth, kRowH, kMargin);
+        QCOMPARE(grown.w, origin.w + 1);
+        QCOMPARE(grown.h, origin.h);
+
+        // Clamped to the grid and to the minimum sizes.
+        const GridCell clamped = resize_target_from_pointer(origin, kWidth + 100, origin_rect.bottom() + 1000, kCols,
+                                                            kWidth, kRowH, kMargin);
+        QCOMPARE(clamped.w, kCols - origin.x);
+        QVERIFY(clamped.h >= origin.min_h);
+
+        const GridCell floored = resize_target_from_pointer(origin, 0, 0, kCols, kWidth, kRowH, kMargin);
+        QCOMPARE(floored.w, origin.min_w);
+        QCOMPARE(floored.h, origin.min_h);
+    }
+
+    void narrowResizeGestureDoesNotJumpWider() {
+        // A resize that starts on a 6-column view: the canvas restores the
+        // canonical geometry and maps the pointer (still at the view tile's
+        // edge) into the canonical frame before the first move. Reproduce the
+        // canvas composition with the same helpers.
+        const auto saved = saved_arrangement();
+        ResponsiveLayoutState state;
+        state.reset(make_layout(saved, 12));
+        const auto view = state.apply_view(make_layout(saved, 12), 6);
+
+        constexpr int kViewCols = 6;
+        constexpr int kWidth = 600;
+        constexpr int kRowH = 60;
+        constexpr int kMargin = 4;
+        const GridCell view_cell = cell_of(view.items, QStringLiteral("news"));
+        const QRect view_rect = grid_to_rect(view_cell, kViewCols, kWidth, kRowH, kMargin);
+        const QPoint press(view_rect.right(), view_rect.bottom());
+
+        const auto canonical = state.begin_edit(view);
+        const GridCell canonical_cell = cell_of(canonical.items, QStringLiteral("news"));
+        const QRect canonical_rect = grid_to_rect(canonical_cell, 12, kWidth, kRowH, kMargin);
+
+        const QPoint offset = resize_pointer_offset(canonical_rect, press);
+        const QPoint unchanged = press - offset; // first move delivers the same pointer
+        const GridCell first_move =
+            resize_target_from_pointer(canonical_cell, unchanged.x(), unchanged.y(), 12, kWidth, kRowH, kMargin);
+        QCOMPARE(first_move, canonical_cell); // no spurious growth
+
+        // A genuine drag of one column still grows by one, from the canonical
+        // size, and the edit is persisted as canonical.
+        const int col_w = (kWidth - kMargin * 13) / 12;
+        const QPoint moved = unchanged + QPoint(col_w + kMargin, 0);
+        const GridCell grown =
+            resize_target_from_pointer(canonical_cell, moved.x(), moved.y(), 12, kWidth, kRowH, kMargin);
+        QCOMPARE(grown.w, canonical_cell.w + 1);
+        QCOMPARE(grown.h, canonical_cell.h);
+    }
 };
 
 QTEST_MAIN(TstDashboardLayout)

@@ -24,7 +24,6 @@ class ResponsiveLayoutState {
         canonical_cols_ = layout.cols > 0 ? layout.cols : 12;
         canonical_.cols = canonical_cols_;
         view_active_ = false;
-        restore_view_after_edit_ = false;
     }
 
     bool view_active() const { return view_active_; }
@@ -46,6 +45,12 @@ class ResponsiveLayoutState {
         if (!view_active_) {
             canonical_ = current;
             view_active_ = true;
+        } else {
+            // The live layout is a view; carry any per-instance config edited
+            // in it (the UI config path only updates the view) into the
+            // canonical copy before deriving the next view, or the edit would
+            // vanish on a 6 -> 9 / 9 -> 6 transition.
+            canonical_ = merge_runtime(canonical_, current);
         }
         GridLayout view = canonical_;
         view.cols = target_cols;
@@ -60,22 +65,22 @@ class ResponsiveLayoutState {
     /// is re-derived by end_edit(). With no view active the current layout is
     /// returned unchanged.
     GridLayout begin_edit(const GridLayout& current) {
-        restore_view_after_edit_ = view_active_;
         if (!view_active_)
             return current;
         return merge_runtime(canonical_, current);
     }
 
     /// `edited` is the arrangement the edit produced, in canonical cells.
-    /// Returns the layout to display now: the arranged cells, or a view of
-    /// them re-derived for `target_cols`.
+    /// Returns the layout to display now, decided from the width at *edit
+    /// completion*: the arranged cells at the design width, or a view of them
+    /// for `target_cols`. A viewport that changes band mid-gesture therefore
+    /// still ends with the right display (the canvas resize timer skips while
+    /// a gesture is active, so there may be no later transition to repair it).
     GridLayout end_edit(const GridLayout& edited, int target_cols) {
         canonical_ = edited;
         canonical_.cols = canonical_cols_;
-        const bool resume_view = restore_view_after_edit_;
-        restore_view_after_edit_ = false;
 
-        if (!resume_view || target_cols <= 0 || target_cols == canonical_cols_) {
+        if (target_cols <= 0 || target_cols >= canonical_cols_) {
             view_active_ = false;
             return canonical_;
         }
@@ -116,7 +121,6 @@ class ResponsiveLayoutState {
     GridLayout canonical_;
     int canonical_cols_ = 12;
     bool view_active_ = false;
-    bool restore_view_after_edit_ = false;
 };
 
 } // namespace fincept::screens

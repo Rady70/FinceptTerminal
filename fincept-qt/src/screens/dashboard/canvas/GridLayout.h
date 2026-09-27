@@ -164,6 +164,44 @@ inline QVector<GridItem> responsive_items(const QVector<GridItem>& items, int co
     return placed;
 }
 
+/// Offset between a gesture pointer and a tile's resize anchor (its
+/// bottom-right corner), so the pointer's movement delta — not its absolute
+/// position — drives the resize. Required when a gesture begins on a
+/// responsive view and the canvas restores the canonical geometry underneath
+/// it: the pointer is still at the view tile's edge, which is not the
+/// canonical tile's edge, and reading it absolutely made the tile jump wider.
+inline QPoint resize_pointer_offset(const QRect& origin_rect, const QPoint& pointer) {
+    return QPoint(pointer.x() - origin_rect.right(), pointer.y() - origin_rect.bottom());
+}
+
+/// Resize target for a pointer in the canvas frame: the origin cell grown by
+/// the pointer's distance from the cell's top-left corner, clamped to the
+/// minimum sizes and the grid width. An unchanged pointer held on the origin
+/// cell's bottom-right keeps the origin size.
+inline GridCell resize_target_from_pointer(const GridCell& origin, int pointer_x, int pointer_y, int cols,
+                                           int container_w, int row_h, int margin) {
+    if (cols <= 0 || container_w <= 0)
+        return origin;
+    const int col_w = (container_w - margin * (cols + 1)) / cols;
+    if (col_w <= 0)
+        return origin;
+
+    const int tile_px_x = margin + origin.x * (col_w + margin);
+    const int tile_px_y = margin + origin.y * (row_h + margin);
+    const int new_px_w = pointer_x - tile_px_x;
+    const int new_px_h = pointer_y - tile_px_y;
+
+    int new_w = std::max(1, (new_px_w + col_w + margin / 2) / (col_w + margin));
+    int new_h = std::max(1, (new_px_h + row_h + margin / 2) / (row_h + margin));
+    new_w = std::max(origin.min_w, std::min(new_w, cols - origin.x));
+    new_h = std::max(origin.min_h, new_h);
+
+    GridCell target = origin;
+    target.w = new_w;
+    target.h = new_h;
+    return target;
+}
+
 /// Find first available position for a widget of size (w, h).
 inline GridCell find_first_fit(const QVector<GridItem>& items, int w, int h, int cols) {
     for (int row = 0; row < 1000; ++row) {

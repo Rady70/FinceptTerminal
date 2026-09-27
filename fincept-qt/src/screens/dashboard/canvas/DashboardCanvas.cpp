@@ -325,7 +325,7 @@ void DashboardCanvas::on_drag_released(WidgetTile* tile, QPoint /*canvas_pos*/) 
 
 // ── Resize handling (push-down, reflows ALL tiles) ────────────────────────────
 
-void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint /*canvas_pos*/) {
+void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint canvas_pos) {
     // Like a drag: a resize edits the design arrangement, and a responsive
     // view is restored first so the resize anchors are canonical.
     if (layout_state_.view_active()) {
@@ -343,6 +343,12 @@ void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint /*canvas_pos*/)
     // Initialize ghost to current cell so first move doesn't snap
     ghost_cell_ = resize_origin_cell_;
 
+    // The pointer is wherever the view tile's grip was; map it into the
+    // canonical frame so the first move resizes by its movement delta only
+    // instead of reading the old edge as a much wider canonical cell.
+    const QRect origin_rect = grid_to_rect(resize_origin_cell_, layout_.cols, width(), layout_.row_h, layout_.margin);
+    resize_pointer_offset_ = resize_pointer_offset(origin_rect, canvas_pos);
+
     tile->set_resizing(true);
     update_placeholder(resize_origin_cell_);
 }
@@ -351,32 +357,12 @@ void DashboardCanvas::on_resize_moved(WidgetTile* tile, QPoint canvas_pos) {
     if (!resizing_tile_ || resizing_tile_ != tile)
         return;
 
-    int col_w = (width() - layout_.margin * (layout_.cols + 1)) / layout_.cols;
-    if (col_w <= 0)
-        return;
-
-    // canvas_pos is now computed from global screen coordinates in WidgetTile,
-    // so it's stable even if the tile gets repositioned by setGeometry.
-    // Compute tile origin from the fixed origin cell (doesn't change during resize).
-    int tile_px_x = layout_.margin + resize_origin_cell_.x * (col_w + layout_.margin);
-    int tile_px_y = layout_.margin + resize_origin_cell_.y * (layout_.row_h + layout_.margin);
-
-    int new_px_w = canvas_pos.x() - tile_px_x;
-    int new_px_h = canvas_pos.y() - tile_px_y;
-
-    // Convert pixel delta to grid columns/rows.
-    // Use truncation (not rounding) so the cell only grows when the mouse
-    // has clearly crossed the midpoint of the next column/row. This prevents
-    // the widget from shrinking on the initial click.
-    int new_w = std::max(1, (new_px_w + col_w + layout_.margin / 2) / (col_w + layout_.margin));
-    int new_h = std::max(1, (new_px_h + layout_.row_h + layout_.margin / 2) / (layout_.row_h + layout_.margin));
-
-    new_w = std::max(resize_origin_cell_.min_w, std::min(new_w, layout_.cols - resize_origin_cell_.x));
-    new_h = std::max(resize_origin_cell_.min_h, new_h);
-
-    GridCell target = resize_origin_cell_;
-    target.w = new_w;
-    target.h = new_h;
+    // canvas_pos is computed from global screen coordinates in WidgetTile, so
+    // it is stable even if the tile gets repositioned by setGeometry. The
+    // offset puts it in the frame of the canonical origin cell.
+    const QPoint pointer = canvas_pos - resize_pointer_offset_;
+    const GridCell target = resize_target_from_pointer(resize_origin_cell_, pointer.x(), pointer.y(), layout_.cols,
+                                                       width(), layout_.row_h, layout_.margin);
 
     // Early-out: skip expensive collision resolution if nothing changed
     if (target == ghost_cell_)
