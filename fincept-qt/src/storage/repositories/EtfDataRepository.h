@@ -27,6 +27,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <optional>
@@ -162,6 +163,26 @@ enum class ObservationOutcome {
 
 const char* observation_outcome_id(ObservationOutcome o);
 
+/// A stored SEC reporting entity, for the Batch C derived-value reads.
+struct ReportingEntityRow {
+    qint64 entity_id = 0;
+    QString cik;
+    QString series_id; ///< empty for a registrant that reports without a series
+    QString reporting_level;
+    QString registrant_name;
+    QString series_name;
+};
+
+/// A stored IBKR listed instrument with every ticker seen for it, oldest first.
+struct ListedInstrumentRow {
+    qint64 instrument_id = 0;
+    qint64 con_id = 0;
+    QString symbol; ///< the latest ticker; an attribute, never the identity
+    QString primary_exchange;
+    QString currency;
+    QStringList symbols;
+};
+
 } // namespace etf_store
 
 class EtfDataRepository : public BaseRepository<services::etf::StoredObservation> {
@@ -231,6 +252,15 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
                                                                            qint64 subject_id);
     Result<std::optional<qint64>> find_reporting_entity(const QString& cik10, const QString& series_id);
     Result<std::optional<qint64>> find_listed_instrument(qint64 con_id);
+
+    // ── Reads for derived values (Batch C; read only) ────────────────────────
+    /// Every stored reporting entity, by entity id.
+    Result<QVector<etf_store::ReportingEntityRow>> reporting_entities();
+    /// Every stored listed instrument, by instrument id, with its tickers.
+    Result<QVector<etf_store::ListedInstrumentRow>> listed_instruments();
+    /// The instruments that have carried `symbol` at any time. A ticker is not
+    /// an identity: more than one id means the ticker alone is ambiguous.
+    Result<QVector<qint64>> find_listed_instruments_by_symbol(const QString& symbol);
 
     /// Every ETF table, every row, in primary-key order, as JSON. Deterministic;
     /// NULL stays JSON null. Used to reload and compare state across restarts.

@@ -2,8 +2,12 @@
 
 #include "core/logging/Logger.h"
 #include "services/etf/EtfDataService.h"
+#include "services/etf/EtfDerivedAnalytics.h"
+#include "services/etf/EtfRegulatoryFlowAnalytics.h"
+#include "services/etf/EtfRotationMeasures.h"
 #include "services/etf/EtfRoutePolicy.h"
 #include "services/etf/EtfSessionCalendar.h"
+#include "services/etf/SecEdgarParse.h"
 #include "storage/repositories/EtfDataRepository.h"
 #include "storage/sqlite/Database.h"
 #include "storage/sqlite/migrations/MigrationRunner.h"
@@ -23,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 
 namespace fincept::marketlab {
 
@@ -38,14 +43,99 @@ void print_json(const QJsonObject& o) {
 }
 
 int usage(const QString& why) {
-    print_json(QJsonObject{
-        {"ok", false},
-        {"error", why},
-        {"usage", QJsonArray{"--etf-data sec-nport --cik <cik> [--series <S#########>] [--max-filings <1-40>] "
-                             "[--from <yyyy-MM-dd>] [--to <yyyy-MM-dd>]",
-                             "--etf-data ibkr-daily --symbol <SYM> [--duration \"2 Y\"]",
-                             "--etf-data export --out <file.json>", "--etf-data status"}}});
+    // One append per command: a long command wraps over adjacent literals,
+    // which inside a braced list reads as a missing comma.
+    QJsonArray commands;
+    commands.append(QStringLiteral("--etf-data sec-nport --cik <cik> [--series <S#########>] [--max-filings <1-40>] "
+                                   "[--from <yyyy-MM-dd>] [--to <yyyy-MM-dd>]"));
+    commands.append(QStringLiteral("--etf-data ibkr-daily --symbol <SYM> [--duration \"2 Y\"]"));
+    commands.append(QStringLiteral("--etf-data derived --out <file.json> [--as-of <ISO-8601 with Z or offset>] "
+                                   "[--known-at <ISO-8601 with Z or offset>] [--cik <cik> [--series <S#########>]] "
+                                   "[--symbol <SYM> | --con-id <n>] [--reference-symbol <SYM> | --reference-con-id "
+                                   "<n>] [--from <yyyy-MM-dd>] [--to <yyyy-MM-dd>]"));
+    commands.append(QStringLiteral("--etf-data export --out <file.json>"));
+    commands.append(QStringLiteral("--etf-data status"));
+    print_json(QJsonObject{{"ok", false}, {"error", why}, {"usage", commands}});
     return 2;
+}
+
+/// An instant given on the command line. It must name its zone (Z or an
+/// offset): a local wall-clock time would make the decision time depend on
+/// the machine that ran the command.
+bool parse_instant(const QString& text, QDateTime* out) {
+    const QDateTime t = QDateTime::fromString(text, Qt::ISODateWithMs);
+    if (!t.isValid() || t.timeSpec() == Qt::LocalTime)
+        return false;
+    *out = t.toUTC();
+    return true;
+}
+
+/// One listed instrument named by ticker or conId, or why it cannot be.
+std::optional<qint64> resolve_instrument(const QString& symbol, const QString& con_id, QString* why) {
+    auto& repo = EtfDataRepository::instance();
+    if (!con_id.isEmpty()) {
+        bool ok = false;
+        const qint64 id = con_id.toLongLong(&ok);
+        auto found = ok ? repo.find_listed_instrument(id) : Result<std::optional<qint64>>::err("not a number");
+        if (found.is_err() || !found.value()) {
+            *why = QStringLiteral("no stored listed instrument has conId '%1'").arg(con_id);
+            return std::nullopt;
+        }
+        return *found.value();
+    }
+    auto ids = repo.find_listed_instruments_by_symbol(symbol.trimmed().toUpper());
+    if (ids.is_err() || ids.value().isEmpty()) {
+        *why = QStringLiteral("no stored listed instrument has carried the ticker '%1'").arg(symbol);
+        return std::nullopt;
+    }
+    if (ids.value().size() > 1) {
+        // A ticker is not an identity; name the conId instead.
+        *why = QStringLiteral("the ticker '%1' has been carried by %2 instruments; use --con-id")
+                   .arg(symbol)
+                   .arg(ids.value().size());
+        return std::nullopt;
+    }
+    return ids.value().first();
+}
+
+/// Counts of a derived document, by family and state, for the console.
+QJsonObject derived_summary(const QJsonObject& doc) {
+    auto count_values = [](const QJsonObject& values, QHash<QString, int>& states) {
+        for (auto it = values.begin(); it != values.end(); ++it)
+            ++states[it.value().toObject().value(QLatin1String("state")).toString()];
+    };
+    auto to_json = [](const QHash<QString, int>& states) {
+        QJsonObject o;
+        for (auto it = states.cbegin(); it != states.cend(); ++it)
+            o.insert(it.key(), it.value());
+        return o;
+    };
+    QHash<QString, int> reg_states;
+    int months = 0;
+    const QJsonArray reg = doc.value(QLatin1String("regulatory_flow")).toArray();
+    for (const QJsonValue& e : reg) {
+        for (const QJsonValue& m :
+             e.toObject().value(QLatin1String("analytics")).toObject().value(QLatin1String("months")).toArray()) {
+            ++months;
+            count_values(m.toObject().value(QLatin1String("values")).toObject(), reg_states);
+        }
+    }
+    QHash<QString, int> rot_states;
+    int sessions = 0;
+    const QJsonArray rot = doc.value(QLatin1String("rotation_proxy")).toArray();
+    for (const QJsonValue& i : rot) {
+        for (const QJsonValue& s :
+             i.toObject().value(QLatin1String("measures")).toObject().value(QLatin1String("sessions")).toArray()) {
+            ++sessions;
+            count_values(s.toObject().value(QLatin1String("values")).toObject(), rot_states);
+        }
+    }
+    return QJsonObject{{"regulatory_entities", reg.size()},
+                       {"regulatory_months", months},
+                       {"regulatory_value_states", to_json(reg_states)},
+                       {"rotation_instruments", rot.size()},
+                       {"rotation_sessions", sessions},
+                       {"rotation_value_states", to_json(rot_states)}};
 }
 
 /// argv after `--etf-data`: the subcommand, then `--key value` pairs.
@@ -156,6 +246,8 @@ int run_etf_data_cli(int argc, char* argv[]) {
                                {"highest_registered_version", MigrationRunner::highest_registered_version()},
                                {"route_policy", QLatin1String(services::etf::kEtfRoutePolicyVersion)},
                                {"calendar_version", QLatin1String(services::etf::kUsEquityCalendarVersion)},
+                               {"regulatory_method", QLatin1String(services::etf::kRegulatoryFlowAnalyticsVersion)},
+                               {"rotation_method", QLatin1String(services::etf::kRotationProxyMeasuresVersion)},
                                // The User-Agent itself is never printed: only whether one is declared.
                                {"sec_user_agent_declared", sec.declared},
                                {"sec_min_request_interval_ms", sec.min_request_interval_ms},
@@ -182,6 +274,88 @@ int run_etf_data_cli(int argc, char* argv[]) {
             return 1;
         }
         print_json(QJsonObject{{"ok", true}, {"command", command}, {"out", out}, {"table_counts", table_counts()}});
+        return 0;
+    }
+
+    if (command == QLatin1String("derived")) {
+        // Batch C: derived values over the stored vintages. Reads only.
+        const QString out = options.value(QStringLiteral("out"));
+        if (out.isEmpty())
+            return usage(QStringLiteral("derived needs --out <file.json>"));
+        services::etf::DerivedRunRequest req;
+        const QDateTime now = QDateTime::currentDateTimeUtc();
+        req.frame.as_of = now;
+        req.frame.known_at = now;
+        if (options.contains(QStringLiteral("as-of")) &&
+            !parse_instant(options.value(QStringLiteral("as-of")), &req.frame.as_of))
+            return usage(QStringLiteral("--as-of must be an ISO-8601 instant with Z or an offset"));
+        if (options.contains(QStringLiteral("known-at")) &&
+            !parse_instant(options.value(QStringLiteral("known-at")), &req.frame.known_at))
+            return usage(QStringLiteral("--known-at must be an ISO-8601 instant with Z or an offset"));
+        for (const char* key : {"from", "to"}) {
+            if (!options.contains(QLatin1String(key)))
+                continue;
+            const QDate d = QDate::fromString(options.value(QLatin1String(key)), Qt::ISODate);
+            if (!d.isValid())
+                return usage(QStringLiteral("--from/--to must be yyyy-MM-dd"));
+            (std::strcmp(key, "from") == 0 ? req.output_from : req.output_to) = d;
+        }
+        const bool by_entity = options.contains(QStringLiteral("cik"));
+        const bool by_instrument =
+            options.contains(QStringLiteral("symbol")) || options.contains(QStringLiteral("con-id"));
+        if (options.contains(QStringLiteral("series")) && !by_entity)
+            return usage(QStringLiteral("--series needs --cik"));
+        if (by_entity || by_instrument) {
+            // Only the families of the subjects named.
+            req.regulatory = by_entity;
+            req.rotation = by_instrument;
+        }
+        if (by_entity) {
+            const QString cik10 = services::etf::sec_normalized_cik(options.value(QStringLiteral("cik")));
+            const QString series = options.value(QStringLiteral("series"));
+            if (cik10.isEmpty() || (!series.isEmpty() && !services::etf::sec_valid_series_id(series)))
+                return usage(QStringLiteral("--cik must be 1-10 digits and --series S followed by 9 digits"));
+            auto found = EtfDataRepository::instance().find_reporting_entity(cik10, series);
+            if (found.is_err() || !found.value())
+                return usage(QStringLiteral("no stored reporting entity for CIK %1 series '%2'").arg(cik10, series));
+            req.entity_id = *found.value();
+        }
+        if (by_instrument) {
+            QString why;
+            const auto id = resolve_instrument(options.value(QStringLiteral("symbol")),
+                                               options.value(QStringLiteral("con-id")), &why);
+            if (!id)
+                return usage(why);
+            req.instrument_id = *id;
+        }
+        if (options.contains(QStringLiteral("reference-symbol")) ||
+            options.contains(QStringLiteral("reference-con-id"))) {
+            QString why;
+            const auto id = resolve_instrument(options.value(QStringLiteral("reference-symbol")),
+                                               options.value(QStringLiteral("reference-con-id")), &why);
+            if (!id)
+                return usage(QStringLiteral("reference: %1").arg(why));
+            req.reference_instrument_id = *id;
+        }
+        auto doc = services::etf::run_derived_calculations(req);
+        if (doc.is_err()) {
+            print_json(
+                QJsonObject{{"ok", false}, {"command", command}, {"error", QString::fromStdString(doc.error())}});
+            return 1;
+        }
+        QSaveFile file(out);
+        if (!file.open(QIODevice::WriteOnly) ||
+            file.write(QJsonDocument(doc.value()).toJson(QJsonDocument::Indented)) < 0 || !file.commit()) {
+            print_json(QJsonObject{{"ok", false}, {"error", QStringLiteral("could not write %1").arg(out)}});
+            return 1;
+        }
+        print_json(QJsonObject{{"ok", true},
+                               {"command", command},
+                               {"out", out},
+                               {"frame", doc.value().value(QLatin1String("frame"))},
+                               {"regulatory_method", QLatin1String(services::etf::kRegulatoryFlowAnalyticsVersion)},
+                               {"rotation_method", QLatin1String(services::etf::kRotationProxyMeasuresVersion)},
+                               {"summary", derived_summary(doc.value())}});
         return 0;
     }
 

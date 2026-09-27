@@ -1,0 +1,54 @@
+// src/services/etf/EtfDerivedAnalytics.h
+//
+// ETF Capital Flows, Batch C: the entry point to derived values over the
+// stored ETF data foundation (docs/ETF_FLOW_BATCH_C_IMPLEMENTATION.md in the
+// control repository).
+//
+// It reads the append-only vintage store through EtfDataRepository and runs
+// the two calculation families, which stay apart in every respect:
+//
+//   * regulatory-flow analytics (EtfRegulatoryFlowAnalytics.h): per SEC
+//     reporting entity, monthly, measurement kind regulatory_reported_flow;
+//   * market-rotation proxy measures (EtfRotationMeasures.h): per IBKR listed
+//     instrument, per exchange session, measurement kind rotation_proxy.
+//
+// They describe different subjects (a reporting entity is not a listed
+// instrument; Batch B stores no identity link between them yet), different
+// frequencies and different measurement classes, and no value of one family
+// is ever added to, weighted with or written into the other. Calculated daily
+// creation/redemption flow has no enabled input route (D1-d): it is reported
+// as ROUTE_DISABLED and no formula is run.
+//
+// Nothing is written. A run is a pure function of the stored vintages and of
+// its time frame (as_of, known_at), both recorded in its output, so the same
+// request over the same store gives the same bytes, and a result computed
+// earlier can be recomputed exactly after new vintages arrive.
+#pragma once
+#include "core/result/Result.h"
+#include "services/etf/EtfDerivedModel.h"
+
+#include <QDate>
+#include <QJsonObject>
+
+#include <optional>
+
+namespace fincept::services::etf {
+
+struct DerivedRunRequest {
+    DerivedTimeFrame frame;
+    bool regulatory = true;                        ///< compute the regulatory-flow family
+    bool rotation = true;                          ///< compute the rotation-proxy family
+    std::optional<qint64> entity_id;               ///< only this reporting entity
+    std::optional<qint64> instrument_id;           ///< only this listed instrument
+    std::optional<qint64> reference_instrument_id; ///< the caller's declared reference for relative measures
+    QDate output_from; ///< series output bounds (the calculation always uses the full history)
+    QDate output_to;
+};
+
+/// The method block every output carries: versions, parameters, bases.
+QJsonObject derived_methods_json();
+
+/// Compute the derived values of the stored subjects. Reads only.
+Result<QJsonObject> run_derived_calculations(const DerivedRunRequest& request);
+
+} // namespace fincept::services::etf

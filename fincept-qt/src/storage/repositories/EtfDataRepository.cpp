@@ -619,6 +619,68 @@ Result<std::optional<qint64>> EtfDataRepository::find_listed_instrument(qint64 c
     return Result<std::optional<qint64>>::ok(r.value().value(0).toLongLong());
 }
 
+Result<QVector<etf_store::ReportingEntityRow>> EtfDataRepository::reporting_entities() {
+    using R = Result<QVector<etf_store::ReportingEntityRow>>;
+    auto r = db().execute("SELECT entity_id, cik, series_id, reporting_level, registrant_name, series_name FROM "
+                          "etf_reporting_entities ORDER BY entity_id");
+    if (r.is_err())
+        return R::err(r.error());
+    QVector<etf_store::ReportingEntityRow> out;
+    auto& q = r.value();
+    while (q.next()) {
+        etf_store::ReportingEntityRow row;
+        row.entity_id = q.value(0).toLongLong();
+        row.cik = q.value(1).toString();
+        row.series_id = q.value(2).toString();
+        row.reporting_level = q.value(3).toString();
+        row.registrant_name = q.value(4).toString();
+        row.series_name = q.value(5).toString();
+        out.append(row);
+    }
+    return R::ok(out);
+}
+
+Result<QVector<etf_store::ListedInstrumentRow>> EtfDataRepository::listed_instruments() {
+    using R = Result<QVector<etf_store::ListedInstrumentRow>>;
+    auto r = db().execute("SELECT instrument_id, ibkr_con_id, symbol, primary_exchange, currency FROM "
+                          "etf_listed_instruments ORDER BY instrument_id");
+    if (r.is_err())
+        return R::err(r.error());
+    QVector<etf_store::ListedInstrumentRow> out;
+    auto& q = r.value();
+    while (q.next()) {
+        etf_store::ListedInstrumentRow row;
+        row.instrument_id = q.value(0).toLongLong();
+        row.con_id = q.value(1).toLongLong();
+        row.symbol = q.value(2).toString();
+        row.primary_exchange = q.value(3).toString();
+        row.currency = q.value(4).toString();
+        out.append(row);
+    }
+    for (etf_store::ListedInstrumentRow& row : out) {
+        auto s = db().execute("SELECT symbol FROM etf_instrument_symbols WHERE instrument_id = ? ORDER BY "
+                              "first_seen_at, symbol",
+                              {row.instrument_id});
+        if (s.is_err())
+            return R::err(s.error());
+        while (s.value().next())
+            row.symbols.append(s.value().value(0).toString());
+    }
+    return R::ok(out);
+}
+
+Result<QVector<qint64>> EtfDataRepository::find_listed_instruments_by_symbol(const QString& symbol) {
+    auto r = db().execute("SELECT DISTINCT instrument_id FROM etf_instrument_symbols WHERE symbol = ? ORDER BY "
+                          "instrument_id",
+                          {etf_text(symbol)});
+    if (r.is_err())
+        return Result<QVector<qint64>>::err(r.error());
+    QVector<qint64> out;
+    while (r.value().next())
+        out.append(r.value().value(0).toLongLong());
+    return Result<QVector<qint64>>::ok(out);
+}
+
 Result<QJsonObject> EtfDataRepository::export_all() {
     struct TableOrder {
         const char* table;
