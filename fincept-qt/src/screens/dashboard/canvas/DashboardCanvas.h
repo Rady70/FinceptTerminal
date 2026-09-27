@@ -1,6 +1,7 @@
 #pragma once
 #include "screens/dashboard/canvas/GridLayout.h"
 #include "screens/dashboard/canvas/PlaceholderOverlay.h"
+#include "screens/dashboard/canvas/ResponsiveLayout.h"
 #include "screens/dashboard/canvas/WidgetTile.h"
 #include "ui/theme/ThemeTokens.h"
 
@@ -19,6 +20,10 @@ class DashboardCanvas : public QWidget {
 
     void load_layout(const GridLayout& layout);
     GridLayout current_layout() const { return layout_; }
+    /// The arrangement to persist. While a narrow responsive view is active
+    /// this is the saved canonical arrangement (current row height, margins
+    /// and per-instance config), never the compacted view on screen.
+    GridLayout canonical_layout() const;
     void apply_template(const QString& template_id);
     void add_widget(const QString& widget_type_id);
     void remove_widget(const QString& instance_id);
@@ -56,6 +61,12 @@ class DashboardCanvas : public QWidget {
     WidgetTile* tile_for_id(const QString& instance_id) const;
     GridItem* item_for_id(const QString& instance_id);
 
+    /// Switch the rendered grid to `target_cols`. Narrowing derives a view
+    /// from the canonical arrangement; widening restores it exactly.
+    void apply_responsive_cols(int target_cols);
+    /// The responsive column count for the canvas' current width.
+    int responsive_target_cols() const;
+
     GridLayout layout_;
     QVector<WidgetTile*> tiles_;
     PlaceholderOverlay* placeholder_ = nullptr;
@@ -69,6 +80,10 @@ class DashboardCanvas : public QWidget {
     // Resize state
     WidgetTile* resizing_tile_ = nullptr;
     GridCell resize_origin_cell_;
+    // Pointer position relative to the origin tile's bottom-right corner, so a
+    // gesture that restores canonical geometry mid-flight resizes by the
+    // pointer's movement only (see resize_pointer_offset in GridLayout.h).
+    QPoint resize_pointer_offset_;
     GridLayout pre_resize_layout_;
 
     // Auto-scroll during drag
@@ -81,9 +96,11 @@ class DashboardCanvas : public QWidget {
     QTimer* resize_timer_ = nullptr;
     int pending_resize_w_ = 0;
 
-    // The column count the user last explicitly set (via load/apply/drag).
-    // Responsive shrink is allowed, but we restore this when width permits.
-    int canonical_cols_ = 12;
+    // Canonical (design) arrangement versus the narrow view on screen.
+    // Geometry edits always run against the canonical arrangement, so no edit
+    // made while narrow can persist the derived view or reinterpret its
+    // coordinates at the design width.
+    ResponsiveLayoutState layout_state_;
 
     fincept::ui::ThemeTokens tokens_{};
 };

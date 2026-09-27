@@ -32,6 +32,9 @@ class QuoteTableWidget : public BaseWidget {
     void on_theme_changed() override;
     void showEvent(QShowEvent* e) override;
     void hideEvent(QHideEvent* e) override;
+    /// Keep the four reading columns inside the tile on every resize — the
+    /// fixed pixel widths clipped CHG% on narrow tiles.
+    void resizeEvent(QResizeEvent* e) override;
 
     /// Re-apply BaseWidget chrome + this widget's own table headers when the
     /// UI language changes. Title is caller-supplied (constructor param) so it
@@ -40,6 +43,8 @@ class QuoteTableWidget : public BaseWidget {
 
   private:
     void apply_styles();
+    /// Divide the table viewport between the columns proportionally.
+    void fit_columns();
 
     /// Hub path: subscribe to every symbol's quote topic and apply updates
     /// into the row cache + redraw. Called from showEvent.

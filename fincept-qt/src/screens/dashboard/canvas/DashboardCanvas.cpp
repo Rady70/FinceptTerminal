@@ -52,23 +52,14 @@ DashboardCanvas::DashboardCanvas(QWidget* parent) : QWidget(parent) {
         if (w <= 0)
             return;
 
-        // Restore to canonical columns if width now permits it — user's layout
-        // should snap back when they expand the panel again.
-        const int target_cols = (w >= 1000)  ? canonical_cols_
-                                : (w >= 600) ? std::min(canonical_cols_, 9)
-                                             : std::min(canonical_cols_, 6);
-
-        if (target_cols != layout_.cols) {
-            layout_.cols = target_cols;
-            for (auto& item : layout_.items) {
-                item.cell.w = std::min(item.cell.w, layout_.cols);
-                item.cell.x = std::min(item.cell.x, layout_.cols - item.cell.w);
-            }
-            layout_.items = compact_vertical(layout_.items);
-        }
-
-        if (!dragging_tile_ && !resizing_tile_)
+        // Restore to canonical columns if width now permits it — the user's
+        // saved arrangement must snap back when they expand the panel again.
+        // Skipped mid-gesture: a drag/resize edits the canonical arrangement
+        // already, and the release handler re-derives the view.
+        if (!dragging_tile_ && !resizing_tile_) {
+            apply_responsive_cols(responsive_target_cols());
             reflow_tiles();
+        }
         update_canvas_height();
     });
 }
@@ -86,15 +77,20 @@ void DashboardCanvas::load_layout(const GridLayout& layout) {
         t->deleteLater();
     tiles_.clear();
     layout_ = layout;
+    layout_state_.reset(layout_);
 
-    // Record the canonical column count from the saved layout — this is what
-    // the user designed for. Responsive shrink is allowed on narrow viewports
-    // but we restore to this when the panel expands back to full width.
-    canonical_cols_ = layout_.cols > 0 ? layout_.cols : 12;
+    // The saved column count is the design width. Responsive shrink is
+    // allowed on narrow viewports but the canvas restores this when the panel
+    // expands back to full width.
+    layout_.cols = layout_state_.canonical_cols();
 
-    // Apply responsive columns for current width without clamping canonical_cols_
-    if (width() > 0)
-        layout_.cols = responsive_cols(width());
+    // Apply responsive columns for current width without touching the saved
+    // arrangement (apply_responsive_cols keeps the canonical copy).
+    if (width() > 0) {
+        const int initial_cols = responsive_cols(width());
+        if (initial_cols < layout_state_.canonical_cols())
+            apply_responsive_cols(initial_cols);
+    }
 
     // Preserve unknown entries losslessly in layout_. They may belong to a
     // feature removed from this build, and merely opening the Dashboard must
@@ -129,7 +125,6 @@ void DashboardCanvas::apply_template(const QString& template_id) {
         if (t.id == template_id) {
             GridLayout layout;
             layout.cols = 12; // templates are designed for 12 columns
-            canonical_cols_ = 12;
             layout.row_h = layout_.row_h;
             layout.margin = layout_.margin;
             for (auto item : t.items) {
@@ -156,6 +151,10 @@ void DashboardCanvas::add_widget(const QString& widget_type_id) {
     if (!meta)
         return;
 
+    // A geometry edit runs against the design arrangement; the narrow view is
+    // re-derived once the edit is committed (see ResponsiveLayout.h).
+    layout_ = layout_state_.begin_edit(layout_);
+
     GridItem item;
     item.id = widget_type_id;
     item.instance_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -170,11 +169,13 @@ void DashboardCanvas::add_widget(const QString& widget_type_id) {
         // Never leave a GridItem behind for a widget that failed to construct —
         // that produced an invisible tile that still reserved grid space.
         LOG_WARN("Canvas", QString("Factory returned null for widget type: %1").arg(widget_type_id));
+        layout_ = layout_state_.end_edit(layout_, responsive_target_cols()); // nothing changed; redisplay
         return;
     }
 
     layout_.items.append(item);
     layout_.items = compact_vertical(layout_.items);
+    layout_ = layout_state_.end_edit(layout_, responsive_target_cols());
 
     auto* tile = new WidgetTile(item.instance_id, widget, this);
     connect_tile(tile);
@@ -188,6 +189,10 @@ void DashboardCanvas::add_widget(const QString& widget_type_id) {
 }
 
 void DashboardCanvas::remove_widget(const QString& instance_id) {
+    // A geometry edit runs against the design arrangement; the narrow view is
+    // re-derived once the edit is committed.
+    layout_ = layout_state_.begin_edit(layout_);
+
     auto it = std::find_if(layout_.items.begin(), layout_.items.end(),
                            [&](const GridItem& i) { return i.instance_id == instance_id; });
     if (it != layout_.items.end())
@@ -200,6 +205,7 @@ void DashboardCanvas::remove_widget(const QString& instance_id) {
     }
 
     layout_.items = compact_vertical(layout_.items);
+    layout_ = layout_state_.end_edit(layout_, responsive_target_cols());
     reflow_tiles(true);
     update_canvas_height();
     emit widget_count_changed(tiles_.size());
@@ -216,6 +222,15 @@ void DashboardCanvas::set_row_height(int px) {
 // ── Drag handling (swap on collision) ─────────────────────────────────────────
 
 void DashboardCanvas::on_drag_started(WidgetTile* tile, QPoint canvas_pos) {
+    // A geometry gesture edits the design arrangement. While a responsive view
+    // is on screen, restore it first so every drag coordinate is canonical;
+    // the view is re-derived on release. reflow_tiles() moves the tiles before
+    // the offset is measured so the dragged tile stays under the cursor.
+    if (layout_state_.view_active()) {
+        layout_ = layout_state_.begin_edit(layout_);
+        reflow_tiles();
+    }
+
     dragging_tile_ = tile;
     drag_offset_ = canvas_pos - tile->pos();
     pre_drag_layout_ = layout_;
@@ -296,6 +311,9 @@ void DashboardCanvas::on_drag_released(WidgetTile* tile, QPoint /*canvas_pos*/) 
         }
     }
     layout_.items = compact_vertical(layout_.items);
+    // The edit is canonical; redisplay the view for the current width (no-op
+    // when the gesture ran at the design width).
+    layout_ = layout_state_.end_edit(layout_, responsive_target_cols());
 
     dragging_tile_ = nullptr;
     tile->set_dragging(false);
@@ -307,7 +325,14 @@ void DashboardCanvas::on_drag_released(WidgetTile* tile, QPoint /*canvas_pos*/) 
 
 // ── Resize handling (push-down, reflows ALL tiles) ────────────────────────────
 
-void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint /*canvas_pos*/) {
+void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint canvas_pos) {
+    // Like a drag: a resize edits the design arrangement, and a responsive
+    // view is restored first so the resize anchors are canonical.
+    if (layout_state_.view_active()) {
+        layout_ = layout_state_.begin_edit(layout_);
+        reflow_tiles();
+    }
+
     resizing_tile_ = tile;
     pre_resize_layout_ = layout_;
 
@@ -318,6 +343,12 @@ void DashboardCanvas::on_resize_started(WidgetTile* tile, QPoint /*canvas_pos*/)
     // Initialize ghost to current cell so first move doesn't snap
     ghost_cell_ = resize_origin_cell_;
 
+    // The pointer is wherever the view tile's grip was; map it into the
+    // canonical frame so the first move resizes by its movement delta only
+    // instead of reading the old edge as a much wider canonical cell.
+    const QRect origin_rect = grid_to_rect(resize_origin_cell_, layout_.cols, width(), layout_.row_h, layout_.margin);
+    resize_pointer_offset_ = resize_pointer_offset(origin_rect, canvas_pos);
+
     tile->set_resizing(true);
     update_placeholder(resize_origin_cell_);
 }
@@ -326,32 +357,12 @@ void DashboardCanvas::on_resize_moved(WidgetTile* tile, QPoint canvas_pos) {
     if (!resizing_tile_ || resizing_tile_ != tile)
         return;
 
-    int col_w = (width() - layout_.margin * (layout_.cols + 1)) / layout_.cols;
-    if (col_w <= 0)
-        return;
-
-    // canvas_pos is now computed from global screen coordinates in WidgetTile,
-    // so it's stable even if the tile gets repositioned by setGeometry.
-    // Compute tile origin from the fixed origin cell (doesn't change during resize).
-    int tile_px_x = layout_.margin + resize_origin_cell_.x * (col_w + layout_.margin);
-    int tile_px_y = layout_.margin + resize_origin_cell_.y * (layout_.row_h + layout_.margin);
-
-    int new_px_w = canvas_pos.x() - tile_px_x;
-    int new_px_h = canvas_pos.y() - tile_px_y;
-
-    // Convert pixel delta to grid columns/rows.
-    // Use truncation (not rounding) so the cell only grows when the mouse
-    // has clearly crossed the midpoint of the next column/row. This prevents
-    // the widget from shrinking on the initial click.
-    int new_w = std::max(1, (new_px_w + col_w + layout_.margin / 2) / (col_w + layout_.margin));
-    int new_h = std::max(1, (new_px_h + layout_.row_h + layout_.margin / 2) / (layout_.row_h + layout_.margin));
-
-    new_w = std::max(resize_origin_cell_.min_w, std::min(new_w, layout_.cols - resize_origin_cell_.x));
-    new_h = std::max(resize_origin_cell_.min_h, new_h);
-
-    GridCell target = resize_origin_cell_;
-    target.w = new_w;
-    target.h = new_h;
+    // canvas_pos is computed from global screen coordinates in WidgetTile, so
+    // it is stable even if the tile gets repositioned by setGeometry. The
+    // offset puts it in the frame of the canonical origin cell.
+    const QPoint pointer = canvas_pos - resize_pointer_offset_;
+    const GridCell target = resize_target_from_pointer(resize_origin_cell_, pointer.x(), pointer.y(), layout_.cols,
+                                                       width(), layout_.row_h, layout_.margin);
 
     // Early-out: skip expensive collision resolution if nothing changed
     if (target == ghost_cell_)
@@ -406,6 +417,8 @@ void DashboardCanvas::on_resize_released(WidgetTile* tile) {
     moving.cell = ghost_cell_;
     layout_.items = resolve_collisions(layout_.items, moving);
     layout_.items = compact_vertical(layout_.items);
+    // The edit is canonical; redisplay the view for the current width.
+    layout_ = layout_state_.end_edit(layout_, responsive_target_cols());
 
     resizing_tile_ = nullptr;
     tile->set_resizing(false);
@@ -513,6 +526,26 @@ void DashboardCanvas::paintEvent(QPaintEvent* event) {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+void DashboardCanvas::apply_responsive_cols(int target_cols) {
+    if (target_cols <= 0 || target_cols == layout_.cols)
+        return;
+    layout_ = layout_state_.apply_view(layout_, target_cols);
+}
+
+int DashboardCanvas::responsive_target_cols() const {
+    const int w = width();
+    const int canonical = layout_state_.canonical_cols();
+    if (w >= 1000)
+        return canonical;
+    if (w >= 600)
+        return std::min(canonical, 9);
+    return std::min(canonical, 6);
+}
+
+GridLayout DashboardCanvas::canonical_layout() const {
+    return layout_state_.for_save(layout_);
+}
 
 void DashboardCanvas::reflow_tiles(bool animate) {
     if (width() <= 0)

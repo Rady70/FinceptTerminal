@@ -5,6 +5,10 @@
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
+#include <QHeaderView>
+#include <QResizeEvent>
+
+#include <algorithm>
 #include <cmath>
 
 namespace fincept::screens::widgets {
@@ -20,6 +24,7 @@ QuoteTableWidget::QuoteTableWidget(const QString& title, const QStringList& symb
     table_->set_headers({tr("SYMBOL"), tr("PRICE"), tr("CHG"), tr("CHG%")});
     table_->set_column_widths({130, 100, 80, 70});
     content_layout()->addWidget(table_);
+    fit_columns();
 
     connect(this, &BaseWidget::refresh_requested, this, &QuoteTableWidget::refresh_data);
 
@@ -33,6 +38,12 @@ void QuoteTableWidget::apply_styles() {
 
 void QuoteTableWidget::on_theme_changed() {
     apply_styles();
+    // Re-derive the font from the theme before re-fitting: fit_columns() may
+    // have set a smaller table font, and a theme font change must win.
+    if (table_) {
+        table_->setFont(font());
+        fit_columns();
+    }
 }
 
 void QuoteTableWidget::retranslateUi() {
@@ -45,12 +56,66 @@ void QuoteTableWidget::showEvent(QShowEvent* e) {
     BaseWidget::showEvent(e);
     if (!hub_active_)
         hub_subscribe_all();
+    fit_columns(); // a tile that was hidden while narrow has no resize event to catch
 }
 
 void QuoteTableWidget::hideEvent(QHideEvent* e) {
     BaseWidget::hideEvent(e);
     if (hub_active_)
         hub_unsubscribe_all();
+}
+
+void QuoteTableWidget::resizeEvent(QResizeEvent* e) {
+    BaseWidget::resizeEvent(e);
+    fit_columns();
+}
+
+void QuoteTableWidget::fit_columns() {
+    if (!table_ || table_->columnCount() < 4)
+        return;
+    const int avail = table_->viewport()->width();
+    if (avail <= 0)
+        return;
+
+    auto* header = table_->horizontalHeader();
+    // Widths are managed here; the generic DataTable stretches its last
+    // section, which would fight the readings column below.
+    header->setStretchLastSection(false);
+
+    // Qt's own content sizing: the delegate measures the rendered font
+    // (including the global stylesheet font) and the item padding, so the
+    // fixed widths (130+100+80+70) no longer push CHG% off a narrow tile and
+    // the measured widths no longer under-count the actual glyphs.
+    auto numeric_width = [&]() {
+        int total = 0;
+        for (int c = 1; c < 4; ++c)
+            total += table_->columnWidth(c);
+        return total;
+    };
+
+    const QFont base = font();
+    QFont fitted = base;
+    table_->setFont(fitted);
+    table_->resizeColumnsToContents();
+
+    // Each candidate is derived from the base font, never from the previous
+    // candidate — scaling the already-scaled font compounded to ~44% of the
+    // theme size — and the size is floored at a readable minimum.
+    constexpr int kMaxSteps = 4; // 0.95, 0.90, 0.85, 0.80
+    for (int step = 1; step <= kMaxSteps && numeric_width() + header->minimumSectionSize() > avail; ++step) {
+        // The three readings cannot share the tile at the theme font size;
+        // step the font down until they can, then let the symbol column take
+        // whatever width remains.
+        fitted = base;
+        const qreal scale = 1.0 - 0.05 * step;
+        if (fitted.pointSizeF() > 0)
+            fitted.setPointSizeF(std::max(8.0, fitted.pointSizeF() * scale));
+        else
+            fitted.setPixelSize(std::max(8, static_cast<int>(std::round(fitted.pixelSize() * scale))));
+        table_->setFont(fitted);
+        table_->resizeColumnsToContents();
+    }
+    table_->setColumnWidth(0, std::max(header->minimumSectionSize(), avail - numeric_width()));
 }
 
 void QuoteTableWidget::refresh_data() {
@@ -121,6 +186,9 @@ void QuoteTableWidget::render_from_cache() {
         table_->set_cell_color(row, 2, move_color(q.has_change, q.change));
         table_->set_cell_color(row, 3, move_color(q.has_change_pct, q.change_pct));
     }
+    // A vertical scrollbar can appear once the rows arrive and shave width off
+    // the viewport; re-fit after the fill so all four columns stay visible.
+    fit_columns();
 }
 
 } // namespace fincept::screens::widgets

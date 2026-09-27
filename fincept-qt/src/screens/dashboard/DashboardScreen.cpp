@@ -406,7 +406,7 @@ void DashboardScreen::save_layout() {
         return;
     }
 
-    GridLayout layout = canvas_->current_layout();
+    GridLayout layout = canvas_->canonical_layout();
 
     // Serialize: magic+version, cols, row_h, margin, item count, then each item
     // (including its per-instance config — dropping it reverted every configured

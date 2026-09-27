@@ -325,7 +325,7 @@ std::vector<ToolDef> get_dashboard_tools() {
                     resolve(ToolResult::fail("Dashboard not open"));
                     return;
                 }
-                auto layout = canvas->current_layout();
+                auto layout = canvas->canonical_layout();
                 auto r =
                     DashboardLayoutRepository::instance().save_layout(layout, args["profile_name"].toString("default"));
                 if (r.is_err()) {
@@ -442,14 +442,14 @@ std::vector<ToolDef> get_dashboard_tools() {
 
                 // Snapshot existing instance_ids so we can identify the new one.
                 QSet<QString> before;
-                for (const auto& it : canvas->current_layout().items)
+                for (const auto& it : canvas->canonical_layout().items)
                     before.insert(it.instance_id);
 
                 canvas->add_widget(type_id);
 
                 // Diff to find the newly-added instance.
                 QString new_id;
-                auto after = canvas->current_layout();
+                auto after = canvas->canonical_layout();
                 for (const auto& it : after.items) {
                     if (!before.contains(it.instance_id)) {
                         new_id = it.instance_id;
@@ -461,7 +461,10 @@ std::vector<ToolDef> get_dashboard_tools() {
                     return;
                 }
 
-                // Apply optional cell overrides + config by mutating layout, then reload.
+                // Apply optional cell overrides + config by mutating the
+                // canonical arrangement, then reload. Reading the responsive
+                // view here would promote a narrow view to the saved layout;
+                // load_layout() re-derives the view for the current width.
                 const QJsonObject cfg = args["config"].toObject();
                 const int x = args["x"].toInt(-1);
                 const int y = args["y"].toInt(-1);
@@ -470,7 +473,7 @@ std::vector<ToolDef> get_dashboard_tools() {
                 const bool cell_override = (x >= 0 || y >= 0 || w > 0 || h > 0);
 
                 if (cell_override || !cfg.isEmpty()) {
-                    auto layout = canvas->current_layout();
+                    auto layout = canvas->canonical_layout();
                     for (auto& it : layout.items) {
                         if (it.instance_id != new_id)
                             continue;
@@ -559,7 +562,9 @@ std::vector<ToolDef> get_dashboard_tools() {
                     return;
                 }
                 const QString id = args["instance_id"].toString();
-                auto layout = canvas->current_layout();
+                // Move the tile in the canonical arrangement, not the
+                // responsive view (see the add tool's note above).
+                auto layout = canvas->canonical_layout();
                 bool found = false;
                 for (auto& it : layout.items) {
                     if (it.instance_id != id)
@@ -610,7 +615,9 @@ std::vector<ToolDef> get_dashboard_tools() {
                     return;
                 }
                 const QString id = args["instance_id"].toString();
-                auto layout = canvas->current_layout();
+                // Resize the tile in the canonical arrangement, not the
+                // responsive view (see the add tool's note above).
+                auto layout = canvas->canonical_layout();
                 bool found = false;
                 for (auto& it : layout.items) {
                     if (it.instance_id != id)
@@ -696,8 +703,11 @@ std::vector<ToolDef> get_dashboard_tools() {
                 const QJsonObject cfg = args["config"].toObject();
                 tile->content_widget()->apply_config(cfg);
 
-                // Also persist into the layout's GridItem.config so save/load round-trips.
-                auto layout = canvas->current_layout();
+                // Also persist into the canonical layout's GridItem.config so
+                // save/load round-trips. A configuration-only write must not
+                // redefine the geometry: reading the responsive view here would
+                // turn the narrow view into the saved arrangement.
+                auto layout = canvas->canonical_layout();
                 for (auto& it : layout.items) {
                     if (it.instance_id == id) {
                         it.config = cfg;
