@@ -93,18 +93,25 @@ void QuoteTableWidget::fit_columns() {
         return total;
     };
 
-    QFont fitted = font();
+    const QFont base = font();
+    QFont fitted = base;
     table_->setFont(fitted);
     table_->resizeColumnsToContents();
-    for (int step = 1; step <= 5 && numeric_width() + header->minimumSectionSize() > avail; ++step) {
+
+    // Each candidate is derived from the base font, never from the previous
+    // candidate — scaling the already-scaled font compounded to ~44% of the
+    // theme size — and the size is floored at a readable minimum.
+    constexpr int kMaxSteps = 4; // 0.95, 0.90, 0.85, 0.80
+    for (int step = 1; step <= kMaxSteps && numeric_width() + header->minimumSectionSize() > avail; ++step) {
         // The three readings cannot share the tile at the theme font size;
         // step the font down until they can, then let the symbol column take
         // whatever width remains.
+        fitted = base;
         const qreal scale = 1.0 - 0.05 * step;
         if (fitted.pointSizeF() > 0)
-            fitted.setPointSizeF(fitted.pointSizeF() * scale);
+            fitted.setPointSizeF(std::max(8.0, fitted.pointSizeF() * scale));
         else
-            fitted.setPixelSize(std::max(8, static_cast<int>(fitted.pixelSize() * scale)));
+            fitted.setPixelSize(std::max(8, static_cast<int>(std::round(fitted.pixelSize() * scale))));
         table_->setFont(fitted);
         table_->resizeColumnsToContents();
     }

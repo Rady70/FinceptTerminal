@@ -335,12 +335,14 @@ fincept_add_test(tst_cftc_monitor
 fincept_add_test(tst_cftc_monitor_visual
     tst_cftc_monitor_visual.cpp)
 
-# MarketLab: the dashboard's responsive-column view
-# (screens/dashboard/canvas/GridLayout.h): a narrow pane derives its view from
-# the saved arrangement instead of compacting the saved cells in place, so
-# widening the pane restores the saved arrangement exactly and no save can
-# persist a compacted view. Pins the six-widget arrangement a startup shrink
-# previously scrambled. Header-only over Qt Core; no app sources.
+# MarketLab: the dashboard's canonical/responsive layout state
+# (screens/dashboard/canvas/ResponsiveLayout.h over GridLayout.h): a narrow
+# pane derives its view from the saved arrangement, widening restores it
+# exactly, and a geometry edit made while narrow edits the canonical
+# arrangement — so no save can persist a compacted view and a config-only
+# change cannot redefine the geometry. Pins the six-widget arrangement a
+# startup shrink previously scrambled. Header-only over Qt Core; no app
+# sources.
 fincept_add_test(tst_dashboard_layout
     tst_dashboard_layout.cpp)
 

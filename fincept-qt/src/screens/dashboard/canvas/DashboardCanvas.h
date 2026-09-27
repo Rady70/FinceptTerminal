@@ -1,6 +1,7 @@
 #pragma once
 #include "screens/dashboard/canvas/GridLayout.h"
 #include "screens/dashboard/canvas/PlaceholderOverlay.h"
+#include "screens/dashboard/canvas/ResponsiveLayout.h"
 #include "screens/dashboard/canvas/WidgetTile.h"
 #include "ui/theme/ThemeTokens.h"
 
@@ -60,12 +61,11 @@ class DashboardCanvas : public QWidget {
     WidgetTile* tile_for_id(const QString& instance_id) const;
     GridItem* item_for_id(const QString& instance_id);
 
-    /// Switch the rendered grid to `target_cols`. Narrowing keeps a copy of
-    /// the canonical arrangement and renders a derived view; widening back to
-    /// canonical_cols_ restores that copy exactly.
+    /// Switch the rendered grid to `target_cols`. Narrowing derives a view
+    /// from the canonical arrangement; widening restores it exactly.
     void apply_responsive_cols(int target_cols);
-    /// Drop the remembered canonical arrangement — a user edit supersedes it.
-    void forget_canonical_layout();
+    /// The responsive column count for the canvas' current width.
+    int responsive_target_cols() const;
 
     GridLayout layout_;
     QVector<WidgetTile*> tiles_;
@@ -92,15 +92,11 @@ class DashboardCanvas : public QWidget {
     QTimer* resize_timer_ = nullptr;
     int pending_resize_w_ = 0;
 
-    // The column count the user last explicitly set (via load/apply/drag).
-    // Responsive shrink is allowed, but we restore this when width permits.
-    int canonical_cols_ = 12;
-
-    // Snapshot of the saved arrangement taken before the first responsive
-    // shrink. It is the source of every narrow view, so widening the pane
-    // restores the user's layout instead of persisting a compacted one.
-    GridLayout canonical_layout_;
-    bool canonical_saved_ = false;
+    // Canonical (design) arrangement versus the narrow view on screen.
+    // Geometry edits always run against the canonical arrangement, so no edit
+    // made while narrow can persist the derived view or reinterpret its
+    // coordinates at the design width.
+    ResponsiveLayoutState layout_state_;
 
     fincept::ui::ThemeTokens tokens_{};
 };
