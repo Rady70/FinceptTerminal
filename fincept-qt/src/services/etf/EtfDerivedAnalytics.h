@@ -19,10 +19,15 @@
 // creation/redemption flow has no enabled input route (D1-d): it is reported
 // as ROUTE_DISABLED and no formula is run.
 //
-// Nothing is written. A run is a pure function of the stored vintages and of
-// its time frame (as_of, known_at), both recorded in its output, so the same
-// request over the same store gives the same bytes, and a result computed
-// earlier can be recomputed exactly after new vintages arrive.
+// Nothing is written. A run is a pure function of its request and time frame
+// (as_of, known_at), both recorded in its output, and of what the store had
+// recorded by known_at: the subjects, their tickers and identity links, and
+// the vintages (used only once available at as_of). Names, exchange and
+// currency are rewritten in place by later sightings, so no earlier value of
+// them exists and the output leaves them out. The same request over the same
+// store therefore gives the same bytes, and a result computed earlier is
+// recomputed exactly after the store grows (for the persisted session rows,
+// which carry no recording time, see EtfRotationMeasures.h).
 #pragma once
 #include "core/result/Result.h"
 #include "services/etf/EtfDerivedModel.h"
@@ -48,7 +53,9 @@ struct DerivedRunRequest {
 /// The method block every output carries: versions, parameters, bases.
 QJsonObject derived_methods_json();
 
-/// Compute the derived values of the stored subjects. Reads only.
+/// Compute the derived values of the subjects recorded by the knowledge
+/// cutoff. Reads only. A requested entity, instrument or reference that was
+/// not recorded by then is an error, not an empty result.
 Result<QJsonObject> run_derived_calculations(const DerivedRunRequest& request);
 
 } // namespace fincept::services::etf

@@ -27,7 +27,6 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QString>
-#include <QStringList>
 #include <QVector>
 
 #include <optional>
@@ -163,24 +162,40 @@ enum class ObservationOutcome {
 
 const char* observation_outcome_id(ObservationOutcome o);
 
+// The Batch C derived-value reads return only what a knowledge cutoff can
+// reproduce: identity that never changes once stored, each dated by its own
+// first sighting. Names, exchange and currency are rewritten in place by later
+// sightings (no history is kept), so they are not read here.
+
 /// A stored SEC reporting entity, for the Batch C derived-value reads.
 struct ReportingEntityRow {
     qint64 entity_id = 0;
     QString cik;
     QString series_id; ///< empty for a registrant that reports without a series
     QString reporting_level;
-    QString registrant_name;
-    QString series_name;
+    QDateTime first_seen_at;
 };
 
-/// A stored IBKR listed instrument with every ticker seen for it, oldest first.
+/// One ticker of a listed instrument, dated by its first sighting.
+struct InstrumentSymbolRow {
+    QString symbol;
+    QDateTime first_seen_at;
+};
+
+/// A stored IBKR listed instrument with the tickers recorded for it by the
+/// cutoff, oldest first. A ticker is an attribute, never the identity.
 struct ListedInstrumentRow {
     qint64 instrument_id = 0;
     qint64 con_id = 0;
-    QString symbol; ///< the latest ticker; an attribute, never the identity
-    QString primary_exchange;
-    QString currency;
-    QStringList symbols;
+    QDateTime first_seen_at;
+    QVector<InstrumentSymbolRow> symbols;
+};
+
+/// The lineage of one stored N-PORT filing (never changes once stored).
+struct SecFilingLineageRow {
+    QString accession;
+    QString form;
+    QString amends_accession;
 };
 
 } // namespace etf_store
@@ -254,13 +269,26 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
     Result<std::optional<qint64>> find_listed_instrument(qint64 con_id);
 
     // ── Reads for derived values (Batch C; read only) ────────────────────────
-    /// Every stored reporting entity, by entity id.
-    Result<QVector<etf_store::ReportingEntityRow>> reporting_entities();
-    /// Every stored listed instrument, by instrument id, with its tickers.
-    Result<QVector<etf_store::ListedInstrumentRow>> listed_instruments();
-    /// The instruments that have carried `symbol` at any time. A ticker is not
+    // Each takes the knowledge cutoff `known_at`: a subject, ticker or link
+    // recorded after it does not exist for the read, so a result recomputed
+    // for an earlier cutoff does not change when the store grows.
+    /// The reporting entities first recorded by `known_at`, by entity id.
+    Result<QVector<etf_store::ReportingEntityRow>> reporting_entities(const QDateTime& known_at);
+    /// The listed instruments first recorded by `known_at`, by instrument id,
+    /// each with the tickers recorded for it by then.
+    Result<QVector<etf_store::ListedInstrumentRow>> listed_instruments(const QDateTime& known_at);
+    /// The instruments that had carried `symbol` by `known_at`. A ticker is not
     /// an identity: more than one id means the ticker alone is ambiguous.
-    Result<QVector<qint64>> find_listed_instruments_by_symbol(const QString& symbol);
+    Result<QVector<qint64>> find_listed_instruments_by_symbol(const QString& symbol, const QDateTime& known_at);
+    /// nport_link_relationship as of `known_at`: the most recently declared
+    /// link whose declaration time is at or before it.
+    Result<std::optional<services::etf::LinkRelationship>> nport_link_relationship_known_at(qint64 instrument_id,
+                                                                                            const QDateTime& known_at);
+    /// The persisted session rows of one calendar version, by date.
+    Result<QVector<services::etf::MarketSessionDay>> market_sessions(const QString& calendar_id,
+                                                                     const QString& calendar_version);
+    /// The lineage of every stored filing of one reporting entity.
+    Result<QVector<etf_store::SecFilingLineageRow>> sec_filing_lineage(qint64 entity_id);
 
     /// Every ETF table, every row, in primary-key order, as JSON. Deterministic;
     /// NULL stays JSON null. Used to reload and compare state across restarts.

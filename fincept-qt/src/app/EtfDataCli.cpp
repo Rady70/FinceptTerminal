@@ -28,6 +28,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <utility>
 
 namespace fincept::marketlab {
 
@@ -70,22 +71,27 @@ bool parse_instant(const QString& text, QDateTime* out) {
     return true;
 }
 
-/// One listed instrument named by ticker or conId, or why it cannot be.
-std::optional<qint64> resolve_instrument(const QString& symbol, const QString& con_id, QString* why) {
+/// One listed instrument named by ticker or conId (exactly one of the two),
+/// as recorded by the knowledge cutoff, or why it cannot be.
+std::optional<qint64> resolve_instrument(const QString& symbol, const QString& con_id, const QDateTime& known_at,
+                                         QString* why) {
     auto& repo = EtfDataRepository::instance();
     if (!con_id.isEmpty()) {
         bool ok = false;
         const qint64 id = con_id.toLongLong(&ok);
-        auto found = ok ? repo.find_listed_instrument(id) : Result<std::optional<qint64>>::err("not a number");
-        if (found.is_err() || !found.value()) {
-            *why = QStringLiteral("no stored listed instrument has conId '%1'").arg(con_id);
-            return std::nullopt;
+        auto instruments = repo.listed_instruments(known_at);
+        if (ok && instruments.is_ok()) {
+            for (const etf_store::ListedInstrumentRow& row : instruments.value()) {
+                if (row.con_id == id)
+                    return row.instrument_id;
+            }
         }
-        return *found.value();
+        *why = QStringLiteral("no listed instrument with conId '%1' was recorded by the knowledge cutoff").arg(con_id);
+        return std::nullopt;
     }
-    auto ids = repo.find_listed_instruments_by_symbol(symbol.trimmed().toUpper());
+    auto ids = repo.find_listed_instruments_by_symbol(symbol.trimmed().toUpper(), known_at);
     if (ids.is_err() || ids.value().isEmpty()) {
-        *why = QStringLiteral("no stored listed instrument has carried the ticker '%1'").arg(symbol);
+        *why = QStringLiteral("no listed instrument had carried the ticker '%1' by the knowledge cutoff").arg(symbol);
         return std::nullopt;
     }
     if (ids.value().size() > 1) {
@@ -279,6 +285,28 @@ int run_etf_data_cli(int argc, char* argv[]) {
 
     if (command == QLatin1String("derived")) {
         // Batch C: derived values over the stored vintages. Reads only.
+        // An option this command does not know is refused, not ignored: a
+        // mistyped --known-at would otherwise silently mean "now".
+        static const QStringList kDerivedOptions = {QStringLiteral("out"),
+                                                    QStringLiteral("as-of"),
+                                                    QStringLiteral("known-at"),
+                                                    QStringLiteral("from"),
+                                                    QStringLiteral("to"),
+                                                    QStringLiteral("cik"),
+                                                    QStringLiteral("series"),
+                                                    QStringLiteral("symbol"),
+                                                    QStringLiteral("con-id"),
+                                                    QStringLiteral("reference-symbol"),
+                                                    QStringLiteral("reference-con-id")};
+        for (auto it = options.cbegin(); it != options.cend(); ++it) {
+            if (!kDerivedOptions.contains(it.key()))
+                return usage(QStringLiteral("derived does not take --%1").arg(it.key()));
+        }
+        for (const auto& [a, b] : {std::pair{"symbol", "con-id"}, std::pair{"reference-symbol", "reference-con-id"}}) {
+            if (options.contains(QLatin1String(a)) && options.contains(QLatin1String(b)))
+                return usage(
+                    QStringLiteral("--%1 and --%2 are alternatives; give one").arg(QLatin1String(a), QLatin1String(b)));
+        }
         const QString out = options.value(QStringLiteral("out"));
         if (out.isEmpty())
             return usage(QStringLiteral("derived needs --out <file.json>"));
@@ -300,6 +328,8 @@ int run_etf_data_cli(int argc, char* argv[]) {
                 return usage(QStringLiteral("--from/--to must be yyyy-MM-dd"));
             (std::strcmp(key, "from") == 0 ? req.output_from : req.output_to) = d;
         }
+        if (req.output_from.isValid() && req.output_to.isValid() && req.output_from > req.output_to)
+            return usage(QStringLiteral("--from must not be after --to"));
         const bool by_entity = options.contains(QStringLiteral("cik"));
         const bool by_instrument =
             options.contains(QStringLiteral("symbol")) || options.contains(QStringLiteral("con-id"));
@@ -315,15 +345,22 @@ int run_etf_data_cli(int argc, char* argv[]) {
             const QString series = options.value(QStringLiteral("series"));
             if (cik10.isEmpty() || (!series.isEmpty() && !services::etf::sec_valid_series_id(series)))
                 return usage(QStringLiteral("--cik must be 1-10 digits and --series S followed by 9 digits"));
-            auto found = EtfDataRepository::instance().find_reporting_entity(cik10, series);
-            if (found.is_err() || !found.value())
-                return usage(QStringLiteral("no stored reporting entity for CIK %1 series '%2'").arg(cik10, series));
-            req.entity_id = *found.value();
+            auto entities = EtfDataRepository::instance().reporting_entities(req.frame.known_at);
+            if (entities.is_ok()) {
+                for (const etf_store::ReportingEntityRow& e : entities.value()) {
+                    if (e.cik == cik10 && e.series_id == series)
+                        req.entity_id = e.entity_id;
+                }
+            }
+            if (!req.entity_id)
+                return usage(QStringLiteral("no reporting entity for CIK %1 series '%2' was recorded by the knowledge "
+                                            "cutoff")
+                                 .arg(cik10, series));
         }
         if (by_instrument) {
             QString why;
             const auto id = resolve_instrument(options.value(QStringLiteral("symbol")),
-                                               options.value(QStringLiteral("con-id")), &why);
+                                               options.value(QStringLiteral("con-id")), req.frame.known_at, &why);
             if (!id)
                 return usage(why);
             req.instrument_id = *id;
@@ -331,8 +368,9 @@ int run_etf_data_cli(int argc, char* argv[]) {
         if (options.contains(QStringLiteral("reference-symbol")) ||
             options.contains(QStringLiteral("reference-con-id"))) {
             QString why;
-            const auto id = resolve_instrument(options.value(QStringLiteral("reference-symbol")),
-                                               options.value(QStringLiteral("reference-con-id")), &why);
+            const auto id =
+                resolve_instrument(options.value(QStringLiteral("reference-symbol")),
+                                   options.value(QStringLiteral("reference-con-id")), req.frame.known_at, &why);
             if (!id)
                 return usage(QStringLiteral("reference: %1").arg(why));
             req.reference_instrument_id = *id;

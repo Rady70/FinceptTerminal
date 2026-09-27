@@ -54,10 +54,15 @@
 //     inputs (every month of its window and its denominator), with the weakest
 //     point-in-time status among them (EtfDerivedModel.h);
 //   * an amendment (NPORT-P/A) supersedes its original once it is available
-//     at as_of; the original stays listed with its own net flow, and the
-//     month's revision_delta is the difference. A value computed from a filing
-//     whose numbers differ from an earlier filing of the same month is
-//     REVISED; an amendment that repeats the original's numbers is not.
+//     at as_of; every filing that reports the month stays listed with its own
+//     net flow, its form and, for an amendment, the accession it states it
+//     amends (etf_sec_filings.amends_accession, as Batch B stored it). When
+//     the selected filing is an amendment, its net flow is compared with THAT
+//     accession's, never with whichever filing precedes it in acceptance
+//     order, and the comparison says why when it cannot be made. A value
+//     computed from a filing whose numbers differ from an earlier filing of
+//     the same month is REVISED; an amendment that repeats the original's
+//     numbers is not.
 //
 // Header-only over Qt Core.
 #pragma once
@@ -95,7 +100,8 @@ inline QString regulatory_flow_parameters_text() {
     using P = RegulatoryFlowParameters;
     return QStringLiteral("net_flow=sales-redemption+reinvestment(one_filing);"
                           "denominator=latest_regulatory_net_assets_before_window,max_lag_months=%1;"
-                          "windows=%2,%3;acceleration=%4;percentile=%5m,min_prior=%6,mid_rank;sign_balance=%7")
+                          "windows=%2,%3;acceleration=%4;percentile=%5m,min_prior=%6,mid_rank;sign_balance=%7;"
+                          "amendment_comparison=stated_amended_accession")
         .arg(P::kDenominatorMaxLagMonths)
         .arg(P::kShortWindowMonths)
         .arg(P::kLongWindowMonths)
@@ -110,14 +116,66 @@ inline constexpr const char* kNportRedemption = "nport_redemption";
 inline constexpr const char* kNportReinvestment = "nport_reinvestment";
 inline constexpr const char* kNportNetAssets = "nport_net_assets";
 
+/// The lineage Batch B stores for one N-PORT filing (etf_sec_filings). A
+/// filed document does not change, so none of it changes after it is stored.
+struct SecFilingLineage {
+    QString accession;
+    QString form;             ///< NPORT-P or NPORT-P/A
+    QString amends_accession; ///< the accession an NPORT-P/A states it amends; empty when none is stated
+};
+
+/// Every stored filing of one reporting entity, by accession.
+using SecFilingLineageMap = QHash<QString, SecFilingLineage>;
+
+inline constexpr const char* kNportAmendmentForm = "NPORT-P/A";
+
 /// A filing that reports a month, with the net flow it reports (when all
 /// three components are numbers).
 struct RegulatoryMonthVintage {
     QString accession;
+    QString form;             ///< empty when the filing has no stored lineage row
+    QString amends_accession; ///< as stored for an NPORT-P/A
+    QDate report_period;
+    bool filing_recorded = false; ///< the filing's lineage row is stored
     QDateTime accepted_at;
     QDateTime available_from;
     QString revision_state;
     std::optional<double> net_flow;
+};
+
+/// How the selected filing's net flow compares with the filing it amends.
+enum class AmendmentComparisonState {
+    NotAnAmendment,            ///< the selected filing is an NPORT-P
+    FilingRecordMissing,       ///< the selected filing has no stored lineage row
+    AmendedAccessionNotStated, ///< an NPORT-P/A that names no amended accession
+    AmendedFilingNotAvailable, ///< the amended accession is not a filing of the month known and available here
+    NetFlowNotComparable,      ///< either filing reports no net flow for the month
+    Compared,
+};
+
+inline const char* amendment_comparison_state_id(AmendmentComparisonState s) {
+    switch (s) {
+        case AmendmentComparisonState::NotAnAmendment:
+            return "not_an_amendment";
+        case AmendmentComparisonState::FilingRecordMissing:
+            return "filing_record_missing";
+        case AmendmentComparisonState::AmendedAccessionNotStated:
+            return "amended_accession_not_stated";
+        case AmendmentComparisonState::AmendedFilingNotAvailable:
+            return "amended_filing_not_available";
+        case AmendmentComparisonState::NetFlowNotComparable:
+            return "net_flow_not_comparable";
+        case AmendmentComparisonState::Compared:
+            return "compared";
+    }
+    return "";
+}
+
+struct AmendmentComparison {
+    AmendmentComparisonState state = AmendmentComparisonState::NotAnAmendment;
+    QString selected_form;
+    QString amends_accession;              ///< the stated amended accession
+    std::optional<double> net_flow_change; ///< selected net flow - the amended filing's (Compared only)
 };
 
 struct RegulatoryMonthInputs {
@@ -129,7 +187,7 @@ struct RegulatoryMonthInputs {
     SelectedInput redemption;
     SelectedInput reinvestment;
     QVector<RegulatoryMonthVintage> vintages; ///< every filing available at as_of that reports the month, oldest first
-    std::optional<double> revision_delta;     ///< selected net flow - the previous filing's, when both are numbers
+    AmendmentComparison amendment;            ///< the selected filing against the accession it states it amends
 
     QDate month_end() const { return month.addMonths(1).addDays(-1); }
 };
@@ -200,7 +258,7 @@ inline SelectedInput selected_from(const QVector<StoredObservation>& known, cons
         if (known[i].observation_id == v.observation_id)
             idx = i;
     }
-    s.quality = derived_quality(known, idx);
+    s.quality = derived_input_quality(known, idx);
     s.available_from = v.available_from;
     s.point_in_time_status =
         point_in_time_status_from_id(v.point_in_time_status).value_or(PointInTimeStatus::NotPointInTime);
@@ -225,10 +283,51 @@ inline std::optional<double> net_of(const SelectedInput& s, const SelectedInput&
 
 } // namespace regulatory_detail
 
+/// The selected filing (the last of `vintages`) against the accession it
+/// states it amends, among the month's filings known and available here.
+inline AmendmentComparison compare_with_amended(const QVector<RegulatoryMonthVintage>& vintages) {
+    AmendmentComparison c;
+    if (vintages.isEmpty())
+        return c;
+    const RegulatoryMonthVintage& selected = vintages.last();
+    c.selected_form = selected.form;
+    c.amends_accession = selected.amends_accession;
+    if (!selected.filing_recorded) {
+        c.state = AmendmentComparisonState::FilingRecordMissing;
+        return c;
+    }
+    if (selected.form != QLatin1String(kNportAmendmentForm)) {
+        c.state = AmendmentComparisonState::NotAnAmendment;
+        return c;
+    }
+    if (selected.amends_accession.isEmpty()) {
+        c.state = AmendmentComparisonState::AmendedAccessionNotStated;
+        return c;
+    }
+    const RegulatoryMonthVintage* amended = nullptr;
+    for (const RegulatoryMonthVintage& v : vintages) {
+        if (v.accession == selected.amends_accession)
+            amended = &v;
+    }
+    if (!amended) {
+        c.state = AmendmentComparisonState::AmendedFilingNotAvailable;
+        return c;
+    }
+    if (!selected.net_flow || !amended->net_flow) {
+        c.state = AmendmentComparisonState::NetFlowNotComparable;
+        return c;
+    }
+    c.state = AmendmentComparisonState::Compared;
+    c.net_flow_change = *selected.net_flow - *amended->net_flow;
+    return c;
+}
+
 /// Compute every monthly measure of one reporting entity. `observations` are
-/// all stored vintages of the entity (any measure; other sources are ignored).
+/// all stored vintages of the entity (any measure; other sources are ignored);
+/// `filings` the entity's stored filing lineage, by accession.
 inline RegulatoryFlowAnalytics compute_regulatory_flow_analytics(const QVector<StoredObservation>& observations,
-                                                                 const DerivedTimeFrame& tf) {
+                                                                 const DerivedTimeFrame& tf,
+                                                                 const SecFilingLineageMap& filings) {
     using namespace regulatory_detail;
     using P = RegulatoryFlowParameters;
     RegulatoryFlowAnalytics out;
@@ -274,12 +373,18 @@ inline RegulatoryFlowAnalytics compute_regulatory_flow_analytics(const QVector<S
             month_inputs.insert(mi.month, mi);
             continue;
         }
-        QVector<const StoredObservation*> filings(representative.cbegin(), representative.cend());
-        std::stable_sort(filings.begin(), filings.end(),
+        QVector<const StoredObservation*> reporting(representative.cbegin(), representative.cend());
+        std::stable_sort(reporting.begin(), reporting.end(),
                          [](const StoredObservation* a, const StoredObservation* b) { return vintage_before(*a, *b); });
-        for (const StoredObservation* f : filings) {
+        for (const StoredObservation* f : reporting) {
             RegulatoryMonthVintage mv;
             mv.accession = f->source_document;
+            if (const auto lineage = filings.constFind(f->source_document); lineage != filings.cend()) {
+                mv.filing_recorded = true;
+                mv.form = lineage->form;
+                mv.amends_accession = lineage->amends_accession;
+            }
+            mv.report_period = f->report_period;
             mv.accepted_at = f->accepted_at;
             mv.available_from = f->available_from;
             mv.revision_state = f->revision_state;
@@ -290,7 +395,7 @@ inline RegulatoryFlowAnalytics compute_regulatory_flow_analytics(const QVector<S
                 mv.net_flow = s->value.value - r->value.value + d->value.value;
             mi.vintages.append(mv);
         }
-        const StoredObservation* chosen = filings.last();
+        const StoredObservation* chosen = reporting.last();
         mi.available = true;
         mi.selected_accession = chosen->source_document;
         mi.accepted_at = chosen->accepted_at;
@@ -302,8 +407,7 @@ inline RegulatoryFlowAnalytics compute_regulatory_flow_analytics(const QVector<S
             mi.redemption = selected_from(kr, *r);
         if (const StoredObservation* d = find_in(kd, chosen->source_document); d && available_at(*d, tf.as_of))
             mi.reinvestment = selected_from(kd, *d);
-        if (mi.vintages.size() >= 2 && mi.vintages.last().net_flow && mi.vintages[mi.vintages.size() - 2].net_flow)
-            mi.revision_delta = *mi.vintages.last().net_flow - *mi.vintages[mi.vintages.size() - 2].net_flow;
+        mi.amendment = compare_with_amended(mi.vintages);
         month_inputs.insert(mi.month, mi);
     }
 
@@ -571,15 +675,23 @@ inline QJsonObject regulatory_flow_analytics_json(const RegulatoryFlowAnalytics&
             for (const RegulatoryMonthVintage& v : r.inputs.vintages) {
                 vintages.append(QJsonObject{
                     {QStringLiteral("accession"), v.accession},
+                    {QStringLiteral("form"), v.filing_recorded ? QJsonValue(v.form) : QJsonValue(QJsonValue::Null)},
+                    {QStringLiteral("amends_accession"), v.amends_accession},
+                    {QStringLiteral("report_period"), v.report_period.toString(Qt::ISODate)},
                     {QStringLiteral("accepted_at"), derived_time_text(v.accepted_at)},
                     {QStringLiteral("available_from"), derived_time_text(v.available_from)},
                     {QStringLiteral("revision_state"), v.revision_state},
                     {QStringLiteral("net_flow"), v.net_flow ? QJsonValue(*v.net_flow) : QJsonValue(QJsonValue::Null)}});
             }
             inputs.insert(QStringLiteral("vintages"), vintages);
-            inputs.insert(QStringLiteral("revision_delta"), r.inputs.revision_delta
-                                                                ? QJsonValue(*r.inputs.revision_delta)
-                                                                : QJsonValue(QJsonValue::Null));
+            const AmendmentComparison& c = r.inputs.amendment;
+            inputs.insert(
+                QStringLiteral("amendment"),
+                QJsonObject{{QStringLiteral("selected_form"), c.selected_form},
+                            {QStringLiteral("amends_accession"), c.amends_accession},
+                            {QStringLiteral("comparison"), QLatin1String(amendment_comparison_state_id(c.state))},
+                            {QStringLiteral("net_flow_change"),
+                             c.net_flow_change ? QJsonValue(*c.net_flow_change) : QJsonValue(QJsonValue::Null)}});
         }
         auto with_denominator = [&](const DerivedValue& v, const NetAssetsDenominator& d) {
             QJsonObject o = derived_value_json(v, kind, QStringLiteral("fraction_of_regulatory_net_assets"));

@@ -1,16 +1,20 @@
 // tst_etf_derived_store.cpp — ETF Capital Flows Batch C: derived values over a
 // real SQLite store (services/etf/EtfDerivedAnalytics).
 //
-// The vintages are written through the Batch B repository exactly as the
-// ingestors write them, so their timing (history type, point-in-time status,
-// available_from) comes from the Batch B rules, not from the test. What this
-// suite proves needs a real database:
+// The vintages, and the session rows of each bar retrieval, are written
+// through the Batch B repository exactly as the ingestors write them, so
+// their timing (history type, point-in-time status, available_from) comes
+// from the Batch B rules, not from the test. What this suite proves needs a
+// real database:
 //   * a derived run reads and never writes: every ETF table is identical
 //     before and after, and two runs of one request give the same bytes;
-//   * a result computed for (as_of, known_at) is reproduced exactly after the
-//     store has grown by a bar revision and an SEC amendment, while a later
-//     frame sees both, as REVISED;
+//   * a whole document computed for (as_of, known_at) is reproduced exactly
+//     after the store has grown: a bar revision, an SEC amendment, a new
+//     instrument and a new entity, a ticker change, an identity link and new
+//     entity names, all recorded after the cutoff; a later frame sees them;
 //   * a ticker change does not split an instrument's series;
+//   * the persisted session rows govern the calendar, and bars without them
+//     fail closed;
 //   * the flow routes of a listed ETF, the dormant calculated flow and the
 //     separation of the two families are reported as stored.
 // Every database is a fresh file in a temporary directory.
@@ -27,6 +31,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -86,13 +91,18 @@ qint64 add_instrument(qint64 con_id, const char* symbol, const char* seen) {
 }
 
 /// One IBKR retrieval of daily bars for `sessions`, recorded as the Batch B
-/// ingestor records it (one vintage per bar field).
+/// ingestor records it: the session rows of its window (every weekday from
+/// the first to the last bar) and one vintage per bar field.
+/// `with_session_rows` false stores the bars alone, as no ingestor does.
 bool add_bars(qint64 instrument, const QVector<QDate>& sessions, const std::function<double(int)>& close,
-              const char* seen) {
+              const char* seen, bool with_session_rows = true) {
     const qint64 r = retrieval(SourceType::IbkrTwsReadonly, AcquisitionMode::IbkrReadonlyWrapper, seen);
     auto start =
         repo().observation_start(SourceType::IbkrTwsReadonly, SubjectType::ListedInstrument, instrument, utc(seen), r);
-    if (r <= 0 || start.is_err())
+    if (r <= 0 || start.is_err() || sessions.isEmpty())
+        return false;
+    if (with_session_rows &&
+        repo().upsert_sessions(UsEquityCalendar::weekdays_in(sessions.first(), sessions.last())).is_err())
         return false;
     for (int i = 0; i < sessions.size(); ++i) {
         for (const char* measure : {"bar_close", "bar_volume"}) {
@@ -212,7 +222,7 @@ QJsonObject last_session_values(const QJsonObject& doc, int instrument_index) {
     return sessions.last().toObject().value(QLatin1String("values")).toObject();
 }
 
-QJsonObject month_values(const QJsonObject& doc, const QString& month) {
+QJsonObject month_of(const QJsonObject& doc, const QString& month) {
     const QJsonArray months = doc.value(QLatin1String("regulatory_flow"))
                                   .toArray()
                                   .at(0)
@@ -223,9 +233,32 @@ QJsonObject month_values(const QJsonObject& doc, const QString& month) {
                                   .toArray();
     for (const QJsonValue& m : months) {
         if (m.toObject().value(QLatin1String("month")).toString() == month)
-            return m.toObject().value(QLatin1String("values")).toObject();
+            return m.toObject();
     }
     return {};
+}
+
+QJsonObject month_values(const QJsonObject& doc, const QString& month) {
+    return month_of(doc, month).value(QLatin1String("values")).toObject();
+}
+
+QJsonObject month_inputs(const QJsonObject& doc, const QString& month) {
+    return month_of(doc, month).value(QLatin1String("inputs")).toObject();
+}
+
+/// The session entry of one instrument's measures, or an empty object.
+QJsonObject session_entry(const QJsonObject& measures, const QString& date) {
+    for (const QJsonValue& s : measures.value(QLatin1String("sessions")).toArray()) {
+        if (s.toObject().value(QLatin1String("session")).toString() == date)
+            return s.toObject();
+    }
+    return {};
+}
+
+QStringList keys_of(const QJsonObject& o) {
+    QStringList k = o.keys();
+    k.sort();
+    return k;
 }
 
 const FilingSpec kQ1{"0001410368-26-000101",
@@ -290,7 +323,9 @@ class TstEtfDerivedStore : public QObject {
     void cleanupTestCase();
     void a_run_reads_only_and_replays_byte_for_byte();
     void an_earlier_result_is_reproduced_after_the_store_grows();
+    void an_earlier_document_is_reproduced_after_identity_changes();
     void a_ticker_change_keeps_one_series();
+    void the_persisted_session_record_is_followed();
     void flow_routes_and_the_dormant_calculated_flow();
     void the_two_families_stay_apart();
     void a_declared_reference_must_be_stored();
@@ -365,6 +400,14 @@ void TstEtfDerivedStore::an_earlier_result_is_reproduced_after_the_store_grows()
     const QJsonObject net = apr.value(QLatin1String("net_flow")).toObject();
     QCOMPARE(net.value(QLatin1String("value")).toDouble(), 65.0);
     QCOMPARE(net.value(QLatin1String("state")).toString(), QStringLiteral("REVISED"));
+    // The amendment names the accession it amends in etf_sec_filings, and its
+    // change is taken against that accession: 65 - 55.
+    const QJsonObject lineage =
+        month_inputs(later, QStringLiteral("2026-04")).value(QLatin1String("amendment")).toObject();
+    QCOMPARE(lineage.value(QLatin1String("selected_form")).toString(), QStringLiteral("NPORT-P/A"));
+    QCOMPARE(lineage.value(QLatin1String("amends_accession")).toString(), QString::fromLatin1(kQ2.accession));
+    QCOMPARE(lineage.value(QLatin1String("comparison")).toString(), QStringLiteral("compared"));
+    QCOMPARE(lineage.value(QLatin1String("net_flow_change")).toDouble(), 10.0);
     // Accepted after MarketLab's SEC observation start: observed, from its
     // first sighting.
     QCOMPARE(net.value(QLatin1String("point_in_time_status")).toString(), QStringLiteral("observed"));
@@ -383,6 +426,89 @@ void TstEtfDerivedStore::an_earlier_result_is_reproduced_after_the_store_grows()
              QStringLiteral("PROXY"));
 }
 
+void TstEtfDerivedStore::an_earlier_document_is_reproduced_after_identity_changes() {
+    populate();
+    const DerivedRunRequest first = request("2026-09-27T00:00:00.000Z");
+    const QByteArray original = run_bytes(first);
+    QVERIFY(!original.isEmpty());
+
+    // Everything below is recorded after the cutoff (2026-09-28):
+    // a new listed instrument with its bars, and a new SEC reporting entity;
+    const qint64 qqq = add_instrument(320227571, "QQQ", "2026-09-28T02:00:00.000Z");
+    QVERIFY(qqq > 0);
+    QVERIFY(add_bars(qqq, sessions_, [](int i) { return 50.0 + i; }, "2026-09-28T02:00:00.000Z"));
+    etf_store::ReportingEntityFacts other;
+    other.cik = QStringLiteral("0001067839");
+    other.registrant_name = QStringLiteral("Another Trust");
+    other.source_accepted_at = utc("2026-09-28T01:00:00.000Z");
+    QVERIFY(repo().upsert_reporting_entity(other, utc("2026-09-28T02:00:00.000Z")).is_ok());
+    // SPY's ticker changes;
+    QCOMPARE(add_instrument(756733, "SPYX", "2026-09-28T03:00:00.000Z"), spy_);
+    // an identity link is declared for TLT;
+    QVERIFY(repo()
+                .declare_link(tlt_, entity_, QString(), LinkRelationship::RegistrantIsInstrument,
+                              QStringLiteral("test declaration"), utc("2026-09-28T04:00:00.000Z"))
+                .is_ok());
+    // the entity's names are rewritten in place from a newer filing's attributes.
+    etf_store::ReportingEntityFacts renamed;
+    renamed.cik = QStringLiteral("0000884394");
+    renamed.registrant_name = QStringLiteral("Renamed Trust");
+    renamed.source_accepted_at = utc("2026-09-28T05:00:00.000Z");
+    auto same_entity = repo().upsert_reporting_entity(renamed, utc("2026-09-28T05:00:00.000Z"));
+    QVERIFY(same_entity.is_ok());
+    QCOMPARE(same_entity.value(), entity_);
+
+    // The earlier document, run again, is the earlier document byte for byte.
+    QCOMPARE(run_bytes(first), original);
+    // Naming a subject recorded later does not reach into it either.
+    DerivedRunRequest late_subject = first;
+    late_subject.instrument_id = qqq;
+    QVERIFY(run_derived_calculations(late_subject).is_err());
+    DerivedRunRequest late_reference = first;
+    late_reference.reference_instrument_id = qqq;
+    QVERIFY(run_derived_calculations(late_reference).is_err());
+    auto spyx_then = repo().find_listed_instruments_by_symbol(QStringLiteral("SPYX"), first.frame.known_at);
+    QVERIFY(spyx_then.is_ok() && spyx_then.value().isEmpty());
+
+    // A later frame sees all of it.
+    const QJsonObject later = run_json(request("2026-09-29T00:00:00.000Z"));
+    QCOMPARE(later.value(QLatin1String("regulatory_flow")).toArray().size(), 2);
+    const QJsonArray rotation = later.value(QLatin1String("rotation_proxy")).toArray();
+    QCOMPARE(rotation.size(), 3);
+    const QJsonArray tickers = rotation.at(0)
+                                   .toObject()
+                                   .value(QLatin1String("instrument"))
+                                   .toObject()
+                                   .value(QLatin1String("tickers"))
+                                   .toArray();
+    QCOMPARE(tickers.size(), 2);
+    QCOMPARE(tickers.at(0).toObject().value(QLatin1String("symbol")).toString(), QStringLiteral("SPY"));
+    QCOMPARE(tickers.at(1).toObject().value(QLatin1String("symbol")).toString(), QStringLiteral("SPYX"));
+    QCOMPARE(tickers.at(1).toObject().value(QLatin1String("first_recorded_at")).toString(),
+             QStringLiteral("2026-09-28T03:00:00.000Z"));
+    QCOMPARE(rotation.at(1)
+                 .toObject()
+                 .value(QLatin1String("flow_routes"))
+                 .toArray()
+                 .at(0)
+                 .toObject()
+                 .value(QLatin1String("availability"))
+                 .toString(),
+             QStringLiteral("available"));
+
+    // Identity only, in either document: no name, exchange or currency.
+    for (const QJsonObject& doc : {QJsonDocument::fromJson(original).object(), later}) {
+        for (const QJsonValue& e : doc.value(QLatin1String("regulatory_flow")).toArray())
+            QCOMPARE(keys_of(e.toObject().value(QLatin1String("entity")).toObject()),
+                     (QStringList{"cik", "entity_id", "first_recorded_at", "reporting_level", "series_id"}));
+        for (const QJsonValue& i : doc.value(QLatin1String("rotation_proxy")).toArray())
+            QCOMPARE(keys_of(i.toObject().value(QLatin1String("instrument")).toObject()),
+                     (QStringList{"first_recorded_at", "ibkr_con_id", "instrument_id", "tickers"}));
+    }
+    QVERIFY(!original.contains("Test Trust"));
+    QVERIFY(!QJsonDocument(later).toJson().contains("Renamed Trust"));
+}
+
 void TstEtfDerivedStore::a_ticker_change_keeps_one_series() {
     QVERIFY(open_fresh());
     const QVector<QDate> sessions = sessions_between(QDate(2025, 9, 2), QDate(2025, 12, 31));
@@ -393,18 +519,29 @@ void TstEtfDerivedStore::a_ticker_change_keeps_one_series() {
     // The same conId under a new ticker: the same instrument.
     QCOMPARE(add_instrument(424242, "NEWT", "2026-09-27T02:00:00.000Z"), id);
     QVERIFY(add_bars(id, late, [](int i) { return 100.0 * std::pow(1.01, 40 + i); }, "2026-09-27T02:00:00.000Z"));
-    auto by_old = repo().find_listed_instruments_by_symbol(QStringLiteral("OLDT"));
-    auto by_new = repo().find_listed_instruments_by_symbol(QStringLiteral("NEWT"));
-    QVERIFY(by_old.is_ok() && by_new.is_ok());
+    // A ticker names the instrument only from its first sighting on.
+    const QDateTime before_change = utc("2026-09-26T12:00:00.000Z");
+    const QDateTime after_change = utc("2026-09-28T00:00:00.000Z");
+    auto by_old = repo().find_listed_instruments_by_symbol(QStringLiteral("OLDT"), after_change);
+    auto by_new = repo().find_listed_instruments_by_symbol(QStringLiteral("NEWT"), after_change);
+    auto new_before = repo().find_listed_instruments_by_symbol(QStringLiteral("NEWT"), before_change);
+    QVERIFY(by_old.is_ok() && by_new.is_ok() && new_before.is_ok());
     QCOMPARE(by_old.value(), QVector<qint64>{id});
     QCOMPARE(by_new.value(), QVector<qint64>{id});
+    QVERIFY(new_before.value().isEmpty());
 
     const QJsonObject doc = run_json(request("2026-09-28T00:00:00.000Z"));
     const QJsonArray rotation = doc.value(QLatin1String("rotation_proxy")).toArray();
     QCOMPARE(rotation.size(), 1);
-    const QJsonObject instrument = rotation.at(0).toObject().value(QLatin1String("instrument")).toObject();
-    QCOMPARE(instrument.value(QLatin1String("symbol")).toString(), QStringLiteral("NEWT"));
-    QCOMPARE(instrument.value(QLatin1String("symbols_seen")).toArray(), (QJsonArray{"OLDT", "NEWT"}));
+    const QJsonArray tickers = rotation.at(0)
+                                   .toObject()
+                                   .value(QLatin1String("instrument"))
+                                   .toObject()
+                                   .value(QLatin1String("tickers"))
+                                   .toArray();
+    QCOMPARE(tickers.size(), 2);
+    QCOMPARE(tickers.at(0).toObject().value(QLatin1String("symbol")).toString(), QStringLiteral("OLDT"));
+    QCOMPARE(tickers.at(1).toObject().value(QLatin1String("symbol")).toString(), QStringLiteral("NEWT"));
     // A return across the ticker change is one series: 1.01^21 - 1.
     const QJsonArray listed = rotation.at(0)
                                   .toObject()
@@ -420,6 +557,89 @@ void TstEtfDerivedStore::a_ticker_change_keeps_one_series() {
                                 .value(QLatin1String("price_return_21"))
                                 .toObject();
     QVERIFY(std::fabs(r21.value(QLatin1String("value")).toDouble() - (std::pow(1.01, 21) - 1.0)) < 1e-12);
+
+    // Before the change was recorded: the old ticker only, and the early bars.
+    const QJsonObject earlier = run_json(request("2026-09-26T12:00:00.000Z"));
+    const QJsonObject then = earlier.value(QLatin1String("rotation_proxy")).toArray().at(0).toObject();
+    const QJsonArray then_tickers =
+        then.value(QLatin1String("instrument")).toObject().value(QLatin1String("tickers")).toArray();
+    QCOMPARE(then_tickers.size(), 1);
+    QCOMPARE(then_tickers.at(0).toObject().value(QLatin1String("symbol")).toString(), QStringLiteral("OLDT"));
+    QCOMPARE(then.value(QLatin1String("measures")).toObject().value(QLatin1String("sessions")).toArray().size(),
+             early.size());
+}
+
+void TstEtfDerivedStore::the_persisted_session_record_is_followed() {
+    QVERIFY(open_fresh());
+    // A corrected record: 2025-12-10, a regular session by the compiled rule,
+    // is persisted as an early close before the bar retrieval writes its
+    // window (Batch B keeps a stored row as it is).
+    const QDate corrected(2025, 12, 10);
+    MarketSessionDay early = UsEquityCalendar::day(corrected);
+    early.type = SessionDayType::EarlyClose;
+    early.close_local = QTime(13, 0);
+    early.close_utc = QDateTime(corrected, early.close_local, UsEquityCalendar::exchange_zone()).toUTC();
+    QVERIFY(repo().upsert_sessions({early}).is_ok());
+    const QVector<QDate> sessions = sessions_between(QDate(2025, 6, 2), QDate(2025, 12, 31));
+    const qint64 id = add_instrument(756733, "SPY", "2026-09-26T02:00:00.000Z");
+    QVERIFY(add_bars(id, sessions, [](int i) { return 100.0 * std::pow(1.01, i); }, "2026-09-26T02:00:00.000Z"));
+    const QJsonObject doc = run_json(request("2026-09-27T00:00:00.000Z"));
+    const QJsonObject measures = doc.value(QLatin1String("rotation_proxy"))
+                                     .toArray()
+                                     .at(0)
+                                     .toObject()
+                                     .value(QLatin1String("measures"))
+                                     .toObject();
+    const QJsonObject entry = session_entry(measures, QStringLiteral("2025-12-10"));
+    QCOMPARE(entry.value(QLatin1String("session_type")).toString(), QStringLiteral("early_close"));
+    QCOMPARE(entry.value(QLatin1String("values"))
+                 .toObject()
+                 .value(QLatin1String("volume_ratio_5_63"))
+                 .toObject()
+                 .value(QLatin1String("reason"))
+                 .toString(),
+             QStringLiteral("early_close_session_excluded"));
+    const QJsonArray exceptions =
+        measures.value(QLatin1String("calendar")).toObject().value(QLatin1String("exceptions")).toArray();
+    QCOMPARE(exceptions.size(), 1);
+    QCOMPARE(exceptions.at(0).toObject().value(QLatin1String("kind")).toString(),
+             QStringLiteral("record_differs_from_calendar_rule"));
+    QCOMPARE(exceptions.at(0).toObject().value(QLatin1String("recorded_day_type")).toString(),
+             QStringLiteral("early_close"));
+    QCOMPARE(exceptions.at(0).toObject().value(QLatin1String("calendar_rule_day_type")).toString(),
+             QStringLiteral("regular"));
+
+    // Bars stored without their session rows fail closed: no close is usable.
+    QVERIFY(open_fresh());
+    const qint64 bare = add_instrument(15547841, "TLT", "2026-09-26T02:00:00.000Z");
+    QVERIFY(add_bars(
+        bare, sessions, [](int i) { return 90.0 * std::pow(1.005, i); }, "2026-09-26T02:00:00.000Z",
+        /*with_session_rows=*/false));
+    const QJsonObject none = run_json(request("2026-09-27T00:00:00.000Z"));
+    const QJsonObject bare_measures = none.value(QLatin1String("rotation_proxy"))
+                                          .toArray()
+                                          .at(0)
+                                          .toObject()
+                                          .value(QLatin1String("measures"))
+                                          .toObject();
+    const QJsonArray listed = bare_measures.value(QLatin1String("sessions")).toArray();
+    QCOMPARE(listed.size(), sessions.size());
+    for (const QJsonValue& s : listed) {
+        const QJsonObject values = s.toObject().value(QLatin1String("values")).toObject();
+        for (auto it = values.begin(); it != values.end(); ++it)
+            QVERIFY(it.value().toObject().value(QLatin1String("value")).isNull());
+    }
+    QCOMPARE(session_entry(bare_measures, QStringLiteral("2025-12-31"))
+                 .value(QLatin1String("values"))
+                 .toObject()
+                 .value(QLatin1String("price_return_5"))
+                 .toObject()
+                 .value(QLatin1String("reason"))
+                 .toString(),
+             QStringLiteral("session_record_missing"));
+    QCOMPARE(
+        bare_measures.value(QLatin1String("calendar")).toObject().value(QLatin1String("exceptions")).toArray().size(),
+        static_cast<int>(sessions.size()));
 }
 
 void TstEtfDerivedStore::flow_routes_and_the_dormant_calculated_flow() {
@@ -466,6 +686,19 @@ void TstEtfDerivedStore::flow_routes_and_the_dormant_calculated_flow() {
                                     .toObject();
     QCOMPARE(monthly.value(QLatin1String("availability")).toString(), QStringLiteral("available"));
     QVERIFY(monthly.value(QLatin1String("state")).isNull());
+    // For a knowledge cutoff before the declaration the link does not exist.
+    const QJsonObject before_link = run_json(request("2026-09-26T23:00:00.000Z"));
+    QCOMPARE(before_link.value(QLatin1String("rotation_proxy"))
+                 .toArray()
+                 .at(0)
+                 .toObject()
+                 .value(QLatin1String("flow_routes"))
+                 .toArray()
+                 .at(0)
+                 .toObject()
+                 .value(QLatin1String("availability"))
+                 .toString(),
+             QStringLiteral("identity_not_established"));
 }
 
 void TstEtfDerivedStore::the_two_families_stay_apart() {
@@ -487,6 +720,10 @@ void TstEtfDerivedStore::the_two_families_stay_apart() {
                  .at(0)
                  .toObject()
                  .value(QLatin1String("instrument"))
+                 .toObject()
+                 .value(QLatin1String("tickers"))
+                 .toArray()
+                 .at(0)
                  .toObject()
                  .value(QLatin1String("symbol"))
                  .toString(),

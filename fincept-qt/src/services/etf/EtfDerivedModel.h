@@ -26,9 +26,11 @@
 // States reuse the Batch B quality vocabulary (EtfDataModel.h):
 //   * a usable value carries its family's state, CONFIRMED for analytics of
 //     SEC regulatory flow and PROXY for market-rotation measures, or REVISED
-//     when a selected input vintage differs from an earlier vintage of its key
-//     (the Batch B derivation, EtfReadModel.h). The family itself is always
-//     named by `measurement_kind`, so REVISED never hides what a value is;
+//     when a selected input vintage differs from an earlier known vintage of
+//     its key in value OR in meaning (kind, units, basis, period): Batch B
+//     stores a same-number re-delivery with another meaning as a revision, so
+//     it stays one here. The family itself is always named by
+//     `measurement_kind`, so REVISED never hides what a value is;
 //   * an unusable value has no number and one reason from a closed set, which
 //     also decides its state (MISSING, STALE, NOT_APPLICABLE or
 //     ROUTE_DISABLED). Unknown is never zero.
@@ -120,6 +122,9 @@ enum class DerivedReason {
     SubjectIsReference,          ///< a relative measure of the reference against itself
     LatestSessionBeforeExpected, ///< the latest available session is older than the freshness rule expects
     D1dNoPermissionBasis,        ///< calculated daily creation/redemption flow: the route is disabled (D1-d)
+    InputBasisNotUniform,        ///< the inputs of one value change units or basis between them
+    SessionRecordMissing,        ///< a bar's session has no persisted session record (Batch B writes one per bar)
+    SessionCalendarNotCovered,   ///< a weekday in the window neither the session record nor the calendar covers
 };
 
 inline const char* derived_reason_id(DerivedReason r) {
@@ -158,6 +163,12 @@ inline const char* derived_reason_id(DerivedReason r) {
             return "latest_session_before_expected";
         case DerivedReason::D1dNoPermissionBasis:
             return "d1d_no_permission_basis";
+        case DerivedReason::InputBasisNotUniform:
+            return "input_basis_not_uniform";
+        case DerivedReason::SessionRecordMissing:
+            return "session_record_missing";
+        case DerivedReason::SessionCalendarNotCovered:
+            return "session_calendar_not_covered";
     }
     return "";
 }
@@ -168,6 +179,7 @@ inline QualityState derived_reason_state(DerivedReason r) {
         case DerivedReason::EarlyCloseSessionExcluded:
         case DerivedReason::ReturnBasisNotComparable:
         case DerivedReason::SubjectIsReference:
+        case DerivedReason::InputBasisNotUniform:
             return QualityState::NotApplicable;
         case DerivedReason::LatestSessionBeforeExpected:
             return QualityState::Stale;
@@ -196,7 +208,38 @@ struct SelectedInput {
     int vintages_known = 0;  ///< vintages of the key that existed at known_at
 
     bool usable_number() const { return present && value.reported() && std::isfinite(value.value); }
+
+    /// Two inputs a single value may combine: the same units and basis.
+    bool same_basis(const SelectedInput& o) const { return units == o.units && basis == o.basis; }
 };
+
+/// Two vintages of one key state the same meaning: kind, units, basis and
+/// period. (SEC report period and acceptance time are left out: they tell
+/// separate filings apart, not what a value means.)
+inline bool derived_same_meaning(const StoredObservation& a, const StoredObservation& b) {
+    return a.measurement_kind == b.measurement_kind && a.units == b.units && a.basis == b.basis &&
+           a.period_start == b.period_start && a.period_end == b.period_end;
+}
+
+/// The quality of `known[selected]` as a derived value uses it: MISSING
+/// without a number; REVISED when a vintage that precedes it differs in value
+/// or in meaning; CONFIRMED otherwise. Batch B's derived_quality compares the
+/// value alone; its repository stores a same-number re-delivery with another
+/// meaning as a revision, and a derived value must not call that confirmed.
+inline QualityState derived_input_quality(const QVector<StoredObservation>& known, qsizetype selected) {
+    if (selected < 0 || selected >= known.size())
+        return QualityState::Missing;
+    const StoredObservation& s = known[selected];
+    if (!s.value.reported())
+        return QualityState::Missing;
+    for (qsizetype i = 0; i < known.size(); ++i) {
+        if (i == selected || !vintage_before(known[i], s))
+            continue;
+        if (!known[i].value.same_value(s.value) || !derived_same_meaning(known[i], s))
+            return QualityState::Revised;
+    }
+    return QualityState::Confirmed;
+}
 
 /// Select the vintage of one key a derived value may use: among the vintages
 /// known at `tf.known_at`, the newest available at `tf.as_of`.
@@ -211,7 +254,7 @@ inline SelectedInput select_input(const QVector<StoredObservation>& key_vintages
     s.present = true;
     s.observation_id = v.observation_id;
     s.value = v.value;
-    s.quality = derived_quality(known, idx);
+    s.quality = derived_input_quality(known, idx);
     s.available_from = v.available_from;
     s.point_in_time_status =
         point_in_time_status_from_id(v.point_in_time_status).value_or(PointInTimeStatus::NotPointInTime);

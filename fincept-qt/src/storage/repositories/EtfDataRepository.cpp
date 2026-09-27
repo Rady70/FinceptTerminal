@@ -619,10 +619,16 @@ Result<std::optional<qint64>> EtfDataRepository::find_listed_instrument(qint64 c
     return Result<std::optional<qint64>>::ok(r.value().value(0).toLongLong());
 }
 
-Result<QVector<etf_store::ReportingEntityRow>> EtfDataRepository::reporting_entities() {
+// Stored instants are UTC ISO-8601 with milliseconds (iso_utc), so the text
+// order of first_seen_at and declared_at is their time order.
+
+Result<QVector<etf_store::ReportingEntityRow>> EtfDataRepository::reporting_entities(const QDateTime& known_at) {
     using R = Result<QVector<etf_store::ReportingEntityRow>>;
-    auto r = db().execute("SELECT entity_id, cik, series_id, reporting_level, registrant_name, series_name FROM "
-                          "etf_reporting_entities ORDER BY entity_id");
+    if (!known_at.isValid())
+        return R::err("a knowledge cutoff is required");
+    auto r = db().execute("SELECT entity_id, cik, series_id, reporting_level, first_seen_at FROM "
+                          "etf_reporting_entities WHERE first_seen_at <= ? ORDER BY entity_id",
+                          {etf_store::iso_utc(known_at)});
     if (r.is_err())
         return R::err(r.error());
     QVector<etf_store::ReportingEntityRow> out;
@@ -633,17 +639,20 @@ Result<QVector<etf_store::ReportingEntityRow>> EtfDataRepository::reporting_enti
         row.cik = q.value(1).toString();
         row.series_id = q.value(2).toString();
         row.reporting_level = q.value(3).toString();
-        row.registrant_name = q.value(4).toString();
-        row.series_name = q.value(5).toString();
+        row.first_seen_at = etf_store::parse_iso_utc(q.value(4).toString());
         out.append(row);
     }
     return R::ok(out);
 }
 
-Result<QVector<etf_store::ListedInstrumentRow>> EtfDataRepository::listed_instruments() {
+Result<QVector<etf_store::ListedInstrumentRow>> EtfDataRepository::listed_instruments(const QDateTime& known_at) {
     using R = Result<QVector<etf_store::ListedInstrumentRow>>;
-    auto r = db().execute("SELECT instrument_id, ibkr_con_id, symbol, primary_exchange, currency FROM "
-                          "etf_listed_instruments ORDER BY instrument_id");
+    if (!known_at.isValid())
+        return R::err("a knowledge cutoff is required");
+    const QString cutoff = etf_store::iso_utc(known_at);
+    auto r = db().execute("SELECT instrument_id, ibkr_con_id, first_seen_at FROM etf_listed_instruments WHERE "
+                          "first_seen_at <= ? ORDER BY instrument_id",
+                          {cutoff});
     if (r.is_err())
         return R::err(r.error());
     QVector<etf_store::ListedInstrumentRow> out;
@@ -652,33 +661,100 @@ Result<QVector<etf_store::ListedInstrumentRow>> EtfDataRepository::listed_instru
         etf_store::ListedInstrumentRow row;
         row.instrument_id = q.value(0).toLongLong();
         row.con_id = q.value(1).toLongLong();
-        row.symbol = q.value(2).toString();
-        row.primary_exchange = q.value(3).toString();
-        row.currency = q.value(4).toString();
+        row.first_seen_at = etf_store::parse_iso_utc(q.value(2).toString());
         out.append(row);
     }
     for (etf_store::ListedInstrumentRow& row : out) {
-        auto s = db().execute("SELECT symbol FROM etf_instrument_symbols WHERE instrument_id = ? ORDER BY "
-                              "first_seen_at, symbol",
-                              {row.instrument_id});
+        auto s = db().execute("SELECT symbol, first_seen_at FROM etf_instrument_symbols WHERE instrument_id = ? AND "
+                              "first_seen_at <= ? ORDER BY first_seen_at, symbol",
+                              {row.instrument_id, cutoff});
         if (s.is_err())
             return R::err(s.error());
         while (s.value().next())
-            row.symbols.append(s.value().value(0).toString());
+            row.symbols.append(
+                {s.value().value(0).toString(), etf_store::parse_iso_utc(s.value().value(1).toString())});
     }
     return R::ok(out);
 }
 
-Result<QVector<qint64>> EtfDataRepository::find_listed_instruments_by_symbol(const QString& symbol) {
-    auto r = db().execute("SELECT DISTINCT instrument_id FROM etf_instrument_symbols WHERE symbol = ? ORDER BY "
-                          "instrument_id",
-                          {etf_text(symbol)});
+Result<QVector<qint64>> EtfDataRepository::find_listed_instruments_by_symbol(const QString& symbol,
+                                                                             const QDateTime& known_at) {
+    if (!known_at.isValid())
+        return Result<QVector<qint64>>::err("a knowledge cutoff is required");
+    auto r = db().execute("SELECT DISTINCT instrument_id FROM etf_instrument_symbols WHERE symbol = ? AND "
+                          "first_seen_at <= ? ORDER BY instrument_id",
+                          {etf_text(symbol), etf_store::iso_utc(known_at)});
     if (r.is_err())
         return Result<QVector<qint64>>::err(r.error());
     QVector<qint64> out;
     while (r.value().next())
         out.append(r.value().value(0).toLongLong());
     return Result<QVector<qint64>>::ok(out);
+}
+
+Result<std::optional<LinkRelationship>> EtfDataRepository::nport_link_relationship_known_at(qint64 instrument_id,
+                                                                                            const QDateTime& known_at) {
+    using R = Result<std::optional<LinkRelationship>>;
+    if (!known_at.isValid())
+        return R::err("a knowledge cutoff is required");
+    auto r = db().execute("SELECT relationship FROM etf_identity_links WHERE instrument_id = ? AND declared_at <= ? "
+                          "ORDER BY declared_at DESC, link_id DESC LIMIT 1",
+                          {instrument_id, etf_store::iso_utc(known_at)});
+    if (r.is_err())
+        return R::err(r.error());
+    if (!r.value().next())
+        return R::ok(std::nullopt);
+    return R::ok(link_relationship_from_id(r.value().value(0).toString()));
+}
+
+Result<QVector<MarketSessionDay>> EtfDataRepository::market_sessions(const QString& calendar_id,
+                                                                     const QString& calendar_version) {
+    using R = Result<QVector<MarketSessionDay>>;
+    auto r = db().execute("SELECT session_date, day_type, open_local, close_local, open_utc, close_utc FROM "
+                          "etf_market_sessions WHERE calendar_id = ? AND calendar_version = ? ORDER BY session_date",
+                          {etf_text(calendar_id), etf_text(calendar_version)});
+    if (r.is_err())
+        return R::err(r.error());
+    QVector<MarketSessionDay> out;
+    auto& q = r.value();
+    while (q.next()) {
+        MarketSessionDay d;
+        d.date = QDate::fromString(q.value(0).toString(), Qt::ISODate);
+        const QString type = q.value(1).toString();
+        bool known = false;
+        for (SessionDayType t : {SessionDayType::Regular, SessionDayType::EarlyClose, SessionDayType::Holiday}) {
+            if (type == QLatin1String(session_day_type_id(t))) {
+                d.type = t;
+                known = true;
+            }
+        }
+        if (!d.date.isValid() || !known)
+            return R::err(QStringLiteral("etf_market_sessions row '%1' of type '%2' cannot be read")
+                              .arg(q.value(0).toString(), type)
+                              .toStdString());
+        if (d.is_session()) {
+            d.open_local = QTime::fromString(q.value(2).toString(), QStringLiteral("HH:mm"));
+            d.close_local = QTime::fromString(q.value(3).toString(), QStringLiteral("HH:mm"));
+            d.open_utc = etf_store::parse_iso_utc(q.value(4).toString());
+            d.close_utc = etf_store::parse_iso_utc(q.value(5).toString());
+        }
+        out.append(d);
+    }
+    return R::ok(out);
+}
+
+Result<QVector<etf_store::SecFilingLineageRow>> EtfDataRepository::sec_filing_lineage(qint64 entity_id) {
+    using R = Result<QVector<etf_store::SecFilingLineageRow>>;
+    auto r = db().execute("SELECT accession, form, amends_accession FROM etf_sec_filings WHERE entity_id = ? ORDER BY "
+                          "filing_id",
+                          {entity_id});
+    if (r.is_err())
+        return R::err(r.error());
+    QVector<etf_store::SecFilingLineageRow> out;
+    auto& q = r.value();
+    while (q.next())
+        out.append({q.value(0).toString(), q.value(1).toString(), q.value(2).toString()});
+    return R::ok(out);
 }
 
 Result<QJsonObject> EtfDataRepository::export_all() {

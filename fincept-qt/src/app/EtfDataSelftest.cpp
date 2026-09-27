@@ -302,18 +302,20 @@ int run_etf_data_selftest() {
 
     // ── Batch C: derived values over stored vintages (read only) ────────────
     // Five earlier closes of the self-test instrument, so that a 5-session
-    // return ends on the bar of 2026-09-24 revised above.
+    // return ends on the bar of 2026-09-24 revised above, with the session
+    // rows their retrieval window records (the derived values follow them).
     etf_store::ObservationInput close = bar;
     close.retrieval_id = r4;
     close.seen_at = etf_utc("2026-09-25T15:00:00.000Z");
     close.value = FieldValue::reported_value(10.0);
-    bool closes_ok = true;
+    bool closes_ok =
+        repo.upsert_sessions(UsEquityCalendar::weekdays_in(QDate(2026, 9, 17), QDate(2026, 9, 24))).is_ok();
     for (const QDate& d :
          {QDate(2026, 9, 17), QDate(2026, 9, 18), QDate(2026, 9, 21), QDate(2026, 9, 22), QDate(2026, 9, 23)}) {
         close.effective_date = d;
         closes_ok = closes_ok && repo.record_observation(close).is_ok();
     }
-    etf_check("five earlier closes recorded", closes_ok);
+    etf_check("five earlier closes and their session rows recorded", closes_ok);
 
     // A second reporting entity with the 2025-12-31 net assets and the first
     // quarter of 2026: January is 100 - 30 + 5 = 75.
@@ -432,6 +434,10 @@ int run_etf_data_selftest() {
     etf_check("as of before the revision was seen, the original bar is used",
               before.value(QLatin1String("value")).toDouble(-1.0) == 0.0 &&
                   before.value(QLatin1String("state")).toString() == QLatin1String("PROXY"));
+    // The second entity was first recorded at 2026-09-26T10:00: for a
+    // knowledge cutoff before that it does not exist.
+    derived.frame.known_at = etf_utc("2026-09-26T09:00:00.000Z");
+    etf_check("a subject recorded after the knowledge cutoff is refused", run_derived_calculations(derived).is_err());
     etf_check("a derived run writes nothing", etf_row_total() == rows_before_derived);
 
     etf_check("transaction rolled back", db.rollback().is_ok());
