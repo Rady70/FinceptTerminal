@@ -546,19 +546,19 @@ void TstIbkrParse::wrapper_process_result_fails_closed() {
 
 void TstIbkrParse::config_needs_the_marketlab_adapter_checkout() {
     // IBKR counts as configured when the file names the pinned Market_Lab
-    // adapter checkout. A file that still names only the retired TRADING_DESK
-    // adapter counts as configured too, so the wrapper refuses it with an
-    // explicit configuration error rather than IBKR silently becoming "not
-    // configured" and its routed symbols moving to another provider.
+    // adapter checkout. A configuration file that names no usable adapter
+    // counts as configured too, so the wrapper refuses it with an explicit
+    // configuration error rather than IBKR silently becoming "not configured"
+    // and its routed symbols moving to another provider.
     IbkrTwsConfig cfg;
     QVERIFY(!cfg.is_configured());
     cfg.adapter_root = QStringLiteral("   ");
     QVERIFY(!cfg.is_configured());
     cfg.adapter_root = QStringLiteral("E:/MarketLab-IBKR");
     QVERIFY(cfg.is_configured());
-    IbkrTwsConfig retired;
-    retired.names_retired_adapter = true;
-    QVERIFY(retired.is_configured());
+    IbkrTwsConfig without_adapter;
+    without_adapter.file_present = true;
+    QVERIFY(without_adapter.is_configured());
 }
 
 QTEST_GUILESS_MAIN(TstIbkrParse)

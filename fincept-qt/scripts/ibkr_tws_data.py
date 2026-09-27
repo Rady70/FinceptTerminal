@@ -34,12 +34,9 @@ as observed. If the repository pin, official dependency, local configuration,
 or output shape cannot be verified, the command fails closed with a typed
 failure instead of falling back to another provider.
 
-The value/identity checks below are adapted from the qualified
-``qualify_ibkr_tws.py`` validators of the retired TRADING_DESK project
-(contract identity, snapshot value sanity, recent-daily-bar sanity and
-freshness). They were re-implemented here, not imported, because that
-qualifier was control machinery MarketLab deliberately never consumed; the
-rules are the same.
+The value/identity checks below (contract identity, snapshot value sanity,
+recent-daily-bar sanity and freshness) are implemented in this wrapper;
+nothing outside it is imported for them.
 
 Configuration (default ``%FINCEPT_DATA_DIR%/ibkr_tws.json``, or ``--config``)::
 
@@ -104,10 +101,6 @@ IBKR_UNSET_DOUBLE = 1.7976931348623157e308
 IBKR_UNSET_INTEGER = 2147483647
 HISTORY_MAX_AGE_DAYS = 45
 ADAPTER_PACKAGE_RELATIVE = Path("ibkr_tws")
-# Configuration keys of the retired TRADING_DESK adapter. They are never read;
-# when adapter_root is missing, the error names them, so a configuration from
-# before the move is recognized at once.
-RETIRED_CONFIG_KEYS = ("trading_desk_root", "trading_desk_commit")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 ENTITLEMENT_HINTS = (
     "not subscribed",
@@ -237,14 +230,7 @@ def load_config(path: str | Path, overrides: dict[str, Any] | None = None) -> Co
 
     root_raw = _pick(overrides, raw, "adapter_root")
     if not isinstance(root_raw, str) or not root_raw.strip():
-        retired = [name for name in RETIRED_CONFIG_KEYS if name in raw]
-        hint = (
-            f"; {' and '.join(retired)} name the retired TRADING_DESK adapter and are not used: set adapter_root to "
-            "a clean checkout of Rady70/Market_Lab and adapter_commit to its pinned commit"
-            if retired
-            else ""
-        )
-        raise WrapperError("IBKR_CONFIG_INVALID", "config", "adapter_root is required" + hint)
+        raise WrapperError("IBKR_CONFIG_INVALID", "config", "adapter_root is required")
     root = Path(root_raw).expanduser()
 
     commit = raw.get("adapter_commit")

@@ -745,26 +745,18 @@ class IbkrWrapperTest(unittest.TestCase):
                     if expected is None:
                         self.assertNotIn("stock_type", row)
 
-    def test_retired_trading_desk_keys_are_named_but_never_used(self) -> None:
-        # A configuration from before the move names the retired adapter keys
-        # in its error; beside the adapter keys they are ignored, and the
-        # pinned Market_Lab checkout is the one imported.
-        retired = {"trading_desk_root": str(self.root / "no_such_checkout"), "trading_desk_commit": "1" * 40}
-        path = self.root / "config_retired_only.json"
+    def test_config_without_adapter_root_is_refused(self) -> None:
+        # Without adapter_root there is no adapter to import: the wrapper
+        # refuses with a configuration error before it touches IBKR.
+        path = self.root / "config_without_adapter.json"
         config = json.loads(self._write_config().read_text(encoding="utf-8"))
         del config["adapter_root"]
         del config["adapter_commit"]
-        config.update(retired)
         path.write_text(json.dumps(config), encoding="utf-8")
         code, payload = self._run(path, "probe")
         self.assertEqual(code, 1)
         self.assertEqual(payload["failure"]["type"], "IBKR_CONFIG_INVALID")
         self.assertIn("adapter_root is required", payload["failure"]["message"])
-        self.assertIn("trading_desk_root and trading_desk_commit", payload["failure"]["message"])
-
-        code, payload = self._run(self._write_config(**retired), "probe")
-        self.assertEqual(code, 0, payload)
-        self.assertEqual(payload["adapter"]["commit"], self.commit)
 
 
 if __name__ == "__main__":

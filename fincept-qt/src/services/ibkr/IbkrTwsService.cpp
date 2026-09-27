@@ -52,10 +52,10 @@ IbkrTwsConfig IbkrTwsService::load_config() const {
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
     if (!document.isObject())
         return cfg;
+    cfg.file_present = true;
     const QJsonObject object = document.object();
     cfg.adapter_root = object.value(QLatin1String("adapter_root")).toString();
     cfg.adapter_commit = object.value(QLatin1String("adapter_commit")).toString();
-    cfg.names_retired_adapter = object.contains(QLatin1String("trading_desk_root"));
     cfg.ibapi_path = object.value(QLatin1String("ibapi_path")).toString();
     cfg.host = object.value(QLatin1String("host")).toString(cfg.host);
     cfg.port = object.value(QLatin1String("port")).toInt(cfg.port);

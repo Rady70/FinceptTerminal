@@ -40,12 +40,12 @@ struct IbkrTwsConfig {
     QString config_path;    ///< ignored local JSON file actually read
     QString adapter_root;   ///< clean checkout of Rady70/Market_Lab, which holds MarketLab's adapter (ibkr_tws/)
     QString adapter_commit; ///< the commit that checkout is pinned to
-    /// The file still names the retired TRADING_DESK adapter
-    /// (`trading_desk_root`). It counts as configured, so the wrapper's
-    /// explicit configuration error reaches every consumer, instead of IBKR
-    /// silently becoming "not configured" and routed symbols moving to another
-    /// provider.
-    bool names_retired_adapter = false;
+    /// The configuration file exists and is a JSON object. One that names no
+    /// usable adapter (no adapter_root) still counts as configured, so the
+    /// wrapper's explicit configuration error reaches every consumer, instead
+    /// of IBKR silently becoming "not configured" and routed symbols moving to
+    /// another provider.
+    bool file_present = false;
     QString ibapi_path;
     QString host = QStringLiteral("127.0.0.1");
     int port = 7496;
@@ -57,7 +57,7 @@ struct IbkrTwsConfig {
     /// still name a symbol directly.
     QStringList symbols;
 
-    bool is_configured() const { return !adapter_root.trimmed().isEmpty() || names_retired_adapter; }
+    bool is_configured() const { return file_present || !adapter_root.trimmed().isEmpty(); }
 };
 
 /// Runtime identity observed for one command, as reported by the adapter.

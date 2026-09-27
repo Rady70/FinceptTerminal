@@ -24,6 +24,7 @@
 #include "core/keys/KeyConfigManager.h"
 #include "core/layout/DockLayoutSelftest.h"
 #include "core/logging/Logger.h"
+#include "core/logging/QtMessageRouting.h"
 #include "core/session/ScreenStateManager.h"
 #include "core/session/SessionManager.h"
 #include "core/symbol/SymbolGroup.h"
@@ -386,6 +387,24 @@ int main(int argc, char* argv[]) {
     fincept::services::RelationshipMapService::instance().ensure_registered_with_hub();
     fincept::services::ma::MAAnalyticsService::instance().ensure_registered_with_hub();
 
+    // MarketLab's own headless commands (`--etf-data`, `--selftest-etf-data`,
+    // `--selftest-ibkr`) do one job against the profile and exit. They need
+    // none of the dashboard start-up work scheduled below: the pre-warm, the
+    // deferred service registrations and the news pruning. Their event loops
+    // used to run it anyway, so an ETF ingest also fetched news feeds over
+    // HTTP, requested 53 market quotes through a Python daemon it launched and
+    // then waited up to 2 s at exit to stop, and still had network threads
+    // running when the process ended.
+    const bool marketlab_headless = [argc, argv]() {
+        if (fincept::marketlab::etf_headless_command_requested(argc, argv))
+            return true;
+        for (int i = 1; i < argc; ++i) {
+            if (qstrcmp(argv[i], "--selftest-ibkr") == 0)
+                return true;
+        }
+        return false;
+    }();
+
     // ── Pre-warm the dashboard topics ────────────────────────────────────────
     // The user spends real time on the login / setup / recovery flow before
     // the dashboard ever paints. Kick the hub now so producers start fetching
@@ -400,7 +419,7 @@ int main(int argc, char* argv[]) {
     // batch below) warm themselves on their own next scheduler pass once
     // subscribers exist; pre-warming them here would orphan-log because
     // ensure_registered_with_hub() hasn't run for them yet.
-    QTimer::singleShot(0, qApp, []() {
+    const auto prewarm_dashboard_topics = []() {
         auto& hub = fincept::datahub::DataHub::instance();
         QStringList topics;
 
@@ -431,7 +450,9 @@ int main(int argc, char* argv[]) {
         // limits still apply at dispatch (DataHub::flush_coalesced_requests).
         hub.request(topics, /*force=*/true);
         LOG_INFO("App", QString("Pre-warmed %1 dashboard topics during login screen").arg(topics.size()));
-    });
+    };
+    if (!marketlab_headless)
+        QTimer::singleShot(0, qApp, prewarm_dashboard_topics);
 
     // ── Deferred service init — fires after first window paint ───────────────
     // These services back tab-specific screens (F&O, prediction markets,
@@ -490,7 +511,8 @@ int main(int argc, char* argv[]) {
         LOG_INFO("App", "Deferred service init complete");
     };
 
-    post_chain({init_hub_producers, init_broker_and_storage_timers});
+    if (!marketlab_headless)
+        post_chain({init_hub_producers, init_broker_and_storage_timers});
 
     // Create all application directories under %LOCALAPPDATA%/com.marketlab.terminal
     fincept::AppPaths::ensure_all();
@@ -522,28 +544,10 @@ int main(int argc, char* argv[]) {
     fincept::services::NotebookLibraryService::instance().seed_into_files();
 
     // P3.18 — route Qt's own qDebug/qWarning/qCritical messages into our log
-    // file so framework/3rd-party warnings are visible in Release builds.
-    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& ctx, const QString& msg) {
-        const char* category = (ctx.category && *ctx.category) ? ctx.category : "Qt";
-        switch (type) {
-            case QtDebugMsg:
-                fincept::Logger::instance().debug(category, msg);
-                break;
-            case QtInfoMsg:
-                fincept::Logger::instance().info(category, msg);
-                break;
-            case QtWarningMsg:
-                fincept::Logger::instance().warn(category, msg);
-                break;
-            case QtCriticalMsg:
-                fincept::Logger::instance().error(category, msg);
-                break;
-            case QtFatalMsg:
-                fincept::Logger::instance().error(category, msg);
-                fincept::Logger::instance().flush_and_close();
-                break;
-        }
-    });
+    // file so framework/3rd-party warnings are visible in Release builds, until
+    // the application object is destroyed (QtMessageRouting.h says why the
+    // routing stops there).
+    fincept::install_qt_message_routing();
     {
         auto& log = fincept::Logger::instance();
         auto& cfg = fincept::AppConfig::instance();
@@ -673,7 +677,7 @@ int main(int argc, char* argv[]) {
         // NewsArticleRepository uses the main-thread DB connection (not thread-safe),
         // so we must not run this on a worker thread — QTimer::singleShot(0) posts it
         // to the main thread's event queue instead.
-        {
+        if (!marketlab_headless) {
             int64_t news_cutoff = QDateTime::currentSecsSinceEpoch() - (30LL * 86400);
             QTimer::singleShot(0, [news_cutoff]() {
                 fincept::NewsArticleRepository::instance().prune_older_than(news_cutoff);
@@ -768,9 +772,10 @@ int main(int argc, char* argv[]) {
     // foundation command. It needs only the opened database, so it runs here,
     // before the session manager, the MCP tool registration (whose deferred
     // start would otherwise launch external MCP servers inside this short
-    // process) and any window. It returns without entering the GUI event loop,
-    // so the shell's clean-shutdown marker is written explicitly, exactly as
-    // the database-error path above does.
+    // process) and any window; the dashboard start-up work scheduled above is
+    // skipped for it (marketlab_headless). It returns without entering the GUI
+    // event loop, so the shell's clean-shutdown marker is written explicitly,
+    // exactly as the database-error path above does.
     if (fincept::marketlab::etf_data_cli_requested(argc, argv)) {
         const int etf_rc = fincept::marketlab::run_etf_data_cli(argc, argv);
         fincept::TerminalShell::instance().shutdown();
