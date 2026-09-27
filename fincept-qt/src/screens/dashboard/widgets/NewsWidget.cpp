@@ -2,9 +2,9 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "services/news/NewsService.h"
 #include "ui/theme/Theme.h"
 
-#include <QDateTime>
 #include <QLabel>
 
 namespace fincept::screens::widgets {
@@ -115,12 +115,13 @@ void NewsWidget::populate(const QVector<services::NewsArticle>& articles) {
         if (article.headline.isEmpty())
             continue;
 
-        // Time column: prefer NewsArticle.time, fall back to derived HH:MM
-        // from sort_ts (unix seconds) if `time` is missing.
-        QString time_str = article.time.left(5);
-        if (time_str.isEmpty() && article.sort_ts > 0) {
-            time_str = QDateTime::fromSecsSinceEpoch(article.sort_ts).toString(QStringLiteral("HH:mm"));
-        }
+        // Time column: show the article's age ("45s", "12m", "3h", "2d") so a
+        // current headline can never read as a stale date. The provider's
+        // formatted timestamp was cut to its first five characters, which
+        // turned "Sep 26, 02:15" into "Sep 2" for every day of the month from
+        // the 10th on. Undated articles keep the provider's own text so a
+        // missing date is never promoted to "now".
+        QString time_str = article.sort_ts > 0 ? services::relative_time(article.sort_ts) : article.time;
 
         auto* row = new QWidget(this);
         row->setStyleSheet(QString("border-bottom: 1px solid %1;").arg(ui::colors::BORDER_DIM()));
@@ -131,6 +132,7 @@ void NewsWidget::populate(const QVector<services::NewsArticle>& articles) {
         if (!time_str.isEmpty()) {
             auto* time_lbl = new QLabel(time_str);
             time_lbl->setFixedWidth(36);
+            time_lbl->setToolTip(article.time.isEmpty() ? time_str : article.time);
             time_lbl->setStyleSheet(
                 QString("color: %1; font-size: 9px; background: transparent;").arg(ui::colors::CYAN()));
             rl->addWidget(time_lbl);

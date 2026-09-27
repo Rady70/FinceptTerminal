@@ -335,6 +335,15 @@ fincept_add_test(tst_cftc_monitor
 fincept_add_test(tst_cftc_monitor_visual
     tst_cftc_monitor_visual.cpp)
 
+# MarketLab: the dashboard's responsive-column view
+# (screens/dashboard/canvas/GridLayout.h): a narrow pane derives its view from
+# the saved arrangement instead of compacting the saved cells in place, so
+# widening the pane restores the saved arrangement exactly and no save can
+# persist a compacted view. Pins the six-widget arrangement a startup shrink
+# previously scrambled. Header-only over Qt Core; no app sources.
+fincept_add_test(tst_dashboard_layout
+    tst_dashboard_layout.cpp)
+
 # MarketLab ETF Capital Flows, Batch B — the pure rules of the data foundation:
 # the U.S. equity session calendar (NYSE's published holidays and early closes,
 # checked against the 501-session window Batch A2 observed), the SEC and IBKR
@@ -419,4 +428,4 @@ fincept_add_test(tst_qt_message_routing
     "${PROJECT_SOURCE_DIR}/src/core/logging/QtMessageRouting.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_http_get_raw, tst_qt_message_routing")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_http_get_raw, tst_qt_message_routing")

@@ -115,6 +115,55 @@ inline QVector<GridItem> compact_vertical(QVector<GridItem> items) {
     return placed;
 }
 
+/// Build the responsive view of a saved arrangement for a narrower column
+/// count: clamp every item into `cols`, then pack rows downward in the
+/// arrangement's own (y, x) order so no two items overlap.
+///
+/// Callers derive every view from the canonical arrangement — never from a
+/// previous view — so repeated width changes are idempotent and the saved
+/// arrangement stays untouched for the moment the pane widens again.
+inline QVector<GridItem> responsive_items(const QVector<GridItem>& items, int cols) {
+    if (cols <= 0)
+        return items;
+
+    QVector<GridItem> clamped;
+    clamped.reserve(items.size());
+    for (auto item : items) {
+        item.cell.w = std::max(1, std::min(item.cell.w, cols));
+        item.cell.x = std::max(0, std::min(item.cell.x, cols - item.cell.w));
+        clamped.append(item);
+    }
+    std::stable_sort(clamped.begin(), clamped.end(), [](const GridItem& a, const GridItem& b) {
+        return a.cell.y != b.cell.y ? a.cell.y < b.cell.y : a.cell.x < b.cell.x;
+    });
+
+    QVector<GridItem> placed;
+    placed.reserve(clamped.size());
+    for (auto item : clamped) {
+        if (item.is_static) {
+            placed.append(item);
+            continue;
+        }
+        for (int y = 0;; ++y) {
+            GridCell candidate = item.cell;
+            candidate.y = y;
+            bool fits = true;
+            for (const auto& p : placed) {
+                if (p.instance_id != item.instance_id && cells_overlap(candidate, p.cell)) {
+                    fits = false;
+                    break;
+                }
+            }
+            if (fits) {
+                item.cell = candidate;
+                break;
+            }
+        }
+        placed.append(item);
+    }
+    return placed;
+}
+
 /// Find first available position for a widget of size (w, h).
 inline GridCell find_first_fit(const QVector<GridItem>& items, int w, int h, int cols) {
     for (int row = 0; row < 1000; ++row) {

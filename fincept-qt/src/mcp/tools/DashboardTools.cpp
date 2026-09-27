@@ -325,7 +325,7 @@ std::vector<ToolDef> get_dashboard_tools() {
                     resolve(ToolResult::fail("Dashboard not open"));
                     return;
                 }
-                auto layout = canvas->current_layout();
+                auto layout = canvas->canonical_layout();
                 auto r =
                     DashboardLayoutRepository::instance().save_layout(layout, args["profile_name"].toString("default"));
                 if (r.is_err()) {

@@ -52,20 +52,12 @@ DashboardCanvas::DashboardCanvas(QWidget* parent) : QWidget(parent) {
         if (w <= 0)
             return;
 
-        // Restore to canonical columns if width now permits it — user's layout
-        // should snap back when they expand the panel again.
+        // Restore to canonical columns if width now permits it — the user's
+        // saved arrangement must snap back when they expand the panel again.
         const int target_cols = (w >= 1000)  ? canonical_cols_
                                 : (w >= 600) ? std::min(canonical_cols_, 9)
                                              : std::min(canonical_cols_, 6);
-
-        if (target_cols != layout_.cols) {
-            layout_.cols = target_cols;
-            for (auto& item : layout_.items) {
-                item.cell.w = std::min(item.cell.w, layout_.cols);
-                item.cell.x = std::min(item.cell.x, layout_.cols - item.cell.w);
-            }
-            layout_.items = compact_vertical(layout_.items);
-        }
+        apply_responsive_cols(target_cols);
 
         if (!dragging_tile_ && !resizing_tile_)
             reflow_tiles();
@@ -86,15 +78,21 @@ void DashboardCanvas::load_layout(const GridLayout& layout) {
         t->deleteLater();
     tiles_.clear();
     layout_ = layout;
+    forget_canonical_layout();
 
     // Record the canonical column count from the saved layout — this is what
     // the user designed for. Responsive shrink is allowed on narrow viewports
     // but we restore to this when the panel expands back to full width.
     canonical_cols_ = layout_.cols > 0 ? layout_.cols : 12;
+    layout_.cols = canonical_cols_;
 
-    // Apply responsive columns for current width without clamping canonical_cols_
-    if (width() > 0)
-        layout_.cols = responsive_cols(width());
+    // Apply responsive columns for current width without touching the saved
+    // arrangement (apply_responsive_cols keeps the canonical copy).
+    if (width() > 0) {
+        const int initial_cols = responsive_cols(width());
+        if (initial_cols < canonical_cols_)
+            apply_responsive_cols(initial_cols);
+    }
 
     // Preserve unknown entries losslessly in layout_. They may belong to a
     // feature removed from this build, and merely opening the Dashboard must
@@ -175,6 +173,8 @@ void DashboardCanvas::add_widget(const QString& widget_type_id) {
 
     layout_.items.append(item);
     layout_.items = compact_vertical(layout_.items);
+    // A geometry edit supersedes the remembered canonical arrangement.
+    forget_canonical_layout();
 
     auto* tile = new WidgetTile(item.instance_id, widget, this);
     connect_tile(tile);
@@ -200,6 +200,8 @@ void DashboardCanvas::remove_widget(const QString& instance_id) {
     }
 
     layout_.items = compact_vertical(layout_.items);
+    // A geometry edit supersedes the remembered canonical arrangement.
+    forget_canonical_layout();
     reflow_tiles(true);
     update_canvas_height();
     emit widget_count_changed(tiles_.size());
@@ -300,6 +302,7 @@ void DashboardCanvas::on_drag_released(WidgetTile* tile, QPoint /*canvas_pos*/) 
     dragging_tile_ = nullptr;
     tile->set_dragging(false);
     hide_placeholder();
+    forget_canonical_layout();
     reflow_tiles(true);
     update_canvas_height();
     emit layout_changed(layout_);
@@ -410,6 +413,7 @@ void DashboardCanvas::on_resize_released(WidgetTile* tile) {
     resizing_tile_ = nullptr;
     tile->set_resizing(false);
     hide_placeholder();
+    forget_canonical_layout();
     reflow_tiles(true);
     update_canvas_height();
     emit layout_changed(layout_);
@@ -513,6 +517,66 @@ void DashboardCanvas::paintEvent(QPaintEvent* event) {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+void DashboardCanvas::apply_responsive_cols(int target_cols) {
+    if (target_cols <= 0 || target_cols == layout_.cols)
+        return;
+
+    if (target_cols == canonical_cols_) {
+        // Widening back to the design width: restore the arrangement the user
+        // saved instead of keeping the compacted responsive view.
+        if (canonical_saved_) {
+            for (auto& item : layout_.items) {
+                for (const auto& canon : canonical_layout_.items) {
+                    if (canon.instance_id == item.instance_id) {
+                        item.cell = canon.cell;
+                        break;
+                    }
+                }
+            }
+            canonical_saved_ = false;
+        }
+        layout_.cols = target_cols;
+        return;
+    }
+
+    // Narrowing: remember the canonical arrangement once, then derive the
+    // view from it. Deriving from the canonical copy — never from a previous
+    // view — keeps repeated width changes idempotent and leaves the saved
+    // geometry untouched for the moment the pane widens again.
+    if (!canonical_saved_) {
+        canonical_layout_ = layout_;
+        canonical_saved_ = true;
+    }
+    layout_.cols = target_cols;
+    layout_.items = responsive_items(canonical_layout_.items, target_cols);
+}
+
+void DashboardCanvas::forget_canonical_layout() {
+    canonical_saved_ = false;
+    canonical_layout_ = {};
+}
+
+GridLayout DashboardCanvas::canonical_layout() const {
+    if (!canonical_saved_)
+        return layout_;
+
+    GridLayout out = canonical_layout_;
+    out.cols = canonical_cols_;
+    out.row_h = layout_.row_h;
+    out.margin = layout_.margin;
+    // Carry over per-instance config edits made while the responsive view was
+    // active (widget settings) so saving never reverts them.
+    for (auto& item : out.items) {
+        for (const auto& current : layout_.items) {
+            if (current.instance_id == item.instance_id) {
+                item.config = current.config;
+                break;
+            }
+        }
+    }
+    return out;
+}
 
 void DashboardCanvas::reflow_tiles(bool animate) {
     if (width() <= 0)

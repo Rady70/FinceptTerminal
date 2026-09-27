@@ -19,6 +19,10 @@ class DashboardCanvas : public QWidget {
 
     void load_layout(const GridLayout& layout);
     GridLayout current_layout() const { return layout_; }
+    /// The arrangement to persist. While a narrow responsive view is active
+    /// this is the saved canonical arrangement (current row height, margins
+    /// and per-instance config), never the compacted view on screen.
+    GridLayout canonical_layout() const;
     void apply_template(const QString& template_id);
     void add_widget(const QString& widget_type_id);
     void remove_widget(const QString& instance_id);
@@ -56,6 +60,13 @@ class DashboardCanvas : public QWidget {
     WidgetTile* tile_for_id(const QString& instance_id) const;
     GridItem* item_for_id(const QString& instance_id);
 
+    /// Switch the rendered grid to `target_cols`. Narrowing keeps a copy of
+    /// the canonical arrangement and renders a derived view; widening back to
+    /// canonical_cols_ restores that copy exactly.
+    void apply_responsive_cols(int target_cols);
+    /// Drop the remembered canonical arrangement — a user edit supersedes it.
+    void forget_canonical_layout();
+
     GridLayout layout_;
     QVector<WidgetTile*> tiles_;
     PlaceholderOverlay* placeholder_ = nullptr;
@@ -84,6 +95,12 @@ class DashboardCanvas : public QWidget {
     // The column count the user last explicitly set (via load/apply/drag).
     // Responsive shrink is allowed, but we restore this when width permits.
     int canonical_cols_ = 12;
+
+    // Snapshot of the saved arrangement taken before the first responsive
+    // shrink. It is the source of every narrow view, so widening the pane
+    // restores the user's layout instead of persisting a compacted one.
+    GridLayout canonical_layout_;
+    bool canonical_saved_ = false;
 
     fincept::ui::ThemeTokens tokens_{};
 };
