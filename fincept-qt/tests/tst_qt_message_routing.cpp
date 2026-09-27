@@ -31,8 +31,35 @@ class TestQtMessageRouting : public QObject {
     Q_OBJECT
 
   private slots:
+    // Declared first: it needs the process's first Logger call to come before
+    // any application object exists.
+    void logger_used_before_the_application_still_closes_with_it();
     void routes_to_the_logger_only_while_the_application_exists();
 };
+
+void TestQtMessageRouting::logger_used_before_the_application_still_closes_with_it() {
+    // main() can log before the application object exists (a profile-manifest
+    // error). That early call must not use up the Logger's close routine: the
+    // Logger still closes its file when the application object is destroyed,
+    // the moment the routing stops forwarding Qt's messages.
+    fincept::Logger::instance().info(QStringLiteral("routing"), QStringLiteral("before the application"));
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath("early.log");
+
+    int argc = 1;
+    char name[] = "tst_qt_message_routing";
+    char* argv[] = {name, nullptr};
+    {
+        QCoreApplication app(argc, argv);
+        fincept::Logger::instance().set_file(path);
+        fincept::Logger::instance().info(QStringLiteral("routing"), QStringLiteral("while the application exists"));
+    }
+    fincept::Logger::instance().info(QStringLiteral("routing"), QStringLiteral("after the application"));
+    const QByteArray text = contents(path);
+    QVERIFY(text.contains("while the application exists"));
+    QVERIFY(!text.contains("after the application"));
+}
 
 void TestQtMessageRouting::routes_to_the_logger_only_while_the_application_exists() {
     QTemporaryDir dir;

@@ -15,7 +15,7 @@ namespace fincept {
 namespace {
 
 // P1.8 — rotate when file exceeds this size. Keep 3 historical files.
-constexpr qint64 kRotateBytes = 5 * 1024 * 1024; // 5 MB
+constexpr qint64 kRotateBytes = 5LL * 1024 * 1024; // 5 MB
 constexpr int kRotateKeep = 3;
 
 // P1.5 + P1.6 — date + local time + offset suffix.
@@ -40,11 +40,14 @@ static_assert(kLevelNames.size() == static_cast<std::size_t>(LogLevel::Fatal) + 
 Logger& Logger::instance() {
     static Logger s;
     // Flush-on-exit hook — runs before static destruction, while Qt is still alive.
-    // Guarded so multiple instance() calls don't register duplicate routines.
+    // Registered once, on the first call made while an application object exists:
+    // a call before it (main() can log a profile-manifest error that early) must
+    // not use up the registration, or the file would stay open past the point
+    // where QtMessageRouting stops forwarding Qt's messages.
     static std::atomic<bool> registered{false};
-    bool expected = false;
-    if (registered.compare_exchange_strong(expected, true)) {
-        if (QCoreApplication::instance())
+    if (!registered.load(std::memory_order_acquire) && QCoreApplication::instance()) {
+        bool expected = false;
+        if (registered.compare_exchange_strong(expected, true))
             qAddPostRoutine([]() { Logger::instance().flush_and_close(); });
     }
     return s;
