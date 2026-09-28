@@ -178,6 +178,18 @@ class FallbackSnapshotTests(unittest.TestCase):
                 fomc.fetch_calendar(transport, fallback_path=bad)
         self.assertEqual(caught.exception.code, "FOMC_CALENDAR_UNAVAILABLE")
 
+    def test_unreadable_fallback_keeps_fomc_provider_attribution(self):
+        transport = FakeTransport().add_text(
+            "fomccalendars", TransportError("HTTP 403", status_code=403)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            unreadable = Path(directory) / "fallback.csv"
+            unreadable.mkdir()  # exists, but read_text raises OSError
+            with self.assertRaises(FedwatchError) as caught:
+                fomc.fetch_calendar(transport, fallback_path=unreadable)
+        self.assertEqual(caught.exception.provider, "fomc_calendar")
+        self.assertEqual(caught.exception.code, "FOMC_CALENDAR_UNAVAILABLE")
+
 
 if __name__ == "__main__":
     unittest.main()

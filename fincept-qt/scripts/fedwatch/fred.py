@@ -13,6 +13,8 @@ not add a spoofed browser UA here.
 
 from __future__ import annotations
 
+import math
+
 from fedwatch import timeutil
 from fedwatch.errors import PROVIDER_FRED, FedwatchError
 from fedwatch.transport import Transport, TransportError
@@ -78,11 +80,12 @@ def fetch_series(transport: Transport, series_id: str) -> tuple[list[dict], str]
 def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
     """Fetch the current target range from DFEDTARU/DFEDTARL.
 
-    Validates that the two series are internally consistent (upper >= lower)
-    and that the latest observation date is not in the future beyond the
-    retrieval day. Returns the current range, both latest observation dates,
-    and a small tail of recent observations for context. Raises
-    :class:`FedwatchError` (provider ``fred``) on any failure.
+    The current target range must be a single point-in-time pair, so the two
+    series' latest observations must fall on the same date; a lagging series
+    would otherwise let MarketLab synthesize a range that never existed. The
+    range itself must satisfy the previously qualified validity requirement
+    ``upper > lower >= 0`` with finite bounds. Any violation raises
+    :class:`FedwatchError` (provider ``fred``); no range is synthesized.
     """
     upper_rows, upper_url = fetch_series(transport, "DFEDTARU")
     lower_rows, _lower_url = fetch_series(transport, "DFEDTARL")
@@ -90,21 +93,40 @@ def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
 
     latest_upper = upper_rows[-1]
     latest_lower = lower_rows[-1]
+    upper_value = latest_upper["value"]
+    lower_value = latest_lower["value"]
 
-    if latest_upper["value"] < latest_lower["value"]:
+    if latest_upper["date"] != latest_lower["date"]:
         raise FedwatchError(
             PROVIDER_FRED,
             "FRED_TARGET_RANGE_INVALID",
-            "FRED target range is inconsistent: upper bound below lower bound",
+            "FRED upper and lower series have different latest observation dates; "
+            "a point-in-time target range cannot be constructed",
             detail={
-                "upper": latest_upper["value"],
-                "lower": latest_lower["value"],
+                "upper_observation_date": latest_upper["date"].isoformat(),
+                "lower_observation_date": latest_lower["date"].isoformat(),
+                "same_latest_date": False,
+            },
+        )
+
+    if (
+        not math.isfinite(upper_value)
+        or not math.isfinite(lower_value)
+        or not (upper_value > lower_value >= 0)
+    ):
+        raise FedwatchError(
+            PROVIDER_FRED,
+            "FRED_TARGET_RANGE_INVALID",
+            "FRED target range is not a valid upper > lower >= 0 pair",
+            detail={
+                "upper": upper_value,
+                "lower": lower_value,
                 "latest_observation_date": latest_upper["date"].isoformat(),
             },
         )
 
     today = retrieved_at.date()
-    if latest_upper["date"] > today or latest_lower["date"] > today:
+    if latest_upper["date"] > today:
         raise FedwatchError(
             PROVIDER_FRED,
             "FRED_TARGET_RANGE_INVALID",
@@ -132,23 +154,22 @@ def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
         "source": SOURCE_LABEL,
         "method": "FRED target-range bounds",
         "target_range": {
-            "lower": latest_lower["value"],
-            "upper": latest_upper["value"],
+            "lower": lower_value,
+            "upper": upper_value,
         },
-        "latest_observation_date": max(
-            latest_upper["date"], latest_lower["date"]
-        ).isoformat(),
+        "latest_observation_date": latest_upper["date"].isoformat(),
+        "same_latest_date": True,
         "series": {
             "upper": {
                 "series_id": "DFEDTARU",
                 "observation_date": latest_upper["date"].isoformat(),
-                "value": latest_upper["value"],
+                "value": upper_value,
                 "url": upper_url,
             },
             "lower": {
                 "series_id": "DFEDTARL",
                 "observation_date": latest_lower["date"].isoformat(),
-                "value": latest_lower["value"],
+                "value": lower_value,
                 "url": FRED_CSV_URL.format(series_id="DFEDTARL"),
             },
         },

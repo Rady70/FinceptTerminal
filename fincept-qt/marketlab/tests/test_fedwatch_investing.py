@@ -188,6 +188,36 @@ class NormalizationRegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=probabilities):
                 investing.normalize_cumulative(self.frame(probabilities))
 
+    def test_malformed_rate_ranges_are_rejected_before_any_conversion(self):
+        # The previously qualified input-quality boundary: finite bounds,
+        # non-negative lows, an ordered plausible range, and probabilities
+        # inside [0, 100] before the expected-rate conversion.
+        cases = {
+            "equal_bounds": [(3.50, 3.75, 50.0), (4.00, 4.00, 50.0)],
+            "reversed_bounds": [(3.50, 3.75, 50.0), (4.25, 4.00, 50.0)],
+            "negative_low": [(3.50, 3.75, 50.0), (-0.25, 0.00, 50.0)],
+            "implausible_high": [(3.50, 3.75, 50.0), (4.00, 10.5, 50.0)],
+            "non_finite_high": [(3.50, 3.75, 50.0), (4.00, float("nan"), 50.0)],
+            "probability_above_100": [(3.50, 3.75, 150.0), (4.00, 4.25, -50.0)],
+        }
+        for label, buckets in cases.items():
+            rows = [
+                {
+                    "meeting_date": "2026-10-28",
+                    "rate_low": low,
+                    "rate_high": high,
+                    "probability_pct": probability,
+                }
+                for low, high, probability in buckets
+            ]
+            with self.assertRaises(ValueError, msg=label) as caught:
+                investing.normalize_cumulative(rows)
+            self.assertEqual(
+                getattr(caught.exception, "code", None),
+                "INVESTING_DISTRIBUTION_INVALID",
+                label,
+            )
+
     def test_empty_distribution_is_rejected(self):
         with self.assertRaises(ValueError):
             investing.normalize_cumulative([])
@@ -327,6 +357,21 @@ class FetchDistributionsTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             investing.fetch_distributions(transport)
         self.assertIsInstance(caught.exception, FedwatchError)
+        self.assertEqual(caught.exception.provider, "investing")
+        self.assertEqual(caught.exception.code, "INVESTING_DISTRIBUTION_INVALID")
+
+    def test_malformed_rate_range_is_an_investing_provider_error(self):
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(4.00, 4.00, 50.0), (4.00, 4.25, 50.0)],
+                )
+            ]
+        )
+        transport = FakeTransport().add_text("fed-rate-monitor", html)
+        with self.assertRaises(FedwatchError) as caught:
+            investing.fetch_distributions(transport)
         self.assertEqual(caught.exception.provider, "investing")
         self.assertEqual(caught.exception.code, "INVESTING_DISTRIBUTION_INVALID")
 

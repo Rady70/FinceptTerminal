@@ -58,6 +58,7 @@ class FredTargetRangeTests(unittest.TestCase):
         self.assertEqual(payload["target_range"], {"lower": 3.75, "upper": 4.0})
         self.assertEqual(payload["latest_observation_date"], "2026-09-28")
         self.assertEqual(payload["retrieved_at"], "2026-09-28T12:00:00Z")
+        self.assertTrue(payload["same_latest_date"])
         self.assertEqual(payload["series"]["upper"]["series_id"], "DFEDTARU")
         self.assertEqual(payload["series"]["lower"]["series_id"], "DFEDTARL")
         self.assertEqual(len(payload["recent_observations"]), 5)
@@ -75,6 +76,42 @@ class FredTargetRangeTests(unittest.TestCase):
         ).add_text("DFEDTARL", csv_text(["2026-09-28,3.75"]))
         with self.assertRaises(FedwatchError) as caught:
             fred.fetch_target_range(transport)
+        self.assertEqual(caught.exception.code, "FRED_TARGET_RANGE_INVALID")
+
+    def test_equal_bounds_are_rejected(self):
+        transport = FakeTransport().add_text(
+            "DFEDTARU", csv_text(["2026-09-28,3.75"])
+        ).add_text("DFEDTARL", csv_text(["2026-09-28,3.75"]))
+        with self.assertRaises(FedwatchError) as caught:
+            fred.fetch_target_range(transport)
+        self.assertEqual(caught.exception.provider, "fred")
+        self.assertEqual(caught.exception.code, "FRED_TARGET_RANGE_INVALID")
+
+    def test_negative_bounds_are_rejected(self):
+        transport = FakeTransport().add_text(
+            "DFEDTARU", csv_text(["2026-09-28,0.00"])
+        ).add_text("DFEDTARL", csv_text(["2026-09-28,-0.25"]))
+        with self.assertRaises(FedwatchError) as caught:
+            fred.fetch_target_range(transport)
+        self.assertEqual(caught.exception.code, "FRED_TARGET_RANGE_INVALID")
+
+    def test_non_finite_bounds_are_rejected(self):
+        transport = FakeTransport().add_text(
+            "DFEDTARU", csv_text(["2026-09-28,nan"])
+        ).add_text("DFEDTARL", csv_text(["2026-09-28,3.75"]))
+        with self.assertRaises(FedwatchError) as caught:
+            fred.fetch_target_range(transport)
+        self.assertEqual(caught.exception.code, "FRED_TARGET_RANGE_INVALID")
+
+    def test_different_latest_observation_dates_are_rejected(self):
+        # A lagging lower series must not let MarketLab synthesize a
+        # point-in-time range from two different dates.
+        transport = FakeTransport().add_text(
+            "DFEDTARU", csv_text(["2026-09-24,4.00", "2026-09-28,4.00"])
+        ).add_text("DFEDTARL", csv_text(["2026-09-24,3.75", "2026-09-25,3.75"]))
+        with self.assertRaises(FedwatchError) as caught:
+            fred.fetch_target_range(transport, clock=FixedClock(utc(2026, 9, 28, 12)))
+        self.assertEqual(caught.exception.provider, "fred")
         self.assertEqual(caught.exception.code, "FRED_TARGET_RANGE_INVALID")
 
     def test_future_dated_observation_is_rejected(self):

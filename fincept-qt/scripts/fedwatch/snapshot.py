@@ -46,7 +46,8 @@ METHOD_NOTES = [
     "Polymarket mappings are validated automatically per retrieval: exact U.S. "
     "Eastern event end date, strict Fed-Decision title month/year, and rate "
     "submarket structure. An unverified meeting reports mapping_status "
-    "NOT_FOUND or AMBIGUOUS and no comparison; nothing is guessed.",
+    "NOT_FOUND or AMBIGUOUS and no comparison; a validated mapping whose data "
+    "is not CURRENT likewise yields no current comparison; nothing is guessed.",
     "Batch A is a read-only current-observation capability. No broker, wallet, "
     "order, execution or trading path exists here.",
 ]
@@ -259,6 +260,10 @@ def build_snapshot(
             and fed_section.get("local_probabilities")
             and polymarket_entry is not None
             and polymarket_entry.get("mapping_status") == "VALIDATED"
+            # Batch A compares current expectations only: a stale, partial or
+            # unavailable Polymarket mapping must not produce a "current"
+            # comparison against the fresh Fed-side observation.
+            and polymarket_entry.get("data_status") == "CURRENT"
             and polymarket_entry.get("outcomes")
         ):
             comparison_rows = compare(fed_section["local_probabilities"], polymarket_entry["outcomes"])

@@ -273,7 +273,15 @@ def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str 
 
     snapshot_retrieved_at: str | None = None
     data_lines: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        fallback_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise FedwatchError(
+            PROVIDER_FOMC_CALENDAR,
+            "FOMC_CALENDAR_UNAVAILABLE",
+            f"FOMC fallback snapshot at {path} could not be read: {exc}",
+        ) from exc
+    for line in fallback_text.splitlines():
         if line.startswith(FALLBACK_METADATA_PREFIX):
             payload = line[len(FALLBACK_METADATA_PREFIX):].strip()
             if payload.startswith("snapshot_retrieved_at="):

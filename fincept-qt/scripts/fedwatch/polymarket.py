@@ -550,8 +550,13 @@ def build_section(
 
     Raises :class:`FedwatchError` (provider ``polymarket``) only for
     discovery-level failures; everything else is a per-meeting state
-    (``mapping_status``/``data_status``) plus warnings, so a single event's
-    problem cannot masquerade as a different provider's failure.
+    (``mapping_status``/``data_status``) plus warnings. A validated mapping
+    whose data quality is not ``CURRENT`` additionally records a
+    provider-attributed error (``POLYMARKET_MARKET_DATA_PARTIAL`` /
+    ``_STALE`` / ``_UNAVAILABLE``), so the composite snapshot can never report
+    a partially covered, stale or unavailable mapping as an ordinary
+    successful provider retrieval. ``NOT_FOUND`` and ``AMBIGUOUS`` are
+    mapping-availability states, not provider outages, and stay error-free.
     """
     events, discovery_stats, warnings = discover_candidate_events(transport)
     retrieved_at = clock()
@@ -644,14 +649,33 @@ def build_section(
                     f"than the {FRESHNESS_MAX_AGE_DAYS}-day freshness window "
                     f"(oldest {entry['freshness_days']:.2f} days)"
                 )
-        if entry["data_status"] == "UNAVAILABLE":
+        # A validated mapping whose data quality is not CURRENT is a provider
+        # quality failure for a current-observation snapshot: it must not leave
+        # the provider reported as an ordinary OK with no partial marker.
+        if entry["data_status"] in ("PARTIAL", "STALE", "UNAVAILABLE"):
+            quality_code = {
+                "PARTIAL": "POLYMARKET_MARKET_DATA_PARTIAL",
+                "STALE": "POLYMARKET_MARKET_DATA_STALE",
+                "UNAVAILABLE": "POLYMARKET_MARKET_DATA_UNAVAILABLE",
+            }[entry["data_status"]]
+            quality_message = {
+                "PARTIAL": "Polymarket outcome coverage is incomplete for meeting "
+                f"{meeting_date.isoformat()}",
+                "STALE": "Polymarket outcomes are older than the "
+                f"{FRESHNESS_MAX_AGE_DAYS}-day freshness window for meeting "
+                f"{meeting_date.isoformat()}",
+                "UNAVAILABLE": "no current Polymarket outcome probabilities for meeting "
+                f"{meeting_date.isoformat()}",
+            }[entry["data_status"]]
             provider_errors.append(
                 FedwatchError(
                     PROVIDER_POLYMARKET,
-                    "POLYMARKET_MARKET_DATA_UNAVAILABLE",
-                    f"no current Polymarket outcome probabilities for meeting "
-                    f"{meeting_date.isoformat()}",
-                    detail={"meeting_date": meeting_date.isoformat()},
+                    quality_code,
+                    quality_message,
+                    detail={
+                        "meeting_date": meeting_date.isoformat(),
+                        "data_status": entry["data_status"],
+                    },
                 )
             )
         meetings.append(entry)

@@ -358,6 +358,9 @@ class PriceRetrievalTests(unittest.TestCase):
         self.assertAlmostEqual(entry["freshness_days"], 10.0, places=6)
         self.assertEqual(entry["freshness"]["status"], "STALE")
         self.assertTrue(any("freshness window" in warning for warning in section["warnings"]))
+        self.assertIn(
+            "POLYMARKET_MARKET_DATA_STALE", {error.code for error in section["errors"]}
+        )
 
     def test_mixed_age_outcomes_are_stale_not_current(self):
         # One fresh quote must not mask four three-week-old quotes.
@@ -380,6 +383,9 @@ class PriceRetrievalTests(unittest.TestCase):
         self.assertAlmostEqual(entry["freshness_days"], 20.0, places=6)
         self.assertEqual(entry["freshness"]["status"], "STALE")
         self.assertEqual(entry["latest_observation_date"], "2026-09-27")
+        self.assertIn(
+            "POLYMARKET_MARKET_DATA_STALE", {error.code for error in section["errors"]}
+        )
 
     def test_within_tolerance_future_timestamp_is_current_with_skew_reported(self):
         event = make_fed_decision_event()
@@ -395,6 +401,7 @@ class PriceRetrievalTests(unittest.TestCase):
         entry = section["meetings"][0]
         self.assertEqual(entry["data_status"], "CURRENT")
         self.assertLess(entry["freshness_days"], 0.0)  # skew reported truthfully
+        self.assertEqual(section["errors"], [])
 
     def test_malformed_epoch_degrades_to_null_not_crash(self):
         event = make_fed_decision_event()
@@ -426,7 +433,8 @@ class PriceRetrievalTests(unittest.TestCase):
         missing = next(outcome for outcome in entry["outcomes"] if outcome["outcome_bp"] == 0)
         self.assertIsNone(missing["probability_pct"])
         self.assertTrue(section["warnings"])
-        self.assertEqual(section["errors"], [])
+        codes = {error.code for error in section["errors"]}
+        self.assertIn("POLYMARKET_MARKET_DATA_PARTIAL", codes)
 
     def test_all_prices_missing_is_unavailable_with_provider_error(self):
         event = make_fed_decision_event()

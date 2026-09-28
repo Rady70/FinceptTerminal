@@ -67,6 +67,8 @@ _MEETING_TIME_FORMAT = "%b %d, %Y %I:%M%p ET"
 BP_STEP = 25
 NORMALIZATION_MIN_SUM = 99.5
 NORMALIZATION_MAX_SUM = 100.5
+MAX_PROBABILITY_PCT = 100.0
+MAX_PLAUSIBLE_RATE_HIGH = 10.0
 
 
 def fetch_fed_rate_monitor_html(transport: Transport, url: str = FED_RATE_MONITOR_URL) -> str:
@@ -158,9 +160,11 @@ def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
 
     Returns ``(normalized_rows, records)``. The input is never mutated. The
     correction is the smallest possible: every bucket in a meeting is scaled by
-    the same factor ``100 / raw_sum``. A meeting whose raw sum falls outside
-    [99.5, 100.5], or whose values are negative or non-finite, raises
-    :class:`InvestingDistributionError` (a ``ValueError``).
+    the same factor ``100 / raw_sum``. A meeting whose rate bounds or
+    probabilities are malformed (non-finite, negative ranges, unordered or
+    implausible ranges, probabilities outside [0, 100]) or whose raw sum falls
+    outside [99.5, 100.5] raises :class:`InvestingDistributionError`
+    (a ``ValueError``).
     """
     if not rows:
         raise InvestingDistributionError(
@@ -175,22 +179,41 @@ def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
         group = [row for row in normalized_rows if row["meeting_date"] == meeting_date]
         try:
             values = [float(row["probability_pct"]) for row in group]
-            midpoints = [
-                (float(row["rate_low"]) + float(row["rate_high"])) / 2.0 for row in group
-            ]
+            rate_lows = [float(row["rate_low"]) for row in group]
+            rate_highs = [float(row["rate_high"]) for row in group]
         except (TypeError, ValueError) as exc:
             raise InvestingDistributionError(
                 "INVESTING_DISTRIBUTION_INVALID",
-                f"invalid Investing probabilities for meeting {meeting_date}",
+                f"invalid Investing rate range or probability for meeting {meeting_date}",
                 detail={"meeting_date": meeting_date},
             ) from exc
 
-        if any(not math.isfinite(value) or value < 0 for value in values):
+        # The previously qualified input-quality boundary: every rate bound and
+        # probability must be finite, target ranges non-negative, ordered,
+        # within the plausible bound the qualification used, and probabilities
+        # inside [0, 100] before any expected-rate or local-step conversion.
+        invalid_ranges = any(
+            not math.isfinite(low)
+            or not math.isfinite(high)
+            or low < 0
+            or high <= low
+            or high > MAX_PLAUSIBLE_RATE_HIGH
+            for low, high in zip(rate_lows, rate_highs)
+        )
+        invalid_probabilities = any(
+            not math.isfinite(value) or value < 0 or value > MAX_PROBABILITY_PCT
+            for value in values
+        )
+        if invalid_ranges or invalid_probabilities:
             raise InvestingDistributionError(
                 "INVESTING_DISTRIBUTION_INVALID",
-                f"invalid Investing probabilities for meeting {meeting_date}",
+                f"invalid Investing rate range or probability for meeting {meeting_date}",
                 detail={"meeting_date": meeting_date},
             )
+
+        midpoints = [
+            (low + high) / 2.0 for low, high in zip(rate_lows, rate_highs)
+        ]
 
         raw_sum = float(sum(values))
         if not math.isfinite(raw_sum) or not (

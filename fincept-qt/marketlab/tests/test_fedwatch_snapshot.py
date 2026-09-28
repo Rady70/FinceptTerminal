@@ -90,6 +90,14 @@ class SnapshotContractTests(unittest.TestCase):
         self.assertEqual(self.snapshot["failed_components"], [])
         self.assertEqual(self.snapshot["data"]["retrieved_at"], "2026-09-28T12:00:00Z")
         self.assertEqual(self.snapshot["data"]["errors"], [])
+        # Ordinary absence of a listed future event is a mapping state, not a
+        # provider failure: NOT_FOUND meetings must not make the snapshot partial.
+        mapping_statuses = [
+            meeting["polymarket"]["mapping_status"]
+            for meeting in self.snapshot["data"]["meetings"]
+        ]
+        self.assertIn("NOT_FOUND", mapping_statuses)
+        self.assertEqual(mapping_statuses.count("VALIDATED"), 2)
 
     def test_current_target_range(self):
         target = self.snapshot["data"]["current_target_range"]
@@ -239,13 +247,87 @@ class SnapshotFailureTests(unittest.TestCase):
     def test_fomc_fallback_is_visible_not_hidden(self):
         transport = build_snapshot_transport()
         transport.add_text("fomccalendars", TransportError("HTTP 403", status_code=403))
-        snapshot = fedwatch_snapshot.build_snapshot(transport, clock=FixedClock(NOW), sleep=NO_SLEEP)
+        snapshot = fedwatch_snapshot.build_snapshot(transport, clock=FixedClock(NOW))
         sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
         self.assertEqual(sources["fomc_calendar"]["status"], "FALLBACK_SNAPSHOT")
         self.assertEqual(
             sources["fomc_calendar"]["fallback_snapshot_retrieved_at"], "2026-09-28T00:00:00Z"
         )
         self.assertFalse(snapshot["partial"])
+
+
+def single_event_transport(event: dict, token_points: dict) -> FakeTransport:
+    transport = build_snapshot_transport(events=[event])
+    transport.add_json("prices-history", make_clob_history(token_points))
+    return transport
+
+
+def event_token_points(event: dict, age_days: float = 1.0, empty: set | None = None) -> dict:
+    empty = empty or set()
+    points = {}
+    for market in event["markets"]:
+        token = json.loads(market["clobTokenIds"])[0]
+        if token in empty:
+            points[token] = []
+            continue
+        price = float(json.loads(market["outcomePrices"])[0])
+        points[token] = [{"t": epoch(NOW - timedelta(days=age_days)), "p": price}]
+    return points
+
+
+class SnapshotPolymarketQualityTests(unittest.TestCase):
+    """A validated mapping whose CLOB quality is not CURRENT must propagate."""
+
+    def _snapshot_for(self, event: dict, token_points: dict) -> dict:
+        transport = single_event_transport(event, token_points)
+        return fedwatch_snapshot.build_snapshot(
+            transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+
+    def _assert_snapshot_partial_for_polymarket(self, snapshot: dict, expected_code: str,
+                                                expected_status: str) -> dict:
+        self.assertTrue(snapshot["partial"])
+        self.assertEqual(snapshot["failed_components"], ["polymarket"])
+        errors = snapshot["data"]["errors"]
+        self.assertEqual({error["provider"] for error in errors}, {"polymarket"})
+        self.assertIn(expected_code, {error["code"] for error in errors})
+        sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
+        self.assertEqual(sources["polymarket"]["status"], "PARTIAL")
+        meetings = {m["meeting_date"]: m for m in snapshot["data"]["meetings"]}
+        october = meetings["2026-10-28"]
+        self.assertEqual(october["polymarket"]["data_status"], expected_status)
+        self.assertEqual(october["comparison"], [])
+        self.assertEqual(october["fed_side"]["local_status"], "OK")
+        return october
+
+    def test_partial_validated_mapping_makes_snapshot_partial_without_comparison(self):
+        event = fixture_json(FIXTURE_PM_OCTOBER)
+        missing_token = json.loads(event["markets"][2]["clobTokenIds"])[0]
+        snapshot = self._snapshot_for(
+            event, event_token_points(event, empty={missing_token})
+        )
+        self._assert_snapshot_partial_for_polymarket(
+            snapshot, "POLYMARKET_MARKET_DATA_PARTIAL", "PARTIAL"
+        )
+
+    def test_stale_validated_mapping_makes_snapshot_partial_without_comparison(self):
+        event = fixture_json(FIXTURE_PM_OCTOBER)
+        snapshot = self._snapshot_for(event, event_token_points(event, age_days=10.0))
+        self._assert_snapshot_partial_for_polymarket(
+            snapshot, "POLYMARKET_MARKET_DATA_STALE", "STALE"
+        )
+
+    def test_unavailable_validated_mapping_makes_snapshot_partial_without_comparison(self):
+        event = fixture_json(FIXTURE_PM_OCTOBER)
+        all_tokens = {
+            json.loads(market["clobTokenIds"])[0] for market in event["markets"]
+        }
+        snapshot = self._snapshot_for(
+            event, event_token_points(event, empty=all_tokens)
+        )
+        self._assert_snapshot_partial_for_polymarket(
+            snapshot, "POLYMARKET_MARKET_DATA_UNAVAILABLE", "UNAVAILABLE"
+        )
 
 
 class CommandTests(unittest.TestCase):
