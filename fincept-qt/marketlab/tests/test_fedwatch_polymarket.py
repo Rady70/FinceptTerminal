@@ -192,6 +192,22 @@ class MappingValidationTests(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertIsNone(evidence["title_year"])
 
+    def test_non_string_title_is_rejected_not_internal(self):
+        event = event_with_market_mutation(lambda value: value.update({"title": 123}))
+        evidence, reason = polymarket.validate_candidate_event(event, MEETING_OCTOBER)
+        self.assertIsNone(evidence)
+        self.assertEqual(reason, "EVENT_TITLE_NOT_STRING")
+
+    def test_non_string_question_is_rejected_not_internal(self):
+        def corrupt_question(event):
+            event["markets"][1]["question"] = None
+
+        evidence, reason = polymarket.validate_candidate_event(
+            event_with_market_mutation(corrupt_question), MEETING_OCTOBER
+        )
+        self.assertIsNone(evidence)
+        self.assertEqual(reason, "MARKET_QUESTION_NOT_STRING")
+
     def test_insufficient_rate_submarkets_is_rejected(self):
         def drop_three(event):
             event["markets"] = event["markets"][:2]
@@ -312,7 +328,8 @@ class DiscoveryTests(unittest.TestCase):
         )
         events, stats, warnings = polymarket.discover_candidate_events(transport)
         self.assertEqual([item["id"] for item in events], ["606422"])
-        self.assertEqual(stats["tag_source_status"], "ERROR")
+        self.assertEqual(stats["tag"]["status"], "ERROR")
+        self.assertFalse(stats["coverage_complete"])
         self.assertTrue(any("tag listing failed" in warning for warning in warnings))
 
     def test_all_sources_failing_fails_closed(self):
@@ -331,6 +348,121 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaises(FedwatchError) as caught:
             polymarket.discover_candidate_events(transport)
         self.assertEqual(caught.exception.code, "POLYMARKET_DISCOVERY_EMPTY")
+
+    def test_tag_pagination_finds_event_after_first_page(self):
+        # The only valid FOMC event is on the second page: one-page discovery
+        # would have produced a false NOT_FOUND.
+        filler = make_fed_decision_event(event_id="filler")
+        valid = make_fed_decision_event(event_id="606422")
+        flat = [filler, valid]
+        transport = FakeTransport()
+        transport.add_json(
+            "gamma-api.polymarket.com/events",
+            lambda url, params: (
+                flat[
+                    int(params.get("offset", 0)): int(params.get("offset", 0))
+                    + int(params.get("limit", 100))
+                ]
+                if params.get("tag_slug") == "fed-rates"
+                else []
+            ),
+        )
+        transport.add_json("public-search", {"events": []})
+        events, stats, _ = polymarket.discover_candidate_events(
+            transport, tag_page_size=1, search_page_size=1
+        )
+        self.assertEqual({event["id"] for event in events}, {"filler", "606422"})
+        self.assertTrue(stats["tag"]["complete"])
+        # Pages: [filler], [valid], then an empty page confirms exhaustion.
+        self.assertEqual(stats["tag"]["pages"], 3)
+        self.assertTrue(stats["coverage_complete"])
+
+    def test_search_pagination_finds_event_after_first_page(self):
+        filler = make_fed_decision_event(event_id="filler")
+        valid = make_fed_decision_event(event_id="606422")
+        pages = {
+            1: {"events": [filler], "pagination": {"hasMore": True, "totalResults": 2}},
+            2: {"events": [valid], "pagination": {"hasMore": False, "totalResults": 2}},
+        }
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [])
+        transport.add_json(
+            "public-search",
+            lambda url, params: pages[int(params.get("page", 1))]
+            if params["q"] == "FOMC"
+            else {"events": [], "pagination": {"hasMore": False, "totalResults": 0}},
+        )
+        events, stats, _ = polymarket.discover_candidate_events(
+            transport, tag_page_size=1, search_page_size=1
+        )
+        self.assertEqual({event["id"] for event in events}, {"filler", "606422"})
+        self.assertEqual(stats["searches"]["FOMC"]["pages"], 2)
+        self.assertTrue(stats["searches"]["FOMC"]["complete"])
+        self.assertTrue(stats["coverage_complete"])
+
+    def test_capped_pagination_marks_discovery_partial(self):
+        first = make_fed_decision_event(event_id="1")
+        second = make_fed_decision_event(event_id="2")
+        full_page = [first, second]
+        transport = FakeTransport()
+        transport.add_json(
+            "gamma-api.polymarket.com/events",
+            lambda url, params: full_page if params.get("tag_slug") == "fed-rates" else [],
+        )
+        transport.add_json("public-search", {"events": []})
+        events, stats, _ = polymarket.discover_candidate_events(
+            transport, tag_page_size=2, max_pages=1
+        )
+        self.assertEqual(len(events), 2)
+        self.assertFalse(stats["tag"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+        section = polymarket.build_section(
+            transport,
+            [MEETING_OCTOBER],
+            clock=FixedClock(NOW),
+            sleep=NO_SLEEP,
+            tag_page_size=2,
+            max_pages=1,
+        )
+        self.assertIn(
+            "POLYMARKET_DISCOVERY_PARTIAL", {error.code for error in section["errors"]}
+        )
+
+    def test_non_list_tag_response_is_a_source_failure(self):
+        event = make_fed_decision_event()
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", {"unexpected": "shape"})
+        transport.add_json(
+            "public-search", lambda url, params: {"events": [event] if params["q"] == "FOMC" else []}
+        )
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        self.assertEqual(stats["tag"]["status"], "ERROR")
+        self.assertFalse(stats["coverage_complete"])
+        self.assertTrue(any("tag listing failed" in warning for warning in warnings))
+
+    def test_non_dict_search_response_is_a_source_failure(self):
+        event = make_fed_decision_event()
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [event])
+        transport.add_json("public-search", ["unexpected", "shape"])
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        for keyword in ("Fed", "FOMC", "interest rate"):
+            self.assertEqual(stats["searches"][keyword]["status"], "ERROR")
+        self.assertFalse(stats["coverage_complete"])
+        self.assertTrue(any("search (" in warning and "failed" in warning for warning in warnings))
+
+    def test_search_response_without_events_list_is_a_source_failure(self):
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        transport.add_json("public-search", {"pagination": {}})
+        # The tag source alone still yields candidates; the search sources are
+        # explicit failures and coverage is incomplete.
+        events, stats, _ = polymarket.discover_candidate_events(transport)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(stats["searches"]["Fed"]["status"], "ERROR")
+        self.assertFalse(stats["coverage_complete"])
 
 
 def build_polymarket_transport(events, token_points) -> FakeTransport:

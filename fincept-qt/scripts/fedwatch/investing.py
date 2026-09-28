@@ -64,6 +64,10 @@ _BUCKET_ITEM_RE = re.compile(
 )
 _MEETING_TIME_FORMAT = "%b %d, %Y %I:%M%p ET"
 
+# Structural markers used to detect rows the bucket regex did not match.
+_INFO_FED_MARKER_RE = re.compile(r'class="infoFed"')
+_BUCKET_MARKER_RE = re.compile(r'percfedRateItem"')
+
 BP_STEP = 25
 NORMALIZATION_MIN_SUM = 99.5
 NORMALIZATION_MAX_SUM = 100.5
@@ -86,13 +90,16 @@ def fetch_fed_rate_monitor_html(transport: Transport, url: str = FED_RATE_MONITO
 def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
     """Parse the page's embedded Fed Rate Monitor table.
 
-    Returns ``(rows, warnings)`` where each row is
+    Returns ``(rows, warnings, report)`` where each row is
     ``{meeting_date, rate_low, rate_high, probability_pct}`` and ``meeting_date``
-    is an ISO date string. Rows that cannot be parsed are skipped with a warning
-    rather than aborting the whole retrieval, because the page structure is
-    Investing.com's own and can change without notice. An empty result is
-    reported as an empty list; the provider layer turns that into an explicit
-    ``INVESTING_PARSE_EMPTY`` failure.
+    is an ISO date string. Rows that cannot be parsed are skipped with a
+    warning, and the report records every structural loss (dropped meeting
+    blocks, dropped bucket rows, and bucket markers that did not match the row
+    structure). The provider layer fails closed whenever the report is not
+    structurally complete, so a distribution is never normalized after source
+    buckets disappeared. An empty result is reported as an empty list; the
+    provider layer turns that into an explicit ``INVESTING_PARSE_EMPTY``
+    failure.
 
     Deduplication matches the qualified behavior: the sidebar "Fed Rate Monitor
     Tool" repeats the nearest meeting, the main table appears first, so the
@@ -101,7 +108,13 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
     """
     rows: list[dict] = []
     warnings: list[str] = []
+    dropped_meeting_blocks: list[dict] = []
+    dropped_bucket_rows: list[dict] = []
+    partial_meeting_dates: set[str] = set()
+    unmatched_bucket_items = 0
+
     blocks = _MEETING_BLOCK_RE.findall(html)
+    info_fed_marker_count = len(_INFO_FED_MARKER_RE.findall(html))
     if not blocks:
         warnings.append(
             "no meeting blocks found in the Investing.com page; the HTML structure may have changed"
@@ -114,14 +127,28 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
             ).date()
         except ValueError:
             warnings.append(f"unparseable meeting time {meeting_time_raw!r}; block skipped")
+            dropped_meeting_blocks.append(
+                {"meeting_time": meeting_time_raw, "reason": "unparseable_meeting_time"}
+            )
             continue
 
         items = _BUCKET_ITEM_RE.findall(rest)
+        marker_count = len(_BUCKET_MARKER_RE.findall(rest))
         if not items:
             warnings.append(
                 f"no parseable bucket rows for meeting {meeting_date.isoformat()}; meeting skipped"
             )
+            dropped_meeting_blocks.append(
+                {"meeting_time": meeting_time_raw, "reason": "no_parseable_bucket_rows"}
+            )
             continue
+        if marker_count > len(items):
+            unmatched_bucket_items += marker_count - len(items)
+            partial_meeting_dates.add(meeting_date.isoformat())
+            warnings.append(
+                f"{marker_count - len(items)} bucket marker(s) for meeting "
+                f"{meeting_date.isoformat()} did not match the bucket row structure"
+            )
 
         for bucket_label, pct_raw in items:
             try:
@@ -133,6 +160,14 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
                     f"unparseable target-rate interval or percentage {bucket_label!r}/"
                     f"{pct_raw!r} for meeting {meeting_date.isoformat()}; row skipped"
                 )
+                dropped_bucket_rows.append(
+                    {
+                        "meeting_date": meeting_date.isoformat(),
+                        "bucket": bucket_label,
+                        "percentage": pct_raw,
+                    }
+                )
+                partial_meeting_dates.add(meeting_date.isoformat())
                 continue
 
             rows.append(
@@ -153,7 +188,24 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
         seen.add(key)
         deduplicated.append(row)
     deduplicated.sort(key=lambda row: (row["meeting_date"], row["rate_low"]))
-    return deduplicated, warnings
+
+    report = {
+        "meeting_block_count": len(blocks),
+        "info_fed_marker_count": info_fed_marker_count,
+        "unmatched_bucket_item_count": unmatched_bucket_items,
+        "dropped_bucket_row_count": len(dropped_bucket_rows),
+        "dropped_bucket_rows": dropped_bucket_rows[:10],
+        "dropped_meeting_blocks": dropped_meeting_blocks[:10],
+        "partial_meeting_dates": sorted(partial_meeting_dates),
+        "structurally_complete": bool(
+            blocks
+            and info_fed_marker_count == len(blocks)
+            and not dropped_meeting_blocks
+            and not dropped_bucket_rows
+            and unmatched_bucket_items == 0
+        ),
+    }
+    return deduplicated, warnings, report
 
 
 def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -342,18 +394,32 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     Returns a JSON-ready provider payload with both the raw displayed values and
     the validated/normalized values kept distinct, plus the per-meeting
     normalization records. Raises :class:`FedwatchError` (provider
-    ``investing``) for transport, empty-parse and malformed-distribution
-    failures.
+    ``investing``) for transport, empty-parse, partially parsed and
+    malformed-distribution failures.
     """
     html = fetch_fed_rate_monitor_html(transport)
     retrieved_at = clock()
-    raw_rows, warnings = parse_fed_rate_monitor(html)
+    raw_rows, warnings, parse_report = parse_fed_rate_monitor(html)
     if not raw_rows:
         raise FedwatchError(
             PROVIDER_INVESTING,
             "INVESTING_PARSE_EMPTY",
             "Investing.com Fed Rate Monitor returned no parseable meeting rows",
-            detail={"retrieved_at": timeutil.iso_z(retrieved_at)},
+            detail={
+                "retrieved_at": timeutil.iso_z(retrieved_at),
+                "parse_report": parse_report,
+            },
+        )
+    if not parse_report["structurally_complete"]:
+        raise FedwatchError(
+            PROVIDER_INVESTING,
+            "INVESTING_PARSE_PARTIAL",
+            "Investing.com Fed Rate Monitor page contained malformed meeting blocks "
+            "or bucket rows; refusing to normalize a partially parsed distribution",
+            detail={
+                "retrieved_at": timeutil.iso_z(retrieved_at),
+                "parse_report": parse_report,
+            },
         )
 
     normalized_rows, records = normalize_cumulative(raw_rows)

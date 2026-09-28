@@ -40,10 +40,11 @@ from fedwatch.transport import TransportError
 
 class InvestingParseTests(unittest.TestCase):
     def test_qualified_july_fixture_known_values(self):
-        rows, warnings = investing.parse_fed_rate_monitor(
+        rows, warnings, report = investing.parse_fed_rate_monitor(
             fixture_text(FIXTURE_INVESTING_QUALIFIED)
         )
         self.assertEqual(warnings, [])
+        self.assertTrue(report["structurally_complete"])
         meeting_dates = sorted({row["meeting_date"] for row in rows})
         self.assertEqual(len(meeting_dates), 12)
         july = [row for row in rows if row["meeting_date"] == "2026-07-29"]
@@ -59,8 +60,11 @@ class InvestingParseTests(unittest.TestCase):
             self.assertLessEqual(abs(total - 100.0), 0.5, meeting_date)
 
     def test_current_capture_known_values(self):
-        rows, warnings = investing.parse_fed_rate_monitor(fixture_text(FIXTURE_INVESTING_LIVE))
+        rows, warnings, report = investing.parse_fed_rate_monitor(
+            fixture_text(FIXTURE_INVESTING_LIVE)
+        )
         self.assertEqual(warnings, [])
+        self.assertTrue(report["structurally_complete"])
         self.assertEqual(len({row["meeting_date"] for row in rows}), 10)
         october = [row for row in rows if row["meeting_date"] == "2026-10-28"]
         self.assertEqual(
@@ -75,9 +79,12 @@ class InvestingParseTests(unittest.TestCase):
         self.assertEqual(len(rows_by_meeting), 10)
 
     def test_empty_html_returns_empty_with_warning(self):
-        rows, warnings = investing.parse_fed_rate_monitor("<html><body>nope</body></html>")
+        rows, warnings, report = investing.parse_fed_rate_monitor(
+            "<html><body>nope</body></html>"
+        )
         self.assertEqual(rows, [])
         self.assertEqual(len(warnings), 1)
+        self.assertFalse(report["structurally_complete"])
 
     def test_unparseable_meeting_time_skips_block(self):
         html = synthetic_html(
@@ -86,19 +93,23 @@ class InvestingParseTests(unittest.TestCase):
                 ("Oct 28, 2026 02:00PM ET", [(3.75, 4.0, 100.0)]),
             ]
         )
-        rows, warnings = investing.parse_fed_rate_monitor(html)
+        rows, warnings, report = investing.parse_fed_rate_monitor(html)
         self.assertEqual([row["meeting_date"] for row in rows], ["2026-10-28"])
         self.assertTrue(any("unparseable meeting time" in warning for warning in warnings))
+        self.assertFalse(report["structurally_complete"])
+        self.assertEqual(len(report["dropped_meeting_blocks"]), 1)
 
     def test_meeting_without_parseable_buckets_is_skipped_with_warning(self):
         html = synthetic_html([("Oct 28, 2026 02:00PM ET", [])])
-        rows, warnings = investing.parse_fed_rate_monitor(html)
+        rows, warnings, report = investing.parse_fed_rate_monitor(html)
         self.assertEqual(rows, [])
         self.assertTrue(any("no parseable bucket rows" in warning for warning in warnings))
+        self.assertFalse(report["structurally_complete"])
 
-    def test_malformed_percentage_token_skips_row_without_crashing(self):
+    def test_malformed_percentage_token_skips_row_and_marks_meeting_partial(self):
         # "[0-9.]+" matches strings like "1..2"; float() must be guarded so a
-        # malformed provider token cannot escape as a raw ValueError.
+        # malformed provider token cannot escape as a raw ValueError, and the
+        # report must record the lost row so the provider can fail closed.
         html = synthetic_html(
             [
                 (
@@ -107,11 +118,32 @@ class InvestingParseTests(unittest.TestCase):
                 )
             ]
         )
-        rows, warnings = investing.parse_fed_rate_monitor(html)
+        rows, warnings, report = investing.parse_fed_rate_monitor(html)
         self.assertEqual([row["probability_pct"] for row in rows], [100.0])
         self.assertTrue(
             any("unparseable target-rate interval or percentage" in warning for warning in warnings)
         )
+        self.assertFalse(report["structurally_complete"])
+        self.assertEqual(report["dropped_bucket_row_count"], 1)
+        self.assertEqual(report["partial_meeting_dates"], ["2026-10-28"])
+
+    def test_bucket_marker_without_matching_structure_is_reported(self):
+        # A percentage token that does not match the bucket regex at all (e.g.
+        # "abc%") silently disappears from findall; the marker count exposes it.
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "abc"), (4.00, 4.25, 100.0)],
+                )
+            ]
+        )
+        rows, warnings, report = investing.parse_fed_rate_monitor(html)
+        self.assertEqual([row["probability_pct"] for row in rows], [100.0])
+        self.assertFalse(report["structurally_complete"])
+        self.assertEqual(report["unmatched_bucket_item_count"], 1)
+        self.assertEqual(report["partial_meeting_dates"], ["2026-10-28"])
+        self.assertTrue(any("did not match the bucket row structure" in w for w in warnings))
 
     def test_all_malformed_percentages_is_an_investing_provider_error(self):
         html = synthetic_html(
@@ -127,6 +159,58 @@ class InvestingParseTests(unittest.TestCase):
             investing.fetch_distributions(transport)
         self.assertEqual(caught.exception.provider, "investing")
         self.assertEqual(caught.exception.code, "INVESTING_PARSE_EMPTY")
+
+    def test_partial_parse_fails_provider_closed(self):
+        # One malformed bucket plus a surviving bucket that sums to exactly
+        # 100 must not become an ordinary successful distribution: the
+        # provider fails closed as a partially parsed source.
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "1..2"), (4.00, 4.25, 100.0)],
+                )
+            ]
+        )
+        transport = FakeTransport().add_text("fed-rate-monitor", html)
+        with self.assertRaises(FedwatchError) as caught:
+            investing.fetch_distributions(transport)
+        self.assertEqual(caught.exception.provider, "investing")
+        self.assertEqual(caught.exception.code, "INVESTING_PARSE_PARTIAL")
+        self.assertEqual(
+            caught.exception.detail["parse_report"]["dropped_bucket_row_count"], 1
+        )
+
+    def test_bucket_marker_without_matching_regex_fails_provider_closed(self):
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "abc"), (4.00, 4.25, 100.0)],
+                )
+            ]
+        )
+        transport = FakeTransport().add_text("fed-rate-monitor", html)
+        with self.assertRaises(FedwatchError) as caught:
+            investing.fetch_distributions(transport)
+        self.assertEqual(caught.exception.provider, "investing")
+        self.assertEqual(caught.exception.code, "INVESTING_PARSE_PARTIAL")
+        self.assertEqual(
+            caught.exception.detail["parse_report"]["unmatched_bucket_item_count"], 1
+        )
+
+    def test_unparseable_meeting_block_fails_provider_closed(self):
+        html = synthetic_html(
+            [
+                ("not a date", [(3.75, 4.00, 50.0), (4.00, 4.25, 50.0)]),
+                ("Nov 18, 2026 02:00PM ET", [(3.75, 4.00, 50.0), (4.00, 4.25, 50.0)]),
+            ]
+        )
+        transport = FakeTransport().add_text("fed-rate-monitor", html)
+        with self.assertRaises(FedwatchError) as caught:
+            investing.fetch_distributions(transport)
+        self.assertEqual(caught.exception.provider, "investing")
+        self.assertEqual(caught.exception.code, "INVESTING_PARSE_PARTIAL")
 
 
 class NormalizationRegressionTests(unittest.TestCase):
@@ -289,7 +373,7 @@ class LocalStepTests(unittest.TestCase):
         self.assertEqual(second[0]["probability_pct"], 100.0)
 
     def test_local_probabilities_sum_to_100_per_meeting_on_current_capture(self):
-        rows, _ = investing.parse_fed_rate_monitor(fixture_text(FIXTURE_INVESTING_LIVE))
+        rows, _, _ = investing.parse_fed_rate_monitor(fixture_text(FIXTURE_INVESTING_LIVE))
         normalized, _ = investing.normalize_cumulative(rows)
         local = investing.local_steps_from_cumulative(normalized, 4.0, 3.75)
         for meeting_date in {row["meeting_date"] for row in local}:
@@ -300,7 +384,7 @@ class LocalStepTests(unittest.TestCase):
         # Qualified live audit: with current bounds 3.75-4.00 the December 2026
         # local step is 22.45/77.55 from raw values and 20.750751/79.249249
         # after validating/normalizing the whole cumulative table.
-        rows, _ = investing.parse_fed_rate_monitor(fixture_text(FIXTURE_INVESTING_LIVE))
+        rows, _, _ = investing.parse_fed_rate_monitor(fixture_text(FIXTURE_INVESTING_LIVE))
         normalized, records = investing.normalize_cumulative(rows)
         raw_local = {
             row["local_bp_change"]: row["probability_pct"]

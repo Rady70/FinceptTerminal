@@ -45,6 +45,14 @@ FED_RATES_TAG = "fed-rates"
 REQUEST_TIMEOUT = 20
 RATE_LIMIT_SLEEP_SECONDS = 0.2
 
+# Discovery pagination: the tag listing is the precise candidate set and must
+# be exhausted; the keyword searches are paginated to a bounded cap. Coverage
+# completeness is recorded and an incomplete discovery marks the provider
+# partial instead of allowing a definitive NOT_FOUND.
+TAG_PAGE_SIZE = 100
+SEARCH_PAGE_SIZE = 50
+MAX_DISCOVERY_PAGES = 50
+
 FRESHNESS_MAX_AGE_DAYS = 3
 FUTURE_TOLERANCE_SECONDS = 300
 
@@ -125,6 +133,8 @@ def extract_markets(event: dict) -> list[dict]:
         if not isinstance(market, dict):
             continue
         question = market.get("question", "")
+        if not isinstance(question, str):
+            question = ""
         parsed = parse_bp_outcome(question)
         outcomes = _load_json_list(market.get("outcomes"))
         prices = _load_json_list(market.get("outcomePrices"))
@@ -170,25 +180,113 @@ def _get_json(transport: Transport, url: str, params: dict, context: str):
         ) from exc
 
 
-def search_events(transport: Transport, query: str, limit_per_type: int = 50) -> list:
-    data = _get_json(
-        transport,
-        f"{GAMMA_BASE_URL}/public-search",
-        {"q": query, "limit_per_type": limit_per_type},
-        context=f"search ({query!r})",
-    )
-    events = data.get("events", []) if isinstance(data, dict) else []
-    return events if isinstance(events, list) else []
+def search_events(
+    transport: Transport,
+    query: str,
+    limit_per_type: int = SEARCH_PAGE_SIZE,
+    max_pages: int = MAX_DISCOVERY_PAGES,
+) -> tuple[list, dict]:
+    """Paginated gamma public-search (1-based ``page`` until ``hasMore`` is false).
+
+    Returns ``(events, info)``. ``info.complete`` is true only when the API
+    reported no further results (or the reported total was reached); otherwise
+    the caller must treat discovery coverage as incomplete. An unexpected
+    top-level response shape is a source failure, never an empty success.
+    """
+    events: list = []
+    page = 1
+    pages = 0
+    complete = False
+    total_results = None
+    while pages < max_pages:
+        data = _get_json(
+            transport,
+            f"{GAMMA_BASE_URL}/public-search",
+            {"q": query, "limit_per_type": limit_per_type, "page": page},
+            context=f"search ({query!r}) page {page}",
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+            raise FedwatchError(
+                PROVIDER_POLYMARKET,
+                "POLYMARKET_DISCOVERY_UNAVAILABLE",
+                f"Polymarket search ({query!r}) response did not contain an events list",
+                detail={"phase": "search", "query": query, "page": page},
+            )
+        pages += 1
+        page_events = [event for event in data["events"] if isinstance(event, dict)]
+        events.extend(page_events)
+
+        pagination = data.get("pagination")
+        if not isinstance(pagination, dict):
+            # No pagination metadata: a short page means exhausted, a full page
+            # is unknowable and must be treated as incomplete coverage.
+            complete = len(data["events"]) < limit_per_type
+            break
+        if isinstance(pagination.get("totalResults"), int):
+            total_results = pagination["totalResults"]
+        has_more = bool(pagination.get("hasMore", False))
+        if not has_more:
+            complete = True
+            break
+        if isinstance(total_results, int) and total_results <= page * limit_per_type:
+            complete = True
+            break
+        page += 1
+    return events, {
+        "pages": pages,
+        "event_count": len(events),
+        "total_results": total_results,
+        "complete": complete,
+    }
 
 
-def events_by_tag(transport: Transport, tag_slug: str, limit: int = 200) -> list:
-    data = _get_json(
-        transport,
-        f"{GAMMA_BASE_URL}/events",
-        {"tag_slug": tag_slug, "limit": limit},
-        context=f"tag listing ({tag_slug!r})",
-    )
-    return data if isinstance(data, list) else []
+def events_by_tag(
+    transport: Transport,
+    tag_slug: str,
+    page_size: int = TAG_PAGE_SIZE,
+    max_pages: int = MAX_DISCOVERY_PAGES,
+    closed: bool | None = False,
+) -> tuple[list, dict]:
+    """Paginated gamma tag listing (offset pagination until a short page).
+
+    The default ``closed=false`` filter narrows the listing to the events that
+    can matter for current mappings; the loop then follows ``offset`` until the
+    provider returns a short page, so coverage is exhausted rather than capped
+    at one page. An unexpected top-level response shape is a source failure.
+    """
+    events: list = []
+    offset = 0
+    pages = 0
+    complete = False
+    while pages < max_pages:
+        params = {"tag_slug": tag_slug, "limit": page_size, "offset": offset}
+        if closed is not None:
+            params["closed"] = str(closed).lower()
+        data = _get_json(
+            transport,
+            f"{GAMMA_BASE_URL}/events",
+            params,
+            context=f"tag listing ({tag_slug!r}) page {pages + 1}",
+        )
+        if not isinstance(data, list):
+            raise FedwatchError(
+                PROVIDER_POLYMARKET,
+                "POLYMARKET_DISCOVERY_UNAVAILABLE",
+                f"Polymarket tag listing ({tag_slug!r}) response was not a list",
+                detail={"phase": "tag", "tag_slug": tag_slug, "page": pages + 1},
+            )
+        pages += 1
+        events.extend(event for event in data if isinstance(event, dict))
+        if len(data) < page_size:
+            complete = True
+            break
+        offset += page_size
+    return events, {
+        "pages": pages,
+        "event_count": len(events),
+        "complete": complete,
+        "closed_filter": closed,
+    }
 
 
 def fetch_price_history(
@@ -217,40 +315,62 @@ def fetch_price_history(
     return history if isinstance(history, list) else []
 
 
-def discover_candidate_events(transport: Transport) -> tuple[list[dict], dict, list[str]]:
-    """Union of the ``fed-rates`` tag listing and the keyword searches.
+def discover_candidate_events(
+    transport: Transport,
+    tag_page_size: int = TAG_PAGE_SIZE,
+    search_page_size: int = SEARCH_PAGE_SIZE,
+    max_pages: int = MAX_DISCOVERY_PAGES,
+) -> tuple[list[dict], dict, list[str]]:
+    """Union of the paginated ``fed-rates`` tag listing and keyword searches.
 
-    Returns ``(events, discovery_stats, warnings)``. Partial source failures
-    survive as warnings; when every source fails or the union is empty the
-    provider raises an explicit failure instead of returning nothing.
+    Returns ``(events, discovery_stats, warnings)``. Every source records its
+    page and result counts and whether its coverage was exhausted.
+    ``coverage_complete`` is true only when every source succeeded and finished
+    paginating; partial source failures survive as warnings, and when every
+    source fails or the union is empty the provider raises an explicit failure
+    instead of returning nothing.
     """
     events_by_id: dict[str, dict] = {}
     warnings: list[str] = []
     stats = {
-        "tag_source_status": "OK",
-        "search_source_status": {keyword: "OK" for keyword in SEARCH_KEYWORDS},
+        "tag": {"status": "OK"},
+        "searches": {keyword: {"status": "OK"} for keyword in SEARCH_KEYWORDS},
     }
 
     try:
-        for event in events_by_tag(transport, FED_RATES_TAG):
-            if isinstance(event, dict) and event.get("id") is not None:
+        tag_events, tag_info = events_by_tag(
+            transport, FED_RATES_TAG, page_size=tag_page_size, max_pages=max_pages
+        )
+        stats["tag"].update(tag_info)
+        for event in tag_events:
+            if event.get("id") is not None:
                 events_by_id[str(event["id"])] = event
     except FedwatchError as exc:
-        stats["tag_source_status"] = "ERROR"
+        stats["tag"]["status"] = "ERROR"
+        stats["tag"]["code"] = exc.code
         warnings.append(f"tag listing failed: {exc.message}")
 
     for keyword in SEARCH_KEYWORDS:
         try:
-            for event in search_events(transport, keyword):
-                if isinstance(event, dict) and event.get("id") is not None:
+            found, info = search_events(
+                transport, keyword, limit_per_type=search_page_size, max_pages=max_pages
+            )
+            stats["searches"][keyword].update(info)
+            for event in found:
+                if event.get("id") is not None:
                     events_by_id[str(event["id"])] = event
         except FedwatchError as exc:
-            stats["search_source_status"][keyword] = "ERROR"
+            stats["searches"][keyword]["status"] = "ERROR"
+            stats["searches"][keyword]["code"] = exc.code
             warnings.append(f"search ({keyword!r}) failed: {exc.message}")
 
-    failed_sources = (
-        (1 if stats["tag_source_status"] == "ERROR" else 0)
-        + sum(1 for status in stats["search_source_status"].values() if status == "ERROR")
+    failed_sources = []
+    if stats["tag"]["status"] == "ERROR":
+        failed_sources.append(f"tag:{FED_RATES_TAG}")
+    failed_sources.extend(
+        f"search:{keyword}"
+        for keyword, info in stats["searches"].items()
+        if info["status"] == "ERROR"
     )
     if not events_by_id:
         if failed_sources:
@@ -284,6 +404,15 @@ def discover_candidate_events(transport: Transport) -> tuple[list[dict], dict, l
             f"{events_without_market_list} candidate event(s) had a non-list markets "
             f"field; they can only be rejected, not validated"
         )
+
+    stats["coverage_complete"] = bool(
+        stats["tag"]["status"] == "OK"
+        and stats["tag"].get("complete")
+        and all(
+            info["status"] == "OK" and info.get("complete")
+            for info in stats["searches"].values()
+        )
+    )
     return events, stats, warnings
 
 
@@ -323,6 +452,10 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
     if event.get("active") is not True or event.get("closed") is not False:
         return None, "EVENT_NOT_ACTIVE_AND_OPEN"
 
+    raw_title = event.get("title")
+    if not isinstance(raw_title, str):
+        return None, "EVENT_TITLE_NOT_STRING"
+
     raw_end_date = event.get("endDate")
     if not raw_end_date:
         return None, "END_DATE_MISSING"
@@ -334,7 +467,15 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
     if event_end_eastern != meeting_date:
         return None, "END_DATE_MISMATCH"
 
-    title_meeting = _title_meeting(event.get("title", ""))
+    raw_markets = event.get("markets")
+    if isinstance(raw_markets, list):
+        for market in raw_markets:
+            if isinstance(market, dict):
+                question = market.get("question", "")
+                if not isinstance(question, str):
+                    return None, "MARKET_QUESTION_NOT_STRING"
+
+    title_meeting = _title_meeting(raw_title)
     if title_meeting is None:
         return None, "TITLE_NOT_FED_DECISION"
     title_month, title_year = title_meeting
@@ -570,6 +711,9 @@ def build_section(
     meeting_dates: list[date],
     clock=timeutil.utc_now,
     sleep=time.sleep,
+    tag_page_size: int = TAG_PAGE_SIZE,
+    search_page_size: int = SEARCH_PAGE_SIZE,
+    max_pages: int = MAX_DISCOVERY_PAGES,
 ) -> dict:
     """Discovery + mapping validation + current prices for the given meetings.
 
@@ -582,32 +726,46 @@ def build_section(
     a partially covered, stale or unavailable mapping as an ordinary
     successful provider retrieval. ``NOT_FOUND`` and ``AMBIGUOUS`` are
     mapping-availability states, not provider outages, and stay error-free.
+
+    Incomplete discovery coverage (a failed source or a source that did not
+    finish paginating) records ``POLYMARKET_DISCOVERY_PARTIAL`` so an
+    apparently definitive ``NOT_FOUND`` is never presented as complete
+    coverage.
     """
-    events, discovery_stats, warnings = discover_candidate_events(transport)
+    events, discovery_stats, warnings = discover_candidate_events(
+        transport,
+        tag_page_size=tag_page_size,
+        search_page_size=search_page_size,
+        max_pages=max_pages,
+    )
     retrieved_at = clock()
 
     meetings = []
     provider_errors: list[FedwatchError] = []
 
     failed_discovery_sources = []
-    if discovery_stats["tag_source_status"] == "ERROR":
+    if discovery_stats["tag"]["status"] == "ERROR":
         failed_discovery_sources.append(f"tag:{FED_RATES_TAG}")
     failed_discovery_sources.extend(
         f"search:{keyword}"
-        for keyword, status in discovery_stats["search_source_status"].items()
-        if status == "ERROR"
+        for keyword, info in discovery_stats["searches"].items()
+        if info["status"] == "ERROR"
     )
-    if failed_discovery_sources:
-        # A discovery source outage is a partial provider failure, recorded as
-        # an explicit error so a partial discovery cannot be presented as a
-        # fully successful provider retrieval.
+    coverage_complete = bool(discovery_stats.get("coverage_complete"))
+    if failed_discovery_sources or not coverage_complete:
+        # A failed or capped discovery source is a partial provider failure,
+        # recorded explicitly so incomplete candidate coverage cannot be
+        # presented as a fully successful provider retrieval.
         provider_errors.append(
             FedwatchError(
                 PROVIDER_POLYMARKET,
                 "POLYMARKET_DISCOVERY_PARTIAL",
-                "Polymarket discovery succeeded with one or more failed sources; "
-                "candidate coverage may be incomplete",
-                detail={"failed_sources": failed_discovery_sources},
+                "Polymarket discovery did not complete candidate coverage; "
+                "a NOT_FOUND mapping state is not exhaustive",
+                detail={
+                    "failed_sources": failed_discovery_sources,
+                    "coverage_complete": coverage_complete,
+                },
             )
         )
 

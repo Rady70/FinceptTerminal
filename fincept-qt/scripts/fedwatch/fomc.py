@@ -52,6 +52,9 @@ STATEMENT_LINK_RE = re.compile(r"monetary(\d{8})[a-z]?\d*\.(?:htm|pdf)$", re.IGN
 YEAR_HEADING_RE = re.compile(r"(\d{4})\s+FOMC Meetings", re.IGNORECASE)
 NOTATION_VOTE_RE = re.compile(r"^(\d+)\s*\(notation vote\)$", re.IGNORECASE)
 DAY_RANGE_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
+# A meeting row container class token; excludes fomc-meeting__month/date/minutes
+# and the fomc-meeting--shaded modifier.
+_ROW_MARKER_RE = re.compile(r'class="[^"]*(?<![\w-])fomc-meeting(?![\w-])[^"]*"')
 
 VOID_ELEMENTS = {
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
@@ -127,6 +130,7 @@ class _FomcCalendarParser(HTMLParser):
         self.year_capture_depth: int | None = None
         self.year_text: list[str] = []
         self.rows: list[dict] = []
+        self.skipped_rows = 0
         self.warnings: list[str] = []
 
     @staticmethod
@@ -208,6 +212,7 @@ class _FomcCalendarParser(HTMLParser):
         self.year_capture_depth = None
 
         if meeting["year"] is None:
+            self.skipped_rows += 1
             self.warnings.append(
                 f"FOMC meeting row without a year heading skipped ({meeting['month']!r})"
             )
@@ -215,6 +220,7 @@ class _FomcCalendarParser(HTMLParser):
         try:
             parsed = parse_meeting_row(meeting["month"], meeting["date"], meeting["year"])
         except ValueError as exc:
+            self.skipped_rows += 1
             self.warnings.append(
                 f"FOMC meeting row skipped ({meeting['month']!r} {meeting['date']!r}): {exc}"
             )
@@ -231,13 +237,20 @@ class _FomcCalendarParser(HTMLParser):
         self.rows.append(parsed)
 
 
-def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str]]:
+def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
     """Parse the FOMC calendar HTML into meeting rows.
 
-    Returns ``(rows, warnings)``. Rows are sorted by ``(start_date, end_date)``
-    and de-duplicated. An HTML body with no meeting rows raises ``ValueError``;
-    the provider layer maps that to an explicit failure unless the tracked
-    fallback snapshot is available.
+    Returns ``(rows, warnings, report)``. Rows are sorted by
+    ``(start_date, end_date)`` and de-duplicated. An HTML body with no meeting
+    rows raises ``ValueError``.
+
+    The report records whether the parse was structurally complete: the number
+    of ``fomc-meeting`` row markers found in the raw HTML must equal the rows
+    that were parsed plus the rows that were explicitly skipped, no row may be
+    left open at end of document, and at least one row must have parsed. Since
+    the calendar is the authoritative meeting identity, an incomplete parse
+    must not be treated as a live scrape; the provider layer falls back to the
+    tracked snapshot instead.
     """
     parser = _FomcCalendarParser()
     parser.feed(html)
@@ -254,7 +267,23 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str]]:
             continue
         seen.add(key)
         deduplicated.append(row)
-    return deduplicated, parser.warnings
+
+    row_marker_count = len(_ROW_MARKER_RE.findall(html))
+    accounted_rows = len(parser.rows) + parser.skipped_rows
+    report = {
+        "row_marker_count": row_marker_count,
+        "parsed_row_count": len(parser.rows),
+        "skipped_row_count": parser.skipped_rows,
+        "open_meeting_at_eof": parser.meeting is not None or bool(parser.capture_stack),
+        "structurally_complete": bool(
+            row_marker_count == accounted_rows
+            and parser.skipped_rows == 0
+            and parser.meeting is None
+            and not parser.capture_stack
+            and parser.rows
+        ),
+    }
+    return deduplicated, parser.warnings, report
 
 
 def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str | None]:
@@ -338,12 +367,19 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
     """Retrieve the FOMC calendar: scrape first, tracked fallback snapshot second.
 
     The returned payload states which path produced the data
-    (``source_status`` = ``SCRAPED`` or ``FALLBACK_SNAPSHOT``) and includes the
-    fallback snapshot's capture time when it was used. A fallback is never
-    reported as a live scrape.
+    (``source_status`` = ``SCRAPED`` or ``FALLBACK_SNAPSHOT``), includes the
+    fallback snapshot's capture time when it was used, and carries the live
+    parse report. A fallback is never reported as a live scrape.
+
+    A structurally incomplete parse (rows skipped or lost because the provider
+    HTML was malformed/truncated) is not authoritative and is treated like a
+    failed scrape: the tracked fallback snapshot is used instead, with the
+    parse warnings preserved. This keeps the official calendar from silently
+    omitting a real meeting and mis-blaming another provider.
     """
     path = fallback_path or FALLBACK_PATH
     warnings: list[str] = []
+    live_parse_report: dict | None = None
     try:
         html = transport.get_text(CALENDAR_URL, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT)
     except TransportError as exc:
@@ -352,17 +388,24 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
 
     if html is not None:
         try:
-            rows, parse_warnings = parse_fomc_calendar(html)
+            rows, parse_warnings, live_parse_report = parse_fomc_calendar(html)
             warnings.extend(parse_warnings)
-            retrieved_at = clock()
-            return {
-                "retrieved_at": timeutil.iso_z(retrieved_at),
-                "source": SOURCE_LABEL_SCRAPE,
-                "source_status": "SCRAPED",
-                "fallback_snapshot_retrieved_at": None,
-                "meetings": rows,
-                "warnings": warnings,
-            }
+            if live_parse_report["structurally_complete"]:
+                retrieved_at = clock()
+                return {
+                    "retrieved_at": timeutil.iso_z(retrieved_at),
+                    "source": SOURCE_LABEL_SCRAPE,
+                    "source_status": "SCRAPED",
+                    "fallback_snapshot_retrieved_at": None,
+                    "meetings": rows,
+                    "parse_report": live_parse_report,
+                    "warnings": warnings,
+                }
+            warnings.append(
+                "FOMC calendar live parse was structurally incomplete "
+                f"({live_parse_report['skipped_row_count']} skipped row(s)); using the "
+                "tracked fallback snapshot instead of an authoritative partial scrape"
+            )
         except ValueError as exc:
             warnings.append(f"FOMC calendar parse failed: {exc}")
 
@@ -374,6 +417,7 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
         "source_status": "FALLBACK_SNAPSHOT",
         "fallback_snapshot_retrieved_at": snapshot_retrieved_at,
         "meetings": rows,
+        "parse_report": live_parse_report,
         "warnings": warnings,
     }
 

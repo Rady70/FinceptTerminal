@@ -390,6 +390,7 @@ def build_fomc_meetings_command(
         "source": result["source"],
         "source_status": result["source_status"],
         "fallback_snapshot_retrieved_at": result["fallback_snapshot_retrieved_at"],
+        "parse_report": result.get("parse_report"),
         "meetings": [fomc.serialize_meeting(row) for row in result["meetings"]],
         "warnings": list(result["warnings"]),
     }

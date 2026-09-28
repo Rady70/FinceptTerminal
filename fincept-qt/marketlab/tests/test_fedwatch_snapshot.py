@@ -34,6 +34,7 @@ from fedwatch_test_support import (
     FIXTURE_PM_OCTOBER,
     FakeTransport,
     FixedClock,
+    corrupt_fomc_calendar_december_row,
     epoch,
     fixture_json,
     fixture_text,
@@ -348,6 +349,80 @@ class FomcAuthorityTests(unittest.TestCase):
                 if call["url"].endswith("prices-history")
             )
         )
+
+    def test_incomplete_fomc_parse_falls_back_and_does_not_blame_investing(self):
+        # A malformed live calendar row drops the real 2026-12-09 meeting from
+        # the scrape, but Investing still reports it. The incomplete parse must
+        # fall back to the tracked snapshot, so the composite must not emit
+        # INVESTING_MEETING_DATE_MISMATCH and must still compare December.
+        transport = build_snapshot_transport()
+        transport.add_text(
+            "fomccalendars",
+            corrupt_fomc_calendar_december_row(fixture_text(FIXTURE_FOMC_CALENDAR)),
+        )
+        snapshot = fedwatch_snapshot.build_snapshot(
+            transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
+        self.assertEqual(sources["fomc_calendar"]["status"], "FALLBACK_SNAPSHOT")
+        self.assertNotIn(
+            "INVESTING_MEETING_DATE_MISMATCH",
+            {error["code"] for error in snapshot["data"]["errors"]},
+        )
+        meetings = {m["meeting_date"]: m for m in snapshot["data"]["meetings"]}
+        self.assertIn("2026-12-09", meetings)
+        december = meetings["2026-12-09"]
+        self.assertEqual(december["fed_side"]["local_status"], "OK")
+        self.assertEqual(december["polymarket"]["mapping_status"], "VALIDATED")
+        self.assertTrue(december["comparison"])
+        self.assertFalse(snapshot["partial"])
+
+
+class InvestingQualityTests(unittest.TestCase):
+    def test_partial_investing_parse_makes_snapshot_partial_and_blocks_comparison(self):
+        # One malformed bucket plus a surviving bucket that sums to 100 must
+        # not become an ordinary successful Fed-side distribution or snapshot.
+        investing_html = make_investing_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "1..2"), (4.00, 4.25, 100.0)],
+                )
+            ]
+        )
+        october_event = fixture_json(FIXTURE_PM_OCTOBER)
+        transport = FakeTransport()
+        transport.add_text("DFEDTARU", fixture_text(FIXTURE_FRED_UPPER))
+        transport.add_text("DFEDTARL", fixture_text(FIXTURE_FRED_LOWER))
+        transport.add_text("fomccalendars", fixture_text(FIXTURE_FOMC_CALENDAR))
+        transport.add_text("fed-rate-monitor", investing_html)
+        transport.add_json(
+            "gamma-api.polymarket.com/events",
+            lambda url, params: [october_event] if params.get("tag_slug") == "fed-rates" else [],
+        )
+        transport.add_json(
+            "public-search",
+            lambda url, params: {"events": [october_event] if params["q"] == "FOMC" else []},
+        )
+        transport.add_json(
+            "prices-history", make_clob_history(event_token_points(october_event))
+        )
+
+        snapshot = fedwatch_snapshot.build_snapshot(
+            transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        self.assertTrue(snapshot["partial"])
+        self.assertIn("investing", snapshot["failed_components"])
+        self.assertIn(
+            "INVESTING_PARSE_PARTIAL",
+            {error["code"] for error in snapshot["data"]["errors"]},
+        )
+        sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
+        self.assertEqual(sources["investing"]["status"], "ERROR")
+        meetings = {m["meeting_date"]: m for m in snapshot["data"]["meetings"]}
+        self.assertIsNone(meetings["2026-10-28"]["fed_side"])
+        self.assertEqual(meetings["2026-10-28"]["comparison"], [])
+        self.assertEqual(meetings["2026-10-28"]["polymarket"]["mapping_status"], "VALIDATED")
 
 
 class SnapshotPolymarketQualityTests(unittest.TestCase):

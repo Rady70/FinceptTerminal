@@ -207,3 +207,12 @@ def make_investing_html(meetings) -> str:
             f'<div class="percfedRateWrap">{items}</div>'
         )
     return "".join(blocks)
+
+
+def corrupt_fomc_calendar_december_row(html: str) -> str:
+    """Corrupt the first December meeting date cell of the captured calendar."""
+    marker = html.find("<strong>December</strong>")
+    start = html.find("fomc-meeting__date", marker)
+    open_end = html.find(">", start) + 1
+    close = html.find("</div>", open_end)
+    return html[:open_end] + "not-a-date" + html[close:]

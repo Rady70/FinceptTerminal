@@ -20,6 +20,7 @@ from fedwatch_test_support import (
     FIXTURE_FOMC_CALENDAR,
     FakeTransport,
     FixedClock,
+    corrupt_fomc_calendar_december_row,
     fixture_text,
     utc,
 )
@@ -44,7 +45,7 @@ def synthetic_calendar(year: int, rows: list[tuple[str, str]]) -> str:
 
 class FomcParseTests(unittest.TestCase):
     def test_live_calendar_fixture_known_values(self):
-        rows, warnings = fomc.parse_fomc_calendar(fixture_text(FIXTURE_FOMC_CALENDAR))
+        rows, warnings, report = fomc.parse_fomc_calendar(fixture_text(FIXTURE_FOMC_CALENDAR))
         self.assertEqual(warnings, [])
         self.assertEqual(len(rows), 57)
         by_end = {row["end_date"]: row for row in rows}
@@ -70,7 +71,7 @@ class FomcParseTests(unittest.TestCase):
         )
 
     def test_upcoming_filter_is_inclusive_and_chronological(self):
-        rows, _ = fomc.parse_fomc_calendar(fixture_text(FIXTURE_FOMC_CALENDAR))
+        rows, _, _ = fomc.parse_fomc_calendar(fixture_text(FIXTURE_FOMC_CALENDAR))
         upcoming = fomc.upcoming_meetings(rows, date(2026, 9, 28))
         self.assertEqual(len(upcoming), 10)
         self.assertEqual(upcoming[0]["end_date"], date(2026, 10, 28))
@@ -79,17 +80,18 @@ class FomcParseTests(unittest.TestCase):
         self.assertEqual(on_meeting_day[0]["end_date"], date(2026, 10, 28))
 
     def test_projection_star_and_notation_vote_synthetic_rows(self):
-        rows, warnings = fomc.parse_fomc_calendar(
+        rows, warnings, report = fomc.parse_fomc_calendar(
             synthetic_calendar(2026, [("March", "17-18*"), ("August", "22 (notation vote)")])
         )
         self.assertEqual(warnings, [])
+        self.assertTrue(report["structurally_complete"])
         self.assertEqual(rows[0]["has_projection_materials"], True)
         self.assertEqual(rows[0]["end_date"], date(2026, 3, 18))
         self.assertEqual(rows[1]["meeting_type"], "notation_vote")
         self.assertEqual(rows[1]["start_date"], rows[1]["end_date"])
 
     def test_month_spanning_new_year_wraps_end_year(self):
-        rows, _ = fomc.parse_fomc_calendar(synthetic_calendar(2026, [("December/January", "31-1")]))
+        rows, _, _ = fomc.parse_fomc_calendar(synthetic_calendar(2026, [("December/January", "31-1")]))
         self.assertEqual(rows[0]["start_date"], date(2026, 12, 31))
         self.assertEqual(rows[0]["end_date"], date(2027, 1, 1))
 
@@ -103,22 +105,38 @@ class FomcParseTests(unittest.TestCase):
             '<div class="col"><a href="/newsevents/pressreleases/monetary20260729a.htm">HTML</a></div>'
             "</div></div>"
         )
-        rows, _ = fomc.parse_fomc_calendar(html)
+        rows, _, _ = fomc.parse_fomc_calendar(html)
         self.assertEqual(rows[0]["end_date"], date(2026, 7, 29))
 
         overriding = html.replace("monetary20260729a.htm", "monetary20260730a.htm")
-        rows, _ = fomc.parse_fomc_calendar(overriding)
+        rows, _, _ = fomc.parse_fomc_calendar(overriding)
         self.assertEqual(rows[0]["end_date"], date(2026, 7, 30))
 
     def test_empty_or_unstructured_html_raises(self):
         with self.assertRaises(ValueError):
             fomc.parse_fomc_calendar("<html><body>nothing</body></html>")
 
-    def test_truncated_html_drops_incomplete_row_without_fabricating(self):
+    def test_truncated_html_drops_incomplete_row_and_reports_incomplete(self):
         html = synthetic_calendar(2026, [("March", "17-18"), ("April", "27-28")])
-        truncated = html[: html.rindex('<div class="row fomc-meeting">')]
-        rows, _ = fomc.parse_fomc_calendar(truncated)
+        cut = html.rindex('<div class="row fomc-meeting">') + len(
+            '<div class="row fomc-meeting">'
+        )
+        truncated = (
+            html[:cut] + '<div class="fomc-meeting__month col"><strong>April</strong></div>'
+        )
+        rows, _, report = fomc.parse_fomc_calendar(truncated)
         self.assertEqual([row["end_date"] for row in rows], [date(2026, 3, 18)])
+        self.assertFalse(report["structurally_complete"])
+        self.assertTrue(report["open_meeting_at_eof"])
+
+    def test_malformed_live_row_marks_parse_incomplete(self):
+        html = corrupt_fomc_calendar_december_row(fixture_text(FIXTURE_FOMC_CALENDAR))
+        rows, warnings, report = fomc.parse_fomc_calendar(html)
+        self.assertFalse(report["structurally_complete"])
+        self.assertEqual(report["skipped_row_count"], 1)
+        self.assertNotIn(date(2026, 12, 9), {row["end_date"] for row in rows})
+        self.assertEqual(len(rows), 56)
+        self.assertTrue(any("row skipped" in warning for warning in warnings))
 
 
 class FallbackSnapshotTests(unittest.TestCase):
@@ -155,6 +173,24 @@ class FallbackSnapshotTests(unittest.TestCase):
         self.assertEqual(result["source_status"], "SCRAPED")
         self.assertIsNone(result["fallback_snapshot_retrieved_at"])
         self.assertEqual(len(result["meetings"]), 57)
+        self.assertTrue(result["parse_report"]["structurally_complete"])
+
+    def test_incomplete_live_parse_falls_back_to_tracked_snapshot(self):
+        # One malformed official row must not become an authoritative partial
+        # scrape: the tracked fallback supplies the complete calendar.
+        transport = FakeTransport().add_text(
+            "fomccalendars",
+            corrupt_fomc_calendar_december_row(fixture_text(FIXTURE_FOMC_CALENDAR)),
+        )
+        result = fomc.fetch_calendar(transport, clock=FixedClock(utc(2026, 9, 28, 12)))
+        self.assertEqual(result["source_status"], "FALLBACK_SNAPSHOT")
+        self.assertEqual(result["fallback_snapshot_retrieved_at"], "2026-09-28T00:00:00Z")
+        self.assertEqual(len(result["meetings"]), 57)
+        self.assertIn(date(2026, 12, 9), {row["end_date"] for row in result["meetings"]})
+        self.assertFalse(result["parse_report"]["structurally_complete"])
+        self.assertTrue(
+            any("structurally incomplete" in warning for warning in result["warnings"])
+        )
 
     def test_missing_fallback_and_failed_scrape_fails_closed(self):
         transport = FakeTransport().add_text(
