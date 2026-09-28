@@ -105,6 +105,12 @@ fincept-qt/scripts/**/*.pickle
 fincept-qt/scripts/**/*.model
 fincept-qt/scripts/**/*.weights
 
+# MarketLab FedWatch Batch A: the FOMC fallback snapshot is a small, reviewed
+# runtime resource (57 rows with a capture-time header line), not script output.
+# Without this negation it is invisible to `git add` and absent from a fresh
+# clone, which the implementation record's fail-closed fallback depends on.
+!fincept-qt/scripts/fedwatch/fomc_dates_fallback.csv
+
 # ── Archives ─────────────────────────────────────────────────
 *.zip
 *.tar
