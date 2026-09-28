@@ -110,6 +110,24 @@ def _load_json_list(value) -> list:
     return []
 
 
+def _usable_event_id(value) -> str | None:
+    """Normalize a Gamma event id, or return None when it is malformed.
+
+    Event ids are non-empty strings or positive integers; anything else
+    (``None``, empty or whitespace strings, booleans, floats, lists, dicts)
+    cannot serve as a deduplication key and counts as discovery loss rather
+    than being coerced into a colliding key.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return str(value) if value > 0 else None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return None
+
+
 def extract_markets(event: dict) -> list[dict]:
     """Flatten one Gamma event into one row per submarket.
 
@@ -188,10 +206,24 @@ def search_events(
 ) -> tuple[list, dict]:
     """Paginated gamma public-search (1-based ``page`` until ``hasMore`` is false).
 
-    Returns ``(events, info)``. ``info.complete`` is true only when the API
-    reported no further results (or the reported total was reached); otherwise
-    the caller must treat discovery coverage as incomplete. An unexpected
-    top-level response shape is a source failure, never an empty success.
+    Returns ``(events, info)``. ``info.complete`` is true only when the
+    provider metadata agrees that every reported result has actually been
+    received. Completion is judged against the cumulative number of raw events
+    received, never against page capacity:
+
+    * ``hasMore: false`` completes only when no trustworthy total, or a total
+      already received, is reported;
+    * ``hasMore: true`` never completes on a total alone (a trusted total that
+      has already been received while ``hasMore`` still says otherwise is
+      contradictory and fails closed);
+    * a missing or wrong-typed ``hasMore`` completes only when a trustworthy
+      total has been received;
+    * a trusted ``totalResults`` that changes between pages is inconsistent and
+      fails closed, as do dropped non-dict items and untrusted (boolean or
+      negative) totals.
+
+    An unexpected top-level response shape is a source failure, never an empty
+    success.
     """
     events: list = []
     page = 1
@@ -199,6 +231,8 @@ def search_events(
     complete = False
     total_results = None
     malformed_item_count = 0
+    received_count = 0
+    metadata_inconsistent = False
     while pages < max_pages:
         data = _get_json(
             transport,
@@ -215,6 +249,7 @@ def search_events(
             )
         pages += 1
         raw_page = data["events"]
+        received_count += len(raw_page)
         page_events = [event for event in raw_page if isinstance(event, dict)]
         malformed_item_count += len(raw_page) - len(page_events)
         events.extend(page_events)
@@ -225,38 +260,46 @@ def search_events(
             # is unknowable and must be treated as incomplete coverage.
             complete = len(raw_page) < limit_per_type
             break
+
         raw_total = pagination.get("totalResults")
+        trusted_total = None
         if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0:
-            total_results = raw_total
+            trusted_total = raw_total
+        if trusted_total is not None:
+            if total_results is None:
+                total_results = trusted_total
+            elif trusted_total != total_results:
+                metadata_inconsistent = True
+                complete = False
+                break
+
         has_more = pagination.get("hasMore")
         if has_more is False:
-            # A trustworthy total that reports more results than the pages seen
-            # contradicts hasMore=false; contradictory metadata fails closed.
-            if isinstance(total_results, int) and total_results > page * limit_per_type:
-                complete = False
-            else:
-                complete = True
+            complete = total_results is None or received_count >= total_results
             break
         if has_more is True:
-            if isinstance(total_results, int) and total_results <= page * limit_per_type:
-                complete = True
+            if total_results is not None and received_count >= total_results:
+                # The provider says another page exists while its own total says
+                # everything has been received: contradictory, fail closed.
+                complete = False
                 break
             page += 1
             continue
         # Missing or wrong-typed hasMore cannot establish completion on its own;
-        # only a trustworthy total that has been reached can, otherwise the
-        # coverage is explicitly incomplete.
-        complete = isinstance(total_results, int) and total_results <= page * limit_per_type
+        # only a trustworthy total already received can.
+        complete = total_results is not None and received_count >= total_results
         break
-    if malformed_item_count:
-        # Non-dict response items were dropped; coverage cannot be trusted even
+    if malformed_item_count or metadata_inconsistent:
+        # Dropped items or changing metadata mean coverage cannot be trusted even
         # though pagination finished.
         complete = False
     return events, {
         "pages": pages,
         "event_count": len(events),
+        "received_count": received_count,
         "total_results": total_results,
         "malformed_item_count": malformed_item_count,
+        "metadata_inconsistent": metadata_inconsistent,
         "complete": complete,
     }
 
@@ -373,10 +416,11 @@ def discover_candidate_events(
         )
         stats["tag"].update(tag_info)
         for event in tag_events:
-            if event.get("id") is None:
+            event_id = _usable_event_id(event.get("id"))
+            if event_id is None:
                 events_without_id += 1
             else:
-                events_by_id[str(event["id"])] = event
+                events_by_id[event_id] = event
     except FedwatchError as exc:
         stats["tag"]["status"] = "ERROR"
         stats["tag"]["code"] = exc.code
@@ -389,10 +433,11 @@ def discover_candidate_events(
             )
             stats["searches"][keyword].update(info)
             for event in found:
-                if event.get("id") is None:
+                event_id = _usable_event_id(event.get("id"))
+                if event_id is None:
                     events_without_id += 1
                 else:
-                    events_by_id[str(event["id"])] = event
+                    events_by_id[event_id] = event
         except FedwatchError as exc:
             stats["searches"][keyword]["status"] = "ERROR"
             stats["searches"][keyword]["code"] = exc.code
