@@ -530,6 +530,40 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(stats["searches"]["Fed"]["complete"])
         self.assertFalse(stats["coverage_complete"])
 
+    def test_contradictory_search_metadata_fails_closed(self):
+        # hasMore=false while totalResults reports more results than have been
+        # seen is contradictory; completion must not be declared.
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        page_events = [{"id": str(index)} for index in range(5)]
+        transport.add_json(
+            "public-search",
+            lambda url, params: {
+                "events": page_events,
+                "pagination": {"hasMore": False, "totalResults": 808},
+            },
+        )
+        events, stats, _ = polymarket.discover_candidate_events(transport, search_page_size=5)
+        self.assertFalse(stats["searches"]["Fed"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_untrusted_total_results_are_not_used_for_completion(self):
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        for total in (True, -5):
+            transport.add_json(
+                "public-search",
+                lambda url, params, value=total: {
+                    "events": [{"id": "x"}],
+                    "pagination": {"totalResults": value},
+                },
+            )
+            events, stats, _ = polymarket.discover_candidate_events(
+                transport, search_page_size=1
+            )
+            self.assertFalse(stats["searches"]["Fed"]["complete"], total)
+            self.assertFalse(stats["coverage_complete"], total)
+
 
 def build_polymarket_transport(events, token_points) -> FakeTransport:
     transport = FakeTransport()

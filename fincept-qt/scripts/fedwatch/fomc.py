@@ -439,7 +439,7 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
     return {
         "retrieved_at": timeutil.iso_z(retrieved_at),
         "source": SOURCE_LABEL_FALLBACK,
-        "source_status": "FALLBACK_SNAPSHOT",
+        "source_status": "FALLBACK_STALE" if fallback_stale else "FALLBACK_SNAPSHOT",
         "fallback_snapshot_retrieved_at": snapshot_retrieved_at,
         "fallback_age_days": fallback_age_days,
         "fallback_stale": fallback_stale,

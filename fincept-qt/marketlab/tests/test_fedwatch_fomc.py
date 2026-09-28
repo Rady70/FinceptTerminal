@@ -229,7 +229,7 @@ class FallbackSnapshotTests(unittest.TestCase):
             result = fomc.fetch_calendar(
                 transport, fallback_path=path, clock=FixedClock(utc(2026, 9, 28, 12))
             )
-        self.assertEqual(result["source_status"], "FALLBACK_SNAPSHOT")
+        self.assertEqual(result["source_status"], "FALLBACK_STALE")
         self.assertTrue(result["fallback_stale"])
         self.assertGreater(result["fallback_age_days"], fomc.FALLBACK_MAX_AGE_DAYS)
         self.assertTrue(any("fallback snapshot age" in w for w in result["warnings"]))

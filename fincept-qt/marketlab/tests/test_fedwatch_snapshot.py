@@ -410,6 +410,7 @@ class FomcAuthorityTests(unittest.TestCase):
 
         sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
         self.assertEqual(sources["fomc_calendar"]["status"], "FALLBACK_STALE")
+        self.assertEqual(sources["polymarket"]["status"], "SKIPPED")
         self.assertTrue(snapshot["partial"])
         self.assertIn("fomc_calendar", snapshot["failed_components"])
         codes = {error["code"] for error in snapshot["data"]["errors"]}
@@ -420,8 +421,39 @@ class FomcAuthorityTests(unittest.TestCase):
         self.assertIn("2026-12-09", meetings)
         december = meetings["2026-12-09"]
         self.assertIsNone(december["fomc_calendar"])
+        self.assertIsNone(december["polymarket"])
         self.assertEqual(december["comparison"], [])
         self.assertEqual(december["fed_side"]["local_status"], "OK")
+        # No meeting may be serialized with a stale calendar row.
+        for meeting in snapshot["data"]["meetings"]:
+            self.assertIsNone(meeting["fomc_calendar"])
+            self.assertEqual(meeting["comparison"], [])
+
+    def test_polymarket_command_rejects_stale_calendar_authority(self):
+        shipped_lines = [
+            line
+            for line in fedwatch_fomc.FALLBACK_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            stale_path = Path(directory) / "fallback.csv"
+            stale_path.write_text(
+                "# snapshot_retrieved_at=2026-01-01T00:00:00Z\n"
+                + "\n".join(shipped_lines)
+                + "\n",
+                encoding="utf-8",
+            )
+            transport = build_snapshot_transport()
+            transport.add_text("fomccalendars", TransportError("HTTP 403", status_code=403))
+            with self.assertRaises(FedwatchError) as caught:
+                fedwatch_snapshot.build_polymarket_command(
+                    transport,
+                    clock=FixedClock(NOW),
+                    fallback_path=stale_path,
+                    sleep=NO_SLEEP,
+                )
+        self.assertEqual(caught.exception.provider, "fomc_calendar")
+        self.assertEqual(caught.exception.code, "FOMC_CALENDAR_FALLBACK_STALE")
 
 
 class InvestingQualityTests(unittest.TestCase):
@@ -546,6 +578,9 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(payload["source_status"], "SCRAPED")
         self.assertEqual(len(payload["meetings"]), 57)
         self.assertEqual(payload["meetings"][0]["start_date"], "2021-01-26")
+        self.assertFalse(payload["fallback_stale"])
+        self.assertIsNone(payload["fallback_age_days"])
+        self.assertTrue(payload["parse_report"]["structurally_complete"])
 
     def test_polymarket_command_carries_mapping_and_errors(self):
         payload = fedwatch_snapshot.build_polymarket_command(

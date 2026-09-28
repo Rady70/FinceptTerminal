@@ -114,10 +114,8 @@ def build_snapshot(
         fomc_result = fomc.fetch_calendar(transport, fallback_path=fallback_path, clock=clock)
         if fomc_result["source_status"] == "SCRAPED":
             status = "OK"
-        elif fomc_result.get("fallback_stale"):
-            status = "FALLBACK_STALE"
         else:
-            status = "FALLBACK_SNAPSHOT"
+            status = fomc_result["source_status"]
         sources.append(
             _source_entry(
                 PROVIDER_FOMC_CALENDAR,
@@ -254,7 +252,7 @@ def build_snapshot(
         )
 
     polymarket_section = None
-    if fomc_result is not None:
+    if fomc_result is not None and not calendar_uncertain:
         # Official upcoming dates only: an Investing-only date must never be a
         # candidate for Polymarket mapping validation.
         meeting_dates = set(official_upcoming_dates)
@@ -285,6 +283,23 @@ def build_snapshot(
                     detail=exc.message,
                 )
             )
+    elif calendar_uncertain:
+        # The stale fallback was explicitly judged unable to establish the
+        # official schedule, so it must not drive automatic mapping validation
+        # either.
+        sources.append(
+            _source_entry(
+                PROVIDER_POLYMARKET,
+                polymarket.SOURCE_LABEL,
+                "SKIPPED",
+                timeutil.iso_z(clock()),
+                detail="FOMC calendar is stale/uncertain; mappings cannot be verified",
+            )
+        )
+        warnings.append(
+            "Polymarket mapping validation was skipped because the FOMC calendar "
+            "authority is stale/uncertain."
+        )
     else:
         sources.append(
             _source_entry(
@@ -301,8 +316,9 @@ def build_snapshot(
         )
 
     # Only meetings that are still upcoming appear in the current snapshot;
-    # resolved-meeting history and lifecycle belong to a later batch.
-    fomc_by_end = {row["end_date"]: row for row in upcoming}
+    # resolved-meeting history and lifecycle belong to a later batch. A stale
+    # fallback is not serialized as a meeting's calendar authority.
+    fomc_by_end = {} if calendar_uncertain else {row["end_date"]: row for row in upcoming}
     polymarket_by_date = {}
     if polymarket_section is not None:
         polymarket_by_date = {
@@ -328,6 +344,7 @@ def build_snapshot(
         comparison_rows: list[dict] = []
         if (
             calendar_row is not None
+            and not calendar_uncertain
             and fed_section is not None
             and fed_section.get("local_probabilities")
             and polymarket_entry is not None
@@ -423,6 +440,8 @@ def build_fomc_meetings_command(
         "source": result["source"],
         "source_status": result["source_status"],
         "fallback_snapshot_retrieved_at": result["fallback_snapshot_retrieved_at"],
+        "fallback_age_days": result.get("fallback_age_days"),
+        "fallback_stale": result.get("fallback_stale"),
         "parse_report": result.get("parse_report"),
         "meetings": [fomc.serialize_meeting(row) for row in result["meetings"]],
         "warnings": list(result["warnings"]),
@@ -437,11 +456,27 @@ def build_polymarket_command(
 ) -> dict:
     """Standalone Polymarket payload: discovery, mappings, current prices.
 
-    The FOMC calendar is the mapping reference; if it is unavailable the
-    command fails with provider ``fomc_calendar`` rather than guessing dates.
+    The FOMC calendar is the mapping reference; if it is unavailable or is a
+    stale fallback that cannot establish the official schedule, the command
+    fails with provider ``fomc_calendar`` rather than validating dates against
+    a schedule that is not authoritative.
     """
     transport = transport or HttpTransport()
     fomc_result = fomc.fetch_calendar(transport, fallback_path=fallback_path, clock=clock)
+    if fomc_result.get("fallback_stale"):
+        raise FedwatchError(
+            PROVIDER_FOMC_CALENDAR,
+            "FOMC_CALENDAR_FALLBACK_STALE",
+            "live FOMC calendar unavailable and the tracked fallback snapshot is too "
+            "old to establish the schedule; Polymarket mappings cannot be verified",
+            detail={
+                "fallback_snapshot_retrieved_at": fomc_result.get(
+                    "fallback_snapshot_retrieved_at"
+                ),
+                "fallback_age_days": fomc_result.get("fallback_age_days"),
+                "max_age_days": fomc.FALLBACK_MAX_AGE_DAYS,
+            },
+        )
     upcoming = fomc.upcoming_meetings(fomc_result["meetings"], as_of=_as_of_date(clock))
     section = polymarket.build_section(
         transport, [row["end_date"] for row in upcoming], clock=clock, sleep=sleep

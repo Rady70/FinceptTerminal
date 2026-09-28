@@ -225,11 +225,17 @@ def search_events(
             # is unknowable and must be treated as incomplete coverage.
             complete = len(raw_page) < limit_per_type
             break
-        if isinstance(pagination.get("totalResults"), int):
-            total_results = pagination["totalResults"]
+        raw_total = pagination.get("totalResults")
+        if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0:
+            total_results = raw_total
         has_more = pagination.get("hasMore")
         if has_more is False:
-            complete = True
+            # A trustworthy total that reports more results than the pages seen
+            # contradicts hasMore=false; contradictory metadata fails closed.
+            if isinstance(total_results, int) and total_results > page * limit_per_type:
+                complete = False
+            else:
+                complete = True
             break
         if has_more is True:
             if isinstance(total_results, int) and total_results <= page * limit_per_type:
