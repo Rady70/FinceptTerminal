@@ -228,6 +228,14 @@ target_link_libraries(tst_redirect_guard PRIVATE Qt6::Network)
 fincept_add_test(tst_news_date_parse
     tst_news_date_parse.cpp)
 
+# MarketLab: cross-feed news de-duplication — overlapping publisher feeds
+# (three CNBC views, for example) carry the same story in more than one feed,
+# so the aggregate collapses repeats by link (normalized) or, absent a link,
+# by the normalized headline. The first occurrence survives and a different
+# link stays a different story. Header-only over Qt Core; no app sources.
+fincept_add_test(tst_news_dedupe
+    tst_news_dedupe.cpp)
+
 # MarketLab: the shared historical time-series rules behind the chart-first
 # economics path — date parsing, chronological ordering, range windows anchored
 # at the latest returned observation, and gap splitting that breaks the line
@@ -451,4 +459,4 @@ fincept_add_test(tst_qt_message_routing
     "${PROJECT_SOURCE_DIR}/src/core/logging/QtMessageRouting.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_news_dedupe, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")

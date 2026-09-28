@@ -15,6 +15,7 @@
 #include "datahub/DataHubMetaTypes.h"
 #include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HttpClient.h"
+#include "services/news/NewsDedupe.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/NewsArticleRepository.h"
 
@@ -45,6 +46,20 @@ static constexpr int kFeedTransferTimeoutMs = 4000; // 4s per RSS feed request
 // the same endpoints.
 static constexpr const char* kBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                                                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+// Newest first; equal publication instants (the same story carried by several
+// feeds) break deterministically — best tier, then source, then headline — so
+// the cross-feed de-duplication below always keeps the same copy no matter
+// which feed answered first.
+static bool newer_first(const NewsArticle& a, const NewsArticle& b) {
+    if (a.sort_ts != b.sort_ts)
+        return a.sort_ts > b.sort_ts;
+    if (a.tier != b.tier)
+        return a.tier < b.tier;
+    if (a.source != b.source)
+        return a.source < b.source;
+    return a.headline < b.headline;
+}
 
 NewsService& NewsService::instance() {
     static NewsService s;
@@ -89,6 +104,7 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            dedupe_news_articles(articles);
             cb(true, articles);
             publish_articles_to_hub(articles);
             return;
@@ -167,10 +183,11 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
             }
 
             if (state->remaining.fetchAndSubRelaxed(1) == 1) {
-                // Last feed done — sort by time descending
+                // Last feed done — sort by time descending, then collapse the
+                // same story carried by more than one feed.
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(),
-                          [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+                std::sort(all.begin(), all.end(), newer_first);
+                dedupe_news_articles(all);
 
                 QSet<QString> sources;
                 for (const auto& a : all)
@@ -248,6 +265,7 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            dedupe_news_articles(articles);
             final_cb(true, articles);
             emit articles_partial(articles, feed_count_, feed_count_);
             publish_articles_to_hub(articles);
@@ -327,8 +345,10 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 // Partial snapshot sorted by time for progressive display
                 snapshot = state->all_articles;
             }
-            std::sort(snapshot.begin(), snapshot.end(),
-                      [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+            std::sort(snapshot.begin(), snapshot.end(), newer_first);
+            // Each partial snapshot is a full-list republish; collapse
+            // cross-feed repeats before it reaches a subscriber or the hub.
+            dedupe_news_articles(snapshot);
             emit articles_partial(snapshot, feeds_done, total);
             // Progressive publish — each chunk fans out the accumulated
             // list. Hub's per-topic coalescing (news:general at 250ms)
@@ -336,10 +356,11 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
             publish_articles_to_hub(snapshot);
 
             if (state->remaining.fetchAndSubRelaxed(1) == 1) {
-                // All feeds done — finalize cache
+                // All feeds done — sort, collapse cross-feed repeats, then
+                // finalize cache.
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(),
-                          [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+                std::sort(all.begin(), all.end(), newer_first);
+                dedupe_news_articles(all);
 
                 QSet<QString> sources;
                 for (const auto& a : all)
@@ -459,6 +480,7 @@ void NewsService::refresh(const QStringList& topics) {
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            dedupe_news_articles(articles);
             publish_articles_to_hub(articles);
         }
     }
