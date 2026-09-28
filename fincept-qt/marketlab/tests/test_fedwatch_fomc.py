@@ -234,6 +234,43 @@ class FallbackSnapshotTests(unittest.TestCase):
         self.assertGreater(result["fallback_age_days"], fomc.FALLBACK_MAX_AGE_DAYS)
         self.assertTrue(any("fallback snapshot age" in w for w in result["warnings"]))
 
+    def test_future_dated_fallback_metadata_is_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fallback.csv"
+            path.write_text(
+                "# snapshot_retrieved_at=2026-12-01T00:00:00Z\n"
+                "start_date,end_date,meeting_type,has_projection_materials\n"
+                "2026-10-27,2026-10-28,regular,false\n",
+                encoding="utf-8",
+            )
+            transport = FakeTransport().add_text(
+                "fomccalendars", TransportError("HTTP 403", status_code=403)
+            )
+            result = fomc.fetch_calendar(
+                transport, fallback_path=path, clock=FixedClock(utc(2026, 9, 28, 12))
+            )
+        self.assertEqual(result["source_status"], "FALLBACK_STALE")
+        self.assertTrue(result["fallback_stale"])
+        self.assertLess(result["fallback_age_days"], -fomc.FALLBACK_MAX_FUTURE_DAYS)
+
+    def test_slightly_future_fallback_metadata_is_tolerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fallback.csv"
+            path.write_text(
+                "# snapshot_retrieved_at=2026-09-28T18:00:00Z\n"
+                "start_date,end_date,meeting_type,has_projection_materials\n"
+                "2026-10-27,2026-10-28,regular,false\n",
+                encoding="utf-8",
+            )
+            transport = FakeTransport().add_text(
+                "fomccalendars", TransportError("HTTP 403", status_code=403)
+            )
+            result = fomc.fetch_calendar(
+                transport, fallback_path=path, clock=FixedClock(utc(2026, 9, 28, 12))
+            )
+        self.assertFalse(result["fallback_stale"])
+        self.assertLess(result["fallback_age_days"], 0)
+
     def test_missing_fallback_and_failed_scrape_fails_closed(self):
         transport = FakeTransport().add_text(
             "fomccalendars", TransportError("HTTP 403", status_code=403)

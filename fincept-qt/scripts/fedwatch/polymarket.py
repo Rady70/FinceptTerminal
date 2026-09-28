@@ -211,13 +211,13 @@ def search_events(
     received. Completion is judged against the cumulative number of raw events
     received, never against page capacity:
 
-    * ``hasMore: false`` completes only when no trustworthy total, or a total
-      already received, is reported;
-    * ``hasMore: true`` never completes on a total alone (a trusted total that
-      has already been received while ``hasMore`` still says otherwise is
+    * ``hasMore: false`` completes only when no trustworthy total is reported,
+      or the received count exactly equals the reported total;
+    * ``hasMore: true`` never completes on a total alone (a trusted total at or
+      below the received count while ``hasMore`` still says otherwise is
       contradictory and fails closed);
-    * a missing or wrong-typed ``hasMore`` completes only when a trustworthy
-      total has been received;
+    * a missing or wrong-typed ``hasMore`` completes only when the received
+      count exactly equals a trustworthy total;
     * a trusted ``totalResults`` that changes between pages is inconsistent and
       fails closed, as do dropped non-dict items and untrusted (boolean or
       negative) totals.
@@ -275,7 +275,7 @@ def search_events(
 
         has_more = pagination.get("hasMore")
         if has_more is False:
-            complete = total_results is None or received_count >= total_results
+            complete = total_results is None or received_count == total_results
             break
         if has_more is True:
             if total_results is not None and received_count >= total_results:
@@ -286,8 +286,8 @@ def search_events(
             page += 1
             continue
         # Missing or wrong-typed hasMore cannot establish completion on its own;
-        # only a trustworthy total already received can.
-        complete = total_results is not None and received_count >= total_results
+        # only a trustworthy total exactly received can.
+        complete = total_results is not None and received_count == total_results
         break
     if malformed_item_count or metadata_inconsistent:
         # Dropped items or changing metadata mean coverage cannot be trusted even
@@ -415,12 +415,28 @@ def discover_candidate_events(
             transport, FED_RATES_TAG, page_size=tag_page_size, max_pages=max_pages
         )
         stats["tag"].update(tag_info)
+        tag_seen: set[str] = set()
+        tag_duplicates = 0
         for event in tag_events:
             event_id = _usable_event_id(event.get("id"))
             if event_id is None:
                 events_without_id += 1
-            else:
-                events_by_id[event_id] = event
+                continue
+            if event_id in tag_seen:
+                # The same event consumed two result slots within one paginated
+                # source: another result may have been skipped, so the source
+                # cannot claim complete coverage.
+                tag_duplicates += 1
+                continue
+            tag_seen.add(event_id)
+            events_by_id[event_id] = event
+        if tag_duplicates:
+            stats["tag"]["duplicate_id_count"] = tag_duplicates
+            stats["tag"]["complete"] = False
+            warnings.append(
+                f"tag listing repeated {tag_duplicates} event id(s) within its own "
+                f"pages; coverage may be incomplete"
+            )
     except FedwatchError as exc:
         stats["tag"]["status"] = "ERROR"
         stats["tag"]["code"] = exc.code
@@ -432,12 +448,25 @@ def discover_candidate_events(
                 transport, keyword, limit_per_type=search_page_size, max_pages=max_pages
             )
             stats["searches"][keyword].update(info)
+            source_seen: set[str] = set()
+            source_duplicates = 0
             for event in found:
                 event_id = _usable_event_id(event.get("id"))
                 if event_id is None:
                     events_without_id += 1
-                else:
-                    events_by_id[event_id] = event
+                    continue
+                if event_id in source_seen:
+                    source_duplicates += 1
+                    continue
+                source_seen.add(event_id)
+                events_by_id[event_id] = event
+            if source_duplicates:
+                stats["searches"][keyword]["duplicate_id_count"] = source_duplicates
+                stats["searches"][keyword]["complete"] = False
+                warnings.append(
+                    f"search ({keyword!r}) repeated {source_duplicates} event id(s) "
+                    f"within its own pages; coverage may be incomplete"
+                )
         except FedwatchError as exc:
             stats["searches"][keyword]["status"] = "ERROR"
             stats["searches"][keyword]["code"] = exc.code

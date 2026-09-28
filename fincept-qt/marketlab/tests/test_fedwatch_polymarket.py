@@ -582,6 +582,91 @@ class DiscoveryTests(unittest.TestCase):
         self.assertFalse(stats["searches"]["Fed"]["complete"])
         self.assertFalse(stats["coverage_complete"])
 
+    def test_search_received_more_than_total_is_incomplete(self):
+        # A payload that reports more raw entries than its own total contradicts
+        # the metadata; completing it would hide unaccounted results.
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        page_events = [{"id": str(index)} for index in range(10)]
+        transport.add_json(
+            "public-search",
+            lambda url, params: {
+                "events": page_events,
+                "pagination": {"hasMore": False, "totalResults": 5},
+            },
+        )
+        events, stats, _ = polymarket.discover_candidate_events(transport, search_page_size=50)
+        self.assertEqual(stats["searches"]["Fed"]["received_count"], 10)
+        self.assertFalse(stats["searches"]["Fed"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_search_page_duplicate_ids_make_coverage_incomplete(self):
+        # Page 2 repeats page 1: raw count matches the total, but distinct
+        # results were not traversed, so coverage must not complete.
+        event = make_fed_decision_event()
+        pages = {
+            1: {
+                "events": [event],
+                "pagination": {"hasMore": True, "totalResults": 2},
+            },
+            2: {
+                "events": [event],
+                "pagination": {"hasMore": False, "totalResults": 2},
+            },
+        }
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [])
+        transport.add_json(
+            "public-search",
+            lambda url, params: pages[int(params.get("page", 1))]
+            if params["q"] == "FOMC"
+            else {"events": [], "pagination": {"hasMore": False, "totalResults": 0}},
+        )
+        events, stats, warnings = polymarket.discover_candidate_events(
+            transport, search_page_size=1
+        )
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        self.assertEqual(stats["searches"]["FOMC"]["duplicate_id_count"], 1)
+        self.assertFalse(stats["searches"]["FOMC"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_tag_duplicate_ids_make_coverage_incomplete(self):
+        event = make_fed_decision_event()
+
+        def tag_route(url, params):
+            if params.get("tag_slug") != "fed-rates":
+                return []
+            # Offset 0 and 1 both return the same event (pagination overlap);
+            # offset 2 is the short terminating page.
+            return [event] if int(params.get("offset", 0)) <= 1 else []
+
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", tag_route)
+        transport.add_json(
+            "public-search", {"events": [], "pagination": {"hasMore": False, "totalResults": 0}}
+        )
+        # page_size=1 with the same event on two pages simulates offset overlap.
+        events, stats, _ = polymarket.discover_candidate_events(transport, tag_page_size=1)
+        self.assertEqual(stats["tag"]["duplicate_id_count"], 1)
+        self.assertFalse(stats["tag"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_cross_source_duplicates_are_not_loss(self):
+        # The same event returned by the tag listing and a search is normal
+        # deduplication across sources, not within-source pagination loss.
+        event = make_fed_decision_event()
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [event])
+        transport.add_json(
+            "public-search",
+            lambda url, params: {"events": [event] if params["q"] == "FOMC" else []},
+        )
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        self.assertNotIn("duplicate_id_count", stats["tag"])
+        self.assertNotIn("duplicate_id_count", stats["searches"]["FOMC"])
+        self.assertTrue(stats["coverage_complete"])
+
     def test_search_has_more_after_received_total_is_incomplete(self):
         # hasMore=true while the trusted total says everything was received is
         # contradictory and must fail closed.

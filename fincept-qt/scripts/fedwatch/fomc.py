@@ -41,7 +41,9 @@ FALLBACK_METADATA_PREFIX = "#"
 # many days it no longer establishes which meeting dates are officially
 # scheduled (a new meeting can be announced between captures), so the
 # composite must treat the calendar as uncertain rather than authoritative.
+# A capture timestamp materially in the future is equally untrustworthy.
 FALLBACK_MAX_AGE_DAYS = 30
+FALLBACK_MAX_FUTURE_DAYS = 1
 
 # federalreserve.gov answers 403 to empty/bot-like User-Agents; the qualified
 # implementation used a browser UA for this host only.
@@ -428,12 +430,17 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
             fallback_age_days = (retrieved_at - snapshot_instant).total_seconds() / 86400.0
         except ValueError:
             fallback_age_days = None
-    fallback_stale = fallback_age_days is None or fallback_age_days > FALLBACK_MAX_AGE_DAYS
+    fallback_stale = (
+        fallback_age_days is None
+        or fallback_age_days > FALLBACK_MAX_AGE_DAYS
+        or fallback_age_days < -FALLBACK_MAX_FUTURE_DAYS
+    )
     if fallback_stale:
         warnings.append(
             "FOMC fallback snapshot age is "
             + ("unknown" if fallback_age_days is None else f"{fallback_age_days:.1f} days")
-            + f" (limit {FALLBACK_MAX_AGE_DAYS} days); the calendar is not authoritative "
+            + f" (accepted window -{FALLBACK_MAX_FUTURE_DAYS} to "
+            f"{FALLBACK_MAX_AGE_DAYS} days); the calendar is not authoritative "
             "for meeting-date alignment"
         )
     return {
