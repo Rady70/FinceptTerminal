@@ -138,15 +138,6 @@ def build_snapshot(
     distributions = None
     try:
         distributions = investing.fetch_distributions(transport, clock=clock)
-        sources.append(
-            _source_entry(
-                PROVIDER_INVESTING,
-                distributions["source"],
-                "OK",
-                distributions["retrieved_at"],
-                method=distributions["method"],
-            )
-        )
         warnings.extend(distributions["warnings"])
     except FedwatchError as exc:
         errors.append(_error_entry(exc))
@@ -180,12 +171,62 @@ def build_snapshot(
     fomc_meetings = fomc_result["meetings"] if fomc_result is not None else []
     upcoming = fomc.upcoming_meetings(fomc_meetings, as_of=_as_of_date(clock)) if fomc_result else []
 
+    # The official FOMC calendar is authoritative for meeting identity. An
+    # Investing date absent from the official upcoming calendar is an
+    # Investing/Fed-side quality problem: it is excluded from the composite and
+    # from Polymarket validation, and it can never produce a comparison. (This
+    # restores the qualified invariant that current Investing meeting dates
+    # used by the composite are valid official FOMC meeting dates.)
+    official_upcoming_dates = {row["end_date"] for row in upcoming}
+    investing_dates = {
+        timeutil.parse_date(section["meeting_date"]) for section in fed_sections.values()
+    }
+    investing_only_dates = (
+        sorted(investing_dates - official_upcoming_dates) if fomc_result is not None else []
+    )
+
+    if distributions is not None:
+        if investing_only_dates:
+            errors.append(
+                FedwatchError(
+                    PROVIDER_INVESTING,
+                    "INVESTING_MEETING_DATE_MISMATCH",
+                    "Investing.com reported meeting date(s) that are not official "
+                    "upcoming FOMC meetings: "
+                    + ", ".join(value.isoformat() for value in investing_only_dates),
+                    detail={
+                        "meeting_dates": [value.isoformat() for value in investing_only_dates],
+                        "official_upcoming_dates": sorted(
+                            value.isoformat() for value in official_upcoming_dates
+                        ),
+                    },
+                ).to_dict()
+            )
+            warnings.append(
+                "Investing.com meeting date(s) outside the official FOMC calendar were "
+                "excluded from the composite: "
+                + ", ".join(value.isoformat() for value in investing_only_dates)
+            )
+        sources.append(
+            _source_entry(
+                PROVIDER_INVESTING,
+                distributions["source"],
+                "PARTIAL" if investing_only_dates else "OK",
+                distributions["retrieved_at"],
+                method=distributions["method"],
+                detail=(
+                    "reported meeting date(s) absent from the official FOMC calendar"
+                    if investing_only_dates
+                    else None
+                ),
+            )
+        )
+
     polymarket_section = None
     if fomc_result is not None:
-        meeting_dates = {row["end_date"] for row in upcoming}
-        meeting_dates |= {
-            timeutil.parse_date(section["meeting_date"]) for section in fed_sections.values()
-        }
+        # Official upcoming dates only: an Investing-only date must never be a
+        # candidate for Polymarket mapping validation.
+        meeting_dates = set(official_upcoming_dates)
         try:
             polymarket_section = polymarket.build_section(
                 transport, sorted(meeting_dates), clock=clock, sleep=sleep
@@ -239,7 +280,10 @@ def build_snapshot(
         }
 
     meeting_dates_all = set(fomc_by_end)
-    meeting_dates_all |= {timeutil.parse_date(value) for value in fed_sections}
+    if fomc_result is None:
+        # With no official calendar the composite can only follow Investing,
+        # and the FOMC provider error already marks the snapshot partial.
+        meeting_dates_all |= {timeutil.parse_date(value) for value in fed_sections}
     meeting_dates_all |= set(polymarket_by_date)
 
     meetings = []
@@ -248,15 +292,10 @@ def build_snapshot(
         fed_section = fed_sections.get(meeting_date.isoformat())
         polymarket_entry = polymarket_by_date.get(meeting_date)
 
-        if fed_section is not None and calendar_row is None:
-            warnings.append(
-                f"meeting {meeting_date.isoformat()} was reported by Investing.com but "
-                f"not found in the FOMC calendar"
-            )
-
         comparison_rows: list[dict] = []
         if (
-            fed_section is not None
+            calendar_row is not None
+            and fed_section is not None
             and fed_section.get("local_probabilities")
             and polymarket_entry is not None
             and polymarket_entry.get("mapping_status") == "VALIDATED"

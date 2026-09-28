@@ -29,30 +29,13 @@ from fedwatch_test_support import (
     FakeTransport,
     FixedClock,
     fixture_text,
+    make_investing_html as synthetic_html,
     utc,
 )
 
 from fedwatch import investing
 from fedwatch.errors import FedwatchError
 from fedwatch.transport import TransportError
-
-
-def synthetic_html(meetings) -> str:
-    """Build a minimal Investing-shaped page: meetings = [(date_text, buckets)]."""
-    blocks = []
-    for date_text, buckets in meetings:
-        items = "".join(
-            f'<div class="percfedRateItem">'
-            f"<span>{low} - {high}</span><i></i>"
-            f'<div style="width: 10.0%"></div><span>{pct}%</span></div>'
-            for low, high, pct in buckets
-        )
-        blocks.append(
-            f'<div class="infoFed"><div><span>Meeting Time:</span><i>{date_text}</i></div>'
-            f"<div><span>Future Price:</span><i>96.0</i></div></div>"
-            f'<div class="percfedRateWrap">{items}</div>'
-        )
-    return "".join(blocks)
 
 
 class InvestingParseTests(unittest.TestCase):
@@ -112,6 +95,38 @@ class InvestingParseTests(unittest.TestCase):
         rows, warnings = investing.parse_fed_rate_monitor(html)
         self.assertEqual(rows, [])
         self.assertTrue(any("no parseable bucket rows" in warning for warning in warnings))
+
+    def test_malformed_percentage_token_skips_row_without_crashing(self):
+        # "[0-9.]+" matches strings like "1..2"; float() must be guarded so a
+        # malformed provider token cannot escape as a raw ValueError.
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "1..2"), (4.00, 4.25, 100.0)],
+                )
+            ]
+        )
+        rows, warnings = investing.parse_fed_rate_monitor(html)
+        self.assertEqual([row["probability_pct"] for row in rows], [100.0])
+        self.assertTrue(
+            any("unparseable target-rate interval or percentage" in warning for warning in warnings)
+        )
+
+    def test_all_malformed_percentages_is_an_investing_provider_error(self):
+        html = synthetic_html(
+            [
+                (
+                    "Oct 28, 2026 02:00PM ET",
+                    [(3.75, 4.00, "."), (4.00, 4.25, "1..2")],
+                )
+            ]
+        )
+        transport = FakeTransport().add_text("fed-rate-monitor", html)
+        with self.assertRaises(FedwatchError) as caught:
+            investing.fetch_distributions(transport)
+        self.assertEqual(caught.exception.provider, "investing")
+        self.assertEqual(caught.exception.code, "INVESTING_PARSE_EMPTY")
 
 
 class NormalizationRegressionTests(unittest.TestCase):

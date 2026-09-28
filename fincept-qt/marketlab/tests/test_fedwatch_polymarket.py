@@ -33,6 +33,7 @@ from fedwatch_test_support import (
     fixture_json,
     make_clob_history,
     make_fed_decision_event,
+    make_gamma_market,
     utc,
 )
 
@@ -95,6 +96,47 @@ class OutcomeParsingTests(unittest.TestCase):
         for market in rate_markets:
             self.assertTrue(market["yes_clob_token_id"])
             self.assertFalse(market["parse_failed"])
+
+
+class MalformedStructureTests(unittest.TestCase):
+    def test_extract_markets_tolerates_malformed_structures(self):
+        self.assertEqual(polymarket.extract_markets({"markets": None}), [])
+        self.assertEqual(polymarket.extract_markets({"markets": "oops"}), [])
+        self.assertEqual(polymarket.extract_markets({}), [])
+        valid = make_gamma_market(
+            "Will there be no change in Fed interest rates after the October 2026 meeting?",
+            "0.5",
+            "tok",
+        )
+        rows = polymarket.extract_markets({"markets": [None, "x", 42, valid]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["bp_delta"], 0)
+
+    def test_candidate_without_market_list_is_rejected_not_internal(self):
+        event = make_fed_decision_event()
+        event["markets"] = None
+        evidence, reason = polymarket.validate_candidate_event(event, MEETING_OCTOBER)
+        self.assertIsNone(evidence)
+        self.assertEqual(reason, "INSUFFICIENT_RATE_SUBMARKETS")
+
+    def test_discovery_tolerates_non_list_markets_field(self):
+        event = fixture_json(FIXTURE_PM_OCTOBER)
+        event["markets"] = {"unexpected": "shape"}
+        transport = build_polymarket_transport([event], {})
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(stats["candidate_market_rows"], 0)
+        self.assertEqual(stats["events_without_market_list"], 1)
+        self.assertTrue(any("non-list markets field" in warning for warning in warnings))
+
+    def test_section_with_non_list_markets_gives_mapping_state_not_internal_error(self):
+        event = make_fed_decision_event()
+        event["markets"] = "broken"
+        transport = build_polymarket_transport([event], {})
+        section = polymarket.build_section(
+            transport, [MEETING_OCTOBER], clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        self.assertEqual(section["meetings"][0]["mapping_status"], "NOT_FOUND")
 
 
 class MappingValidationTests(unittest.TestCase):

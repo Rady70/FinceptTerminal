@@ -127,10 +127,11 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
             try:
                 low_raw, high_raw = bucket_label.split("-")
                 rate_low, rate_high = float(low_raw.strip()), float(high_raw.strip())
+                probability_pct = float(pct_raw)
             except ValueError:
                 warnings.append(
-                    f"unparseable target-rate interval {bucket_label!r} for meeting "
-                    f"{meeting_date.isoformat()}; row skipped"
+                    f"unparseable target-rate interval or percentage {bucket_label!r}/"
+                    f"{pct_raw!r} for meeting {meeting_date.isoformat()}; row skipped"
                 )
                 continue
 
@@ -139,7 +140,7 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
                     "meeting_date": meeting_date.isoformat(),
                     "rate_low": rate_low,
                     "rate_high": rate_high,
-                    "probability_pct": float(pct_raw),
+                    "probability_pct": probability_pct,
                 }
             )
 

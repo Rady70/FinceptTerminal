@@ -110,9 +110,20 @@ def extract_markets(event: dict) -> list[dict]:
     token id. Non-rate questions stay in the result with
     ``bp_delta=None``/``parse_failed=True`` so callers can see them, but they
     never count as rate outcomes.
+
+    Malformed event structure is tolerated at this boundary: a non-list
+    ``markets`` field yields no rows, and non-dict market entries are skipped,
+    so schema drift rejects a candidate instead of escaping as an internal
+    error. Candidates without usable structure fail validation explicitly.
     """
+    markets = event.get("markets", [])
+    if not isinstance(markets, list):
+        return []
+
     rows: list[dict] = []
-    for market in event.get("markets", []):
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
         question = market.get("question", "")
         parsed = parse_bp_outcome(question)
         outcomes = _load_json_list(market.get("outcomes"))
@@ -258,7 +269,21 @@ def discover_candidate_events(transport: Transport) -> tuple[list[dict], dict, l
 
     events = list(events_by_id.values())
     stats["unique_event_count"] = len(events)
-    stats["candidate_market_rows"] = sum(len(event.get("markets", [])) for event in events)
+    market_rows = 0
+    events_without_market_list = 0
+    for event in events:
+        markets = event.get("markets")
+        if isinstance(markets, list):
+            market_rows += len(markets)
+        else:
+            events_without_market_list += 1
+    stats["candidate_market_rows"] = market_rows
+    if events_without_market_list:
+        stats["events_without_market_list"] = events_without_market_list
+        warnings.append(
+            f"{events_without_market_list} candidate event(s) had a non-list markets "
+            f"field; they can only be rejected, not validated"
+        )
     return events, stats, warnings
 
 

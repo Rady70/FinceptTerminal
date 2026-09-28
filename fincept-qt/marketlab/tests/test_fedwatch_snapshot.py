@@ -38,6 +38,8 @@ from fedwatch_test_support import (
     fixture_json,
     fixture_text,
     make_clob_history,
+    make_fed_decision_event,
+    make_investing_html,
     utc,
 )
 
@@ -273,6 +275,79 @@ def event_token_points(event: dict, age_days: float = 1.0, empty: set | None = N
         price = float(json.loads(market["outcomePrices"])[0])
         points[token] = [{"t": epoch(NOW - timedelta(days=age_days)), "p": price}]
     return points
+
+
+class FomcAuthorityTests(unittest.TestCase):
+    """The official FOMC calendar is authoritative for meeting identity."""
+
+    def test_investing_only_date_cannot_produce_a_comparison(self):
+        investing_html = make_investing_html(
+            [
+                ("Oct 28, 2026 02:00PM ET", [(3.75, 4.00, 50.0), (4.00, 4.25, 50.0)]),
+                ("Nov 18, 2026 02:00PM ET", [(3.75, 4.00, 40.0), (4.00, 4.25, 60.0)]),
+            ]
+        )
+        # A structure that would validate if it were ever offered as a candidate:
+        # 2026-11-19T04:59Z is 2026-11-18 23:59 U.S. Eastern.
+        november_event = make_fed_decision_event(
+            event_id="777",
+            title="Fed Decision in November?",
+            end_date="2026-11-19T04:59:00Z",
+            month="November",
+            year=2026,
+        )
+        transport = FakeTransport()
+        transport.add_text("DFEDTARU", fixture_text(FIXTURE_FRED_UPPER))
+        transport.add_text("DFEDTARL", fixture_text(FIXTURE_FRED_LOWER))
+        transport.add_text("fomccalendars", fixture_text(FIXTURE_FOMC_CALENDAR))
+        transport.add_text("fed-rate-monitor", investing_html)
+        transport.add_json(
+            "gamma-api.polymarket.com/events",
+            lambda url, params: [november_event] if params.get("tag_slug") == "fed-rates" else [],
+        )
+        transport.add_json(
+            "public-search",
+            lambda url, params: {"events": [november_event] if params["q"] == "FOMC" else []},
+        )
+        points = {}
+        for market in november_event["markets"]:
+            token = json.loads(market["clobTokenIds"])[0]
+            price = float(json.loads(market["outcomePrices"])[0])
+            points[token] = [{"t": epoch(NOW - timedelta(days=1)), "p": price}]
+        transport.add_json("prices-history", make_clob_history(points))
+
+        snapshot = fedwatch_snapshot.build_snapshot(
+            transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        self.assertTrue(snapshot["partial"])
+        self.assertIn("investing", snapshot["failed_components"])
+        mismatch = next(
+            error
+            for error in snapshot["data"]["errors"]
+            if error["code"] == "INVESTING_MEETING_DATE_MISMATCH"
+        )
+        self.assertEqual(mismatch["provider"], "investing")
+        self.assertEqual(mismatch["detail"]["meeting_dates"], ["2026-11-18"])
+
+        sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
+        self.assertEqual(sources["investing"]["status"], "PARTIAL")
+
+        meetings = {m["meeting_date"]: m for m in snapshot["data"]["meetings"]}
+        self.assertNotIn("2026-11-18", meetings)
+        self.assertIn("2026-10-28", meetings)
+        for meeting in snapshot["data"]["meetings"]:
+            self.assertNotEqual(meeting["meeting_date"], "2026-11-18")
+            self.assertEqual(meeting["comparison"], [])
+
+        # The non-official date was never offered to Polymarket validation, so
+        # its outcome tokens were never fetched.
+        self.assertFalse(
+            any(
+                str(call.get("params", {}).get("market", "")).startswith("777-")
+                for call in transport.json_calls
+                if call["url"].endswith("prices-history")
+            )
+        )
 
 
 class SnapshotPolymarketQualityTests(unittest.TestCase):

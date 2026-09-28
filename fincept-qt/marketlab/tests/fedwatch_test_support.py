@@ -185,3 +185,25 @@ def make_clob_history(token_points: dict):
 
 def epoch(value: datetime) -> int:
     return int(value.timestamp())
+
+
+def make_investing_html(meetings) -> str:
+    """Build a minimal Investing-shaped page.
+
+    ``meetings`` is a list of ``(meeting_time_text, [(low, high, pct), ...])``;
+    percentages may be strings so malformed provider tokens can be reproduced.
+    """
+    blocks = []
+    for date_text, buckets in meetings:
+        items = "".join(
+            f'<div class="percfedRateItem">'
+            f"<span>{low} - {high}</span><i></i>"
+            f'<div style="width: 10.0%"></div><span>{pct}%</span></div>'
+            for low, high, pct in buckets
+        )
+        blocks.append(
+            f'<div class="infoFed"><div><span>Meeting Time:</span><i>{date_text}</i></div>'
+            f"<div><span>Future Price:</span><i>96.0</i></div></div>"
+            f'<div class="percfedRateWrap">{items}</div>'
+        )
+    return "".join(blocks)
