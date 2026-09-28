@@ -1246,6 +1246,7 @@ set(SERVICE_SOURCES
     src/services/etf/EtfSecNportIngestor.cpp
     src/services/etf/EtfIbkrDailyIngestor.cpp
     src/services/etf/EtfDataService.cpp
+    src/services/etf/EtfDerivedAnalytics.cpp
     src/services/options/OptionChainService.cpp
     src/services/options/OISnapshotter.cpp
     src/services/options/StrategyTemplates.cpp
@@ -2575,6 +2576,7 @@ set_source_files_properties(
     src/services/etf/EtfSecNportIngestor.cpp
     src/services/etf/EtfIbkrDailyIngestor.cpp
     src/services/etf/EtfDataService.cpp
+    src/services/etf/EtfDerivedAnalytics.cpp
     src/app/EtfDataCli.cpp
     src/app/EtfDataSelftest.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE

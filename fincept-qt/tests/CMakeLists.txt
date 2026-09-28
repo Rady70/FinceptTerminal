@@ -396,7 +396,8 @@ set(_FINCEPT_ETF_STORE_SOURCES
 fincept_add_test(tst_etf_store
     tst_etf_store.cpp
     ${_FINCEPT_ETF_STORE_SOURCES}
-    "${PROJECT_SOURCE_DIR}/src/app/EtfDataSelftest.cpp")
+    "${PROJECT_SOURCE_DIR}/src/app/EtfDataSelftest.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfDerivedAnalytics.cpp")
 target_link_libraries(tst_etf_store PRIVATE Qt6::Sql)
 
 fincept_add_test(tst_etf_ingest
@@ -405,6 +406,26 @@ fincept_add_test(tst_etf_ingest
     "${PROJECT_SOURCE_DIR}/src/services/etf/EtfSecNportIngestor.cpp"
     "${PROJECT_SOURCE_DIR}/src/services/etf/EtfIbkrDailyIngestor.cpp")
 target_link_libraries(tst_etf_ingest PRIVATE Qt6::Sql)
+
+# MarketLab ETF Capital Flows, Batch C — the derived values over hand-built
+# vintages (services/etf/EtfDerivedModel.h, EtfRegulatoryFlowAnalytics.h,
+# EtfRotationMeasures.h): monthly N-PORT flow analytics and their denominators,
+# amendments and availability; rotation-proxy price and volume measures over
+# the session calendar (holidays, early closes, missing sessions, revisions,
+# freshness, a caller-declared reference). Header-only over Qt Core.
+fincept_add_test(tst_etf_derived_calc
+    tst_etf_derived_calc.cpp)
+
+# MarketLab ETF Batch C — the derived values over a real SQLite store, written
+# through the Batch B repository: reproducibility for a recorded (as_of,
+# known_at) after the store grows, byte-identical replays, no write of any
+# kind, ticker history, flow-route states. Links Qt6::Sql for the same reason
+# as tst_etf_store (added after fincept_add_test(), as there).
+fincept_add_test(tst_etf_derived_store
+    tst_etf_derived_store.cpp
+    ${_FINCEPT_ETF_STORE_SOURCES}
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfDerivedAnalytics.cpp")
+target_link_libraries(tst_etf_derived_store PRIVATE Qt6::Sql)
 
 # MarketLab ETF Batch B — HttpClient::get_raw, the raw GET the SEC N-PORT route
 # uses: the declared User-Agent replaces the client's default on the wire, the
@@ -430,4 +451,4 @@ fincept_add_test(tst_qt_message_routing
     "${PROJECT_SOURCE_DIR}/src/core/logging/QtMessageRouting.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_http_get_raw, tst_qt_message_routing")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")
