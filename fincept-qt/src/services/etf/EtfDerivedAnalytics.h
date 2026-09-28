@@ -34,6 +34,7 @@
 
 #include <QDate>
 #include <QJsonObject>
+#include <QString>
 
 #include <optional>
 
@@ -53,9 +54,17 @@ struct DerivedRunRequest {
 /// The method block every output carries: versions, parameters, bases.
 QJsonObject derived_methods_json();
 
+/// Why a request cannot be run as stated, or an empty string when it can.
+/// A request must name its frame and at least one family, and every part of
+/// it must apply to a family it runs: an entity filter needs the regulatory
+/// family, an instrument filter or a reference the rotation family. An output
+/// range must not end before it starts. Nothing is dropped silently.
+QString derived_request_problem(const DerivedRunRequest& request);
+
 /// Compute the derived values of the subjects recorded by the knowledge
-/// cutoff. Reads only. A requested entity, instrument or reference that was
-/// not recorded by then is an error, not an empty result.
+/// cutoff. Reads only. A request with a problem (derived_request_problem), or
+/// a requested entity, instrument or reference that was not recorded by the
+/// cutoff, is an error, not an empty result.
 Result<QJsonObject> run_derived_calculations(const DerivedRunRequest& request);
 
 } // namespace fincept::services::etf

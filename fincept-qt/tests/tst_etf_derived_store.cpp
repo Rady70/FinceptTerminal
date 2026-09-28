@@ -329,6 +329,7 @@ class TstEtfDerivedStore : public QObject {
     void flow_routes_and_the_dormant_calculated_flow();
     void the_two_families_stay_apart();
     void a_declared_reference_must_be_stored();
+    void a_request_must_be_consistent();
 };
 
 void TstEtfDerivedStore::initTestCase() {
@@ -771,6 +772,52 @@ void TstEtfDerivedStore::a_declared_reference_must_be_stored() {
     const QJsonObject tlt = last_session_values(doc, 1);
     QCOMPARE(tlt.value(QLatin1String("relative_price_return_21")).toObject().value(QLatin1String("reason")).toString(),
              QStringLiteral("subject_is_reference"));
+}
+
+void TstEtfDerivedStore::a_request_must_be_consistent() {
+    populate();
+    const DerivedRunRequest valid = request("2026-09-27T00:00:00.000Z");
+    QVERIFY(derived_request_problem(valid).isEmpty());
+    QVERIFY(run_derived_calculations(valid).is_ok());
+    // Refused by the rule and by the run alike, never dropped silently.
+    auto refused = [](const DerivedRunRequest& r) {
+        return !derived_request_problem(r).isEmpty() && run_derived_calculations(r).is_err();
+    };
+    DerivedRunRequest no_frame = valid;
+    no_frame.frame.known_at = QDateTime();
+    QVERIFY(refused(no_frame));
+    DerivedRunRequest no_family = valid;
+    no_family.regulatory = false;
+    no_family.rotation = false;
+    QVERIFY(refused(no_family));
+    // What --cik with a reference asks: the reference would apply to nothing.
+    DerivedRunRequest reference_without_rotation = valid;
+    reference_without_rotation.rotation = false;
+    reference_without_rotation.entity_id = entity_;
+    reference_without_rotation.reference_instrument_id = spy_;
+    QVERIFY(refused(reference_without_rotation));
+    DerivedRunRequest entity_without_regulatory = valid;
+    entity_without_regulatory.regulatory = false;
+    entity_without_regulatory.entity_id = entity_;
+    QVERIFY(refused(entity_without_regulatory));
+    DerivedRunRequest instrument_without_rotation = valid;
+    instrument_without_rotation.rotation = false;
+    instrument_without_rotation.instrument_id = spy_;
+    QVERIFY(refused(instrument_without_rotation));
+    DerivedRunRequest inverted = valid;
+    inverted.output_from = QDate(2025, 12, 31);
+    inverted.output_to = QDate(2025, 6, 2);
+    QVERIFY(refused(inverted));
+    // The same parts with the family they apply to run.
+    DerivedRunRequest with_reference = valid;
+    with_reference.regulatory = false;
+    with_reference.instrument_id = spy_;
+    with_reference.reference_instrument_id = tlt_;
+    QVERIFY(run_derived_calculations(with_reference).is_ok());
+    DerivedRunRequest one_day = valid;
+    one_day.output_from = QDate(2025, 12, 31);
+    one_day.output_to = QDate(2025, 12, 31);
+    QVERIFY(run_derived_calculations(one_day).is_ok());
 }
 
 QTEST_GUILESS_MAIN(TstEtfDerivedStore)

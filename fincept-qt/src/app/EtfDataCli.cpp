@@ -328,8 +328,6 @@ int run_etf_data_cli(int argc, char* argv[]) {
                 return usage(QStringLiteral("--from/--to must be yyyy-MM-dd"));
             (std::strcmp(key, "from") == 0 ? req.output_from : req.output_to) = d;
         }
-        if (req.output_from.isValid() && req.output_to.isValid() && req.output_from > req.output_to)
-            return usage(QStringLiteral("--from must not be after --to"));
         const bool by_entity = options.contains(QStringLiteral("cik"));
         const bool by_instrument =
             options.contains(QStringLiteral("symbol")) || options.contains(QStringLiteral("con-id"));
@@ -375,6 +373,11 @@ int run_etf_data_cli(int argc, char* argv[]) {
                 return usage(QStringLiteral("reference: %1").arg(why));
             req.reference_instrument_id = *id;
         }
+        // The families follow the subjects named: --cik alone runs the
+        // regulatory family only, so a reference given with it would apply to
+        // nothing. That, and every other inconsistent request, is refused.
+        if (const QString problem = services::etf::derived_request_problem(req); !problem.isEmpty())
+            return usage(problem);
         auto doc = services::etf::run_derived_calculations(req);
         if (doc.is_err()) {
             print_json(

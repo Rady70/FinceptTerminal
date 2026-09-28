@@ -104,10 +104,26 @@ QJsonObject derived_methods_json() {
                                        "reproduced)")}};
 }
 
+QString derived_request_problem(const DerivedRunRequest& request) {
+    if (!request.frame.valid())
+        return QStringLiteral("a derived calculation needs its as_of and known_at times");
+    if (!request.regulatory && !request.rotation)
+        return QStringLiteral("a derived calculation needs at least one family, regulatory or rotation");
+    if (request.entity_id && !request.regulatory)
+        return QStringLiteral("a reporting-entity filter applies to the regulatory family, which is not run");
+    if (request.instrument_id && !request.rotation)
+        return QStringLiteral("a listed-instrument filter applies to the rotation family, which is not run");
+    if (request.reference_instrument_id && !request.rotation)
+        return QStringLiteral("a reference applies to rotation measures, and the rotation family is not run");
+    if (request.output_from.isValid() && request.output_to.isValid() && request.output_from > request.output_to)
+        return QStringLiteral("the output range starts after it ends");
+    return {};
+}
+
 Result<QJsonObject> run_derived_calculations(const DerivedRunRequest& request) {
     using R = Result<QJsonObject>;
-    if (!request.frame.valid())
-        return R::err("a derived calculation needs its as_of and known_at times");
+    if (const QString problem = derived_request_problem(request); !problem.isEmpty())
+        return R::err(problem.toStdString());
     auto& repo = EtfDataRepository::instance();
     const QDateTime& known_at = request.frame.known_at;
 
