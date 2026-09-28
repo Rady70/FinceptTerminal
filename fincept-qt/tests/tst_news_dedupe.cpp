@@ -3,9 +3,12 @@
 // MarketLab: cross-feed news de-duplication. The RSS catalog deliberately
 // carries overlapping publisher views (three CNBC feeds, for example), and the
 // aggregate would otherwise list the same story once per feed. The rule:
-// identity is the link (normalized) or, absent a link, the normalized
-// headline; the first occurrence survives; a different link stays a different
-// story even with an identical headline.
+// identity is the link, normalized component-aware (scheme/host case
+// insensitive, path/query case preserved, fragment dropped); absent a link,
+// the normalized headline scoped to the source. The first occurrence in
+// news_newer_first() order survives — deterministically, without the
+// regenerated article id — and a different link stays a different story even
+// with an identical headline.
 //
 // Header-only over Qt Core ("services/news/NewsDedupe.h"), no app sources.
 
@@ -14,18 +17,48 @@
 #include <QTest>
 #include <QVector>
 
+#include <algorithm>
+
 using fincept::services::dedupe_news_articles;
+using fincept::services::news_newer_first;
 using fincept::services::NewsArticle;
 
 namespace {
-NewsArticle article(const QString& headline, const QString& link, const QString& source = "CNBC",
-                    qint64 sort_ts = 1000) {
+NewsArticle article(const QString& headline, const QString& link, const QString& source = "CNBC", qint64 sort_ts = 1000,
+                    const QString& category = "MARKETS", const QString& region = "GLOBAL") {
     NewsArticle a;
     a.headline = headline;
     a.link = link;
     a.source = source;
     a.sort_ts = sort_ts;
+    a.category = category;
+    a.region = region;
     return a;
+}
+
+// The three overlapping CNBC views of one story, with their real envelope
+// metadata (cnbc-finance MARKETS/US, cnbc-world MARKETS/GLOBAL,
+// cnbc-tech TECH/US).
+QVector<NewsArticle> cnbc_copies() {
+    const QString headline = "OpenAI abandons plan to release upcoming model as safety concerns escalate";
+    const QString link = "https://www.cnbc.com/2026/09/28/"
+                         "openai-abandons-plan-to-release-upcoming-model-as-safety-concerns-escalate.html";
+    return {
+        article(headline, link, "CNBC", 1000, "MARKETS", "US"),
+        article(headline, link, "CNBC", 1000, "MARKETS", "GLOBAL"),
+        article(headline, link, "CNBC", 1000, "TECH", "US"),
+    };
+}
+
+// Exactly what NewsService does to the aggregate before it is surfaced.
+void sort_and_dedupe(QVector<NewsArticle>& articles) {
+    std::sort(articles.begin(), articles.end(), news_newer_first);
+    dedupe_news_articles(articles);
+}
+
+QString survivor_signature(const NewsArticle& a) {
+    return a.source + QLatin1Char('|') + a.category + QLatin1Char('|') + a.region + QLatin1Char('|') + a.headline +
+           QLatin1Char('|') + a.link;
 }
 } // namespace
 
@@ -36,32 +69,39 @@ class TstNewsDedupe : public QObject {
     // The demonstrated defect: one CNBC story carried by the finance, world
     // and tech feeds was listed three times in MARKET NEWS.
     void sameStoryAcrossOverlappingFeedsCollapses() {
-        const QString headline = "OpenAI abandons plan to release upcoming model as safety concerns escalate";
-        const QString link = "https://www.cnbc.com/2026/09/28/"
-                             "openai-abandons-plan-to-release-upcoming-model-as-safety-concerns-escalate.html";
-        QVector<NewsArticle> articles = {
-            article(headline, link),
-            article(headline, link),
-            article(headline, link),
-        };
+        auto copies = cnbc_copies();
 
-        dedupe_news_articles(articles);
+        sort_and_dedupe(copies);
 
-        QCOMPARE(articles.size(), 1);
-        QCOMPARE(articles[0].headline, headline);
+        QCOMPARE(copies.size(), 1);
     }
 
-    void firstOccurrenceSurvives() {
-        const QString link = "https://example.com/story";
-        QVector<NewsArticle> articles = {
-            article("Story", link, "CNBC"),
-            article("Story", link, "OTHER"),
-        };
+    // The survivor must not depend on feed completion order or on the
+    // regenerated per-fetch article id. Every permutation must land on the
+    // same copy, whose category/region also drive the hub's category slices.
+    void survivorIsStableAcrossFeedOrder() {
+        QVector<int> order = {0, 1, 2};
+        QString first_signature;
+        do {
+            auto copies = cnbc_copies();
+            QVector<NewsArticle> permuted;
+            permuted.reserve(copies.size());
+            for (int i : order)
+                permuted.append(copies[i]);
+            for (int i = 0; i < permuted.size(); ++i)
+                permuted[i].id = QString("generated-%1-%2").arg(i).arg(order[i]);
 
-        dedupe_news_articles(articles);
+            sort_and_dedupe(permuted);
 
-        QCOMPARE(articles.size(), 1);
-        QCOMPARE(articles[0].source, QString("CNBC"));
+            QCOMPARE(permuted.size(), 1);
+            const QString signature = survivor_signature(permuted[0]);
+            if (first_signature.isEmpty())
+                first_signature = signature;
+            QCOMPARE(signature, first_signature);
+        } while (std::next_permutation(order.begin(), order.end()));
+
+        QCOMPARE(first_signature,
+                 QString("CNBC|MARKETS|GLOBAL|%1|%2").arg(cnbc_copies().first().headline, cnbc_copies().first().link));
     }
 
     void distinctStoriesKeepTheirOrder() {
@@ -109,24 +149,24 @@ class TstNewsDedupe : public QObject {
     }
 
     // A live-blog entry can be retitled between two feeds; the unchanged link
-    // still identifies one story.
+    // still identifies one story and the first (ordered) copy survives.
     void sameLinkUpdatedHeadlineCollapses() {
         QVector<NewsArticle> articles = {
-            article("Stock futures are little changed: Live updates", "https://example.com/live"),
-            article("Stock futures are little changed after higher yields: Live updates", "https://example.com/live"),
+            article("Stock futures are little changed: Live updates", "https://example.com/live", "CNBC", 1000),
+            article("Stock futures are little changed after higher yields: Live updates", "https://example.com/live",
+                    "CNBC", 900),
         };
 
-        dedupe_news_articles(articles);
+        sort_and_dedupe(articles);
 
         QCOMPARE(articles.size(), 1);
         QCOMPARE(articles[0].headline, QString("Stock futures are little changed: Live updates"));
     }
 
-    void linkNormalizationIgnoresCaseFragmentAndTrailingSlash() {
+    void urlSchemeAndHostCaseCollapses() {
         QVector<NewsArticle> articles = {
-            article("Story", "HTTPS://WWW.Example.COM/Story/#live"),
+            article("Story", "HTTPS://WWW.Example.COM/story"),
             article("Story", "https://www.example.com/story"),
-            article("Story", "https://www.example.com/story///"),
         };
 
         dedupe_news_articles(articles);
@@ -134,16 +174,90 @@ class TstNewsDedupe : public QObject {
         QCOMPARE(articles.size(), 1);
     }
 
-    void missingLinkFallsBackToNormalizedHeadline() {
+    void urlFragmentCollapses() {
         QVector<NewsArticle> articles = {
-            article("  OpenAI   abandons PLAN ", ""),
-            article("openai abandons plan", ""),
+            article("Story", "https://www.example.com/story#live"),
+            article("Story", "https://www.example.com/story"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 1);
+    }
+
+    // Path case is significant (RFC 3986): these can be distinct resources.
+    void pathCaseStaysDistinct() {
+        QVector<NewsArticle> articles = {
+            article("Story", "https://www.example.com/Story"),
+            article("Story", "https://www.example.com/story"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
+    }
+
+    // A trailing slash is not stripped: the two paths are not established as
+    // equivalent.
+    void trailingSlashStaysDistinct() {
+        QVector<NewsArticle> articles = {
+            article("Story", "https://www.example.com/story/"),
+            article("Story", "https://www.example.com/story"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
+    }
+
+    // Query text is preserved byte-for-byte, including its case.
+    void queryStaysDistinct() {
+        QVector<NewsArticle> articles = {
+            article("Story", "https://www.example.com/story?id=AbC"),
+            article("Story", "https://www.example.com/story?id=abc"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
+    }
+
+    void missingLinkFallsBackToNormalizedHeadlineWithinSource() {
+        QVector<NewsArticle> articles = {
+            article("  OpenAI   abandons PLAN ", "", "CNBC"),
+            article("openai abandons plan", "", "CNBC"),
         };
 
         dedupe_news_articles(articles);
 
         QCOMPARE(articles.size(), 1);
         QCOMPARE(articles[0].headline, QString("  OpenAI   abandons PLAN "));
+    }
+
+    // The headline fallback is scoped to the source: a coincident title from
+    // another publisher is never merged.
+    void linklessSameHeadlineDifferentSourcesStaySeparate() {
+        QVector<NewsArticle> articles = {
+            article("Fed holds rates steady", "", "AP"),
+            article("Fed holds rates steady", "", "BBC"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
+    }
+
+    // Explicit limitation: a linked copy and a link-less copy of the same
+    // story share no identity to match on, so both are kept.
+    void linkedAndLinklessCopiesOfOneStoryStaySeparate() {
+        QVector<NewsArticle> articles = {
+            article("Fed holds rates steady", "https://example.com/fed-hold", "AP"),
+            article("Fed holds rates steady", "", "AP"),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
     }
 
     void entryWithNeitherLinkNorHeadlineIsKept() {

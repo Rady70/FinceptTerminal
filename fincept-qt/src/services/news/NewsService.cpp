@@ -47,20 +47,6 @@ static constexpr int kFeedTransferTimeoutMs = 4000; // 4s per RSS feed request
 static constexpr const char* kBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                                                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// Newest first; equal publication instants (the same story carried by several
-// feeds) break deterministically — best tier, then source, then headline — so
-// the cross-feed de-duplication below always keeps the same copy no matter
-// which feed answered first.
-static bool newer_first(const NewsArticle& a, const NewsArticle& b) {
-    if (a.sort_ts != b.sort_ts)
-        return a.sort_ts > b.sort_ts;
-    if (a.tier != b.tier)
-        return a.tier < b.tier;
-    if (a.source != b.source)
-        return a.source < b.source;
-    return a.headline < b.headline;
-}
-
 NewsService& NewsService::instance() {
     static NewsService s;
     return s;
@@ -186,7 +172,7 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                 // Last feed done — sort by time descending, then collapse the
                 // same story carried by more than one feed.
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(), newer_first);
+                std::sort(all.begin(), all.end(), news_newer_first);
                 dedupe_news_articles(all);
 
                 QSet<QString> sources;
@@ -345,7 +331,7 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 // Partial snapshot sorted by time for progressive display
                 snapshot = state->all_articles;
             }
-            std::sort(snapshot.begin(), snapshot.end(), newer_first);
+            std::sort(snapshot.begin(), snapshot.end(), news_newer_first);
             // Each partial snapshot is a full-list republish; collapse
             // cross-feed repeats before it reaches a subscriber or the hub.
             dedupe_news_articles(snapshot);
@@ -359,7 +345,7 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 // All feeds done — sort, collapse cross-feed repeats, then
                 // finalize cache.
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(), newer_first);
+                std::sort(all.begin(), all.end(), news_newer_first);
                 dedupe_news_articles(all);
 
                 QSet<QString> sources;
