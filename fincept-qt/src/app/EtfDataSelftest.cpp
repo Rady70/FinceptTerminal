@@ -1,5 +1,6 @@
 #include "app/EtfDataSelftest.h"
 
+#include "services/etf/EtfDerivedAnalytics.h"
 #include "services/etf/EtfReadModel.h"
 #include "services/etf/EtfRoutePolicy.h"
 #include "services/etf/EtfSessionCalendar.h"
@@ -8,9 +9,12 @@
 
 #include <QDate>
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 #include <QVariantList>
 
+#include <cmath>
 #include <cstdio>
 
 namespace fincept::marketlab {
@@ -41,6 +45,20 @@ qint64 etf_row_total() {
         total += r.value().value(0).toLongLong();
     }
     return total;
+}
+
+/// The values of one month of the first entity, or of one session of the
+/// first instrument, in a derived document.
+QJsonObject etf_derived_values(const QJsonObject& doc, const char* family, const char* list, const char* key,
+                               const QString& at) {
+    const QJsonObject subject = doc.value(QLatin1String(family)).toArray().at(0).toObject();
+    const QJsonObject container =
+        subject.value(QLatin1String(qstrcmp(family, "regulatory_flow") == 0 ? "analytics" : "measures")).toObject();
+    for (const QJsonValue& v : container.value(QLatin1String(list)).toArray()) {
+        if (v.toObject().value(QLatin1String(key)).toString() == at)
+            return v.toObject().value(QLatin1String("values")).toObject();
+    }
+    return {};
 }
 
 } // namespace etf_selftest_detail
@@ -281,6 +299,146 @@ int run_etf_data_selftest() {
                        "first_seen_at, last_seen_at) VALUES (999999992, 'ZZCOMMON', 'STK', 'COMMON', 'USD', "
                        "'2026-09-25T15:00:00.000Z', '2026-09-25T15:00:00.000Z')"));
     etf_check("the database refuses an instrument IBKR does not classify as an ETF", ordinary_stock.is_err());
+
+    // ── Batch C: derived values over stored vintages (read only) ────────────
+    // Five earlier closes of the self-test instrument, so that a 5-session
+    // return ends on the bar of 2026-09-24 revised above, with the session
+    // rows their retrieval window records (the derived values follow them).
+    etf_store::ObservationInput close = bar;
+    close.retrieval_id = r4;
+    close.seen_at = etf_utc("2026-09-25T15:00:00.000Z");
+    close.value = FieldValue::reported_value(10.0);
+    bool closes_ok =
+        repo.upsert_sessions(UsEquityCalendar::weekdays_in(QDate(2026, 9, 17), QDate(2026, 9, 24))).is_ok();
+    for (const QDate& d :
+         {QDate(2026, 9, 17), QDate(2026, 9, 18), QDate(2026, 9, 21), QDate(2026, 9, 22), QDate(2026, 9, 23)}) {
+        close.effective_date = d;
+        closes_ok = closes_ok && repo.record_observation(close).is_ok();
+    }
+    etf_check("five earlier closes and their session rows recorded", closes_ok);
+
+    // A second reporting entity with the 2025-12-31 net assets and the first
+    // quarter of 2026: January is 100 - 30 + 5 = 75.
+    const qint64 r6 = retrieval(SourceType::SecNport, AcquisitionMode::RegulatoryApi, "2026-09-26T10:00:00.000Z");
+    etf_store::ReportingEntityFacts facts2 = facts;
+    facts2.cik = QStringLiteral("9999999998");
+    facts2.source_accepted_at = etf_utc("2026-05-28T15:00:00.000Z");
+    auto entity2 = repo.upsert_reporting_entity(facts2, etf_utc("2026-09-26T10:00:00.000Z"));
+    const qint64 entity2_id = entity2.is_ok() ? entity2.value() : 0;
+    auto start2 = repo.observation_start(SourceType::SecNport, SubjectType::ReportingEntity, entity2_id,
+                                         etf_utc("2026-09-26T10:00:00.000Z"), r6);
+    bool quarters_ok = entity2.is_ok() && start2.is_ok();
+    struct Quarter {
+        const char* accession = nullptr;
+        const char* accepted = nullptr;
+        QDate report_date;
+        double net_assets = 0.0;
+        double flows[3][3] = {};
+    };
+    const Quarter quarters[2] = {{"9999999998-26-000001",
+                                  "2026-02-25T15:00:00.000Z",
+                                  QDate(2025, 12, 31),
+                                  1000.0,
+                                  {{1, 0, 0}, {1, 0, 0}, {1, 0, 0}}},
+                                 {"9999999998-26-000002",
+                                  "2026-05-28T15:00:00.000Z",
+                                  QDate(2026, 3, 31),
+                                  1100.0,
+                                  {{100, 30, 5}, {10, 50, 0}, {20, 20, 0}}}};
+    for (const Quarter& q : quarters) {
+        etf_store::SecFilingFacts f = filing;
+        f.accession = QLatin1String(q.accession);
+        f.filer_cik = facts2.cik;
+        f.accepted_at = etf_utc(q.accepted);
+        f.filing_date = f.accepted_at.date();
+        f.entity_id = entity2_id;
+        f.rep_pd_date = q.report_date;
+        auto stored = repo.upsert_sec_filing(f, r6, etf_utc("2026-09-26T10:00:00.000Z"));
+        quarters_ok = quarters_ok && stored.is_ok();
+        etf_store::ObservationInput in = net;
+        in.subject_id = entity2_id;
+        in.source_document = f.accession;
+        in.filing_id = stored.is_ok() ? stored.value().first : 0;
+        in.amended_filing = false;
+        in.accepted_at = f.accepted_at;
+        in.report_period = q.report_date;
+        in.retrieval_id = r6;
+        in.seen_at = etf_utc("2026-09-26T10:00:00.000Z");
+        in.observation_start = start2.is_ok() ? start2.value() : QDateTime();
+        in.effective_date = q.report_date;
+        in.value = FieldValue::reported_value(q.net_assets);
+        quarters_ok = quarters_ok && repo.record_observation(in).is_ok();
+        in.kind = MeasurementKind::RegulatoryReportedFlow;
+        in.basis = QStringLiteral("nport_monthly_flow");
+        for (int m = 0; m < 3; ++m) {
+            const QDate first = QDate(q.report_date.year(), q.report_date.month(), 1).addMonths(m - 2);
+            in.period_start = first;
+            in.period_end = first.addMonths(1).addDays(-1);
+            in.effective_date = in.period_end;
+            const char* measures[3] = {"nport_sales", "nport_redemption", "nport_reinvestment"};
+            for (int c = 0; c < 3; ++c) {
+                in.measure = QLatin1String(measures[c]);
+                in.value = FieldValue::reported_value(q.flows[m][c]);
+                quarters_ok = quarters_ok && repo.record_observation(in).is_ok();
+            }
+        }
+    }
+    etf_check("two quarters of a second entity recorded", quarters_ok);
+
+    const qint64 rows_before_derived = etf_row_total();
+    DerivedRunRequest derived;
+    derived.frame.as_of = etf_utc("2026-09-27T00:00:00.000Z");
+    derived.frame.known_at = derived.frame.as_of;
+    derived.entity_id = entity2_id;
+    derived.instrument_id = instrument_id;
+    auto doc = run_derived_calculations(derived);
+    etf_check("derived values computed", doc.is_ok());
+    if (doc.is_ok()) {
+        const QJsonObject jan =
+            etf_derived_values(doc.value(), "regulatory_flow", "months", "month", QStringLiteral("2026-01"));
+        const QJsonObject net_flow = jan.value(QLatin1String("net_flow")).toObject();
+        etf_check("regulatory net flow = sales - redemptions + reinvestment, confirmed",
+                  net_flow.value(QLatin1String("value")).toDouble() == 75.0 &&
+                      net_flow.value(QLatin1String("state")).toString() == QLatin1String("CONFIRMED") &&
+                      net_flow.value(QLatin1String("point_in_time_status")).toString() ==
+                          QLatin1String("conservative_rule"));
+        const QJsonObject pct = jan.value(QLatin1String("flow_pct_prior_net_assets")).toObject();
+        etf_check(
+            "normalized by the net assets of the prior quarter end",
+            pct.value(QLatin1String("value")).toDouble() == 75.0 / 1000.0 &&
+                pct.value(QLatin1String("denominator")).toObject().value(QLatin1String("report_date")).toString() ==
+                    QLatin1String("2025-12-31"));
+        const QJsonObject after =
+            etf_derived_values(doc.value(), "rotation_proxy", "sessions", "session", QStringLiteral("2026-09-24"))
+                .value(QLatin1String("price_return_5"))
+                .toObject();
+        etf_check("a 5-session price return on the revised bar is REVISED",
+                  std::fabs(after.value(QLatin1String("value")).toDouble() - 0.05) < 1e-12 &&
+                      after.value(QLatin1String("state")).toString() == QLatin1String("REVISED"));
+        const QJsonObject calculated = doc.value()
+                                           .value(QLatin1String("methods"))
+                                           .toObject()
+                                           .value(QLatin1String("calculated_creation_redemption_flow"))
+                                           .toObject();
+        etf_check("calculated daily creation/redemption flow stays ROUTE_DISABLED",
+                  calculated.value(QLatin1String("state")).toString() == QLatin1String("ROUTE_DISABLED"));
+    }
+    // Before the revision was seen, the same return is the original's.
+    derived.frame.as_of = etf_utc("2026-09-25T20:00:00.000Z");
+    auto earlier = run_derived_calculations(derived);
+    const QJsonObject before = earlier.is_ok() ? etf_derived_values(earlier.value(), "rotation_proxy", "sessions",
+                                                                    "session", QStringLiteral("2026-09-24"))
+                                                     .value(QLatin1String("price_return_5"))
+                                                     .toObject()
+                                               : QJsonObject();
+    etf_check("as of before the revision was seen, the original bar is used",
+              before.value(QLatin1String("value")).toDouble(-1.0) == 0.0 &&
+                  before.value(QLatin1String("state")).toString() == QLatin1String("PROXY"));
+    // The second entity was first recorded at 2026-09-26T10:00: for a
+    // knowledge cutoff before that it does not exist.
+    derived.frame.known_at = etf_utc("2026-09-26T09:00:00.000Z");
+    etf_check("a subject recorded after the knowledge cutoff is refused", run_derived_calculations(derived).is_err());
+    etf_check("a derived run writes nothing", etf_row_total() == rows_before_derived);
 
     etf_check("transaction rolled back", db.rollback().is_ok());
     etf_check("the self-test left no ETF row behind", etf_row_total() == rows_before);
