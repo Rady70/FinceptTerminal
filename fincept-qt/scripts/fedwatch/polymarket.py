@@ -198,6 +198,7 @@ def search_events(
     pages = 0
     complete = False
     total_results = None
+    malformed_item_count = 0
     while pages < max_pages:
         data = _get_json(
             transport,
@@ -213,29 +214,43 @@ def search_events(
                 detail={"phase": "search", "query": query, "page": page},
             )
         pages += 1
-        page_events = [event for event in data["events"] if isinstance(event, dict)]
+        raw_page = data["events"]
+        page_events = [event for event in raw_page if isinstance(event, dict)]
+        malformed_item_count += len(raw_page) - len(page_events)
         events.extend(page_events)
 
         pagination = data.get("pagination")
         if not isinstance(pagination, dict):
             # No pagination metadata: a short page means exhausted, a full page
             # is unknowable and must be treated as incomplete coverage.
-            complete = len(data["events"]) < limit_per_type
+            complete = len(raw_page) < limit_per_type
             break
         if isinstance(pagination.get("totalResults"), int):
             total_results = pagination["totalResults"]
-        has_more = bool(pagination.get("hasMore", False))
-        if not has_more:
+        has_more = pagination.get("hasMore")
+        if has_more is False:
             complete = True
             break
-        if isinstance(total_results, int) and total_results <= page * limit_per_type:
-            complete = True
-            break
-        page += 1
+        if has_more is True:
+            if isinstance(total_results, int) and total_results <= page * limit_per_type:
+                complete = True
+                break
+            page += 1
+            continue
+        # Missing or wrong-typed hasMore cannot establish completion on its own;
+        # only a trustworthy total that has been reached can, otherwise the
+        # coverage is explicitly incomplete.
+        complete = isinstance(total_results, int) and total_results <= page * limit_per_type
+        break
+    if malformed_item_count:
+        # Non-dict response items were dropped; coverage cannot be trusted even
+        # though pagination finished.
+        complete = False
     return events, {
         "pages": pages,
         "event_count": len(events),
         "total_results": total_results,
+        "malformed_item_count": malformed_item_count,
         "complete": complete,
     }
 
@@ -258,6 +273,7 @@ def events_by_tag(
     offset = 0
     pages = 0
     complete = False
+    malformed_item_count = 0
     while pages < max_pages:
         params = {"tag_slug": tag_slug, "limit": page_size, "offset": offset}
         if closed is not None:
@@ -276,14 +292,21 @@ def events_by_tag(
                 detail={"phase": "tag", "tag_slug": tag_slug, "page": pages + 1},
             )
         pages += 1
-        events.extend(event for event in data if isinstance(event, dict))
+        page_events = [event for event in data if isinstance(event, dict)]
+        malformed_item_count += len(data) - len(page_events)
+        events.extend(page_events)
         if len(data) < page_size:
             complete = True
             break
         offset += page_size
+    if malformed_item_count:
+        # Non-dict response items were dropped; coverage cannot be trusted even
+        # though pagination finished.
+        complete = False
     return events, {
         "pages": pages,
         "event_count": len(events),
+        "malformed_item_count": malformed_item_count,
         "complete": complete,
         "closed_filter": closed,
     }
@@ -332,6 +355,7 @@ def discover_candidate_events(
     """
     events_by_id: dict[str, dict] = {}
     warnings: list[str] = []
+    events_without_id = 0
     stats = {
         "tag": {"status": "OK"},
         "searches": {keyword: {"status": "OK"} for keyword in SEARCH_KEYWORDS},
@@ -343,7 +367,9 @@ def discover_candidate_events(
         )
         stats["tag"].update(tag_info)
         for event in tag_events:
-            if event.get("id") is not None:
+            if event.get("id") is None:
+                events_without_id += 1
+            else:
                 events_by_id[str(event["id"])] = event
     except FedwatchError as exc:
         stats["tag"]["status"] = "ERROR"
@@ -357,7 +383,9 @@ def discover_candidate_events(
             )
             stats["searches"][keyword].update(info)
             for event in found:
-                if event.get("id") is not None:
+                if event.get("id") is None:
+                    events_without_id += 1
+                else:
                     events_by_id[str(event["id"])] = event
         except FedwatchError as exc:
             stats["searches"][keyword]["status"] = "ERROR"
@@ -404,7 +432,12 @@ def discover_candidate_events(
             f"{events_without_market_list} candidate event(s) had a non-list markets "
             f"field; they can only be rejected, not validated"
         )
-
+    if events_without_id:
+        stats["events_without_id"] = events_without_id
+        warnings.append(
+            f"{events_without_id} candidate event(s) had no usable id and were dropped; "
+            f"discovery coverage cannot be complete"
+        )
     stats["coverage_complete"] = bool(
         stats["tag"]["status"] == "OK"
         and stats["tag"].get("complete")
@@ -412,6 +445,7 @@ def discover_candidate_events(
             info["status"] == "OK" and info.get("complete")
             for info in stats["searches"].values()
         )
+        and events_without_id == 0
     )
     return events, stats, warnings
 

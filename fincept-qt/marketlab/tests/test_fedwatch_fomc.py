@@ -40,6 +40,7 @@ def synthetic_calendar(year: int, rows: list[tuple[str, str]]) -> str:
     return (
         f'<div class="panel panel-default"><div class="panel-heading">'
         f'<h4><a id="1">{year} FOMC Meetings</a></h4></div>{meetings}</div>'
+        "</body></html>"
     )
 
 
@@ -103,7 +104,7 @@ class FomcParseTests(unittest.TestCase):
             '<div class="fomc-meeting__month col"><strong>July</strong></div>'
             '<div class="fomc-meeting__date col">28-29*</div>'
             '<div class="col"><a href="/newsevents/pressreleases/monetary20260729a.htm">HTML</a></div>'
-            "</div></div>"
+            "</div></div></body></html>"
         )
         rows, _, _ = fomc.parse_fomc_calendar(html)
         self.assertEqual(rows[0]["end_date"], date(2026, 7, 29))
@@ -115,6 +116,18 @@ class FomcParseTests(unittest.TestCase):
     def test_empty_or_unstructured_html_raises(self):
         with self.assertRaises(ValueError):
             fomc.parse_fomc_calendar("<html><body>nothing</body></html>")
+
+    def test_html_truncated_between_rows_reports_incomplete(self):
+        # A response cut cleanly after a complete row (before the next row
+        # marker) still loses a meeting and must not be authoritative: the row
+        # counts match, but the document is not closed.
+        html = synthetic_calendar(2026, [("March", "17-18"), ("April", "27-28")])
+        truncated = html[: html.rindex('<div class="row fomc-meeting">')]
+        rows, _, report = fomc.parse_fomc_calendar(truncated)
+        self.assertEqual([row["end_date"] for row in rows], [date(2026, 3, 18)])
+        self.assertFalse(report["structurally_complete"])
+        self.assertFalse(report["document_closed"])
+        self.assertEqual(report["row_marker_count"], report["parsed_row_count"])
 
     def test_truncated_html_drops_incomplete_row_and_reports_incomplete(self):
         html = synthetic_calendar(2026, [("March", "17-18"), ("April", "27-28")])
@@ -191,6 +204,35 @@ class FallbackSnapshotTests(unittest.TestCase):
         self.assertTrue(
             any("structurally incomplete" in warning for warning in result["warnings"])
         )
+        self.assertFalse(result["fallback_stale"])
+
+    def test_fresh_fallback_is_not_stale(self):
+        transport = FakeTransport().add_text(
+            "fomccalendars", TransportError("HTTP 403", status_code=403)
+        )
+        result = fomc.fetch_calendar(transport, clock=FixedClock(utc(2026, 9, 28, 12)))
+        self.assertFalse(result["fallback_stale"])
+        self.assertAlmostEqual(result["fallback_age_days"], 0.5, places=6)
+
+    def test_stale_fallback_is_reported_with_age(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fallback.csv"
+            path.write_text(
+                "# snapshot_retrieved_at=2026-01-01T00:00:00Z\n"
+                "start_date,end_date,meeting_type,has_projection_materials\n"
+                "2026-10-27,2026-10-28,regular,false\n",
+                encoding="utf-8",
+            )
+            transport = FakeTransport().add_text(
+                "fomccalendars", TransportError("HTTP 403", status_code=403)
+            )
+            result = fomc.fetch_calendar(
+                transport, fallback_path=path, clock=FixedClock(utc(2026, 9, 28, 12))
+            )
+        self.assertEqual(result["source_status"], "FALLBACK_SNAPSHOT")
+        self.assertTrue(result["fallback_stale"])
+        self.assertGreater(result["fallback_age_days"], fomc.FALLBACK_MAX_AGE_DAYS)
+        self.assertTrue(any("fallback snapshot age" in w for w in result["warnings"]))
 
     def test_missing_fallback_and_failed_scrape_fails_closed(self):
         transport = FakeTransport().add_text(

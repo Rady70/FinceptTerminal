@@ -21,6 +21,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -44,6 +45,7 @@ from fedwatch_test_support import (
     utc,
 )
 
+from fedwatch import fomc as fedwatch_fomc
 from fedwatch import snapshot as fedwatch_snapshot
 from fedwatch.errors import FedwatchError
 from fedwatch.transport import TransportError
@@ -376,6 +378,50 @@ class FomcAuthorityTests(unittest.TestCase):
         self.assertEqual(december["polymarket"]["mapping_status"], "VALIDATED")
         self.assertTrue(december["comparison"])
         self.assertFalse(snapshot["partial"])
+
+
+    def test_stale_fallback_marks_calendar_uncertain_and_does_not_blame_investing(self):
+        # Live calendar unavailable and the fallback is older than its maximum
+        # age: the calendar cannot establish whether the Investing date is
+        # official, so the snapshot must record FOMC uncertainty rather than an
+        # Investing error.
+        shipped_lines = [
+            line
+            for line in fedwatch_fomc.FALLBACK_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        stale_lines = [line for line in shipped_lines if "2026-12-09" not in line]
+        with tempfile.TemporaryDirectory() as directory:
+            stale_path = Path(directory) / "fallback.csv"
+            stale_path.write_text(
+                "# snapshot_retrieved_at=2026-01-01T00:00:00Z\n"
+                + "\n".join(stale_lines)
+                + "\n",
+                encoding="utf-8",
+            )
+            transport = build_snapshot_transport()
+            transport.add_text("fomccalendars", TransportError("HTTP 403", status_code=403))
+            snapshot = fedwatch_snapshot.build_snapshot(
+                transport,
+                clock=FixedClock(NOW),
+                fallback_path=stale_path,
+                sleep=NO_SLEEP,
+            )
+
+        sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
+        self.assertEqual(sources["fomc_calendar"]["status"], "FALLBACK_STALE")
+        self.assertTrue(snapshot["partial"])
+        self.assertIn("fomc_calendar", snapshot["failed_components"])
+        codes = {error["code"] for error in snapshot["data"]["errors"]}
+        self.assertIn("FOMC_CALENDAR_FALLBACK_STALE", codes)
+        self.assertNotIn("INVESTING_MEETING_DATE_MISMATCH", codes)
+
+        meetings = {m["meeting_date"]: m for m in snapshot["data"]["meetings"]}
+        self.assertIn("2026-12-09", meetings)
+        december = meetings["2026-12-09"]
+        self.assertIsNone(december["fomc_calendar"])
+        self.assertEqual(december["comparison"], [])
+        self.assertEqual(december["fed_side"]["local_status"], "OK")
 
 
 class InvestingQualityTests(unittest.TestCase):

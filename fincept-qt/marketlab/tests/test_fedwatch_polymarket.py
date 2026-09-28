@@ -464,6 +464,72 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(stats["searches"]["Fed"]["status"], "ERROR")
         self.assertFalse(stats["coverage_complete"])
 
+    def test_non_dict_tag_items_mark_coverage_incomplete(self):
+        event = make_fed_decision_event()
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [123, event])
+        transport.add_json(
+            "public-search", {"events": [], "pagination": {"hasMore": False, "totalResults": 0}}
+        )
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        self.assertEqual(stats["tag"]["malformed_item_count"], 1)
+        self.assertFalse(stats["tag"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_event_without_id_marks_coverage_incomplete(self):
+        event = make_fed_decision_event()
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [{"title": "no id"}, event])
+        transport.add_json(
+            "public-search", {"events": [], "pagination": {"hasMore": False, "totalResults": 0}}
+        )
+        events, stats, warnings = polymarket.discover_candidate_events(transport)
+        self.assertEqual([item["id"] for item in events], ["606422"])
+        self.assertEqual(stats["events_without_id"], 1)
+        self.assertFalse(stats["coverage_complete"])
+        self.assertTrue(any("no usable id" in warning for warning in warnings))
+
+    def test_search_missing_has_more_with_full_page_is_incomplete(self):
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        page_events = [{"id": str(index)} for index in range(5)]
+        transport.add_json(
+            "public-search",
+            lambda url, params: {"events": page_events, "pagination": {"totalResults": 804}},
+        )
+        events, stats, _ = polymarket.discover_candidate_events(transport, search_page_size=5)
+        for keyword in ("Fed", "FOMC", "interest rate"):
+            self.assertFalse(stats["searches"][keyword]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
+    def test_search_missing_has_more_but_total_reached_is_complete(self):
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        page_events = [{"id": str(index)} for index in range(3)]
+        transport.add_json(
+            "public-search",
+            lambda url, params: {"events": page_events, "pagination": {"totalResults": 3}},
+        )
+        events, stats, _ = polymarket.discover_candidate_events(transport, search_page_size=5)
+        for keyword in ("Fed", "FOMC", "interest rate"):
+            self.assertTrue(stats["searches"][keyword]["complete"])
+        self.assertTrue(stats["coverage_complete"])
+
+    def test_search_wrong_typed_has_more_is_not_complete(self):
+        transport = FakeTransport()
+        transport.add_json("gamma-api.polymarket.com/events", [make_fed_decision_event()])
+        transport.add_json(
+            "public-search",
+            lambda url, params: {
+                "events": [{"id": "x"}],
+                "pagination": {"hasMore": "yes", "totalResults": 804},
+            },
+        )
+        events, stats, _ = polymarket.discover_candidate_events(transport, search_page_size=1)
+        self.assertFalse(stats["searches"]["Fed"]["complete"])
+        self.assertFalse(stats["coverage_complete"])
+
 
 def build_polymarket_transport(events, token_points) -> FakeTransport:
     transport = FakeTransport()

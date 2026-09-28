@@ -112,7 +112,12 @@ def build_snapshot(
     fomc_result = None
     try:
         fomc_result = fomc.fetch_calendar(transport, fallback_path=fallback_path, clock=clock)
-        status = "OK" if fomc_result["source_status"] == "SCRAPED" else "FALLBACK_SNAPSHOT"
+        if fomc_result["source_status"] == "SCRAPED":
+            status = "OK"
+        elif fomc_result.get("fallback_stale"):
+            status = "FALLBACK_STALE"
+        else:
+            status = "FALLBACK_SNAPSHOT"
         sources.append(
             _source_entry(
                 PROVIDER_FOMC_CALENDAR,
@@ -177,12 +182,38 @@ def build_snapshot(
     # from Polymarket validation, and it can never produce a comparison. (This
     # restores the qualified invariant that current Investing meeting dates
     # used by the composite are valid official FOMC meeting dates.)
+    #
+    # A stale fallback snapshot does not establish which dates are officially
+    # scheduled, so when the live calendar is unusable and the fallback is too
+    # old the composite must not assign an Investing error: it records the
+    # calendar uncertainty instead and treats the calendar like unavailable for
+    # alignment purposes.
+    calendar_uncertain = bool(fomc_result is not None and fomc_result.get("fallback_stale"))
+    if calendar_uncertain:
+        errors.append(
+            FedwatchError(
+                PROVIDER_FOMC_CALENDAR,
+                "FOMC_CALENDAR_FALLBACK_STALE",
+                "live FOMC calendar unavailable and the tracked fallback snapshot is too "
+                "old to establish the official meeting schedule",
+                detail={
+                    "fallback_snapshot_retrieved_at": fomc_result.get(
+                        "fallback_snapshot_retrieved_at"
+                    ),
+                    "fallback_age_days": fomc_result.get("fallback_age_days"),
+                    "max_age_days": fomc.FALLBACK_MAX_AGE_DAYS,
+                },
+            ).to_dict()
+        )
+
     official_upcoming_dates = {row["end_date"] for row in upcoming}
     investing_dates = {
         timeutil.parse_date(section["meeting_date"]) for section in fed_sections.values()
     }
     investing_only_dates = (
-        sorted(investing_dates - official_upcoming_dates) if fomc_result is not None else []
+        sorted(investing_dates - official_upcoming_dates)
+        if fomc_result is not None and not calendar_uncertain
+        else []
     )
 
     if distributions is not None:
@@ -280,9 +311,11 @@ def build_snapshot(
         }
 
     meeting_dates_all = set(fomc_by_end)
-    if fomc_result is None:
-        # With no official calendar the composite can only follow Investing,
-        # and the FOMC provider error already marks the snapshot partial.
+    if fomc_result is None or calendar_uncertain:
+        # With no authoritative calendar the composite can only follow
+        # Investing, and the FOMC provider error already marks the snapshot
+        # partial. Fed-only dates stay visible with no calendar row and no
+        # comparison.
         meeting_dates_all |= {timeutil.parse_date(value) for value in fed_sections}
     meeting_dates_all |= set(polymarket_by_date)
 

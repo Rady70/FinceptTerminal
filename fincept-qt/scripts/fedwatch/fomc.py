@@ -37,6 +37,11 @@ SOURCE_LABEL_FALLBACK = "federalreserve.gov FOMC calendar tracked fallback snaps
 
 FALLBACK_PATH = Path(__file__).resolve().parent / "fomc_dates_fallback.csv"
 FALLBACK_METADATA_PREFIX = "#"
+# The tracked snapshot is a point-in-time capture. Once it is older than this
+# many days it no longer establishes which meeting dates are officially
+# scheduled (a new meeting can be announced between captures), so the
+# composite must treat the calendar as uncertain rather than authoritative.
+FALLBACK_MAX_AGE_DAYS = 30
 
 # federalreserve.gov answers 403 to empty/bot-like User-Agents; the qualified
 # implementation used a browser UA for this host only.
@@ -270,16 +275,19 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
 
     row_marker_count = len(_ROW_MARKER_RE.findall(html))
     accounted_rows = len(parser.rows) + parser.skipped_rows
+    document_closed = bool(re.search(r"</html\s*>", html, re.IGNORECASE))
     report = {
         "row_marker_count": row_marker_count,
         "parsed_row_count": len(parser.rows),
         "skipped_row_count": parser.skipped_rows,
         "open_meeting_at_eof": parser.meeting is not None or bool(parser.capture_stack),
+        "document_closed": document_closed,
         "structurally_complete": bool(
             row_marker_count == accounted_rows
             and parser.skipped_rows == 0
             and parser.meeting is None
             and not parser.capture_stack
+            and document_closed
             and parser.rows
         ),
     }
@@ -397,6 +405,8 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
                     "source": SOURCE_LABEL_SCRAPE,
                     "source_status": "SCRAPED",
                     "fallback_snapshot_retrieved_at": None,
+                    "fallback_age_days": None,
+                    "fallback_stale": False,
                     "meetings": rows,
                     "parse_report": live_parse_report,
                     "warnings": warnings,
@@ -411,11 +421,28 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
 
     rows, snapshot_retrieved_at = load_fallback_snapshot(path)
     retrieved_at = clock()
+    fallback_age_days = None
+    if snapshot_retrieved_at:
+        try:
+            snapshot_instant = timeutil.parse_iso_z(snapshot_retrieved_at)
+            fallback_age_days = (retrieved_at - snapshot_instant).total_seconds() / 86400.0
+        except ValueError:
+            fallback_age_days = None
+    fallback_stale = fallback_age_days is None or fallback_age_days > FALLBACK_MAX_AGE_DAYS
+    if fallback_stale:
+        warnings.append(
+            "FOMC fallback snapshot age is "
+            + ("unknown" if fallback_age_days is None else f"{fallback_age_days:.1f} days")
+            + f" (limit {FALLBACK_MAX_AGE_DAYS} days); the calendar is not authoritative "
+            "for meeting-date alignment"
+        )
     return {
         "retrieved_at": timeutil.iso_z(retrieved_at),
         "source": SOURCE_LABEL_FALLBACK,
         "source_status": "FALLBACK_SNAPSHOT",
         "fallback_snapshot_retrieved_at": snapshot_retrieved_at,
+        "fallback_age_days": fallback_age_days,
+        "fallback_stale": fallback_stale,
         "meetings": rows,
         "parse_report": live_parse_report,
         "warnings": warnings,
