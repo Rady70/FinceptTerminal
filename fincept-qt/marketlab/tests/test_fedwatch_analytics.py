@@ -45,6 +45,7 @@ def seed(
     outcome_bp=25,
     open_ended=False,
     quality="OK",
+    instrument_key="",
 ) -> None:
     """Record production-like observations: the digest covers content only."""
     for observed_at, value in points:
@@ -54,6 +55,7 @@ def seed(
                 "source": source,
                 "outcome_bp": outcome_bp,
                 "open_ended": open_ended,
+                "instrument_key": instrument_key,
                 "probability_pct": value,
             }
         )
@@ -72,6 +74,7 @@ def seed(
             quality_status=quality,
             freshness_status=None,
             digest=digest,
+            instrument_key=instrument_key,
             detail={"origin": "test"},
         )
 
@@ -304,6 +307,26 @@ class DerivedOutcomeTests(unittest.TestCase):
         )["fed_side"]
         self.assertEqual(fed["latest"]["quality_status"], "STALE")
 
+    def test_incomplete_distribution_is_never_used_for_a_derived_tail(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 70.0)], outcome_bp=25)
+        tail = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, open_ended=True, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(tail["state"], "NO_OBSERVATIONS")
+        absent = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 50, open_ended=True, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(absent["state"], "NO_OBSERVATIONS")
+
+    def test_exact_stored_outcome_is_readable_with_an_incomplete_distribution(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 70.0)], outcome_bp=25)
+        fed = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 70.0)
+
 
 class DivergenceTests(unittest.TestCase):
     def _seed_both(self, store, fed_points, poly_points):
@@ -425,6 +448,32 @@ class DivergenceTests(unittest.TestCase):
         self.assertEqual(change(fed["latest_change_from_previous_observation"]), 30.0)
         self.assertEqual(fed["observed_high"]["probability_pct"], 50.0)
         self.assertNotIn(0.0, [point["probability_pct"] for point in points])
+
+
+class InstrumentGenerationTests(unittest.TestCase):
+    def test_recreated_token_series_uses_the_current_validated_generation(self):
+        store = new_store(self)
+        seed(
+            store,
+            [("2026-09-20T00:00:00Z", 30.0), ("2026-09-27T00:00:00Z", 35.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, instrument_key="tok-old",
+        )
+        seed(
+            store,
+            [("2026-09-26T00:00:00Z", 60.0), ("2026-09-28T00:00:00Z", 65.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, instrument_key="tok-new",
+        )
+        store.upsert_mapping_outcome(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, 25, False, "VALIDATED",
+            "606422", "Fed Decision in October?", "m-new", "tok-new", "question",
+            {"validation_method": "test"},
+        )
+        poly = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["polymarket"]
+        self.assertEqual(poly["latest"]["probability_pct"], 65.0)
+        self.assertEqual(poly["latest"]["instrument_key"], "tok-new")
+        self.assertEqual(poly["observation_count"], 2)
 
 
 class MalformedStoredRowTests(unittest.TestCase):

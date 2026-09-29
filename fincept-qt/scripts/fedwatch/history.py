@@ -313,6 +313,7 @@ def _record_polymarket(
             quality_status=data_status or "UNKNOWN",
             freshness_status=freshness.get("status"),
             digest=digest,
+            instrument_key=outcome.get("token_id") or "",
             detail=detail,
             recorded_at=recorded_at,
         )
@@ -394,12 +395,18 @@ def record_snapshot(
             )
             continue
         if meeting_day < as_of_date:
+            store.mark_pending(
+                meeting_date,
+                "MEETING_DATE_IN_PAST",
+                detail={"note": "decision day has passed; FRED resolution not yet established"},
+                now=recorded_at,
+            )
             report["skipped"].append(
                 {
                     "meeting_date": meeting_date,
                     "source": None,
                     "reason": "MEETING_DATE_IN_PAST",
-                    "detail": {"status": stored["status"] if stored else None},
+                    "detail": {"status": "PENDING"},
                 }
             )
             continue
@@ -439,14 +446,6 @@ def _convention_delta(before: dict | None, after: dict | None) -> tuple[int, int
     return upper_delta, lower_delta
 
 
-def _first_change(rows: list[dict], start: date, end: date, baseline_value: float) -> dict | None:
-    """First observation in ``[start, end]`` whose value differs from baseline."""
-    for row in rows:
-        if start <= row["date"] <= end and float(row["value"]) != float(baseline_value):
-            return row
-    return None
-
-
 def resolve_actual_outcome(
     end_date: date,
     upper_rows: list[dict],
@@ -456,12 +455,20 @@ def resolve_actual_outcome(
     """Establish a meeting's actual target-rate decision from FRED, or refuse.
 
     ``upper_rows``/``lower_rows`` are ``[{"date": date, "value": float}, ...]``.
-    Duplicate dates collapse to the last supplied row. The decision is the
-    *first* target-range change observed after the meeting inside the lookahead
-    window (the meeting's effective move); a later intermeeting change inside
-    the same window is never accumulated onto the meeting. It is only accepted
-    when the qualified inclusive convention and the strict next-day convention
-    agree, so a same-day or missing FRED update can never be misread as a hold.
+    Duplicate dates collapse to the last supplied row. The decision is read
+    from the **first paired post-meeting range observation**: the first FRED
+    observation strictly after the meeting's end date inside the lookahead
+    window. That observation reflects the range in effect after the meeting, so
+    a confirmed unchanged pair is a hold and a later intermeeting move inside
+    the same window is never attributed to the meeting.
+
+    Two effective-date conventions are evaluated and must agree: the qualified
+    inclusive convention (before = the last range at or before the meeting) and
+    the strict convention (before = the last range strictly before the meeting,
+    plus a same-day change check that catches a FRED update on the meeting date
+    itself). A genuine post-meeting observation must exist; a meeting-day-only
+    series is insufficient coverage, and a move where the upper and lower
+    bounds disagree fails closed as inconsistent.
 
     Returns ``{"resolvable": True, "outcome_bp": int, "detail": {...}}`` or
     ``{"resolvable": False, "reason": code, "detail": {...}}``.
@@ -495,23 +502,34 @@ def resolve_actual_outcome(
             }
         return None
 
-    def convention(before_day: date | None, window_start: date, window_end: date) -> dict:
+    suffix_end = end_date + timedelta(days=lookahead_days)
+
+    def convention(before_day: date | None, strict: bool) -> dict:
         if before_day is None:
             return {"status": "missing_before"}
         before_pair = pair(before_day)
         if before_pair is None:
             return {"status": "missing_pair"}
-        window_rows = [row for row in upper if window_start <= row["date"] <= window_end]
-        if not window_rows:
-            return {"status": "missing_window"}
-        changed = _first_change(
-            upper, window_start, window_end, before_pair["upper"]["value"]
-        )
-        if changed is None:
-            after_day = window_rows[-1]["date"]
-            after_pair = before_pair
-        else:
-            after_day = changed["date"]
+        after_day = None
+        after_pair = None
+        if strict:
+            # A FRED update on the meeting date itself is only a candidate;
+            # the inclusive convention would already include it in "before",
+            # so an on-day change here makes the attribution ambiguous.
+            on_meeting_day = pair(end_date)
+            if on_meeting_day is not None and (
+                float(on_meeting_day["upper"]["value"])
+                != float(before_pair["upper"]["value"])
+            ):
+                after_day = end_date
+                after_pair = on_meeting_day
+        if after_day is None:
+            post_rows = [
+                row for row in upper if end_date < row["date"] <= suffix_end
+            ]
+            if not post_rows:
+                return {"status": "missing_window"}
+            after_day = post_rows[0]["date"]
             after_pair = pair(after_day)
             if after_pair is None:
                 return {"status": "missing_pair", "after_date": after_day.isoformat()}
@@ -530,42 +548,62 @@ def resolve_actual_outcome(
     inclusive_before_day = _last_at_or_before(upper, end_date)
     strict_rows = [row for row in upper if row["date"] < end_date]
     strict_before_day = strict_rows[-1]["date"] if strict_rows else None
-    suffix_end = end_date + timedelta(days=lookahead_days)
-    inclusive = convention(inclusive_before_day["date"] if inclusive_before_day else None,
-                           end_date, suffix_end)
-    strict = convention(strict_before_day, end_date, suffix_end)
+    inclusive = convention(
+        inclusive_before_day["date"] if inclusive_before_day else None, strict=False
+    )
+    strict = convention(strict_before_day, strict=True)
     has_any_before = inclusive_before_day is not None
+    has_any_after = any(row["date"] > end_date for row in upper)
 
-    if not has_any_before or (
-        inclusive["status"] != "ok" and strict["status"] != "ok"
-    ):
-        if inclusive["status"] == "missing_window" or strict["status"] == "missing_window":
-            reason = "FRED_COVERAGE_INSUFFICIENT"
-        elif inclusive["status"] == "bounds_inconsistent" and strict["status"] == "bounds_inconsistent":
-            reason = "FRED_BOUNDS_INCONSISTENT"
-        else:
-            reason = "FRED_COVERAGE_INSUFFICIENT"
+    if not has_any_before or not has_any_after:
+        # A series that ends on the meeting day (or has no pre-meeting range)
+        # cannot establish the post-meeting range; a hold is never assumed.
         return {
             "resolvable": False,
-            "reason": reason,
+            "reason": "FRED_COVERAGE_INSUFFICIENT",
             "detail": {
                 "end_date": end_date.isoformat(),
                 "has_pre_meeting_observation": has_any_before,
-                "has_post_meeting_observation": any(row["date"] > end_date for row in upper),
+                "has_post_meeting_observation": has_any_after,
                 "inclusive_status": inclusive["status"],
                 "strict_status": strict["status"],
                 "upper_latest_date": upper[-1]["date"].isoformat() if upper else None,
                 "lookahead_days": lookahead_days,
             },
         }
-    if inclusive["status"] != "ok" or strict["status"] != "ok" or inclusive["delta"] != strict["delta"]:
+    if inclusive["status"] != "ok" or strict["status"] != "ok":
+        if (
+            inclusive["status"] == "bounds_inconsistent"
+            and strict["status"] == "bounds_inconsistent"
+        ):
+            reason = "FRED_BOUNDS_INCONSISTENT"
+        elif (
+            inclusive["status"] == "missing_pair"
+            or strict["status"] == "missing_pair"
+        ):
+            reason = "FRED_COVERAGE_INSUFFICIENT"
+        else:
+            reason = "FRED_EFFECTIVE_DATE_AMBIGUOUS"
+        return {
+            "resolvable": False,
+            "reason": reason,
+            "detail": {
+                "end_date": end_date.isoformat(),
+                "inclusive_convention_bp": inclusive.get("delta"),
+                "strict_convention_bp": strict.get("delta"),
+                "inclusive_status": inclusive["status"],
+                "strict_status": strict["status"],
+                "lookahead_days": lookahead_days,
+            },
+        }
+    if inclusive["delta"] != strict["delta"]:
         return {
             "resolvable": False,
             "reason": "FRED_EFFECTIVE_DATE_AMBIGUOUS",
             "detail": {
                 "end_date": end_date.isoformat(),
-                "inclusive_convention_bp": inclusive.get("delta"),
-                "strict_convention_bp": strict.get("delta"),
+                "inclusive_convention_bp": inclusive["delta"],
+                "strict_convention_bp": strict["delta"],
                 "inclusive_status": inclusive["status"],
                 "strict_status": strict["status"],
             },
@@ -579,7 +617,7 @@ def resolve_actual_outcome(
         "outcome_bp": outcome_bp,
         "detail": {
             "end_date": end_date.isoformat(),
-            "method": "FRED DFEDTARU/DFEDTARL target-range change",
+            "method": "FRED DFEDTARU/DFEDTARL first post-meeting target range",
             "inclusive_convention_bp": inclusive["delta"],
             "strict_convention_bp": strict["delta"],
             "upper_delta_bp": _delta_bp(inclusive["before_pair"]["upper"], inclusive["after_pair"]["upper"]),
@@ -611,6 +649,20 @@ def evaluate_lifecycle(
     if not pending:
         return result
     if fred_history is None:
+        # FRED is unavailable: a past unresolved meeting is explicitly PENDING,
+        # never left durably marked UPCOMING.
+        for meeting in pending:
+            meeting_date = meeting["meeting_date"]
+            store.mark_pending(
+                meeting_date,
+                "FRED_SOURCE_UNAVAILABLE",
+                detail={"note": "FRED target-range history unavailable"},
+                now=now,
+            )
+            result["pending"].append(
+                {"meeting_date": meeting_date, "reason": "FRED_SOURCE_UNAVAILABLE"}
+            )
+        result["evaluated"] = len(pending)
         result["errors"].append(
             {
                 "error": "FRED target-range history unavailable; meeting outcomes cannot be established",
@@ -900,6 +952,7 @@ def backfill_polymarket(
                 quality_status="BACKFILLED",
                 freshness_status=None,
                 digest=point_digest,
+                instrument_key=token_id or "",
                 detail=detail,
                 recorded_at=now,
             )
@@ -1077,29 +1130,43 @@ def import_zq(
     errors: list[dict] = []
     watch_results = []
     for watch_date in sorted(watch_dates):
-        upper_before = [
-            row for row in upper_rows
+        # The target range must be a genuine paired observation: the latest
+        # date on which BOTH bounds have an observation, never a mix of dates.
+        upper_by_day = {
+            timeutil.parse_date(row["date"]): float(row["value"])
+            for row in upper_rows
             if timeutil.parse_date(row["date"]) <= watch_date
-        ]
-        lower_before = [
-            row for row in lower_rows
+        }
+        lower_by_day = {
+            timeutil.parse_date(row["date"]): float(row["value"])
+            for row in lower_rows
             if timeutil.parse_date(row["date"]) <= watch_date
-        ]
-        if not upper_before or not lower_before:
+        }
+        paired_days = sorted(set(upper_by_day) & set(lower_by_day))
+        if not paired_days:
             errors.append(
                 FedwatchError(
                     PROVIDER_ZQ,
                     "FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE",
-                    f"no FRED target-range observation exists on or before watch date "
-                    f"{watch_date.isoformat()}",
-                    detail={"watch_date": watch_date.isoformat()},
+                    f"no paired FRED target-range observation exists on or before "
+                    f"watch date {watch_date.isoformat()}",
+                    detail={
+                        "watch_date": watch_date.isoformat(),
+                        "upper_latest_date": (
+                            max(upper_by_day).isoformat() if upper_by_day else None
+                        ),
+                        "lower_latest_date": (
+                            max(lower_by_day).isoformat() if lower_by_day else None
+                        ),
+                    },
                 ).to_dict()
             )
             continue
+        paired_day = paired_days[-1]
         current_range = {
-            "upper": float(upper_before[-1]["value"]),
-            "lower": float(lower_before[-1]["value"]),
-            "observation_date": upper_before[-1]["date"],
+            "upper": upper_by_day[paired_day],
+            "lower": lower_by_day[paired_day],
+            "observation_date": paired_day.isoformat(),
         }
         try:
             deconvolution = fedwatch_zq.run_deconvolution(

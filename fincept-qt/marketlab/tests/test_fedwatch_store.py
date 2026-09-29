@@ -73,6 +73,72 @@ class StoreSchemaTests(unittest.TestCase):
             FedwatchHistoryStore(self.db).ensure_schema()
         self.assertEqual(caught.exception.code, "FEDWATCH_HISTORY_SCHEMA_NEWER")
 
+    def test_pre_review_v1_schema_is_refused(self):
+        # The actual first-reviewed-head table definition (compressed value
+        # episodes) must never be silently reused by the corrected code.
+        self.db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(str(self.db))
+        connection.execute(
+            """
+            CREATE TABLE fedwatch_probability_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meeting_date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                method TEXT NOT NULL,
+                outcome_bp INTEGER NOT NULL,
+                open_ended INTEGER NOT NULL,
+                probability_pct REAL NOT NULL,
+                raw_probability_pct REAL,
+                normalized_probability_pct REAL,
+                observed_at TEXT NOT NULL,
+                source_observed_at TEXT,
+                retrieved_at TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                last_observed_at TEXT NOT NULL,
+                last_retrieved_at TEXT NOT NULL,
+                last_recorded_at TEXT NOT NULL,
+                quality_status TEXT NOT NULL,
+                freshness_status TEXT,
+                content_digest TEXT NOT NULL,
+                observation_count INTEGER NOT NULL DEFAULT 1,
+                detail_json TEXT,
+                UNIQUE (meeting_date, source, method, outcome_bp, open_ended, observed_at)
+            )
+            """
+        )
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(HistoryStoreError) as caught:
+            FedwatchHistoryStore(self.db).ensure_schema()
+        self.assertEqual(caught.exception.code, "FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE")
+
+    def test_schema_missing_instrument_identity_is_refused(self):
+        self.db.parent.mkdir(parents=True)
+        connection = sqlite3.connect(str(self.db))
+        connection.execute(
+            """
+            CREATE TABLE fedwatch_probability_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meeting_date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                method TEXT NOT NULL,
+                outcome_bp INTEGER NOT NULL,
+                open_ended INTEGER NOT NULL,
+                probability_pct REAL NOT NULL,
+                observed_at TEXT NOT NULL,
+                content_digest TEXT NOT NULL,
+                detail_json TEXT
+            )
+            """
+        )
+        connection.execute(f"PRAGMA user_version = {HISTORY_SCHEMA_VERSION}")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(HistoryStoreError) as caught:
+            FedwatchHistoryStore(self.db).ensure_schema()
+        self.assertEqual(caught.exception.code, "FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE")
+
     def test_default_path_fails_closed_without_environment(self):
         original = os.environ.pop("FINCEPT_DATA_DIR", None)
         try:
@@ -216,6 +282,19 @@ class ObservationTests(unittest.TestCase):
             1,
         )
         self.assertEqual(len(self.store.observations(meeting_date="2026-12-09")), 1)
+
+    def test_instrument_generations_do_not_overwrite_each_other(self):
+        self.record(30.0, "2026-09-28T12:00:00Z", instrument_key="tok-old")
+        self.assertEqual(
+            self.record(40.0, "2026-09-28T12:00:00Z", instrument_key="tok-new"), "inserted"
+        )
+        rows = self.store.observations(
+            meeting_date="2026-10-28", outcome_bp=25
+        )
+        self.assertEqual(
+            {(row["instrument_key"], row["probability_pct"]) for row in rows},
+            {("tok-old", 30.0), ("tok-new", 40.0)},
+        )
 
     def test_persistence_across_reopen(self):
         self.record(70.0, "2026-09-28T12:00:00Z")

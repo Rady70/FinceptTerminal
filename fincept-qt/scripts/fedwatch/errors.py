@@ -24,6 +24,7 @@ builder) can branch on them without parsing prose:
                     FEDWATCH_HISTORY_WRITE_FAILED
                     FEDWATCH_HISTORY_READ_FAILED
                     FEDWATCH_HISTORY_SCHEMA_NEWER
+                    FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE
     zq              FEDWATCH_ZQ_DATA_UNAVAILABLE
                     FEDWATCH_ZQ_DATA_INVALID
                     FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE

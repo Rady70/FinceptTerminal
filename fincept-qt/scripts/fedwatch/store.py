@@ -72,7 +72,11 @@ from pathlib import Path
 from fedwatch.errors import HistoryStoreError
 from fedwatch import timeutil
 
-HISTORY_SCHEMA_VERSION = 1
+HISTORY_SCHEMA_VERSION = 2
+# Version 1 was an unreleased pre-review schema (first as a compressed value
+# episode, then as an observation-instant schema without instrument identity).
+# It is refused explicitly instead of being silently reused.
+LEGACY_SCHEMA_VERSION = 1
 
 DEFAULT_DB_RELATIVE = Path("fedwatch") / "fedwatch_history.db"
 
@@ -85,7 +89,7 @@ MEETING_STATUSES = (
     MEETING_STATUS_RESOLVED,
 )
 
-_SCHEMA_STATEMENTS = (
+_SCHEMA_TABLE_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS fedwatch_meetings (
         meeting_date TEXT PRIMARY KEY,
@@ -129,6 +133,7 @@ _SCHEMA_STATEMENTS = (
         method TEXT NOT NULL,
         outcome_bp INTEGER NOT NULL,
         open_ended INTEGER NOT NULL,
+        instrument_key TEXT NOT NULL DEFAULT '',
         probability_pct REAL NOT NULL,
         raw_probability_pct REAL,
         normalized_probability_pct REAL,
@@ -143,14 +148,9 @@ _SCHEMA_STATEMENTS = (
         content_digest TEXT NOT NULL,
         observation_count INTEGER NOT NULL DEFAULT 1,
         detail_json TEXT,
-        UNIQUE (meeting_date, source, method, outcome_bp, open_ended, observed_at)
+        UNIQUE (meeting_date, source, method, outcome_bp, open_ended, instrument_key, observed_at)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_fw_obs_series "
-    "ON fedwatch_probability_observations "
-    "(meeting_date, method, outcome_bp, open_ended, observed_at)",
-    "CREATE INDEX IF NOT EXISTS idx_fw_obs_source "
-    "ON fedwatch_probability_observations (source, method, meeting_date)",
     """
     CREATE TABLE IF NOT EXISTS fedwatch_backfills (
         meeting_date TEXT NOT NULL,
@@ -174,6 +174,47 @@ _SCHEMA_STATEMENTS = (
     )
     """,
 )
+
+_SCHEMA_INDEX_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS idx_fw_obs_series "
+    "ON fedwatch_probability_observations "
+    "(meeting_date, method, outcome_bp, open_ended, observed_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fw_obs_source "
+    "ON fedwatch_probability_observations (source, method, meeting_date)",
+    "CREATE INDEX IF NOT EXISTS idx_fw_obs_instrument "
+    "ON fedwatch_probability_observations "
+    "(meeting_date, method, outcome_bp, open_ended, instrument_key, observed_at)",
+)
+
+_REQUIRED_COLUMNS = {
+    "fedwatch_meetings": {
+        "meeting_date", "status", "status_reason", "calendar_json",
+        "first_seen_at", "last_updated_at", "resolved_at", "actual_outcome_bp",
+        "actual_outcome_source", "actual_outcome_detail_json",
+    },
+    "fedwatch_source_mappings": {
+        "meeting_date", "source", "method", "outcome_bp", "open_ended",
+        "mapping_status", "external_event_id", "external_event_title",
+        "external_market_id", "external_token_id", "question",
+        "mapping_evidence_json", "last_revalidation_status", "last_revalidated_at",
+        "first_seen_at", "last_seen_at",
+    },
+    "fedwatch_probability_observations": {
+        "meeting_date", "source", "method", "outcome_bp", "open_ended",
+        "instrument_key", "probability_pct", "raw_probability_pct",
+        "normalized_probability_pct", "observed_at", "source_observed_at",
+        "retrieved_at", "recorded_at", "last_retrieved_at", "last_recorded_at",
+        "quality_status", "freshness_status", "content_digest",
+        "observation_count", "detail_json",
+    },
+    "fedwatch_backfills": {
+        "meeting_date", "source", "method", "outcome_bp", "open_ended",
+        "external_event_id", "token_id", "market_id", "question",
+        "first_backfill_at", "last_backfill_at", "last_point_observed_at",
+        "point_count", "inserted_count", "observed_again_count", "status",
+        "detail_json",
+    },
+}
 
 
 def default_db_path() -> Path:
@@ -245,9 +286,47 @@ class FedwatchHistoryStore:
                     "this application will not modify it",
                     detail={"database_version": version, "supported_version": HISTORY_SCHEMA_VERSION},
                 )
+            if version == LEGACY_SCHEMA_VERSION:
+                raise HistoryStoreError(
+                    "FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE",
+                    "the FedWatch history database was written by an unreleased "
+                    "pre-review schema (version 1) with different observation "
+                    "semantics; delete the file or start a new history store",
+                    detail={"database_version": version, "supported_version": HISTORY_SCHEMA_VERSION},
+                )
+            for statement in _SCHEMA_TABLE_STATEMENTS:
+                conn.execute(statement)
+            incompatible = []
+            for table, required in _REQUIRED_COLUMNS.items():
+                columns = {
+                    row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if not columns:
+                    incompatible.append(f"{table}: missing table")
+                    continue
+                missing = sorted(required - columns)
+                if missing:
+                    incompatible.append(f"{table}: missing {missing}")
+            if "last_observed_at" in {
+                row["name"] for row in conn.execute(
+                    "PRAGMA table_info(fedwatch_probability_observations)"
+                )
+            }:
+                incompatible.append("fedwatch_probability_observations: legacy episode column")
+            if incompatible:
+                raise HistoryStoreError(
+                    "FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE",
+                    "the FedWatch history database schema does not match this "
+                    "application version; delete the file or start a new history store",
+                    detail={
+                        "database_version": version,
+                        "supported_version": HISTORY_SCHEMA_VERSION,
+                        "problems": incompatible,
+                    },
+                )
+            for statement in _SCHEMA_INDEX_STATEMENTS:
+                conn.execute(statement)
             if version < HISTORY_SCHEMA_VERSION:
-                for statement in _SCHEMA_STATEMENTS:
-                    conn.execute(statement)
                 conn.execute(f"PRAGMA user_version = {HISTORY_SCHEMA_VERSION}")
                 conn.commit()
         except sqlite3.Error as exc:
@@ -674,6 +753,7 @@ class FedwatchHistoryStore:
         quality_status: str,
         freshness_status: str | None,
         digest: str,
+        instrument_key: str = "",
         detail: dict | None = None,
         recorded_at: datetime | None = None,
     ) -> str:
@@ -681,8 +761,10 @@ class FedwatchHistoryStore:
 
         Returns ``inserted``, ``duplicate`` or ``revised``. No compression is
         applied: a different instant is always a new observation row, so the
-        stored chronology is exactly the accepted chronology.
-        """
+        stored chronology is exactly the accepted chronology. ``instrument_key``
+        is the source instrument identity where the source has one (the
+        Polymarket CLOB token id); it is part of the observation key so a
+        re-created market's observations never overwrite another token's."""
         observed_at = _require_iso_instant(observed_at, "observed_at")
         retrieved_at = _require_iso_instant(retrieved_at, "retrieved_at")
         if source_observed_at is not None:
@@ -696,10 +778,15 @@ class FedwatchHistoryStore:
         normalized_probability = self._validate_probability(
             normalized_probability_pct, "normalized_probability_pct", meeting_date, method, outcome_bp
         )
+        if not isinstance(instrument_key, str):
+            raise HistoryStoreError(
+                "FEDWATCH_HISTORY_WRITE_FAILED",
+                f"instrument_key is not a string for {meeting_date} {method} {outcome_bp}",
+            )
         recorded_iso = timeutil.iso_z(recorded_at) if recorded_at is not None else _utc_now_iso()
         detail_json = json.dumps(detail, sort_keys=True) if detail else None
         open_ended_flag = 1 if open_ended else 0
-        series = (meeting_date, source, method, int(outcome_bp), open_ended_flag)
+        series = (meeting_date, source, method, int(outcome_bp), open_ended_flag, instrument_key)
 
         conn = self._connect()
         try:
@@ -709,7 +796,8 @@ class FedwatchHistoryStore:
                     """
                     SELECT * FROM fedwatch_probability_observations
                      WHERE meeting_date = ? AND source = ? AND method = ?
-                       AND outcome_bp = ? AND open_ended = ? AND observed_at = ?
+                       AND outcome_bp = ? AND open_ended = ? AND instrument_key = ?
+                       AND observed_at = ?
                     """,
                     (*series, observed_at),
                 ).fetchone()
@@ -718,15 +806,17 @@ class FedwatchHistoryStore:
                         """
                         INSERT INTO fedwatch_probability_observations
                             (meeting_date, source, method, outcome_bp, open_ended,
-                             probability_pct, raw_probability_pct, normalized_probability_pct,
+                             instrument_key, probability_pct, raw_probability_pct,
+                             normalized_probability_pct,
                              observed_at, source_observed_at, retrieved_at, recorded_at,
                              last_retrieved_at, last_recorded_at,
                              quality_status, freshness_status, content_digest,
                              observation_count, detail_json)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                         """,
                         (
                             meeting_date, source, method, int(outcome_bp), open_ended_flag,
+                            instrument_key,
                             probability, raw_probability, normalized_probability,
                             observed_at, source_observed_at, retrieved_at, recorded_iso,
                             retrieved_at, recorded_iso,
@@ -784,6 +874,7 @@ class FedwatchHistoryStore:
             "method": row["method"],
             "outcome_bp": row["outcome_bp"],
             "open_ended": bool(row["open_ended"]),
+            "instrument_key": row["instrument_key"],
             "probability_pct": row["probability_pct"],
             "raw_probability_pct": row["raw_probability_pct"],
             "normalized_probability_pct": row["normalized_probability_pct"],

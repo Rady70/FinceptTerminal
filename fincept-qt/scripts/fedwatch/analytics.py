@@ -103,6 +103,7 @@ def _point_from_row(row: dict) -> dict:
         "retrieved_at": row["retrieved_at"],
         "quality_status": row["quality_status"],
         "observation_count": row["observation_count"],
+        "instrument_key": row.get("instrument_key") or "",
     }
 
 
@@ -148,6 +149,29 @@ def change_points(
             row for row in valid
             if row["outcome_bp"] == outcome_bp and bool(row["open_ended"]) == open_ended
         ]
+        if not matching:
+            return [], errors
+        # A re-created market contributes a new instrument generation. Prefer
+        # the currently validated token when one is stored; otherwise use the
+        # generation with the latest observation. Generations are never mixed.
+        keys = {row["instrument_key"] for row in matching}
+        chosen = None
+        for mapping in store.validated_mappings([meeting_date]):
+            if (
+                mapping.get("source") == POLY_SOURCE
+                and mapping.get("method") == POLY_METHOD
+                and mapping.get("outcome_bp") == outcome_bp
+                and bool(mapping.get("open_ended")) == open_ended
+            ):
+                token = mapping.get("external_token_id") or ""
+                if token in keys:
+                    chosen = token
+                    break
+        if chosen is None:
+            chosen = max(matching, key=lambda row: (row["observed_at"], row["id"]))[
+                "instrument_key"
+            ]
+        matching = [row for row in matching if row["instrument_key"] == chosen]
         points = [
             _point_from_row(row)
             for row in sorted(matching, key=lambda row: (row["observed_at"], row["id"]))
@@ -164,28 +188,35 @@ def change_points(
             row for row in rows_at
             if _matches_tail(row["outcome_bp"], False, outcome_bp, open_ended)
         ]
-        if not matching:
-            # An absent bucket is exactly 0 only while a complete meeting
-            # distribution is stored at this instant (the established
-            # comparison semantics); otherwise there is no value to report,
-            # never a fabricated zero.
-            active_total = sum(float(row["probability_pct"]) for row in rows_at)
-            if abs(active_total - 100.0) > 0.5:
-                continue
-        total = round(sum(float(row["probability_pct"]) for row in matching), 6)
-        if not open_ended and len(matching) == 1 and matching[0]["outcome_bp"] == outcome_bp:
+        stored_exact = (
+            not open_ended
+            and len(matching) == 1
+            and matching[0]["outcome_bp"] == outcome_bp
+        )
+        if stored_exact:
+            # An individually stored outcome is readable as stored; a derived
+            # tail or absent bucket additionally requires the complete meeting
+            # distribution at that instant (the established comparison rule).
             point = _point_from_row(matching[0])
-            point["probability_pct"] = total
-        else:
-            point = {
+            points.append(point)
+            continue
+        active_total = sum(float(row["probability_pct"]) for row in rows_at)
+        if abs(active_total - 100.0) > 0.5:
+            # Incomplete stored distribution: a derived tail (or absent-bucket
+            # zero) would be unknown, never fabricated.
+            continue
+        total = round(sum(float(row["probability_pct"]) for row in matching), 6)
+        points.append(
+            {
                 "observed_at": instant,
                 "probability_pct": total,
                 "source_observed_at": None,
                 "retrieved_at": max(row["retrieved_at"] for row in rows_at),
                 "quality_status": "DERIVED_FROM_MEETING_DISTRIBUTION",
                 "observation_count": max(len(matching), 1),
+                "instrument_key": "",
             }
-        points.append(point)
+        )
     return points, errors
 
 
@@ -278,6 +309,7 @@ def summarize_points(
             "source_observed_at": latest.get("source_observed_at"),
             "retrieved_at": latest.get("retrieved_at"),
             "quality_status": latest.get("quality_status"),
+            "instrument_key": latest.get("instrument_key") or None,
         },
         "latest_change_from_previous_observation": _change_entry(
             previous, latest, "NO_PREVIOUS_OBSERVATION"

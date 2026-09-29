@@ -281,7 +281,7 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(meeting["resolved_at"], "2026-09-28T12:00:00Z")
         self.assertEqual(
             meeting["actual_outcome_detail"]["method"],
-            "FRED DFEDTARU/DFEDTARL target-range change",
+            "FRED DFEDTARU/DFEDTARL first post-meeting target range",
         )
 
 
@@ -329,6 +329,54 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(verdict["outcome_bp"], 25)
         self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-17")
         self.assertEqual(verdict["detail"]["rate_after"]["upper"], 4.00)
+
+    def test_meeting_day_only_series_is_not_a_hold(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 10).date(), "value": 3.75},
+            {"date": utc(2026, 9, 16).date(), "value": 3.75},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 10).date(), "value": 3.50},
+            {"date": utc(2026, 9, 16).date(), "value": 3.50},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertFalse(verdict["resolvable"])
+        self.assertEqual(verdict["reason"], "FRED_COVERAGE_INSUFFICIENT")
+
+    def test_first_post_meeting_hold_ignores_a_later_intermeeting_move(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 16).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 3.75},
+            {"date": utc(2026, 9, 18).date(), "value": 4.00},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 16).date(), "value": 3.50},
+            {"date": utc(2026, 9, 17).date(), "value": 3.50},
+            {"date": utc(2026, 9, 18).date(), "value": 3.75},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertTrue(verdict["resolvable"])
+        self.assertEqual(verdict["outcome_bp"], 0)
+        self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-17")
+        self.assertEqual(verdict["detail"]["rate_after"]["upper"], 3.75)
+
+    def test_lower_bound_only_change_is_rejected(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 3.75},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 17).date(), "value": 3.25},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertFalse(verdict["resolvable"])
+        self.assertEqual(verdict["reason"], "FRED_BOUNDS_INCONSISTENT")
 
     def test_resolve_missing_post_meeting_coverage_is_not_a_hold(self):
         end_date = utc(2026, 9, 16).date()
@@ -457,7 +505,7 @@ class LifecycleTests(unittest.TestCase):
         )
         self.assertEqual(store.count_observations(), 0)
 
-    def test_an_unseen_past_meeting_is_never_recorded(self):
+    def test_an_unseen_past_meeting_is_never_recorded_and_becomes_pending(self):
         store = new_store(self)
         data = {
             "retrieved_at": "2026-09-28T12:00:00Z",
@@ -469,6 +517,24 @@ class LifecycleTests(unittest.TestCase):
             {"2026-09-01": "MEETING_DATE_IN_PAST"},
         )
         self.assertEqual(store.count_observations(), 0)
+        meeting = store.get_meeting("2026-09-01")
+        self.assertEqual(meeting["status"], "PENDING")
+        self.assertEqual(meeting["status_reason"], "MEETING_DATE_IN_PAST")
+
+    def test_fred_unavailable_marks_past_meetings_pending(self):
+        store = new_store(self)
+        store.upsert_meeting("2026-09-16", default_status="UPCOMING")
+        result = fedwatch_history.evaluate_lifecycle(
+            store, None, clock=FixedClock(NOW)
+        )
+        self.assertEqual(
+            result["pending"],
+            [{"meeting_date": "2026-09-16", "reason": "FRED_SOURCE_UNAVAILABLE"}],
+        )
+        self.assertEqual(result["errors"][0]["code"], "FRED_SOURCE_UNAVAILABLE")
+        meeting = store.get_meeting("2026-09-16")
+        self.assertEqual(meeting["status"], "PENDING")
+        self.assertEqual(meeting["status_reason"], "FRED_SOURCE_UNAVAILABLE")
 
     def test_resolved_meeting_history_remains_readable(self):
         store = new_store(self)
@@ -765,6 +831,44 @@ class BackfillTests(unittest.TestCase):
                 self.assertEqual(row["probability_pct"], original["probability_pct"])
                 self.assertEqual(row["quality_status"], "CURRENT")
 
+    def test_recreated_token_at_the_same_timestamp_preserves_old_observations(self):
+        self.store.upsert_mapping_outcome(
+            "2026-10-28", "polymarket", "POLYMARKET_CLOB", 25, False, "VALIDATED",
+            "606422", "Fed Decision in October?", "606422-3", "tok-old", "question",
+            {"validation_method": "test"},
+        )
+        first_transport = FakeTransport()
+        first_transport.add_json(
+            "prices-history",
+            lambda url, params: {"history": [{"t": epoch(utc(2026, 8, 1)), "p": 0.30}]},
+        )
+        fedwatch_history.backfill_polymarket(
+            self.store, first_transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        self.store.upsert_mapping_outcome(
+            "2026-10-28", "polymarket", "POLYMARKET_CLOB", 25, False, "VALIDATED",
+            "606422", "Fed Decision in October?", "606422-3", "tok-new", "question",
+            {"validation_method": "test"},
+        )
+        recreated = FakeTransport()
+        recreated.add_json(
+            "prices-history",
+            lambda url, params: {"history": [{"t": epoch(utc(2026, 8, 1)), "p": 0.40}]},
+        )
+        result = fedwatch_history.backfill_polymarket(
+            self.store, recreated, clock=FixedClock(NOW), sleep=NO_SLEEP, force=True
+        )
+        self.assertEqual(result["backfills"][0]["status"], "OK")
+        rows = self.store.observations(
+            meeting_date="2026-10-28", method="POLYMARKET_CLOB", outcome_bp=25
+        )
+        self.assertEqual(
+            {(row["instrument_key"], row["probability_pct"]) for row in rows},
+            {("tok-old", 30.0), ("tok-new", 40.0)},
+        )
+        old = next(row for row in rows if row["instrument_key"] == "tok-old")
+        self.assertEqual(old["detail"]["origin"], "clob_prices_history_backfill")
+
     def test_backfill_only_uses_validated_mappings_for_the_requested_meeting(self):
         self.store.upsert_mapping_outcome(
             "2026-12-09", "polymarket", "POLYMARKET_CLOB", 0, False, "VALIDATED",
@@ -881,6 +985,47 @@ class ImportZqTests(unittest.TestCase):
         self.assertTrue(
             all(row["detail"]["watch_date"] == "2026-09-28" for row in stored)
         )
+
+    def test_import_zq_uses_only_a_paired_range_date(self):
+        self._write_contracts()
+        transport = make_snapshot_transport(NOW)
+        transport.add_text("DFEDTARU", fred_csv("DFEDTARU", [
+            (utc(2026, 6, 30).date(), 3.50),
+            (utc(2026, 7, 10).date(), 3.75),
+            (utc(2026, 9, 28).date(), 4.00),
+        ]))
+        transport.add_text("DFEDTARL", fred_csv("DFEDTARL", [
+            (utc(2026, 6, 30).date(), 3.25),
+            (utc(2026, 9, 28).date(), 3.75),
+        ]))
+        payload = fedwatch_history.import_zq(
+            self.store, transport, self.zq_dir,
+            [utc(2026, 7, 14).date()], clock=FixedClock(NOW),
+        )
+        self.assertEqual(
+            payload["watch_dates"][0]["current_target_range"],
+            {"upper": 3.50, "lower": 3.25, "observation_date": "2026-06-30"},
+        )
+
+    def test_import_zq_fails_closed_without_a_paired_range_date(self):
+        self._write_contracts()
+        transport = make_snapshot_transport(NOW)
+        transport.add_text("DFEDTARU", fred_csv("DFEDTARU", [
+            (utc(2026, 7, 10).date(), 3.75),
+        ]))
+        transport.add_text("DFEDTARL", fred_csv("DFEDTARL", [
+            (utc(2026, 6, 30).date(), 3.25),
+        ]))
+        payload = fedwatch_history.import_zq(
+            self.store, transport, self.zq_dir,
+            [utc(2026, 7, 14).date()], clock=FixedClock(NOW),
+        )
+        self.assertEqual(payload["watch_dates"], [])
+        self.assertEqual(
+            [error["code"] for error in payload["errors"]],
+            ["FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE"],
+        )
+        self.assertEqual(self.store.observations(method=fedwatch_history.FED_METHOD_ZQ), [])
 
     def test_import_zq_uses_the_historical_watch_date_rate_and_reloads(self):
         # A historical watch date must use the target range in effect then, not
