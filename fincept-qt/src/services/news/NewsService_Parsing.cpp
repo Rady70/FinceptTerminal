@@ -61,6 +61,7 @@ QVector<NewsArticle> NewsService::parse_rss_xml(const QByteArray& xml, const RSS
                 current.source = feed.source;
                 current.region = feed.region;
                 current.tier = feed.tier;
+                current.feed_order = feed.order;
                 current.id = QString("%1-%2-%3").arg(feed.id).arg(QDateTime::currentMSecsSinceEpoch()).arg(item_idx);
             }
 

@@ -45,6 +45,7 @@ struct NewsArticle {
     QString link;
     int64_t sort_ts = 0; // unix seconds
     int tier = 4;        // 1=wire, 2=major, 3=specialty, 4=blog
+    int feed_order = 0;  // position in the effective feed list at fetch time; 0 = first listed
     ThreatClassification threat;
     SourceFlag source_flag = SourceFlag::NONE;
     QString lang; // ISO language code (e.g., "en", "fr", "ar")
