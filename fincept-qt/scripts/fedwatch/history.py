@@ -5,7 +5,7 @@ durable MarketLab history (FEDWATCH_INTEGRATION_PLAN.md section 9) without
 changing the current contract:
 
 * :func:`collect` records an accepted snapshot's Fed-side and Polymarket
-  observations into the SQLite episode store, then advances the durable FOMC
+  observations into the SQLite history store, then advances the durable FOMC
   meeting lifecycle from FRED's official target-range series.
 * :func:`backfill_polymarket` imports the qualified CLOB ``prices-history``
   (``interval=max``, ``fidelity=1440``) for already-validated mappings,
@@ -145,7 +145,6 @@ def _record_fed_side(
             continue
         digest = content_digest(
             {
-                "origin": "live_collect",
                 "method": method,
                 "outcome_bp": outcome_bp,
                 "probability_pct": probability,
@@ -172,7 +171,7 @@ def _record_fed_side(
             detail=detail,
             recorded_at=recorded_at,
         )
-        report["fed_side_episodes"] += 1
+        report["fed_side_observations"] += 1
         _count_record(report, result)
 
 
@@ -291,14 +290,12 @@ def _record_polymarket(
         }
         digest = content_digest(
             {
-                "origin": "live_collect",
                 "event_id": event_id,
                 "market_id": outcome.get("market_id"),
                 "token_id": outcome.get("token_id"),
                 "outcome_bp": outcome_bp,
                 "open_ended": open_ended,
                 "probability_pct": probability,
-                "data_status": data_status,
             }
         )
         result = store.record_observation(
@@ -319,7 +316,7 @@ def _record_polymarket(
             detail=detail,
             recorded_at=recorded_at,
         )
-        report["polymarket_episodes"] += 1
+        report["polymarket_observations"] += 1
         _count_record(report, result)
 
 
@@ -330,9 +327,12 @@ def record_snapshot(
 ) -> dict:
     """Record an accepted Batch A snapshot's observations into durable history.
 
-    Resolved or past-awaiting-resolution meetings are never given new live
-    observations. The returned report counts each episode outcome and lists
-    every skip with its reason.
+    Resolved, past-awaiting-resolution and past-dated meetings are never given
+    new live observations. ``collect`` evaluates the lifecycle *before* calling
+    this function; the past-date guard here is defense in depth so a snapshot
+    that still carries a past meeting cannot open a live-collection hole. The
+    returned report counts each recorded observation and lists every skip with
+    its reason.
     """
     recorded_at = clock()
     retrieved_at = data.get("retrieved_at")
@@ -341,9 +341,10 @@ def record_snapshot(
             "FEDWATCH_HISTORY_WRITE_FAILED",
             f"snapshot retrieved_at is not a valid UTC instant: {retrieved_at!r}",
         )
+    as_of_date = recorded_at.date() if isinstance(recorded_at, datetime) else date.today()
     report = {
-        "fed_side_episodes": 0,
-        "polymarket_episodes": 0,
+        "fed_side_observations": 0,
+        "polymarket_observations": 0,
         "counts": {},
         "records": [],
         "skipped": [],
@@ -363,7 +364,7 @@ def record_snapshot(
             )
             continue
         try:
-            timeutil.parse_date(meeting_date)
+            meeting_day = timeutil.parse_date(meeting_date)
         except (AttributeError, ValueError):
             report["skipped"].append(
                 {"meeting_date": meeting_date, "source": None, "reason": "MALFORMED_MEETING_DATE"}
@@ -392,6 +393,16 @@ def record_snapshot(
                 }
             )
             continue
+        if meeting_day < as_of_date:
+            report["skipped"].append(
+                {
+                    "meeting_date": meeting_date,
+                    "source": None,
+                    "reason": "MEETING_DATE_IN_PAST",
+                    "detail": {"status": stored["status"] if stored else None},
+                }
+            )
+            continue
 
         _record_fed_side(store, meeting, retrieved_at, recorded_at, report)
         _record_polymarket(store, meeting, retrieved_at, recorded_at, report)
@@ -403,11 +414,6 @@ def record_snapshot(
 
 def _last_at_or_before(rows: list[dict], day: date) -> dict | None:
     candidates = [row for row in rows if row["date"] <= day]
-    return candidates[-1] if candidates else None
-
-
-def _last_in_window(rows: list[dict], start: date, end: date) -> dict | None:
-    candidates = [row for row in rows if start <= row["date"] <= end]
     return candidates[-1] if candidates else None
 
 
@@ -433,6 +439,14 @@ def _convention_delta(before: dict | None, after: dict | None) -> tuple[int, int
     return upper_delta, lower_delta
 
 
+def _first_change(rows: list[dict], start: date, end: date, baseline_value: float) -> dict | None:
+    """First observation in ``[start, end]`` whose value differs from baseline."""
+    for row in rows:
+        if start <= row["date"] <= end and float(row["value"]) != float(baseline_value):
+            return row
+    return None
+
+
 def resolve_actual_outcome(
     end_date: date,
     upper_rows: list[dict],
@@ -443,9 +457,11 @@ def resolve_actual_outcome(
 
     ``upper_rows``/``lower_rows`` are ``[{"date": date, "value": float}, ...]``.
     Duplicate dates collapse to the last supplied row. The decision is the
-    target-range change across the meeting; it is only accepted when the
-    qualified inclusive convention and the strict next-day convention agree, so
-    a same-day or missing FRED update can never be misread as a hold.
+    *first* target-range change observed after the meeting inside the lookahead
+    window (the meeting's effective move); a later intermeeting change inside
+    the same window is never accumulated onto the meeting. It is only accepted
+    when the qualified inclusive convention and the strict next-day convention
+    agree, so a same-day or missing FRED update can never be misread as a hold.
 
     Returns ``{"resolvable": True, "outcome_bp": int, "detail": {...}}`` or
     ``{"resolvable": False, "reason": code, "detail": {...}}``.
@@ -479,73 +495,95 @@ def resolve_actual_outcome(
             }
         return None
 
+    def convention(before_day: date | None, window_start: date, window_end: date) -> dict:
+        if before_day is None:
+            return {"status": "missing_before"}
+        before_pair = pair(before_day)
+        if before_pair is None:
+            return {"status": "missing_pair"}
+        window_rows = [row for row in upper if window_start <= row["date"] <= window_end]
+        if not window_rows:
+            return {"status": "missing_window"}
+        changed = _first_change(
+            upper, window_start, window_end, before_pair["upper"]["value"]
+        )
+        if changed is None:
+            after_day = window_rows[-1]["date"]
+            after_pair = before_pair
+        else:
+            after_day = changed["date"]
+            after_pair = pair(after_day)
+            if after_pair is None:
+                return {"status": "missing_pair", "after_date": after_day.isoformat()}
+        delta = _convention_delta(before_pair, after_pair)
+        if delta is None:
+            return {"status": "bounds_inconsistent"}
+        return {
+            "status": "ok",
+            "delta": delta[0],
+            "before_day": before_day,
+            "after_day": after_day,
+            "before_pair": before_pair,
+            "after_pair": after_pair,
+        }
+
     inclusive_before_day = _last_at_or_before(upper, end_date)
-    inclusive_after = _last_in_window(upper, end_date, end_date + timedelta(days=lookahead_days))
-    inclusive = None
-    if inclusive_before_day and inclusive_after:
-        before = pair(inclusive_before_day["date"])
-        after = pair(inclusive_after["date"])
-        inclusive = _convention_delta(before, after)
+    strict_rows = [row for row in upper if row["date"] < end_date]
+    strict_before_day = strict_rows[-1]["date"] if strict_rows else None
+    suffix_end = end_date + timedelta(days=lookahead_days)
+    inclusive = convention(inclusive_before_day["date"] if inclusive_before_day else None,
+                           end_date, suffix_end)
+    strict = convention(strict_before_day, end_date, suffix_end)
+    has_any_before = inclusive_before_day is not None
 
-    strict_upper_before = [row for row in upper if row["date"] < end_date]
-    strict_before_day = strict_upper_before[-1] if strict_upper_before else None
-    strict_after = _last_in_window(
-        upper, end_date + timedelta(days=1), end_date + timedelta(days=1 + lookahead_days)
-    )
-    strict = None
-    if strict_before_day and strict_after:
-        before = pair(strict_before_day["date"])
-        after = pair(strict_after["date"])
-        strict = _convention_delta(before, after)
-
-    has_any_after = any(row["date"] > end_date for row in upper)
-    has_any_before = _last_at_or_before(upper, end_date) is not None
-
-    if not has_any_after or not has_any_before:
+    if not has_any_before or (
+        inclusive["status"] != "ok" and strict["status"] != "ok"
+    ):
+        if inclusive["status"] == "missing_window" or strict["status"] == "missing_window":
+            reason = "FRED_COVERAGE_INSUFFICIENT"
+        elif inclusive["status"] == "bounds_inconsistent" and strict["status"] == "bounds_inconsistent":
+            reason = "FRED_BOUNDS_INCONSISTENT"
+        else:
+            reason = "FRED_COVERAGE_INSUFFICIENT"
         return {
             "resolvable": False,
-            "reason": "FRED_COVERAGE_INSUFFICIENT",
+            "reason": reason,
             "detail": {
                 "end_date": end_date.isoformat(),
                 "has_pre_meeting_observation": has_any_before,
-                "has_post_meeting_observation": has_any_after,
+                "has_post_meeting_observation": any(row["date"] > end_date for row in upper),
+                "inclusive_status": inclusive["status"],
+                "strict_status": strict["status"],
                 "upper_latest_date": upper[-1]["date"].isoformat() if upper else None,
                 "lookahead_days": lookahead_days,
             },
         }
-    if inclusive is None and strict is None:
-        return {
-            "resolvable": False,
-            "reason": "FRED_BOUNDS_INCONSISTENT",
-            "detail": {
-                "end_date": end_date.isoformat(),
-                "lookahead_days": lookahead_days,
-            },
-        }
-    if inclusive is None or strict is None or inclusive[0] != strict[0]:
+    if inclusive["status"] != "ok" or strict["status"] != "ok" or inclusive["delta"] != strict["delta"]:
         return {
             "resolvable": False,
             "reason": "FRED_EFFECTIVE_DATE_AMBIGUOUS",
             "detail": {
                 "end_date": end_date.isoformat(),
-                "inclusive_convention_bp": inclusive[0] if inclusive else None,
-                "strict_convention_bp": strict[0] if strict else None,
+                "inclusive_convention_bp": inclusive.get("delta"),
+                "strict_convention_bp": strict.get("delta"),
+                "inclusive_status": inclusive["status"],
+                "strict_status": strict["status"],
             },
         }
 
-    outcome_bp = inclusive[0]
-    before_day = strict_before_day["date"] if strict_before_day else None
-    after_day = strict_after["date"] if strict_after else None
+    outcome_bp = inclusive["delta"]
+    before_day = inclusive["before_day"]
+    after_day = inclusive["after_day"]
     return {
         "resolvable": True,
         "outcome_bp": outcome_bp,
         "detail": {
             "end_date": end_date.isoformat(),
             "method": "FRED DFEDTARU/DFEDTARL target-range change",
-            "inclusive_convention_bp": inclusive[0],
-            "strict_convention_bp": strict[0],
-            "upper_delta_bp": inclusive[1],
-            "lower_delta_bp": inclusive[1],
+            "inclusive_convention_bp": inclusive["delta"],
+            "strict_convention_bp": strict["delta"],
+            "upper_delta_bp": _delta_bp(inclusive["before_pair"]["upper"], inclusive["after_pair"]["upper"]),
+            "lower_delta_bp": _delta_bp(inclusive["before_pair"]["lower"], inclusive["after_pair"]["lower"]),
             "rate_before_date": before_day.isoformat() if before_day else None,
             "rate_after_date": after_day.isoformat() if after_day else None,
             "rate_before": range_snapshot(before_day) if before_day else None,
@@ -624,10 +662,14 @@ def collect(
     transport: Transport | None = None,
     clock=timeutil.utc_now,
 ) -> dict:
-    """Record an accepted snapshot and advance the meeting lifecycle."""
+    """Record an accepted snapshot and advance the meeting lifecycle.
+
+    The lifecycle is advanced *first*: a pending or newly resolved meeting is
+    never given fresh live observations in the same run, so a meeting that has
+    already passed cannot remain a live-collection target even for one cycle.
+    """
     transport = transport or HttpTransport()
     now = clock()
-    report = record_snapshot(store, data, clock=clock)
     lifecycle = None
     errors: list[dict] = []
     pending = store.meetings_awaiting_resolution(now.date())
@@ -639,6 +681,7 @@ def collect(
             errors.append(exc.to_dict())
         lifecycle = evaluate_lifecycle(store, fred_history, clock=clock)
         errors.extend(lifecycle.get("errors", []))
+    report = record_snapshot(store, data, clock=clock)
     return {
         "db_path": str(store.path),
         "recorded": report,
@@ -726,7 +769,7 @@ def backfill_polymarket(
     A mapping already backfilled within ``refresh_hours`` is skipped; a
     resolved meeting is skipped permanently unless ``force`` is set, so
     reopening an old meeting never re-downloads its history. Deduplication is
-    enforced both by the episode store and the per-point observation key, so a
+    enforced both by the source-observation key and the unique per-point key, so a
     forced re-run inserts nothing new.
     """
     transport = transport or HttpTransport()
@@ -821,7 +864,7 @@ def backfill_polymarket(
             continue
 
         normalized, counts = normalize_backfill_points(points, now)
-        inserted = extended = revised = duplicates = 0
+        inserted = revised = duplicates = 0
         detail = {
             "origin": "clob_prices_history_backfill",
             "event_id": mapping.get("external_event_id"),
@@ -834,7 +877,6 @@ def backfill_polymarket(
         for point in normalized:
             point_digest = content_digest(
                 {
-                    "origin": "clob_prices_history_backfill",
                     "event_id": mapping.get("external_event_id"),
                     "market_id": mapping.get("external_market_id"),
                     "token_id": token_id,
@@ -863,8 +905,6 @@ def backfill_polymarket(
             )
             if outcome == "inserted":
                 inserted += 1
-            elif outcome == "extended":
-                extended += 1
             elif outcome == "revised":
                 revised += 1
             else:
@@ -884,12 +924,11 @@ def backfill_polymarket(
             mapping["open_ended"], mapping.get("external_event_id"), token_id,
             mapping.get("external_market_id"), mapping.get("question"),
             normalized[-1]["observed_at"] if normalized else None,
-            len(normalized), inserted, duplicates + extended + revised, status,
+            len(normalized), inserted, duplicates + revised, status,
             detail={
                 "point_counts": counts,
-                "episodes_inserted": inserted,
-                "episodes_extended": extended,
-                "episodes_revised": revised,
+                "observations_inserted": inserted,
+                "observations_revised": revised,
                 "duplicates": duplicates,
             }, now=now,
         )
@@ -899,9 +938,8 @@ def backfill_polymarket(
                 "status": status,
                 "points_seen": len(points) if isinstance(points, list) else 0,
                 "points_accepted": len(normalized),
-                "episodes_inserted": inserted,
-                "episodes_extended": extended,
-                "episodes_revised": revised,
+                "observations_inserted": inserted,
+                "observations_revised": revised,
                 "duplicates": duplicates,
                 "first_point_observed_at": normalized[0]["observed_at"] if normalized else None,
                 "last_point_observed_at": normalized[-1]["observed_at"] if normalized else None,
@@ -953,7 +991,6 @@ def record_zq_observations(
         store.upsert_meeting(meeting_date, default_status=meeting_status, now=now)
         digest = content_digest(
             {
-                "origin": "zq_reconstruction",
                 "method": FED_METHOD_ZQ,
                 "watch_date": watch_date.isoformat(),
                 "meeting_date": meeting_date,
@@ -1125,7 +1162,7 @@ def series(
     outcome_bp: int | None = None,
     open_ended: bool | None = None,
 ) -> dict:
-    """Stored observation episodes for one meeting (optionally filtered)."""
+    """Stored accepted observations for one meeting (optionally filtered)."""
     rows = store.observations(
         meeting_date=meeting_date, method=method, outcome_bp=outcome_bp, open_ended=open_ended
     )
@@ -1148,7 +1185,7 @@ def series(
         "method": method,
         "outcome_bp": outcome_bp,
         "open_ended": open_ended,
-        "episode_count": len(valid),
+        "observation_count": len(valid),
         "observations": valid,
         "errors": errors,
     }
@@ -1161,8 +1198,8 @@ def meetings_overview(store: FedwatchHistoryStore) -> dict:
     by_meeting: dict[str, dict] = {}
     for summary in summaries:
         by_meeting.setdefault(summary["meeting_date"], {})[summary["method"]] = {
-            "episodes": summary["episodes"],
-            "retrievals": summary["retrievals"],
+            "observations": summary["observations"],
+            "accepted_count": summary["accepted_count"],
             "first_observed_at": summary["first_observed_at"],
             "last_observed_at": summary["last_observed_at"],
             "source": summary["source"],

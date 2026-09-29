@@ -19,7 +19,7 @@ Durable history commands (Batch B):
     collect             current snapshot + record accepted observations +
                         advance the FOMC meeting lifecycle
     history_meetings    durable meeting lifecycle and observation coverage
-    history_series      stored observation episodes for a meeting/outcome
+    history_series      stored observations for a meeting/outcome
     history_analytics   approved historical calculations for a meeting outcome
     history_backfill    idempotent Polymarket CLOB history backfill for
                         validated mappings

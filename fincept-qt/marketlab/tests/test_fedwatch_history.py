@@ -21,9 +21,12 @@ from datetime import timedelta
 from pathlib import Path
 
 from fedwatch_test_support import (
+    FIXTURE_PM_DECEMBER,
+    FIXTURE_PM_OCTOBER,
     FakeTransport,
     FixedClock,
     epoch,
+    fixture_json,
     make_clob_history,
     make_investing_html,
     make_snapshot_transport,
@@ -45,6 +48,44 @@ def fred_csv(series_id: str, pairs) -> str:
     lines = ["observation_date," + series_id]
     lines.extend(f"{day.isoformat()},{value}" for day, value in pairs)
     return "\n".join(lines) + "\n"
+
+
+def synthetic_fed_meeting(meeting_date: str) -> dict:
+    """A minimal accepted fed-side meeting section for lifecycle tests."""
+    buckets = [
+        {"rate_low": 3.75, "rate_high": 4.00, "probability_pct": 50.0},
+        {"rate_low": 4.00, "rate_high": 4.25, "probability_pct": 50.0},
+    ]
+    return {
+        "meeting_date": meeting_date,
+        "status": "UPCOMING",
+        "fomc_calendar": None,
+        "fed_side": {
+            "meeting_date": meeting_date,
+            "method": "LIVE_INVESTING_DERIVED",
+            "source": "test",
+            "raw_probabilities": [dict(bucket) for bucket in buckets],
+            "normalized_probabilities": [dict(bucket) for bucket in buckets],
+            "normalization": {
+                "applied": False,
+                "raw_probability_sum_pct": 100.0,
+                "normalization_factor": 1.0,
+                "normalized_probability_sum_pct": 100.0,
+                "raw_expected_rate": 4.0,
+                "normalized_expected_rate": 4.0,
+                "expected_rate_difference": 0.0,
+            },
+            "local_probabilities": [
+                {"outcome_bp": 0, "probability_pct": 50.0},
+                {"outcome_bp": 25, "probability_pct": 50.0},
+            ],
+            "local_status": "OK",
+            "source_timestamp": None,
+            "freshness": {"status": "SOURCE_TIMESTAMP_UNAVAILABLE"},
+        },
+        "polymarket": None,
+        "comparison": [],
+    }
 
 
 def build_snapshot_at(now, transport=None, events=None) -> dict:
@@ -69,8 +110,8 @@ class RecordingTests(unittest.TestCase):
         report = fedwatch_history.record_snapshot(
             self.store, self.snapshot["data"], clock=FixedClock(NOW)
         )
-        self.assertGreater(report["fed_side_episodes"], 0)
-        self.assertGreater(report["polymarket_episodes"], 0)
+        self.assertGreater(report["fed_side_observations"], 0)
+        self.assertGreater(report["polymarket_observations"], 0)
         rows = self.store.observations(meeting_date="2026-10-28")
         methods = {row["method"] for row in rows}
         self.assertEqual(methods, {"LIVE_INVESTING_DERIVED", "POLYMARKET_CLOB"})
@@ -83,6 +124,7 @@ class RecordingTests(unittest.TestCase):
         )
         self.assertEqual(fed[0]["source"], "investing")
         self.assertIsNone(fed[0]["source_observed_at"])
+        self.assertIsNone(fed[0]["normalized_probability_pct"])
         self.assertEqual(fed[0]["freshness_status"], "SOURCE_TIMESTAMP_UNAVAILABLE")
         self.assertEqual(fed[0]["detail"]["origin"], "live_collect")
         self.assertEqual(
@@ -93,34 +135,56 @@ class RecordingTests(unittest.TestCase):
         ]
         self.assertTrue(all(row["source_observed_at"] for row in poly))
         self.assertTrue(all(row["quality_status"] == "CURRENT" for row in poly))
+        for row in poly:
+            self.assertEqual(row["raw_probability_pct"], row["probability_pct"])
+            self.assertIsNone(row["normalized_probability_pct"])
 
         mappings = self.store.validated_mappings(["2026-10-28"])
         self.assertEqual(len(mappings), 5)
         self.assertEqual(mappings[0]["external_event_id"], "606422")
 
-    def test_repeated_identical_refresh_extends_not_duplicates(self):
+    def test_replaying_the_same_snapshot_is_a_duplicate(self):
         first = fedwatch_history.record_snapshot(
             self.store, self.snapshot["data"], clock=FixedClock(NOW)
         )
         count_after_first = self.store.count_observations()
-        second_snapshot = build_snapshot_at(NOW + timedelta(minutes=10))
         second = fedwatch_history.record_snapshot(
-            self.store, second_snapshot["data"], clock=FixedClock(NOW + timedelta(minutes=10))
+            self.store, self.snapshot["data"], clock=FixedClock(NOW)
         )
-        self.assertGreater(second["fed_side_episodes"], 0)
+        self.assertGreater(first["fed_side_observations"], 0)
         self.assertEqual(
             self.store.count_observations(), count_after_first,
-            "an identical refresh must not add observation rows",
+            "replaying the same snapshot must not add observation rows",
         )
-        self.assertTrue(any(entry == "extended" for entry in second["records"]))
-        episode = [
+        self.assertEqual(
+            second["counts"], {"duplicate": first["fed_side_observations"] + first["polymarket_observations"]}
+        )
+
+    def test_a_later_collect_records_one_row_per_accepted_observation(self):
+        first = fedwatch_history.record_snapshot(
+            self.store, self.snapshot["data"], clock=FixedClock(NOW)
+        )
+        count_after_first = self.store.count_observations()
+        later = NOW + timedelta(minutes=10)
+        second_snapshot = build_snapshot_at(later)
+        second = fedwatch_history.record_snapshot(
+            self.store, second_snapshot["data"], clock=FixedClock(later)
+        )
+        accepted = second["fed_side_observations"] + second["polymarket_observations"]
+        self.assertEqual(
+            self.store.count_observations(), count_after_first + accepted,
+            "every accepted observation instant is its own durable row",
+        )
+        self.assertTrue(all(result == "inserted" for result in second["records"]))
+        feed = [
             row for row in self.store.observations(meeting_date="2026-10-28", outcome_bp=25)
             if row["method"] == "LIVE_INVESTING_DERIVED"
-        ][0]
-        self.assertEqual(episode["observation_count"], 2)
-        self.assertEqual(episode["observed_at"], "2026-09-28T12:00:00Z")
-        self.assertEqual(episode["last_observed_at"], "2026-09-28T12:10:00Z")
-        self.assertGreater(first["fed_side_episodes"], 0)
+        ]
+        self.assertEqual(
+            [row["observed_at"] for row in feed],
+            ["2026-09-28T12:00:00Z", "2026-09-28T12:10:00Z"],
+        )
+        self.assertGreater(first["fed_side_observations"], 0)
 
     def test_changed_probability_creates_a_distinct_observation(self):
         fedwatch_history.record_snapshot(
@@ -135,13 +199,13 @@ class RecordingTests(unittest.TestCase):
         fedwatch_history.record_snapshot(
             self.store, changed["data"], clock=FixedClock(NOW + timedelta(minutes=30))
         )
-        episodes = [
+        feed = [
             row for row in self.store.observations(meeting_date="2026-10-28")
             if row["method"] == "LIVE_INVESTING_DERIVED" and row["outcome_bp"] == 25
         ]
-        self.assertEqual([row["probability_pct"] for row in episodes], [70.0, 60.0])
-        self.assertEqual(episodes[0]["last_observed_at"], "2026-09-28T12:00:00Z")
-        self.assertEqual(episodes[1]["observed_at"], "2026-09-28T12:30:00Z")
+        self.assertEqual([row["probability_pct"] for row in feed], [70.0, 60.0])
+        self.assertEqual(feed[0]["observed_at"], "2026-09-28T12:00:00Z")
+        self.assertEqual(feed[1]["observed_at"], "2026-09-28T12:30:00Z")
 
     def test_provider_failures_are_not_stored_as_zero_probabilities(self):
         transport = make_snapshot_transport(NOW)
@@ -151,7 +215,7 @@ class RecordingTests(unittest.TestCase):
         report = fedwatch_history.record_snapshot(
             self.store, snapshot["data"], clock=FixedClock(NOW)
         )
-        self.assertEqual(report["fed_side_episodes"], 0)
+        self.assertEqual(report["fed_side_observations"], 0)
         reasons = {skip["reason"] for skip in report["skipped"]}
         self.assertIn("FED_SIDE_UNAVAILABLE", reasons)
         fed_rows = [
@@ -159,7 +223,7 @@ class RecordingTests(unittest.TestCase):
             if row["method"] == "LIVE_INVESTING_DERIVED"
         ]
         self.assertEqual(fed_rows, [])
-        self.assertGreater(report["polymarket_episodes"], 0)
+        self.assertGreater(report["polymarket_observations"], 0)
 
     def test_fred_failure_keeps_raw_truth_without_local_observations(self):
         transport = make_snapshot_transport(NOW)
@@ -168,7 +232,7 @@ class RecordingTests(unittest.TestCase):
         report = fedwatch_history.record_snapshot(
             self.store, snapshot["data"], clock=FixedClock(NOW)
         )
-        self.assertEqual(report["fed_side_episodes"], 0)
+        self.assertEqual(report["fed_side_observations"], 0)
         reasons = {skip["reason"] for skip in report["skipped"]}
         self.assertIn("FED_SIDE_LOCAL_PROBABILITY_UNAVAILABLE", reasons)
         self.assertEqual(
@@ -239,10 +303,32 @@ class LifecycleTests(unittest.TestCase):
         verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
         self.assertTrue(verdict["resolvable"])
         self.assertEqual(verdict["outcome_bp"], 25)
-        self.assertEqual(verdict["detail"]["rate_before_date"], "2026-09-10")
-        self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-18")
-        self.assertEqual(verdict["detail"]["rate_before"], {"date": "2026-09-10", "upper": 3.75, "lower": 3.50})
-        self.assertEqual(verdict["detail"]["rate_after"], {"date": "2026-09-18", "upper": 4.00, "lower": 3.75})
+        self.assertEqual(verdict["detail"]["rate_before_date"], "2026-09-16")
+        self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-17")
+        self.assertEqual(verdict["detail"]["rate_before"], {"date": "2026-09-16", "upper": 3.75, "lower": 3.50})
+        self.assertEqual(verdict["detail"]["rate_after"], {"date": "2026-09-17", "upper": 4.00, "lower": 3.75})
+
+    def test_two_changes_inside_the_window_attribute_only_the_first(self):
+        # A second move inside the lookahead (an intermeeting change) must not
+        # be accumulated onto the meeting.
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 16).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+            {"date": utc(2026, 9, 18).date(), "value": 4.25},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 16).date(), "value": 3.50},
+            {"date": utc(2026, 9, 17).date(), "value": 3.75},
+            {"date": utc(2026, 9, 18).date(), "value": 4.00},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertTrue(verdict["resolvable"])
+        self.assertEqual(verdict["outcome_bp"], 25)
+        self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-17")
+        self.assertEqual(verdict["detail"]["rate_after"]["upper"], 4.00)
 
     def test_resolve_missing_post_meeting_coverage_is_not_a_hold(self):
         end_date = utc(2026, 9, 16).date()
@@ -340,6 +426,50 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(reasons["2026-09-15"], "MEETING_AWAITING_RESOLUTION")
         self.assertEqual(store.count_observations(), 0)
 
+    def test_collect_resolves_a_past_meeting_before_recording_it(self):
+        store = new_store(self)
+        store.upsert_meeting("2026-09-16", default_status="UPCOMING")
+        transport = make_snapshot_transport(NOW)
+        transport.add_text("DFEDTARU", fred_csv("DFEDTARU", [
+            (utc(2026, 9, 10).date(), 3.75),
+            (utc(2026, 9, 16).date(), 3.75),
+            (utc(2026, 9, 17).date(), 4.00),
+        ]))
+        transport.add_text("DFEDTARL", fred_csv("DFEDTARL", [
+            (utc(2026, 9, 10).date(), 3.50),
+            (utc(2026, 9, 16).date(), 3.50),
+            (utc(2026, 9, 17).date(), 3.75),
+        ]))
+        data = {
+            "retrieved_at": "2026-09-28T12:00:00Z",
+            "meetings": [synthetic_fed_meeting("2026-09-16")],
+        }
+        result = fedwatch_history.collect(
+            store, data, transport=transport, clock=FixedClock(NOW)
+        )
+        self.assertEqual(
+            result["lifecycle"]["resolved"],
+            [{"meeting_date": "2026-09-16", "actual_outcome_bp": 25}],
+        )
+        self.assertEqual(
+            {skip["meeting_date"]: skip["reason"] for skip in result["recorded"]["skipped"]},
+            {"2026-09-16": "MEETING_RESOLVED"},
+        )
+        self.assertEqual(store.count_observations(), 0)
+
+    def test_an_unseen_past_meeting_is_never_recorded(self):
+        store = new_store(self)
+        data = {
+            "retrieved_at": "2026-09-28T12:00:00Z",
+            "meetings": [synthetic_fed_meeting("2026-09-01")],
+        }
+        report = fedwatch_history.record_snapshot(store, data, clock=FixedClock(NOW))
+        self.assertEqual(
+            {skip["meeting_date"]: skip["reason"] for skip in report["skipped"]},
+            {"2026-09-01": "MEETING_DATE_IN_PAST"},
+        )
+        self.assertEqual(store.count_observations(), 0)
+
     def test_resolved_meeting_history_remains_readable(self):
         store = new_store(self)
         store.upsert_meeting("2026-09-16", default_status="UPCOMING")
@@ -360,15 +490,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(meeting["status"], "RESOLVED")
         self.assertEqual(meeting["actual_outcome_bp"], 25)
         self.assertIn("LIVE_INVESTING_DERIVED", meeting["observations"])
-
-
-def _parsed(rows):
-    from fedwatch import timeutil
-
-    return [
-        {"date": timeutil.parse_date(row["date"]), "value": row["value"]}
-        for row in rows
-    ]
 
 
 class BackfillTests(unittest.TestCase):
@@ -404,7 +525,7 @@ class BackfillTests(unittest.TestCase):
         entry = result["backfills"][0]
         self.assertEqual(entry["status"], "OK")
         self.assertEqual(entry["points_accepted"], 3)
-        self.assertEqual(entry["episodes_inserted"], 3)
+        self.assertEqual(entry["observations_inserted"], 3)
         rows = self.store.observations(
             meeting_date="2026-10-28", method="POLYMARKET_CLOB", outcome_bp=25
         )
@@ -412,6 +533,44 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(rows[-1]["probability_pct"], 33.0)
         self.assertEqual(rows[-1]["quality_status"], "BACKFILLED")
         self.assertEqual(rows[-1]["source_observed_at"], "2026-08-03T18:00:00Z")
+
+    def test_live_and_backfill_share_the_clob_observation_identity(self):
+        # The same CLOB point (token, timestamp, probability) reaching the store
+        # through the live path and then the backfill path must be one accepted
+        # observation, with the live provenance retained.
+        snapshot = build_snapshot_at(NOW)
+        fedwatch_history.record_snapshot(
+            self.store, snapshot["data"], clock=FixedClock(NOW)
+        )
+        live_rows = self.store.observations(method="POLYMARKET_CLOB")
+        self.assertTrue(live_rows)
+        live_point_epoch = epoch(NOW - timedelta(days=1))
+        prices = {}
+        for fixture_name in (FIXTURE_PM_OCTOBER, FIXTURE_PM_DECEMBER):
+            for market in fixture_json(fixture_name)["markets"]:
+                token = json.loads(market["clobTokenIds"])[0]
+                prices[token] = float(json.loads(market["outcomePrices"])[0])
+
+        def route(url, params):
+            token = params["market"]
+            return {"history": [{"t": live_point_epoch, "p": prices[token]}]}
+
+        transport = FakeTransport()
+        transport.add_json("prices-history", route)
+        result = fedwatch_history.backfill_polymarket(
+            self.store, transport, clock=FixedClock(NOW), sleep=NO_SLEEP
+        )
+        self.assertTrue(all(entry["status"] == "OK" for entry in result["backfills"]))
+        self.assertEqual(
+            sum(entry["observations_inserted"] for entry in result["backfills"]), 0
+        )
+        self.assertEqual(sum(entry["duplicates"] for entry in result["backfills"]), 10)
+        rows = self.store.observations(method="POLYMARKET_CLOB")
+        self.assertEqual(len(rows), len(live_rows))
+        for row in rows:
+            self.assertEqual(row["quality_status"], "CURRENT")
+            self.assertEqual(row["detail"]["origin"], "live_collect")
+            self.assertEqual(row["observation_count"], 2)
 
     def test_repeat_backfill_is_skipped_fresh_and_idempotent_when_forced(self):
         transport = self.transport_with(
@@ -435,7 +594,7 @@ class BackfillTests(unittest.TestCase):
             sleep=NO_SLEEP, force=True,
         )
         self.assertEqual(forced["backfills"][0]["status"], "OK")
-        self.assertEqual(forced["backfills"][0]["episodes_inserted"], 0)
+        self.assertEqual(forced["backfills"][0]["observations_inserted"], 0)
         self.assertEqual(forced["backfills"][0]["duplicates"], 2)
         self.assertEqual(self.store.count_observations(), count)
 
@@ -579,7 +738,7 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(refetched["backfills"][0]["status"], "OK")
         self.assertEqual(refetched["backfills"][0]["token_id"], "tok-new")
 
-    def test_backfill_after_live_collection_preserves_the_live_episode(self):
+    def test_backfill_after_live_collection_preserves_the_live_observation(self):
         snapshot = build_snapshot_at(NOW)
         fedwatch_history.record_snapshot(
             self.store, snapshot["data"], clock=FixedClock(NOW)
@@ -588,6 +747,7 @@ class BackfillTests(unittest.TestCase):
             meeting_date="2026-10-28", method="POLYMARKET_CLOB"
         )
         self.assertTrue(live_rows)
+        live_by_key = {(row["outcome_bp"], row["observed_at"]): row for row in live_rows}
         transport = FakeTransport()
         transport.add_json(
             "prices-history",
@@ -600,7 +760,10 @@ class BackfillTests(unittest.TestCase):
         rows = self.store.observations(meeting_date="2026-10-28", method="POLYMARKET_CLOB")
         self.assertEqual(len(rows), len(live_rows) * 2)
         for row in rows:
-            self.assertGreaterEqual(row["last_observed_at"], row["observed_at"])
+            if (row["outcome_bp"], row["observed_at"]) in live_by_key:
+                original = live_by_key[(row["outcome_bp"], row["observed_at"])]
+                self.assertEqual(row["probability_pct"], original["probability_pct"])
+                self.assertEqual(row["quality_status"], "CURRENT")
 
     def test_backfill_only_uses_validated_mappings_for_the_requested_meeting(self):
         self.store.upsert_mapping_outcome(
@@ -649,7 +812,7 @@ class RecordingRobustnessTests(unittest.TestCase):
             ],
         }
         report = fedwatch_history.record_snapshot(store, data, clock=FixedClock(NOW))
-        self.assertEqual(report["polymarket_episodes"], 1)
+        self.assertEqual(report["polymarket_observations"], 1)
         self.assertIn(
             "MALFORMED_POLYMARKET_TIMESTAMP",
             {skip["reason"] for skip in report["skipped"]},
@@ -685,12 +848,15 @@ class ImportZqTests(unittest.TestCase):
             code = {9: "U", 10: "V", 11: "X", 12: "Z"}[month]
             (self.zq_dir / f"ZQ{code}26.csv").write_text(
                 f"Symbol: ZQ{code}26\n" + header
+                + f"2026-07-10,0,0,0,{close},0,10,5000\n"
                 + f"2026-09-10,0,0,0,{close},0,10,5000\n"
                 + f"2026-09-28,0,0,0,{close},0,10,5000\n",
                 encoding="utf-8",
             )
         (self.zq_dir / "ZQF27.csv").write_text(
-            "Symbol: ZQF27\n" + header + "2026-09-28,0,0,0,96.3,0,10,5000\n",
+            "Symbol: ZQF27\n" + header
+            + "2026-07-10,0,0,0,96.3,0,10,5000\n"
+            + "2026-09-28,0,0,0,96.3,0,10,5000\n",
             encoding="utf-8",
         )
 
@@ -716,23 +882,72 @@ class ImportZqTests(unittest.TestCase):
             all(row["detail"]["watch_date"] == "2026-09-28" for row in stored)
         )
 
+    def test_import_zq_uses_the_historical_watch_date_rate_and_reloads(self):
+        # A historical watch date must use the target range in effect then, not
+        # the latest range, and the reconstructed rows must survive a reload.
+        self._write_contracts()
+        transport = make_snapshot_transport(NOW)
+        transport.add_text("DFEDTARU", fred_csv("DFEDTARU", [
+            (utc(2026, 7, 10).date(), 3.75),
+            (utc(2026, 9, 28).date(), 4.00),
+        ]))
+        transport.add_text("DFEDTARL", fred_csv("DFEDTARL", [
+            (utc(2026, 7, 10).date(), 3.50),
+            (utc(2026, 9, 28).date(), 3.75),
+        ]))
+        payload = fedwatch_history.import_zq(
+            self.store, transport, self.zq_dir,
+            [utc(2026, 7, 14).date()], clock=FixedClock(NOW),
+        )
+        watched = payload["watch_dates"][0]
+        self.assertEqual(
+            watched["current_target_range"],
+            {"upper": 3.75, "lower": 3.50, "observation_date": "2026-07-10"},
+        )
+        self.assertGreater(watched["local_row_count"], 0)
+        reopened = FedwatchHistoryStore(self.store.path)
+        stored = reopened.observations(method=fedwatch_history.FED_METHOD_ZQ)
+        self.assertEqual(len(stored), watched["local_row_count"])
+        self.assertTrue(all(row["observed_at"] == "2026-07-14T00:00:00Z" for row in stored))
+        self.assertTrue(
+            all(row["detail"]["current_target_range"]["upper"] == 3.75 for row in stored)
+        )
+
 
 class StorageGrowthTests(unittest.TestCase):
-    def test_repeated_identical_snapshots_do_not_grow_history(self):
+    def test_replaying_the_same_snapshot_never_grows_history(self):
         store = new_store(self)
         snapshot = build_snapshot_at(NOW)
         fedwatch_history.record_snapshot(store, snapshot["data"], clock=FixedClock(NOW))
         initial_rows = store.count_observations()
         initial_size = store.path.stat().st_size
-        for index in range(1, 26):
-            moment = NOW + timedelta(minutes=10 * index)
-            data = dict(snapshot["data"])
-            data["retrieved_at"] = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
-            fedwatch_history.record_snapshot(store, data, clock=FixedClock(moment))
+        for _ in range(25):
+            fedwatch_history.record_snapshot(
+                store, snapshot["data"], clock=FixedClock(NOW)
+            )
         self.assertEqual(store.count_observations(), initial_rows)
         self.assertLessEqual(store.path.stat().st_size - initial_size, 4096)
 
-    def test_repeated_collect_with_changing_values_grows_only_by_change(self):
+    def test_each_accepted_instant_adds_exactly_one_row_per_observation(self):
+        store = new_store(self)
+        snapshot = build_snapshot_at(NOW)
+        first = fedwatch_history.record_snapshot(
+            store, snapshot["data"], clock=FixedClock(NOW)
+        )
+        accepted_fed = first["fed_side_observations"]
+        accepted_poly = first["polymarket_observations"]
+        for index in range(1, 11):
+            moment = NOW + timedelta(minutes=10 * index)
+            data = dict(snapshot["data"])
+            data["retrieved_at"] = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+            report = fedwatch_history.record_snapshot(store, data, clock=FixedClock(moment))
+            self.assertEqual(report["fed_side_observations"], accepted_fed)
+            self.assertEqual(report["counts"].get("duplicate", 0), accepted_poly)
+        self.assertEqual(
+            store.count_observations(), accepted_fed + accepted_poly + 10 * accepted_fed
+        )
+
+    def test_repeated_collect_with_changing_values_records_each_instant(self):
         store = new_store(self)
         rows_per_collect = []
         for index in range(4):
@@ -745,12 +960,12 @@ class StorageGrowthTests(unittest.TestCase):
             transport.add_text("fed-rate-monitor", html)
             snapshot = build_snapshot_at(moment, transport)
             fedwatch_history.record_snapshot(store, snapshot["data"], clock=FixedClock(moment))
-            fed_episodes = [
+            fed_rows = [
                 row for row in store.observations(
                     meeting_date="2026-10-28", method="LIVE_INVESTING_DERIVED"
                 ) if row["outcome_bp"] == 0
             ]
-            rows_per_collect.append(len(fed_episodes))
+            rows_per_collect.append(len(fed_rows))
         self.assertEqual(rows_per_collect, [1, 2, 3, 4])
 
 
@@ -792,14 +1007,20 @@ class CliTests(unittest.TestCase):
             "history_series", "--db", str(store.path), "--meeting", "2026-10-28"
         )
         self.assertEqual(code, 0, stderr)
-        self.assertGreater(payload["data"]["episode_count"], 0)
+        self.assertGreater(payload["data"]["observation_count"], 0)
 
         code, payload, stderr = self.run_cli(
             "history_analytics", "--db", str(store.path),
             "--meeting", "2026-10-28", "--outcome-bp", "25",
         )
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(payload["data"]["difference"]["sign_convention"], "Polymarket - Fed-side")
+        difference = payload["data"]["difference"]
+        self.assertEqual(difference["sign_convention"], "Polymarket - Fed-side")
+        self.assertEqual(difference["current_state"], "OK")
+        self.assertIsNotNone(difference["current_probability_diff_pp"])
+        self.assertEqual(
+            payload["data"]["fed_side"]["changes"]["30d"]["state"], "INSUFFICIENT_HISTORY"
+        )
 
     def test_cli_argument_validation_fails_closed(self):
         code, payload, _ = self.run_cli("history_series", "--outcome-bp", "abc")
@@ -845,7 +1066,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["success"])
         self.assertIn("history", payload["data"])
-        self.assertGreater(payload["data"]["history"]["recorded"]["fed_side_episodes"], 0)
+        self.assertGreater(payload["data"]["history"]["recorded"]["fed_side_observations"], 0)
         self.assertGreater(store.count_observations(), 0)
 
 

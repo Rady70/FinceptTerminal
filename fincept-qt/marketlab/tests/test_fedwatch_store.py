@@ -1,10 +1,9 @@
 """Deterministic tests for the durable FedWatch history store.
 
 The store is the Batch B persistence boundary (FEDWATCH_INTEGRATION_PLAN.md
-sections 7-8): value episodes that deduplicate identical refreshes, revisions
-that adopt provider restatements, explicit provenance per source/method, and
-a single compact SQLite file under the application profile root. No test uses
-the network.
+sections 7-8): one row per accepted observation instant, exact chronology
+preservation, explicit provenance per source/method, and a single compact
+SQLite file under the application profile root. No test uses the network.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -98,7 +96,7 @@ class StoreSchemaTests(unittest.TestCase):
         self.assertEqual(resolved, Path(self._tmp.name) / "fedwatch" / "fedwatch_history.db")
 
 
-class ObservationEpisodeTests(unittest.TestCase):
+class ObservationTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -126,23 +124,13 @@ class ObservationEpisodeTests(unittest.TestCase):
         payload.update(overrides)
         return self.store.record_observation(**payload)
 
-    def test_identical_refresh_extends_the_episode(self):
+    def test_same_instant_identical_is_a_duplicate(self):
         self.assertEqual(self.record(70.0, "2026-09-28T12:00:00Z"), "inserted")
-        self.assertEqual(self.record(70.0, "2026-09-28T12:10:00Z"), "extended")
-        self.assertEqual(self.record(70.0, "2026-09-28T12:20:00Z"), "extended")
+        self.assertEqual(self.record(70.0, "2026-09-28T12:00:00Z"), "duplicate")
         rows = self.store.observations(meeting_date="2026-10-28")
         self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["observed_at"], "2026-09-28T12:00:00Z")
-        self.assertEqual(row["last_observed_at"], "2026-09-28T12:20:00Z")
-        self.assertEqual(row["last_retrieved_at"], "2026-09-28T12:20:00Z")
-        self.assertEqual(row["retrieved_at"], "2026-09-28T12:00:00Z")
-        self.assertEqual(row["observation_count"], 3)
-
-    def test_same_instant_identical_is_a_duplicate(self):
-        self.record(70.0, "2026-09-28T12:00:00Z")
-        self.assertEqual(self.record(70.0, "2026-09-28T12:00:00Z"), "duplicate")
-        self.assertEqual(len(self.store.observations(meeting_date="2026-10-28")), 1)
+        self.assertEqual(rows[0]["observation_count"], 2)
+        self.assertEqual(rows[0]["retrieved_at"], "2026-09-28T12:00:00Z")
 
     def test_same_instant_restatement_revises_the_row(self):
         self.record(70.0, "2026-09-28T12:00:00Z")
@@ -153,16 +141,36 @@ class ObservationEpisodeTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["probability_pct"], 71.0)
 
-    def test_changed_observation_creates_a_distinct_episode(self):
-        self.record(70.0, "2026-09-28T12:00:00Z")
-        self.record(70.0, "2026-09-28T12:10:00Z")
+    def test_each_distinct_instant_is_its_own_observation(self):
+        self.assertEqual(self.record(70.0, "2026-09-28T12:00:00Z"), "inserted")
+        self.assertEqual(self.record(70.0, "2026-09-28T12:10:00Z"), "inserted")
+        rows = self.store.observations(meeting_date="2026-10-28")
         self.assertEqual(
-            self.record(72.5, "2026-09-28T12:20:00Z", digest=digest_for(72.5)), "inserted"
+            [row["observed_at"] for row in rows],
+            ["2026-09-28T12:00:00Z", "2026-09-28T12:10:00Z"],
+        )
+        self.assertEqual([row["probability_pct"] for row in rows], [70.0, 70.0])
+
+    def test_delayed_contradiction_never_deletes_a_later_observation(self):
+        # The reviewer's chronology regression: 50 @ T1, 50 @ T3, then a
+        # delayed 20 @ T2 must keep all three instants and finish at 50.
+        self.assertEqual(self.record(50.0, "2026-09-20T00:00:00Z", digest="d50"), "inserted")
+        self.assertEqual(self.record(50.0, "2026-09-22T00:00:00Z", digest="d50"), "inserted")
+        self.assertEqual(
+            self.record(20.0, "2026-09-21T00:00:00Z", digest="d20"), "inserted"
         )
         rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual([row["probability_pct"] for row in rows], [70.0, 72.5])
-        self.assertEqual(rows[0]["last_observed_at"], "2026-09-28T12:10:00Z")
-        self.assertEqual(rows[1]["observed_at"], "2026-09-28T12:20:00Z")
+        self.assertEqual(
+            [(row["observed_at"], row["probability_pct"]) for row in rows],
+            [
+                ("2026-09-20T00:00:00Z", 50.0),
+                ("2026-09-21T00:00:00Z", 20.0),
+                ("2026-09-22T00:00:00Z", 50.0),
+            ],
+        )
+        self.assertEqual(rows[-1]["probability_pct"], 50.0)
+        for row in rows:
+            self.assertEqual(row["observed_at"], row["last_retrieved_at"])
 
     def test_out_of_order_backfill_is_idempotent_and_revisable(self):
         self.record(70.0, "2026-09-28T12:00:00Z")
@@ -176,53 +184,21 @@ class ObservationEpisodeTests(unittest.TestCase):
             self.record(61.0, "2026-09-01T00:00:00Z", digest=digest_for(61.0)), "revised"
         )
         rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual([row["observed_at"] for row in rows],
-                         ["2026-09-01T00:00:00Z", "2026-09-28T12:00:00Z"])
-
-    def test_conflicting_value_inside_an_episode_splits_it_without_overlap_beyond_one_instant(self):
-        self.record(80.0, "2026-07-14T00:00:00Z")
-        self.assertEqual(self.record(80.0, "2026-07-15T00:00:00Z"), "extended")
         self.assertEqual(
-            self.record(20.0, "2026-07-15T00:00:00Z", digest=digest_for(20.0)), "inserted"
+            [(row["observed_at"], row["probability_pct"]) for row in rows],
+            [("2026-09-01T00:00:00Z", 61.0), ("2026-09-28T12:00:00Z", 70.0)],
         )
-        rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual([row["probability_pct"] for row in rows], [80.0, 20.0])
-        self.assertEqual(rows[0]["observed_at"], "2026-07-14T00:00:00Z")
-        self.assertEqual(rows[0]["last_observed_at"], "2026-07-15T00:00:00Z")
-        self.assertEqual(rows[1]["observed_at"], "2026-07-15T00:00:00Z")
 
-    def test_same_value_beyond_the_continuity_window_starts_a_new_episode(self):
-        self.record(70.0, "2026-09-20T00:00:00Z")
-        self.assertEqual(self.record(70.0, "2026-09-25T00:00:00Z"), "inserted")
-        rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["last_observed_at"], "2026-09-20T00:00:00Z")
-        self.assertEqual(rows[1]["observed_at"], "2026-09-25T00:00:00Z")
-
-    def test_older_out_of_order_observation_never_truncates_the_latest_episode(self):
-        self.record(70.0, "2026-09-28T12:00:00Z")
-        self.assertEqual(
-            self.record(60.0, "2026-09-01T00:00:00Z", digest=digest_for(60.0)), "inserted"
-        )
-        rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual(
-            [(row["observed_at"], row["last_observed_at"], row["probability_pct"]) for row in rows],
-            [
-                ("2026-09-01T00:00:00Z", "2026-09-01T00:00:00Z", 60.0),
-                ("2026-09-28T12:00:00Z", "2026-09-28T12:00:00Z", 70.0),
-            ],
-        )
-        for row in rows:
-            self.assertGreaterEqual(row["last_observed_at"], row["observed_at"])
-
-    def test_replaying_inside_coverage_does_not_regress_the_coverage_end(self):
-        self.record(70.0, "2026-09-20T00:00:00Z")
-        self.assertEqual(self.record(70.0, "2026-09-25T00:00:00Z"), "inserted")
-        self.record(70.0, "2026-09-20T00:00:00Z")
-        rows = self.store.observations(meeting_date="2026-10-28")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["last_observed_at"], "2026-09-20T00:00:00Z")
-        self.assertEqual(rows[1]["last_observed_at"], "2026-09-25T00:00:00Z")
+    def test_probability_range_fails_closed(self):
+        for value in (-5.0, 120.0, float("nan"), float("inf")):
+            with self.assertRaises(HistoryStoreError) as caught:
+                self.record(value, f"2026-09-28T13:00:00Z")
+            self.assertEqual(caught.exception.code, "FEDWATCH_HISTORY_WRITE_FAILED")
+        with self.assertRaises(HistoryStoreError):
+            self.record(50.0, "2026-09-28T13:00:00Z", raw_probability_pct=101.0)
+        with self.assertRaises(HistoryStoreError):
+            self.record(50.0, "2026-09-28T13:00:00Z", normalized_probability_pct=-0.5)
+        self.assertEqual(self.store.count_observations(), 0)
 
     def test_series_are_isolated_by_meeting_method_and_outcome(self):
         self.record(70.0, "2026-09-28T12:00:00Z")
@@ -356,7 +332,7 @@ class StorageFootprintTests(unittest.TestCase):
              "fedwatch_history.db-shm"},
         )
         self.assertIn("fedwatch_history.db", files)
-        self.assertEqual(store.count_observations(), 1)
+        self.assertEqual(store.count_observations(), 5)
         self.assertEqual(
             [entry for entry in (root / "fedwatch").iterdir() if entry.suffix not in (".db", ".db-journal", ".db-wal", ".db-shm")],
             [],

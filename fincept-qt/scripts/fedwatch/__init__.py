@@ -13,9 +13,9 @@ self-contained capability with no dependency on the retired reference project:
   current outcome probabilities and historical CLOB price backfill.
 * Fed-side vs Polymarket comparison with ``probability_diff_pp = Polymarket -
   Fed-side`` semantics.
-* Durable MarketLab SQLite observation history, duplicate-free value
-  episodes, the FOMC meeting lifecycle, the approved historical calculations
-  and the optional historical ZQ reconstruction path.
+* Durable MarketLab SQLite observation history, duplicate-free accepted
+  observations, the FOMC meeting lifecycle, the approved historical
+  calculations and the optional historical ZQ reconstruction path.
 
 The capability is read-only research. It never places, cancels or modifies
 orders, never touches a wallet or broker, and adds no execution authority.

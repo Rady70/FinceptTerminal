@@ -1,11 +1,11 @@
 """Deterministic tests for the approved historical FedWatch calculations.
 
-The analytics module computes from the stored observation chronology only:
-previous-observation change, 1/7/30-day changes, change since the first
+The analytics module computes from the stored accepted-observation chronology
+only: previous-observation change, 1/7/30-day changes, change since the first
 retained observation, observed high/low, range position, percentile, the
 Fed-side versus Polymarket difference (``Polymarket - Fed-side``) and its
-daily evolution. Insufficient coverage must be an explicit state, never a
-fabricated value. No test uses the network.
+daily evolution over actually observed days. Insufficient coverage must be an
+explicit state, never a fabricated value. No test uses the network.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
-from datetime import timedelta
 from pathlib import Path
 
 from fedwatch_test_support import utc
@@ -25,7 +24,7 @@ from fedwatch.history import (
     POLY_METHOD,
     POLY_SOURCE,
 )
-from fedwatch.store import FedwatchHistoryStore
+from fedwatch.store import FedwatchHistoryStore, content_digest
 
 NOW = utc(2026, 9, 28, 12, 0, 0)
 LIVE = FED_METHOD_LIVE
@@ -47,7 +46,17 @@ def seed(
     open_ended=False,
     quality="OK",
 ) -> None:
+    """Record production-like observations: the digest covers content only."""
     for observed_at, value in points:
+        digest = content_digest(
+            {
+                "method": method,
+                "source": source,
+                "outcome_bp": outcome_bp,
+                "open_ended": open_ended,
+                "probability_pct": value,
+            }
+        )
         store.record_observation(
             meeting_date=meeting,
             source=source,
@@ -62,7 +71,7 @@ def seed(
             retrieved_at=observed_at,
             quality_status=quality,
             freshness_status=None,
-            digest=f"{method}|{meeting}|{outcome_bp}|{open_ended}|{value}|{observed_at}",
+            digest=digest,
             detail={"origin": "test"},
         )
 
@@ -115,7 +124,7 @@ class FullCalculationTests(unittest.TestCase):
         self.assertAlmostEqual(fed["range_position"], round(10.0 / 15.0, 6), places=9)
         self.assertIsNone(fed["range_position_state"])
         self.assertAlmostEqual(fed["percentile_rank"], round(5.0 / 6.0, 6), places=9)
-        self.assertEqual(fed["episode_count"], 6)
+        self.assertEqual(fed["observation_count"], 6)
 
     def test_analytics_does_not_persist_derived_values(self):
         before = self.store.count_observations()
@@ -133,6 +142,38 @@ class FullCalculationTests(unittest.TestCase):
             fedwatch_analytics.compute_analytics(
                 self.store, "2026-10-28", 25, fed_method="NOT_A_METHOD", as_of=NOW
             )
+
+
+class PreviousObservationTests(unittest.TestCase):
+    def test_previous_observation_is_the_immediately_preceding_accepted_observation(self):
+        store = new_store(self)
+        seed(store, [("2026-09-26T00:00:00Z", 50.0)])
+        seed(store, [("2026-09-27T00:00:00Z", 60.0)])
+        seed(store, [("2026-09-28T00:00:00Z", 60.0)])
+        fed = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 60.0)
+        previous = fed["latest_change_from_previous_observation"]
+        self.assertEqual(change(previous), 0.0)
+        self.assertEqual(previous["reference_probability_pct"], 60.0)
+        self.assertEqual(previous["reference_observed_at"], "2026-09-27T00:00:00Z")
+        self.assertEqual(change(fed["change_since_first_observation"]), 10.0)
+        self.assertEqual(fed["observation_count"], 3)
+
+    def test_repeated_values_do_not_change_the_lookback_reference(self):
+        store = new_store(self)
+        seed(store, [("2026-09-20T00:00:00Z", 40.0)])
+        seed(store, [("2026-09-21T00:00:00Z", 40.0)])
+        seed(store, [("2026-09-27T00:00:00Z", 45.0)])
+        seed(store, [("2026-09-28T00:00:00Z", 50.0)])
+        fed = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(change(fed["changes"]["1d"]), 5.0)
+        self.assertEqual(fed["changes"]["1d"]["reference_observed_at"], "2026-09-27T00:00:00Z")
+        self.assertEqual(change(fed["changes"]["7d"]), 10.0)
+        self.assertEqual(fed["changes"]["7d"]["reference_observed_at"], "2026-09-21T00:00:00Z")
 
 
 class InsufficientHistoryTests(unittest.TestCase):
@@ -203,7 +244,7 @@ class IsolationTests(unittest.TestCase):
             store, "2026-10-28", 25, as_of=NOW
         )
         self.assertEqual(result["fed_side"]["latest"]["probability_pct"], 40.0)
-        self.assertEqual(result["fed_side"]["episode_count"], 1)
+        self.assertEqual(result["fed_side"]["observation_count"], 1)
 
     def test_zq_method_is_selected_explicitly(self):
         store = new_store(self)
@@ -269,70 +310,6 @@ class DivergenceTests(unittest.TestCase):
         seed(store, fed_points)
         seed(store, poly_points, method=POLY_METHOD, source=POLY_SOURCE)
 
-    def _seed_with_digest(self, store, observed_at, value, digest, method=LIVE,
-                          source="investing", outcome_bp=25, open_ended=False):
-        store.record_observation(
-            meeting_date="2026-10-28",
-            source=source,
-            method=method,
-            outcome_bp=outcome_bp,
-            open_ended=open_ended,
-            probability_pct=value,
-            raw_probability_pct=None,
-            normalized_probability_pct=None,
-            observed_at=observed_at,
-            source_observed_at=None,
-            retrieved_at=observed_at,
-            quality_status="OK",
-            freshness_status=None,
-            digest=digest,
-            detail={"origin": "test"},
-        )
-
-    def test_conflicting_episode_does_not_fabricate_a_summed_probability(self):
-        store = new_store(self)
-        self._seed_with_digest(store, "2026-07-14T00:00:00Z", 80.0, "zq-80")
-        self._seed_with_digest(store, "2026-07-15T00:00:00Z", 80.0, "zq-80")
-        self._seed_with_digest(store, "2026-07-15T00:00:00Z", 20.0, "zq-20")
-        fed = fedwatch_analytics.compute_analytics(
-            store, "2026-10-28", 25, as_of=NOW
-        )["fed_side"]
-        self.assertEqual(fed["latest"]["probability_pct"], 20.0)
-        self.assertEqual(change(fed["latest_change_from_previous_observation"]), -60.0)
-        self.assertEqual(fed["observed_high"]["probability_pct"], 80.0)
-
-    def test_conflict_strictly_inside_coverage_never_fabricates_a_zero(self):
-        store = new_store(self)
-        for observed_at in ("2026-07-14T00:00:00Z", "2026-07-15T00:00:00Z"):
-            self._seed_with_digest(store, observed_at, 50.0, "bucket-0", outcome_bp=0)
-            self._seed_with_digest(store, observed_at, 50.0, "bucket-25", outcome_bp=25)
-        self._seed_with_digest(store, "2026-07-14T12:00:00Z", 20.0, "bucket-25-new")
-        points, errors = fedwatch_analytics.change_points(
-            store, "2026-10-28", LIVE, 25, False
-        )
-        self.assertEqual(errors, [])
-        self.assertEqual([point["probability_pct"] for point in points], [50.0, 20.0])
-        fed = fedwatch_analytics.compute_analytics(
-            store, "2026-10-28", 25, as_of=NOW
-        )["fed_side"]
-        self.assertEqual(fed["latest"]["probability_pct"], 20.0)
-        self.assertNotIn(0.0, [point["probability_pct"] for point in points])
-
-    def test_divergence_does_not_forward_fill_across_an_unobserved_gap(self):
-        store = new_store(self)
-        for observed_at in ("2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z"):
-            self._seed_with_digest(store, observed_at, 70.0, "fed-70")
-            self._seed_with_digest(
-                store, observed_at, 75.0, "poly-75", method=POLY_METHOD, source=POLY_SOURCE
-            )
-        history = fedwatch_analytics.compute_analytics(
-            store, "2026-10-28", 25, as_of=utc(2026, 3, 2, 0, 0, 0)
-        )["difference"]["history"]
-        self.assertEqual(
-            [row["date"] for row in history], ["2026-01-01", "2026-03-01"]
-        )
-        self.assertEqual([row["probability_diff_pp"] for row in history], [5.0, 5.0])
-
     def test_current_difference_and_daily_history(self):
         store = new_store(self)
         self._seed_both(
@@ -348,10 +325,11 @@ class DivergenceTests(unittest.TestCase):
             ],
         )
         result = fedwatch_analytics.compute_analytics(
-            store, "2026-10-28", 25, as_of=NOW
+            store, "2026-10-28", 25, as_of=utc(2026, 9, 22, 12, 0, 0)
         )
         difference = result["difference"]
         self.assertEqual(difference["sign_convention"], "Polymarket - Fed-side")
+        self.assertEqual(difference["current_state"], "OK")
         self.assertEqual(difference["current_probability_diff_pp"], 2.0)
         self.assertEqual(difference["current_fed_probability_pct"], 32.0)
         self.assertEqual(difference["current_polymarket_probability_pct"], 34.0)
@@ -359,6 +337,21 @@ class DivergenceTests(unittest.TestCase):
             [(row["date"], row["probability_diff_pp"]) for row in difference["history"]],
             [("2026-09-20", 5.0), ("2026-09-22", 2.0)],
         )
+
+    def test_unchanged_values_do_not_create_divergence_days_without_an_observation(self):
+        # Same values on 09-20 and 09-22 with no observation on 09-21: the
+        # calendar day in between must not be presented as covered.
+        store = new_store(self)
+        self._seed_both(
+            store,
+            [("2026-09-20T00:00:00Z", 70.0), ("2026-09-22T00:00:00Z", 70.0)],
+            [("2026-09-20T00:00:00Z", 75.0), ("2026-09-22T00:00:00Z", 75.0)],
+        )
+        history = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=utc(2026, 9, 23)
+        )["difference"]["history"]
+        self.assertEqual([row["date"] for row in history], ["2026-09-20", "2026-09-22"])
+        self.assertEqual([row["probability_diff_pp"] for row in history], [5.0, 5.0])
 
     def test_utc_day_boundaries_use_the_correct_observation(self):
         store = new_store(self)
@@ -395,10 +388,43 @@ class DivergenceTests(unittest.TestCase):
             ],
         )
         difference = fedwatch_analytics.compute_analytics(
-            store, "2026-10-28", 25, as_of=NOW
+            store, "2026-10-28", 25, as_of=utc(2026, 9, 22, 12, 0, 0)
         )["difference"]
         self.assertEqual([row["date"] for row in difference["history"]], ["2026-09-22"])
         self.assertEqual(difference["current_probability_diff_pp"], 2.0)
+
+    def test_current_difference_is_gated_on_latest_observation_age(self):
+        store = new_store(self)
+        self._seed_both(
+            store,
+            [("2026-09-28T00:00:00Z", 50.0)],
+            [("2026-09-20T00:00:00Z", 55.0)],
+        )
+        difference = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["difference"]
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertEqual(difference["current_state"], "STALE_LATEST_OBSERVATION")
+        self.assertGreater(difference["polymarket_latest_age_days"], 3.0)
+        self.assertLessEqual(difference["fed_latest_age_days"], 3.0)
+
+    def test_conflicting_observation_never_fabricates_a_summed_probability(self):
+        store = new_store(self)
+        seed(store, [("2026-07-14T00:00:00Z", 50.0)])
+        seed(store, [("2026-07-16T00:00:00Z", 50.0)])
+        seed(store, [("2026-07-15T00:00:00Z", 20.0)])
+        points, errors = fedwatch_analytics.change_points(
+            store, "2026-10-28", LIVE, 25, False
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual([point["probability_pct"] for point in points], [50.0, 20.0, 50.0])
+        fed = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 50.0)
+        self.assertEqual(change(fed["latest_change_from_previous_observation"]), 30.0)
+        self.assertEqual(fed["observed_high"]["probability_pct"], 50.0)
+        self.assertNotIn(0.0, [point["probability_pct"] for point in points])
 
 
 class MalformedStoredRowTests(unittest.TestCase):

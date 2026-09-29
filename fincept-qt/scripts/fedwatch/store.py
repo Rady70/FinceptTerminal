@@ -18,38 +18,42 @@ instead of silently writing somewhere else.
 
 Observation model
 -----------------
-One row is a *value episode*: a maximal run of accepted observations of one
-``(meeting_date, source, method, outcome_bp, open_ended)`` series that share
-the same content digest. Repeating an identical refresh extends the episode's
-``last_*`` timestamps and increments ``observation_count`` instead of creating
-a row; a changed observation closes the episode and inserts a new one. A
-provider restatement of an already-stored instant revises that row in place.
-The digest is computed by the caller over the exact stored content
-(probability plus the raw/normalized distribution context), so no stored
-value is silently dropped.
+One row is one *accepted observation instant* of one
+``(meeting_date, source, method, outcome_bp, open_ended)`` series, keyed by its
+``observed_at`` instant. The row carries the value exactly as accepted at that
+instant; the store never compresses consecutive observations into an interval,
+so no accepted instant or value can be lost and no coverage is inferred
+between observations. Recording the same instant again with the same content
+digest is a duplicate (it only refreshes retrieval metadata); a provider
+restatement of the same instant revises that row in place; a new instant is a
+new observation row. The digest is computed by the caller over the source
+observation's identity and value, so the same underlying provider observation
+reaches the same row regardless of which ingestion path recorded it.
 
 Only accepted observations are stored. Provider failures, missing outcomes and
 zero-probability placeholders are never inserted; the recording layer reports
-them separately.
+them separately. Probabilities and supplied raw/normalized values must be
+finite and inside ``[0, 100]``; the durable boundary fails closed instead of
+trusting every caller.
 
 The plan's ``raw_probability_pct`` / ``normalized_probability_pct`` columns are
 populated where a source's value has that exact per-outcome meaning (the
-Polymarket CLOB price is both). The Investing-derived Fed-side rows store the
-meeting-level *cumulative rate-band* distributions and their normalization
-record in ``detail_json`` instead: those rows are keyed by rate band, not by
-outcome bp, and collapsing them into a per-outcome column would invent a
-mapping the methodology does not have. The local per-outcome probability is
-the row's ``probability_pct``.
+Polymarket CLOB price is its raw probability). The Investing-derived Fed-side
+rows store the meeting-level *cumulative rate-band* distributions and their
+normalization record in ``detail_json`` instead: those rows are keyed by rate
+band, not by outcome bp, and collapsing them into a per-outcome column would
+invent a mapping the methodology does not have. The local per-outcome
+probability is the row's ``probability_pct``.
 
 Timing semantics (all UTC ISO 8601 seconds with ``Z``):
-    observed_at         when this value was first observed by MarketLab (the
-                        provider observation time where the source exposes
-                        one; otherwise the documented retrieval instant)
+    observed_at         when the value was observed by the source, or the
+                        documented retrieval instant where the source exposes
+                        no observation timestamp
     source_observed_at  the provider's own timestamp when it exists
-    retrieved_at        when MarketLab retrieved the data
+    retrieved_at        when MarketLab first retrieved this observation
     recorded_at         when MarketLab first wrote the row
     last_*              the same fields for the most recent accepted
-                        observation covered by the episode
+                        re-observation of this same instant
 
 The durable schema is versioned with ``PRAGMA user_version``; a database
 written by a newer schema is refused, never downgraded.
@@ -71,12 +75,6 @@ from fedwatch import timeutil
 HISTORY_SCHEMA_VERSION = 1
 
 DEFAULT_DB_RELATIVE = Path("fedwatch") / "fedwatch_history.db"
-
-# Same-value observations only extend an episode's coverage while consecutive
-# accepted retrievals stay within this gap. A longer gap is a coverage gap and
-# opens a new episode even for an identical value, so the store never claims a
-# value was continuously observed across a period with no observation.
-EPISODE_CONTINUITY_MAX_GAP_SECONDS = 36 * 3600
 
 MEETING_STATUS_UPCOMING = "UPCOMING"
 MEETING_STATUS_PENDING = "PENDING"
@@ -138,7 +136,6 @@ _SCHEMA_STATEMENTS = (
         source_observed_at TEXT,
         retrieved_at TEXT NOT NULL,
         recorded_at TEXT NOT NULL,
-        last_observed_at TEXT NOT NULL,
         last_retrieved_at TEXT NOT NULL,
         last_recorded_at TEXT NOT NULL,
         quality_status TEXT NOT NULL,
@@ -198,7 +195,7 @@ def default_db_path() -> Path:
 
 
 def content_digest(payload: dict) -> str:
-    """Canonical digest over the exact content that defines a value episode."""
+    """Canonical digest over the content that identifies an observation."""
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -218,7 +215,7 @@ def _require_iso_instant(value: str, field: str) -> str:
 
 
 class FedwatchHistoryStore:
-    """Durable episode store for FedWatch probability observations."""
+    """Durable observation store for FedWatch probability history."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -641,7 +638,25 @@ class FedwatchHistoryStore:
         finally:
             conn.close()
 
-    # ── observations (value episodes) ─────────────────────────────────────
+    # ── observations (accepted observation instants) ──────────────────────
+
+    @staticmethod
+    def _validate_probability(value, field: str, meeting_date: str, method: str, outcome_bp: int):
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HistoryStoreError(
+                "FEDWATCH_HISTORY_WRITE_FAILED",
+                f"{field} is not numeric for {meeting_date} {method} {outcome_bp}",
+            )
+        parsed = float(value)
+        if not math.isfinite(parsed) or not 0.0 <= parsed <= 100.0:
+            raise HistoryStoreError(
+                "FEDWATCH_HISTORY_WRITE_FAILED",
+                f"{field} is not a finite probability in [0, 100] for "
+                f"{meeting_date} {method} {outcome_bp}: {value!r}",
+            )
+        return parsed
 
     def record_observation(
         self,
@@ -662,24 +677,25 @@ class FedwatchHistoryStore:
         detail: dict | None = None,
         recorded_at: datetime | None = None,
     ) -> str:
-        """Record one accepted observation into its value episode.
+        """Record one accepted observation instant.
 
-        Returns one of ``inserted``, ``extended``, ``duplicate`` or ``revised``.
+        Returns ``inserted``, ``duplicate`` or ``revised``. No compression is
+        applied: a different instant is always a new observation row, so the
+        stored chronology is exactly the accepted chronology.
         """
         observed_at = _require_iso_instant(observed_at, "observed_at")
         retrieved_at = _require_iso_instant(retrieved_at, "retrieved_at")
         if source_observed_at is not None:
             source_observed_at = _require_iso_instant(source_observed_at, "source_observed_at")
-        if not isinstance(probability_pct, (int, float)) or isinstance(probability_pct, bool):
-            raise HistoryStoreError(
-                "FEDWATCH_HISTORY_WRITE_FAILED",
-                f"probability_pct is not numeric for {meeting_date} {method} {outcome_bp}",
-            )
-        if not math.isfinite(float(probability_pct)):
-            raise HistoryStoreError(
-                "FEDWATCH_HISTORY_WRITE_FAILED",
-                f"probability_pct is not finite for {meeting_date} {method} {outcome_bp}",
-            )
+        probability = self._validate_probability(
+            probability_pct, "probability_pct", meeting_date, method, outcome_bp
+        )
+        raw_probability = self._validate_probability(
+            raw_probability_pct, "raw_probability_pct", meeting_date, method, outcome_bp
+        )
+        normalized_probability = self._validate_probability(
+            normalized_probability_pct, "normalized_probability_pct", meeting_date, method, outcome_bp
+        )
         recorded_iso = timeutil.iso_z(recorded_at) if recorded_at is not None else _utc_now_iso()
         detail_json = json.dumps(detail, sort_keys=True) if detail else None
         open_ended_flag = 1 if open_ended else 0
@@ -689,105 +705,6 @@ class FedwatchHistoryStore:
         try:
             self._prepare(conn)
             with conn:
-                latest = conn.execute(
-                    """
-                    SELECT * FROM fedwatch_probability_observations
-                     WHERE meeting_date = ? AND source = ? AND method = ?
-                       AND outcome_bp = ? AND open_ended = ?
-                     ORDER BY observed_at DESC, id DESC LIMIT 1
-                    """,
-                    series,
-                ).fetchone()
-
-                if latest is not None and latest["observed_at"] == observed_at:
-                    if latest["content_digest"] == digest:
-                        conn.execute(
-                            """
-                            UPDATE fedwatch_probability_observations
-                               SET last_observed_at = MAX(last_observed_at, ?),
-                                   last_retrieved_at = MAX(last_retrieved_at, ?),
-                                   last_recorded_at = MAX(last_recorded_at, ?),
-                                   observation_count = observation_count + 1
-                             WHERE id = ?
-                            """,
-                            (observed_at, retrieved_at, recorded_iso, latest["id"]),
-                        )
-                        return "duplicate"
-                    conn.execute(
-                        """
-                        UPDATE fedwatch_probability_observations
-                           SET probability_pct = ?, raw_probability_pct = ?,
-                               normalized_probability_pct = ?, source_observed_at = ?,
-                               quality_status = ?, freshness_status = ?,
-                               content_digest = ?, detail_json = ?,
-                               last_observed_at = ?, last_retrieved_at = ?,
-                               last_recorded_at = ?,
-                               observation_count = observation_count + 1
-                         WHERE id = ?
-                        """,
-                        (
-                            float(probability_pct), raw_probability_pct,
-                            normalized_probability_pct, source_observed_at,
-                            quality_status, freshness_status,
-                            digest, detail_json, observed_at, retrieved_at, recorded_iso,
-                            latest["id"],
-                        ),
-                    )
-                    return "revised"
-
-                if (
-                    latest is not None
-                    and latest["observed_at"] < observed_at <= latest["last_observed_at"]
-                ):
-                    # The instant falls inside the current episode's coverage
-                    # (strictly after its start): the observation is a replay
-                    # or a contradicting correction of the covered span.
-                    if latest["content_digest"] == digest:
-                        conn.execute(
-                            """
-                            UPDATE fedwatch_probability_observations
-                               SET last_retrieved_at = MAX(last_retrieved_at, ?),
-                                   last_recorded_at = MAX(last_recorded_at, ?),
-                                   observation_count = observation_count + 1
-                             WHERE id = ?
-                            """,
-                            (retrieved_at, recorded_iso, latest["id"]),
-                        )
-                        return "duplicate"
-                    # A contradicting value at an instant the old value still
-                    # covered: end the old episode at this instant (never
-                    # overlapping beyond it) and open the new one. Analytics
-                    # resolves the shared instant toward the later episode.
-                    conn.execute(
-                        """
-                        UPDATE fedwatch_probability_observations
-                           SET last_observed_at = ?
-                         WHERE id = ?
-                        """,
-                        (observed_at, latest["id"]),
-                    )
-
-                if latest is not None and observed_at > latest["last_observed_at"]:
-                    gap_seconds = (
-                        timeutil.parse_iso_z(observed_at)
-                        - timeutil.parse_iso_z(latest["last_observed_at"])
-                    ).total_seconds()
-                    if (
-                        latest["content_digest"] == digest
-                        and gap_seconds <= EPISODE_CONTINUITY_MAX_GAP_SECONDS
-                    ):
-                        conn.execute(
-                            """
-                            UPDATE fedwatch_probability_observations
-                               SET last_observed_at = ?, last_retrieved_at = ?,
-                                   last_recorded_at = ?,
-                                   observation_count = observation_count + 1
-                             WHERE id = ?
-                            """,
-                            (observed_at, retrieved_at, recorded_iso, latest["id"]),
-                        )
-                        return "extended"
-
                 existing = conn.execute(
                     """
                     SELECT * FROM fedwatch_probability_observations
@@ -796,62 +713,59 @@ class FedwatchHistoryStore:
                     """,
                     (*series, observed_at),
                 ).fetchone()
-                if existing is not None:
-                    if existing["content_digest"] == digest:
-                        conn.execute(
-                            """
-                            UPDATE fedwatch_probability_observations
-                               SET last_observed_at = MAX(last_observed_at, ?),
-                                   last_retrieved_at = MAX(last_retrieved_at, ?),
-                                   last_recorded_at = MAX(last_recorded_at, ?),
-                                   observation_count = observation_count + 1
-                             WHERE id = ?
-                            """,
-                            (observed_at, retrieved_at, recorded_iso, existing["id"]),
-                        )
-                        return "duplicate"
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO fedwatch_probability_observations
+                            (meeting_date, source, method, outcome_bp, open_ended,
+                             probability_pct, raw_probability_pct, normalized_probability_pct,
+                             observed_at, source_observed_at, retrieved_at, recorded_at,
+                             last_retrieved_at, last_recorded_at,
+                             quality_status, freshness_status, content_digest,
+                             observation_count, detail_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                        """,
+                        (
+                            meeting_date, source, method, int(outcome_bp), open_ended_flag,
+                            probability, raw_probability, normalized_probability,
+                            observed_at, source_observed_at, retrieved_at, recorded_iso,
+                            retrieved_at, recorded_iso,
+                            quality_status, freshness_status, digest, detail_json,
+                        ),
+                    )
+                    return "inserted"
+                if existing["content_digest"] == digest:
                     conn.execute(
                         """
                         UPDATE fedwatch_probability_observations
-                           SET probability_pct = ?, raw_probability_pct = ?,
-                               normalized_probability_pct = ?, source_observed_at = ?,
-                               quality_status = ?, freshness_status = ?,
-                               content_digest = ?, detail_json = ?,
-                               last_observed_at = ?, last_retrieved_at = ?,
-                               last_recorded_at = ?,
+                           SET last_retrieved_at = MAX(last_retrieved_at, ?),
+                               last_recorded_at = MAX(last_recorded_at, ?),
                                observation_count = observation_count + 1
                          WHERE id = ?
                         """,
-                        (
-                            float(probability_pct), raw_probability_pct,
-                            normalized_probability_pct, source_observed_at,
-                            quality_status, freshness_status,
-                            digest, detail_json, observed_at, retrieved_at, recorded_iso,
-                            existing["id"],
-                        ),
+                        (retrieved_at, recorded_iso, existing["id"]),
                     )
-                    return "revised"
-
+                    return "duplicate"
                 conn.execute(
                     """
-                    INSERT INTO fedwatch_probability_observations
-                        (meeting_date, source, method, outcome_bp, open_ended,
-                         probability_pct, raw_probability_pct, normalized_probability_pct,
-                         observed_at, source_observed_at, retrieved_at, recorded_at,
-                         last_observed_at, last_retrieved_at, last_recorded_at,
-                         quality_status, freshness_status, content_digest,
-                         observation_count, detail_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    UPDATE fedwatch_probability_observations
+                       SET probability_pct = ?, raw_probability_pct = ?,
+                           normalized_probability_pct = ?, source_observed_at = ?,
+                           quality_status = ?, freshness_status = ?,
+                           content_digest = ?, detail_json = ?,
+                           last_retrieved_at = MAX(last_retrieved_at, ?),
+                           last_recorded_at = MAX(last_recorded_at, ?),
+                           observation_count = observation_count + 1
+                     WHERE id = ?
                     """,
                     (
-                        meeting_date, source, method, int(outcome_bp), open_ended_flag,
-                        float(probability_pct), raw_probability_pct, normalized_probability_pct,
-                        observed_at, source_observed_at, retrieved_at, recorded_iso,
-                        observed_at, retrieved_at, recorded_iso,
-                        quality_status, freshness_status, digest, detail_json,
+                        probability, raw_probability, normalized_probability,
+                        source_observed_at, quality_status, freshness_status,
+                        digest, detail_json, retrieved_at, recorded_iso,
+                        existing["id"],
                     ),
                 )
-                return "inserted"
+                return "revised"
         except sqlite3.Error as exc:
             raise HistoryStoreError(
                 "FEDWATCH_HISTORY_WRITE_FAILED",
@@ -877,7 +791,6 @@ class FedwatchHistoryStore:
             "source_observed_at": row["source_observed_at"],
             "retrieved_at": row["retrieved_at"],
             "recorded_at": row["recorded_at"],
-            "last_observed_at": row["last_observed_at"],
             "last_retrieved_at": row["last_retrieved_at"],
             "last_recorded_at": row["last_recorded_at"],
             "quality_status": row["quality_status"],
@@ -949,9 +862,9 @@ class FedwatchHistoryStore:
 
     def method_summary(self, meeting_date: str | None = None) -> list[dict]:
         query = (
-            "SELECT meeting_date, source, method, COUNT(*) AS episodes, "
-            "SUM(observation_count) AS retrievals, MIN(observed_at) AS first_observed_at, "
-            "MAX(last_observed_at) AS last_observed_at "
+            "SELECT meeting_date, source, method, COUNT(*) AS observations, "
+            "SUM(observation_count) AS accepted_count, MIN(observed_at) AS first_observed_at, "
+            "MAX(observed_at) AS last_observed_at "
             "FROM fedwatch_probability_observations"
         )
         params: list = []
