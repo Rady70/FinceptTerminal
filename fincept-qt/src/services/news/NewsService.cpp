@@ -15,6 +15,7 @@
 #include "datahub/DataHubMetaTypes.h"
 #include "network/http/GuardedNetworkAccessManager.h"
 #include "network/http/HttpClient.h"
+#include "services/news/NewsDedupe.h"
 #include "storage/cache/CacheManager.h"
 #include "storage/repositories/NewsArticleRepository.h"
 
@@ -81,6 +82,9 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());
@@ -89,6 +93,7 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            canonicalize_news_articles(articles);
             cb(true, articles);
             publish_articles_to_hub(articles);
             return;
@@ -167,10 +172,10 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
             }
 
             if (state->remaining.fetchAndSubRelaxed(1) == 1) {
-                // Last feed done — sort by time descending
+                // Last feed done — canonicalize (select the canonical copy of
+                // each story, then sort the survivors chronologically).
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(),
-                          [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+                canonicalize_news_articles(all);
 
                 QSet<QString> sources;
                 for (const auto& a : all)
@@ -191,6 +196,7 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                     o["link"] = a.link;
                     o["sort_ts"] = static_cast<qint64>(a.sort_ts);
                     o["tier"] = a.tier;
+                    o["feed_order"] = a.feed_order;
                     o["priority"] = priority_string(a.priority);
                     o["sentiment"] = sentiment_string(a.sentiment);
                     o["impact"] = impact_string(a.impact);
@@ -240,6 +246,9 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());
@@ -248,6 +257,7 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            canonicalize_news_articles(articles);
             final_cb(true, articles);
             emit articles_partial(articles, feed_count_, feed_count_);
             publish_articles_to_hub(articles);
@@ -327,8 +337,10 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 // Partial snapshot sorted by time for progressive display
                 snapshot = state->all_articles;
             }
-            std::sort(snapshot.begin(), snapshot.end(),
-                      [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+            // Provisional snapshot: canonical only over the feeds that have
+            // answered so far — the completed fetch below republishes the
+            // authoritative list, so an envelope can still change.
+            canonicalize_news_articles(snapshot);
             emit articles_partial(snapshot, feeds_done, total);
             // Progressive publish — each chunk fans out the accumulated
             // list. Hub's per-topic coalescing (news:general at 250ms)
@@ -336,10 +348,9 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
             publish_articles_to_hub(snapshot);
 
             if (state->remaining.fetchAndSubRelaxed(1) == 1) {
-                // All feeds done — finalize cache
+                // All feeds done — canonicalize, then finalize cache.
                 auto& all = state->all_articles;
-                std::sort(all.begin(), all.end(),
-                          [](const NewsArticle& a, const NewsArticle& b) { return a.sort_ts > b.sort_ts; });
+                canonicalize_news_articles(all);
 
                 QSet<QString> sources;
                 for (const auto& a : all)
@@ -365,6 +376,7 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                         o["link"] = a.link;
                         o["sort_ts"] = static_cast<qint64>(a.sort_ts);
                         o["tier"] = a.tier;
+                        o["feed_order"] = a.feed_order;
                         o["priority"] = priority_string(a.priority);
                         o["sentiment"] = sentiment_string(a.sentiment);
                         o["impact"] = impact_string(a.impact);
@@ -451,6 +463,9 @@ void NewsService::refresh(const QStringList& topics) {
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());
@@ -459,6 +474,7 @@ void NewsService::refresh(const QStringList& topics) {
                     a.tickers << t.toString();
                 articles.append(a);
             }
+            canonicalize_news_articles(articles);
             publish_articles_to_hub(articles);
         }
     }

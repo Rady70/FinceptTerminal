@@ -353,6 +353,14 @@ fincept::services::RSSFeed apply_overlay(const fincept::services::RSSFeed& base,
     return merged;
 }
 
+/// Stamp each feed with its position in the effective list. Articles parsed
+/// from a feed carry this order, and the de-duplication survivor policy uses
+/// it: the earliest listed source that carried a story provides its envelope.
+void assign_feed_order(QVector<fincept::services::RSSFeed>& feeds) {
+    for (int i = 0; i < feeds.size(); ++i)
+        feeds[i].order = i;
+}
+
 } // anonymous namespace
 
 QVector<RSSFeed> NewsService::list_effective_feeds() const {
@@ -362,7 +370,9 @@ QVector<RSSFeed> NewsService::list_effective_feeds() const {
         LOG_WARN(
             "NewsService",
             QString("rss_feeds query failed; using built-ins only: %1").arg(QString::fromStdString(repo_res.error())));
-        return defaults;
+        QVector<RSSFeed> fallback = defaults;
+        assign_feed_order(fallback);
+        return fallback;
     }
 
     QHash<QString, fincept::RssFeedRow> by_id;
@@ -400,6 +410,7 @@ QVector<RSSFeed> NewsService::list_effective_feeds() const {
         f.tier = r.tier;
         out.append(f);
     }
+    assign_feed_order(out);
     return out;
 }
 
