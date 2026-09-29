@@ -229,10 +229,13 @@ fincept_add_test(tst_news_date_parse
     tst_news_date_parse.cpp)
 
 # MarketLab: cross-feed news de-duplication — overlapping publisher feeds
-# (three CNBC views, for example) carry the same story in more than one feed,
-# so the aggregate collapses repeats by link (normalized) or, absent a link,
-# by the normalized headline. The first occurrence survives and a different
-# link stays a different story. Header-only over Qt Core; no app sources.
+# (three CNBC views, for example) carry the same story in more than one feed.
+# The canonical copy is selected by the accepted feed-priority rule (the
+# earliest feed on the effective feed list supplies the story's envelope),
+# independent of input position; identity is the component-aware link or, for
+# link-less items, source + publication time + normalized headline (an undated
+# link-less item has no dedupe identity). A different link stays a different
+# story. Header-only over Qt Core; no app sources.
 fincept_add_test(tst_news_dedupe
     tst_news_dedupe.cpp)
 

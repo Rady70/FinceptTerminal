@@ -172,8 +172,8 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
             }
 
             if (state->remaining.fetchAndSubRelaxed(1) == 1) {
-                // Last feed done — canonicalize (sort by time, then collapse
-                // the same story carried by more than one feed).
+                // Last feed done — canonicalize (select the canonical copy of
+                // each story, then sort the survivors chronologically).
                 auto& all = state->all_articles;
                 canonicalize_news_articles(all);
 
