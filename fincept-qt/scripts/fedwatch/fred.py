@@ -77,6 +77,68 @@ def fetch_series(transport: Transport, series_id: str) -> tuple[list[dict], str]
         ) from exc
 
 
+def valid_target_range(upper, lower) -> bool:
+    """The qualified target-range invariant ``upper > lower >= 0``, finite.
+
+    Batch A's current-range read enforces this; the historical resolution and
+    the ZQ import use the same check so a malformed provider pair can never
+    become a durable decision or reconstruction input.
+    """
+    try:
+        upper_value = float(upper)
+        lower_value = float(lower)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(upper_value) or not math.isfinite(lower_value):
+        return False
+    return upper_value > lower_value >= 0
+
+
+def fetch_target_history(transport: Transport, clock=timeutil.utc_now) -> dict:
+    """Fetch the full DFEDTARU/DFEDTARL daily series for historical decisions.
+
+    Batch B uses this to establish resolved FOMC meetings' actual target-range
+    change (the qualified FedWatch decision convention) without guessing from
+    the meeting date. The series are returned chronologically with ISO dates
+    and validated finite values; a malformed series is an explicit provider
+    failure, never a silently empty history.
+    """
+    upper_rows, upper_url = fetch_series(transport, "DFEDTARU")
+    lower_rows, _lower_url = fetch_series(transport, "DFEDTARL")
+    combined = upper_rows + lower_rows
+    if not combined:
+        raise FedwatchError(
+            PROVIDER_FRED,
+            "FRED_TARGET_RANGE_INVALID",
+            "FRED target-range history is empty",
+            detail={"url": upper_url},
+        )
+    invalid = [
+        row for row in combined
+        if not math.isfinite(row["value"])
+    ]
+    if invalid:
+        raise FedwatchError(
+            PROVIDER_FRED,
+            "FRED_TARGET_RANGE_INVALID",
+            "FRED target-range history contains a non-finite value",
+            detail={"invalid_row_count": len(invalid)},
+        )
+    upper_rows.sort(key=lambda row: row["date"])
+    lower_rows.sort(key=lambda row: row["date"])
+    return {
+        "retrieved_at": timeutil.iso_z(clock()),
+        "source": SOURCE_LABEL,
+        "method": "FRED target-range series (DFEDTARU/DFEDTARL)",
+        "upper": [
+            {"date": row["date"].isoformat(), "value": row["value"]} for row in upper_rows
+        ],
+        "lower": [
+            {"date": row["date"].isoformat(), "value": row["value"]} for row in lower_rows
+        ],
+    }
+
+
 def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
     """Fetch the current target range from DFEDTARU/DFEDTARL.
 

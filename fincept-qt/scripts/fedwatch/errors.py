@@ -18,6 +18,16 @@ builder) can branch on them without parsing prose:
     polymarket      POLYMARKET_DISCOVERY_UNAVAILABLE
                     POLYMARKET_DISCOVERY_EMPTY
                     POLYMARKET_MARKET_DATA_UNAVAILABLE
+    fedwatch_history
+                    FEDWATCH_HISTORY_LOCATION_UNAVAILABLE
+                    FEDWATCH_HISTORY_UNAVAILABLE
+                    FEDWATCH_HISTORY_WRITE_FAILED
+                    FEDWATCH_HISTORY_READ_FAILED
+                    FEDWATCH_HISTORY_SCHEMA_NEWER
+                    FEDWATCH_HISTORY_SCHEMA_INCOMPATIBLE
+    zq              FEDWATCH_ZQ_DATA_UNAVAILABLE
+                    FEDWATCH_ZQ_DATA_INVALID
+                    FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE
 """
 
 from __future__ import annotations
@@ -26,12 +36,19 @@ PROVIDER_INVESTING = "investing"
 PROVIDER_FRED = "fred"
 PROVIDER_FOMC_CALENDAR = "fomc_calendar"
 PROVIDER_POLYMARKET = "polymarket"
+# Batch B local components. These are not external data providers: they name
+# the MarketLab-owned durable history store and the user-supplied historical
+# ZQ dataset so their failures stay distinguishable from provider failures.
+PROVIDER_HISTORY = "fedwatch_history"
+PROVIDER_ZQ = "zq"
 
 PROVIDERS = (
     PROVIDER_INVESTING,
     PROVIDER_FRED,
     PROVIDER_FOMC_CALENDAR,
     PROVIDER_POLYMARKET,
+    PROVIDER_HISTORY,
+    PROVIDER_ZQ,
 )
 
 
@@ -77,3 +94,22 @@ class InvestingDistributionError(FedwatchError, ValueError):
     def __init__(self, code: str, message: str, detail: dict | None = None):
         FedwatchError.__init__(self, PROVIDER_INVESTING, code, message, detail)
         ValueError.__init__(self, message)
+
+
+class HistoryStoreError(FedwatchError):
+    """A failure of the MarketLab-owned FedWatch history store.
+
+    Batch B history failures are provider-attributed like every other
+    FedWatch failure so a persistence problem can never be presented as a
+    provider outage (or vice versa).
+    """
+
+    def __init__(self, code: str, message: str, detail: dict | None = None):
+        FedwatchError.__init__(self, PROVIDER_HISTORY, code, message, detail)
+
+
+class ZqDataError(FedwatchError):
+    """A failure of the optional user-supplied historical ZQ dataset path."""
+
+    def __init__(self, code: str, message: str, detail: dict | None = None):
+        FedwatchError.__init__(self, PROVIDER_ZQ, code, message, detail)

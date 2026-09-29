@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -216,3 +216,42 @@ def corrupt_fomc_calendar_december_row(html: str) -> str:
     open_end = html.find(">", start) + 1
     close = html.find("</div>", open_end)
     return html[:open_end] + "not-a-date" + html[close:]
+
+
+def make_snapshot_transport(now: datetime, events=None) -> FakeTransport:
+    """The captured-provider transport used by the Batch B history tests.
+
+    Mirrors the Batch A snapshot fixture transport: captured Investing, FRED
+    and FOMC fixtures, Gamma/CLOB routes for the two captured events, and one
+    fresh CLOB point per outcome at ``now - 1 day``.
+    """
+    transport = FakeTransport()
+    transport.add_text("DFEDTARU", fixture_text(FIXTURE_FRED_UPPER))
+    transport.add_text("DFEDTARL", fixture_text(FIXTURE_FRED_LOWER))
+    transport.add_text("fomccalendars", fixture_text(FIXTURE_FOMC_CALENDAR))
+    transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE))
+    events = events if events is not None else [
+        fixture_json(FIXTURE_PM_OCTOBER),
+        fixture_json(FIXTURE_PM_DECEMBER),
+    ]
+    transport.add_json(
+        "gamma-api.polymarket.com/events",
+        lambda url, params: events if params.get("tag_slug") == "fed-rates" else [],
+    )
+    transport.add_json(
+        "public-search",
+        lambda url, params: {"events": events if params["q"] == "FOMC" else []},
+    )
+    points = {}
+    for event in events:
+        for market in event.get("markets", []):
+            token = json.loads(market["clobTokenIds"])[0]
+            price = float(json.loads(market["outcomePrices"])[0])
+            points[token] = [{"t": epoch(now - timedelta(days=1)), "p": price}]
+    transport.add_json("prices-history", make_clob_history(points))
+    return transport
+
+
+def fred_series_rows(pairs) -> list[dict]:
+    """Build a FRED history row list from ``[(date, value), ...]`` pairs."""
+    return [{"date": day.isoformat(), "value": value} for day, value in pairs]
