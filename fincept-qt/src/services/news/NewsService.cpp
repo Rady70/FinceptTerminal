@@ -82,7 +82,9 @@ void NewsService::fetch_all_news(bool force, ArticlesCallback cb) {
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
-                a.feed_order = o["feed_order"].toInt();
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());
@@ -244,7 +246,9 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
-                a.feed_order = o["feed_order"].toInt();
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());
@@ -333,8 +337,9 @@ void NewsService::fetch_all_news_progressive(bool force, ArticlesCallback final_
                 // Partial snapshot sorted by time for progressive display
                 snapshot = state->all_articles;
             }
-            // Each partial snapshot is a full-list republish; canonicalize
-            // cross-feed repeats before it reaches a subscriber or the hub.
+            // Provisional snapshot: canonical only over the feeds that have
+            // answered so far — the completed fetch below republishes the
+            // authoritative list, so an envelope can still change.
             canonicalize_news_articles(snapshot);
             emit articles_partial(snapshot, feeds_done, total);
             // Progressive publish — each chunk fans out the accumulated
@@ -458,7 +463,9 @@ void NewsService::refresh(const QStringList& topics) {
                 a.link = o["link"].toString();
                 a.sort_ts = o["sort_ts"].toVariant().toLongLong();
                 a.tier = o["tier"].toInt(4);
-                a.feed_order = o["feed_order"].toInt();
+                // A cache written before feed_order existed has no key here;
+                // -1 marks the priority as unknown rather than guessing 0.
+                a.feed_order = o.contains("feed_order") ? o["feed_order"].toInt() : -1;
                 a.priority = priority_from_string(o["priority"].toString());
                 a.sentiment = sentiment_from_string(o["sentiment"].toString());
                 a.impact = impact_from_string(o["impact"].toString());

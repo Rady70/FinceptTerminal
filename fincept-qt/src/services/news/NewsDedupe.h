@@ -28,15 +28,26 @@
 //   * The canonical envelope: when one story is carried by several feeds, the
 //     copy from the earliest feed on the effective feed list (the order the
 //     RSS manager shows) represents it. Its source, category and region are
-//     what every consumer sees and what the category slices follow. This is
-//     the operator-visible feed priority, not an accident of field ordering.
-//   * The first occurrence in news_newer_first() order survives, so callers
-//     surface a list through canonicalize_news_articles().
+//     what consumers of the completed fetch see and what the category slices
+//     follow. The choice is by feed priority, never by timestamp or by
+//     whichever feed answered first. This is the operator-visible feed
+//     priority, not an accident of field ordering.
+//   * Unknown priority: an article whose feed_order is -1 (a cache written
+//     before feed_order existed, or a list never parsed from a feed) has no
+//     recorded priority. A copy with a recorded priority always beats one
+//     without; a list made only of unknown-priority copies is resolved
+//     best-effort by stable fields and is NOT claimed to match a fresh
+//     fetch. Such a cache is replaced by the first completed fetch.
+//   * Provisional snapshots: the progressive fetch republishes the list as
+//     feeds complete, so a snapshot is canonical only over the feeds that
+//     have already answered; an envelope can still change when an earlier
+//     feed lands. The completed fetch is the canonical list.
 //   * An entry with neither link nor headline is always kept.
 #pragma once
 
 #include "services/news/NewsTypes.h"
 
+#include <QHash>
 #include <QSet>
 #include <QString>
 #include <QUrl>
@@ -77,19 +88,26 @@ inline QString news_dedupe_key(const NewsArticle& article) {
            QString::number(article.sort_ts) + QLatin1Char('\n') + headline;
 }
 
-/// Total order applied before de-duplication, newest first. Equal publication
-/// instants (the same story carried by several feeds) are resolved by the
-/// canonical-envelope rule — earliest feed on the effective list wins — and
-/// then by stable content fields, so the survivor is the same copy no matter
-/// which feed answered first. The generated article id is deliberately not
-/// used: it is regenerated on every fetch.
-inline bool news_newer_first(const NewsArticle& a, const NewsArticle& b) {
+/// True when `a` is a better canonical representative of the same story than
+/// `b`, independent of where either sits in a list. Feed priority decides
+/// first (a recorded priority always beats an unknown one); timestamp does
+/// not participate: the canonical envelope must not change because one feed
+/// published or updated a copy later. Stable content fields break ties and
+/// keep the choice deterministic. The generated article id is never used: it
+/// is regenerated on every fetch.
+inline bool news_envelope_precedes(const NewsArticle& a, const NewsArticle& b) {
+    const bool a_known = a.feed_order >= 0;
+    const bool b_known = b.feed_order >= 0;
+    if (a_known != b_known)
+        return a_known;
+    if (a_known && a.feed_order != b.feed_order)
+        return a.feed_order < b.feed_order;
+
+    // Same feed, or both priorities unknown (legacy cache): resolve on stable
+    // fields. Newest is preferred only here, where feed priority cannot
+    // distinguish the copies.
     if (a.sort_ts != b.sort_ts)
         return a.sort_ts > b.sort_ts;
-    if (a.feed_order != b.feed_order)
-        return a.feed_order < b.feed_order;
-    // Articles from a legacy cache carry no feed order; these fields keep the
-    // comparison total and deterministic for them.
     if (a.tier != b.tier)
         return a.tier < b.tier;
     if (a.source != b.source)
@@ -105,32 +123,60 @@ inline bool news_newer_first(const NewsArticle& a, const NewsArticle& b) {
     return a.link < b.link;
 }
 
-/// Removes cross-feed repeats in place, keeping the first occurrence of every
-/// story. The relative order of the surviving articles is unchanged.
-inline void dedupe_news_articles(QVector<NewsArticle>& articles) {
-    QSet<QString> seen;
-    seen.reserve(articles.size());
-    articles.erase(std::remove_if(articles.begin(), articles.end(),
-                                  [&seen](const NewsArticle& article) {
-                                      const QString key = news_dedupe_key(article);
-                                      if (key.isEmpty())
-                                          return false;
-                                      if (seen.contains(key))
-                                          return true;
-                                      seen.insert(key);
-                                      return false;
-                                  }),
-                   articles.end());
+/// Display order of the surviving articles: newest first, then stable fields
+/// so equal publication instants are ordered deterministically.
+inline bool news_newer_first(const NewsArticle& a, const NewsArticle& b) {
+    if (a.sort_ts != b.sort_ts)
+        return a.sort_ts > b.sort_ts;
+    if (a.tier != b.tier)
+        return a.tier < b.tier;
+    if (a.source != b.source)
+        return a.source < b.source;
+    if (a.category != b.category)
+        return a.category < b.category;
+    if (a.region != b.region)
+        return a.region < b.region;
+    if (a.headline != b.headline)
+        return a.headline < b.headline;
+    if (a.summary != b.summary)
+        return a.summary < b.summary;
+    return a.link < b.link;
 }
 
-/// The single entry point every surfacing path uses: sorts with
-/// news_newer_first() and then collapses repeats. Fresh aggregation,
-/// progressive snapshots and cache reads all go through this helper, so a
-/// cache written before the rule existed is canonicalized exactly like a
-/// fresh fetch.
+/// Removes cross-feed repeats in place. The surviving copy is selected by
+/// news_envelope_precedes() regardless of input order; the slot of the first
+/// occurrence keeps the relative order of distinct stories unchanged.
+inline void dedupe_news_articles(QVector<NewsArticle>& articles) {
+    QHash<QString, int> canonical_index;
+    canonical_index.reserve(articles.size());
+    QVector<NewsArticle> out;
+    out.reserve(articles.size());
+    for (auto& article : articles) {
+        const QString key = news_dedupe_key(article);
+        if (key.isEmpty()) {
+            out.append(std::move(article));
+            continue;
+        }
+        auto it = canonical_index.find(key);
+        if (it == canonical_index.end()) {
+            canonical_index.insert(key, out.size());
+            out.append(std::move(article));
+            continue;
+        }
+        if (news_envelope_precedes(article, out[*it]))
+            out[*it] = std::move(article);
+    }
+    articles = std::move(out);
+}
+
+/// The single entry point every surfacing path uses: collapse repeats, then
+/// order the survivors chronologically. Fresh aggregation, progressive
+/// snapshots and cache reads all go through this helper, so a cache is
+/// canonicalized by the same rule as a fresh fetch when its entries carry a
+/// recorded feed priority.
 inline void canonicalize_news_articles(QVector<NewsArticle>& articles) {
-    std::sort(articles.begin(), articles.end(), news_newer_first);
     dedupe_news_articles(articles);
+    std::sort(articles.begin(), articles.end(), news_newer_first);
 }
 
 } // namespace fincept::services

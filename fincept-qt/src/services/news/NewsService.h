@@ -32,8 +32,9 @@ struct RSSFeed {
     QString source;
     int tier = 3;
     /// Position in the effective feed list, assigned by list_effective_feeds();
-    /// carried into every parsed article as NewsArticle::feed_order.
-    int order = 0;
+    /// carried into every parsed article as NewsArticle::feed_order. -1 means
+    /// the position is not known.
+    int order = -1;
 };
 
 // ── Service ─────────────────────────────────────────────────────────────────

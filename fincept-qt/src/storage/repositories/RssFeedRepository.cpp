@@ -24,8 +24,11 @@ RssFeedRow RssFeedRepository::map_row(QSqlQuery& q) {
 }
 
 Result<QVector<RssFeedRow>> RssFeedRepository::list_all() const {
+    // id ASC is the final key so the effective feed order — and therefore the
+    // canonical-envelope priority — is total, even for feeds with equal tier
+    // and source.
     return query_list("SELECT id, name, url, category, region, source, tier, is_builtin, enabled "
-                      "FROM rss_feeds ORDER BY tier ASC, source ASC",
+                      "FROM rss_feeds ORDER BY tier ASC, source ASC, id ASC",
                       {}, map_row);
 }
 

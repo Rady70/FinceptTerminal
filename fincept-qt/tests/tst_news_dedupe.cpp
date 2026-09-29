@@ -7,8 +7,8 @@
 // insensitive, path/query case preserved, fragment dropped, encoded form
 // preserved); absent a link, source + publication time + normalized headline.
 // The canonical envelope comes from the earliest feed on the effective feed
-// list, and the first occurrence in news_newer_first() order survives —
-// deterministically, without the regenerated article id.
+// list — regardless of timestamps or list position — and a copy with a
+// recorded priority always beats one without (a legacy cache).
 //
 // Header-only over Qt Core ("services/news/NewsDedupe.h"), no app sources.
 
@@ -21,12 +21,13 @@
 
 using fincept::services::canonicalize_news_articles;
 using fincept::services::dedupe_news_articles;
+using fincept::services::news_envelope_precedes;
 using fincept::services::news_newer_first;
 using fincept::services::NewsArticle;
 
 namespace {
 NewsArticle article(const QString& headline, const QString& link, const QString& source = "CNBC", qint64 sort_ts = 1000,
-                    const QString& category = "MARKETS", const QString& region = "GLOBAL", int feed_order = 0) {
+                    const QString& category = "MARKETS", const QString& region = "GLOBAL", int feed_order = -1) {
     NewsArticle a;
     a.headline = headline;
     a.link = link;
@@ -39,16 +40,17 @@ NewsArticle article(const QString& headline, const QString& link, const QString&
 }
 
 // The three overlapping CNBC views of one story, with their real envelope
-// metadata and their positions in the effective feed list (cnbc-finance is
-// listed before cnbc-world and cnbc-tech).
+// metadata and representative relative feed positions: cnbc-finance is listed
+// before cnbc-world and cnbc-tech in the built-in catalog (only the order
+// matters, not the exact indices).
 QVector<NewsArticle> cnbc_copies() {
     const QString headline = "OpenAI abandons plan to release upcoming model as safety concerns escalate";
     const QString link = "https://www.cnbc.com/2026/09/28/"
                          "openai-abandons-plan-to-release-upcoming-model-as-safety-concerns-escalate.html";
     return {
-        article(headline, link, "CNBC", 1000, "MARKETS", "US", 9),      // cnbc-finance
-        article(headline, link, "CNBC", 1000, "MARKETS", "GLOBAL", 30), // cnbc-world
-        article(headline, link, "CNBC", 1000, "TECH", "US", 31),        // cnbc-tech
+        article(headline, link, "CNBC", 1000, "MARKETS", "US", 8),      // cnbc-finance
+        article(headline, link, "CNBC", 1000, "MARKETS", "GLOBAL", 25), // cnbc-world
+        article(headline, link, "CNBC", 1000, "TECH", "US", 26),        // cnbc-tech
     };
 }
 
@@ -101,6 +103,25 @@ class TstNewsDedupe : public QObject {
         QCOMPARE(first_signature, QString("CNBC|MARKETS|US|%1|%2").arg(expected.headline, expected.link));
     }
 
+    // Feed priority decides the envelope, not the publication time: the
+    // earlier feed's older copy must survive, while the surviving list is
+    // still ordered chronologically.
+    void envelopeFollowsFeedPriorityRegardlessOfTimestamps() {
+        QVector<NewsArticle> articles = {
+            article("Shared story", "https://example.com/shared", "EARLIER", 900, "TECH", "US", 5),
+            article("Shared story", "https://example.com/shared", "LATER", 1000, "MARKETS", "US", 6),
+            article("Other story", "https://example.com/other", "OTHER", 1000, "MARKETS", "US", 7),
+        };
+
+        canonicalize_news_articles(articles);
+
+        QCOMPARE(articles.size(), 2);
+        QCOMPARE(articles[0].headline, QString("Other story"));
+        QCOMPARE(articles[1].headline, QString("Shared story"));
+        QCOMPARE(articles[1].source, QString("EARLIER"));
+        QCOMPARE(articles[1].category, QString("TECH"));
+    }
+
     // The canonical envelope follows the feed list, not the category name:
     // a TECH copy listed before a MARKETS copy wins.
     void canonicalEnvelopeFollowsTheFeedListNotTheCategoryName() {
@@ -116,9 +137,25 @@ class TstNewsDedupe : public QObject {
         QCOMPARE(articles[0].category, QString("TECH"));
     }
 
+    // Selection is independent of list position: the later-listed copy does
+    // not win by appearing first.
+    void envelopeSelectionDoesNotDependOnListPosition() {
+        QVector<NewsArticle> articles = {
+            article("Shared story", "https://example.com/shared", "LATER", 1000, "MARKETS", "US", 6),
+            article("Shared story", "https://example.com/shared", "EARLIER", 900, "TECH", "US", 5),
+        };
+
+        dedupe_news_articles(articles);
+
+        QCOMPARE(articles.size(), 1);
+        QCOMPARE(articles[0].source, QString("EARLIER"));
+        QVERIFY(news_envelope_precedes(
+            articles[0], article("Shared story", "https://example.com/shared", "LATER", 1000, "MARKETS", "US", 6)));
+    }
+
     // A cache written before the canonical rule existed stored equal-time
-    // copies in feed-completion order. The cache-read paths canonicalize, so
-    // the same copy survives as a fresh fetch would pick.
+    // copies in feed-completion order, but its entries still carry feed_order,
+    // so the cache-read paths pick the same copy a fresh fetch would.
     void staleCacheOrderIsCanonicalizedLikeFreshData() {
         auto copies = cnbc_copies();
         QVector<NewsArticle> stale_order = {copies[1], copies[2], copies[0]};
@@ -127,6 +164,37 @@ class TstNewsDedupe : public QObject {
 
         QCOMPARE(stale_order.size(), 1);
         QCOMPARE(survivor_signature(stale_order[0]), survivor_signature(copies[0]));
+    }
+
+    // A legacy cache (written before feed_order existed) has no recorded
+    // priority. Such a list is resolved best-effort and deterministically —
+    // here MARKETS/GLOBAL by the stable-field fallback — and is NOT claimed
+    // to match the fresh-fetch envelope (CNBC/MARKETS/US); it is replaced by
+    // the first completed fetch.
+    void legacyCacheWithoutFeedOrderIsBestEffort() {
+        auto legacy = cnbc_copies();
+        for (auto& copy : legacy)
+            copy.feed_order = -1;
+
+        canonicalize_news_articles(legacy);
+
+        QCOMPARE(legacy.size(), 1);
+        QCOMPARE(legacy[0].category, QString("MARKETS"));
+        QCOMPARE(legacy[0].region, QString("GLOBAL"));
+    }
+
+    // A copy with a recorded priority always beats an unknown-priority copy,
+    // whatever the list order or the timestamps.
+    void legacyCacheEntryNeverOutranksRecordedPriority() {
+        QVector<NewsArticle> articles = {
+            article("Shared story", "https://example.com/shared", "CNBC", 1000, "MARKETS", "GLOBAL", -1),
+            article("Shared story", "https://example.com/shared", "CNBC", 900, "MARKETS", "US", 8),
+        };
+
+        canonicalize_news_articles(articles);
+
+        QCOMPARE(articles.size(), 1);
+        QCOMPARE(articles[0].region, QString("US"));
     }
 
     void distinctStoriesKeepTheirOrder() {
@@ -174,7 +242,8 @@ class TstNewsDedupe : public QObject {
     }
 
     // A live-blog entry can be retitled between two feeds; the unchanged link
-    // still identifies one story and the first (ordered) copy survives.
+    // still identifies one story and the newest copy survives when both
+    // priorities are unknown.
     void sameLinkUpdatedHeadlineCollapses() {
         QVector<NewsArticle> articles = {
             article("Stock futures are little changed: Live updates", "https://example.com/live", "CNBC", 1000),
