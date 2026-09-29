@@ -380,10 +380,71 @@ class LifecycleTests(unittest.TestCase):
 
     def test_resolve_missing_post_meeting_coverage_is_not_a_hold(self):
         end_date = utc(2026, 9, 16).date()
-        rows = [{"date": utc(2026, 9, 15).date(), "value": 3.75}]
-        verdict = fedwatch_history.resolve_actual_outcome(end_date, rows, rows)
+        upper = [{"date": utc(2026, 9, 15).date(), "value": 3.75}]
+        lower = [{"date": utc(2026, 9, 15).date(), "value": 3.50}]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
         self.assertFalse(verdict["resolvable"])
         self.assertEqual(verdict["reason"], "FRED_COVERAGE_INSUFFICIENT")
+
+    def test_inverted_before_range_is_rejected(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 17).date(), "value": 3.75},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertFalse(verdict["resolvable"])
+        self.assertEqual(verdict["reason"], "FRED_TARGET_RANGE_INVALID")
+
+    def test_inverted_after_range_is_rejected(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 3.75},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertFalse(verdict["resolvable"])
+        self.assertEqual(verdict["reason"], "FRED_TARGET_RANGE_INVALID")
+
+    def test_equal_bounds_range_is_rejected(self):
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertFalse(verdict["resolvable"])
+        self.assertEqual(verdict["reason"], "FRED_TARGET_RANGE_INVALID")
+
+    def test_upper_only_post_date_does_not_block_a_later_paired_date(self):
+        # A valid paired range exists on 09-18 even though the upper series has
+        # an unpaired 09-17 row; the paired date must be selected.
+        end_date = utc(2026, 9, 16).date()
+        upper = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.75},
+            {"date": utc(2026, 9, 17).date(), "value": 4.00},
+            {"date": utc(2026, 9, 18).date(), "value": 4.00},
+        ]
+        lower = [
+            {"date": utc(2026, 9, 15).date(), "value": 3.50},
+            {"date": utc(2026, 9, 18).date(), "value": 3.75},
+        ]
+        verdict = fedwatch_history.resolve_actual_outcome(end_date, upper, lower)
+        self.assertTrue(verdict["resolvable"])
+        self.assertEqual(verdict["outcome_bp"], 25)
+        self.assertEqual(verdict["detail"]["rate_after_date"], "2026-09-18")
 
     def test_resolve_ambiguous_effective_date_is_not_guessed(self):
         end_date = utc(2026, 9, 16).date()
@@ -1024,6 +1085,26 @@ class ImportZqTests(unittest.TestCase):
         self.assertEqual(
             [error["code"] for error in payload["errors"]],
             ["FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE"],
+        )
+        self.assertEqual(self.store.observations(method=fedwatch_history.FED_METHOD_ZQ), [])
+
+    def test_import_zq_rejects_an_invalid_paired_range(self):
+        self._write_contracts()
+        transport = make_snapshot_transport(NOW)
+        transport.add_text("DFEDTARU", fred_csv("DFEDTARU", [
+            (utc(2026, 7, 10).date(), 3.50),
+        ]))
+        transport.add_text("DFEDTARL", fred_csv("DFEDTARL", [
+            (utc(2026, 7, 10).date(), 3.75),
+        ]))
+        payload = fedwatch_history.import_zq(
+            self.store, transport, self.zq_dir,
+            [utc(2026, 7, 14).date()], clock=FixedClock(NOW),
+        )
+        self.assertEqual(payload["watch_dates"], [])
+        self.assertEqual(
+            [error["code"] for error in payload["errors"]],
+            ["FRED_TARGET_RANGE_INVALID"],
         )
         self.assertEqual(self.store.observations(method=fedwatch_history.FED_METHOD_ZQ), [])
 

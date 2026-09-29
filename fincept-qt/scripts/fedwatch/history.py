@@ -29,6 +29,7 @@ from fedwatch import fomc, fred, polymarket, timeutil
 from fedwatch import zq as fedwatch_zq
 from fedwatch.errors import (
     PROVIDER_FOMC_CALENDAR,
+    PROVIDER_FRED,
     PROVIDER_HISTORY,
     PROVIDER_ZQ,
     FedwatchError,
@@ -419,11 +420,6 @@ def record_snapshot(
 # ── durable meeting lifecycle ──────────────────────────────────────────────
 
 
-def _last_at_or_before(rows: list[dict], day: date) -> dict | None:
-    candidates = [row for row in rows if row["date"] <= day]
-    return candidates[-1] if candidates else None
-
-
 def _delta_bp(before: dict, after: dict) -> int | None:
     raw = (float(after["value"]) - float(before["value"])) * 100.0
     if not math.isfinite(raw):
@@ -502,6 +498,17 @@ def resolve_actual_outcome(
             }
         return None
 
+    def pair_is_valid(day: date) -> bool:
+        candidate = pair(day)
+        if candidate is None:
+            return False
+        return fred.valid_target_range(
+            candidate["upper"]["value"], candidate["lower"]["value"]
+        )
+
+    # The decision is only read from dates on which BOTH bounds have an
+    # observation (a genuine paired range), exactly like the ZQ import.
+    paired_dates = sorted(set(upper_by_date) & set(lower_by_date))
     suffix_end = end_date + timedelta(days=lookahead_days)
 
     def convention(before_day: date | None, strict: bool) -> dict:
@@ -510,29 +517,34 @@ def resolve_actual_outcome(
         before_pair = pair(before_day)
         if before_pair is None:
             return {"status": "missing_pair"}
+        if not pair_is_valid(before_day):
+            return {"status": "invalid_range", "day": before_day.isoformat()}
         after_day = None
         after_pair = None
         if strict:
             # A FRED update on the meeting date itself is only a candidate;
             # the inclusive convention would already include it in "before",
             # so an on-day change here makes the attribution ambiguous.
-            on_meeting_day = pair(end_date)
-            if on_meeting_day is not None and (
-                float(on_meeting_day["upper"]["value"])
-                != float(before_pair["upper"]["value"])
-            ):
-                after_day = end_date
-                after_pair = on_meeting_day
+            if end_date in paired_dates:
+                on_meeting_day = pair(end_date)
+                if (
+                    float(on_meeting_day["upper"]["value"])
+                    != float(before_pair["upper"]["value"])
+                ):
+                    if not pair_is_valid(end_date):
+                        return {"status": "invalid_range", "day": end_date.isoformat()}
+                    after_day = end_date
+                    after_pair = on_meeting_day
         if after_day is None:
-            post_rows = [
-                row for row in upper if end_date < row["date"] <= suffix_end
+            post_days = [
+                day for day in paired_dates if end_date < day <= suffix_end
             ]
-            if not post_rows:
+            if not post_days:
                 return {"status": "missing_window"}
-            after_day = post_rows[0]["date"]
+            after_day = post_days[0]
+            if not pair_is_valid(after_day):
+                return {"status": "invalid_range", "day": after_day.isoformat()}
             after_pair = pair(after_day)
-            if after_pair is None:
-                return {"status": "missing_pair", "after_date": after_day.isoformat()}
         delta = _convention_delta(before_pair, after_pair)
         if delta is None:
             return {"status": "bounds_inconsistent"}
@@ -545,16 +557,33 @@ def resolve_actual_outcome(
             "after_pair": after_pair,
         }
 
-    inclusive_before_day = _last_at_or_before(upper, end_date)
-    strict_rows = [row for row in upper if row["date"] < end_date]
-    strict_before_day = strict_rows[-1]["date"] if strict_rows else None
-    inclusive = convention(
-        inclusive_before_day["date"] if inclusive_before_day else None, strict=False
-    )
+    inclusive_before_rows = [day for day in paired_dates if day <= end_date]
+    inclusive_before_day = inclusive_before_rows[-1] if inclusive_before_rows else None
+    strict_before_rows = [day for day in paired_dates if day < end_date]
+    strict_before_day = strict_before_rows[-1] if strict_before_rows else None
+    inclusive = convention(inclusive_before_day, strict=False)
     strict = convention(strict_before_day, strict=True)
     has_any_before = inclusive_before_day is not None
-    has_any_after = any(row["date"] > end_date for row in upper)
+    has_any_after = any(day > end_date for day in paired_dates)
 
+    invalid_days = sorted(
+        {
+            result["day"]
+            for result in (inclusive, strict)
+            if result["status"] == "invalid_range"
+        }
+    )
+    if invalid_days:
+        return {
+            "resolvable": False,
+            "reason": "FRED_TARGET_RANGE_INVALID",
+            "detail": {
+                "end_date": end_date.isoformat(),
+                "invalid_dates": invalid_days,
+                "inclusive_status": inclusive["status"],
+                "strict_status": strict["status"],
+            },
+        }
     if not has_any_before or not has_any_after:
         # A series that ends on the meeting day (or has no pre-meeting range)
         # cannot establish the post-meeting range; a hold is never assumed.
@@ -1168,6 +1197,23 @@ def import_zq(
             "lower": lower_by_day[paired_day],
             "observation_date": paired_day.isoformat(),
         }
+        if not fred.valid_target_range(current_range["upper"], current_range["lower"]):
+            errors.append(
+                FedwatchError(
+                    PROVIDER_FRED,
+                    "FRED_TARGET_RANGE_INVALID",
+                    f"the paired FRED target range on {paired_day.isoformat()} is not "
+                    f"a valid upper > lower >= 0 pair "
+                    f"({current_range['upper']}/{current_range['lower']})",
+                    detail={
+                        "watch_date": watch_date.isoformat(),
+                        "observation_date": paired_day.isoformat(),
+                        "upper": current_range["upper"],
+                        "lower": current_range["lower"],
+                    },
+                ).to_dict()
+            )
+            continue
         try:
             deconvolution = fedwatch_zq.run_deconvolution(
                 watch_date,

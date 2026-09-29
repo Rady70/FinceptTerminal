@@ -77,6 +77,23 @@ def fetch_series(transport: Transport, series_id: str) -> tuple[list[dict], str]
         ) from exc
 
 
+def valid_target_range(upper, lower) -> bool:
+    """The qualified target-range invariant ``upper > lower >= 0``, finite.
+
+    Batch A's current-range read enforces this; the historical resolution and
+    the ZQ import use the same check so a malformed provider pair can never
+    become a durable decision or reconstruction input.
+    """
+    try:
+        upper_value = float(upper)
+        lower_value = float(lower)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(upper_value) or not math.isfinite(lower_value):
+        return False
+    return upper_value > lower_value >= 0
+
+
 def fetch_target_history(transport: Transport, clock=timeutil.utc_now) -> dict:
     """Fetch the full DFEDTARU/DFEDTARL daily series for historical decisions.
 

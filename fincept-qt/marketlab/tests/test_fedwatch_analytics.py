@@ -475,6 +475,56 @@ class InstrumentGenerationTests(unittest.TestCase):
         self.assertEqual(poly["latest"]["instrument_key"], "tok-new")
         self.assertEqual(poly["observation_count"], 2)
 
+    def test_validated_mapping_without_rows_does_not_fall_back_to_an_obsolete_generation(self):
+        store = new_store(self)
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 35.0), ("2026-09-28T00:00:00Z", 36.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, instrument_key="tok-old",
+        )
+        store.upsert_mapping_outcome(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, 25, False, "VALIDATED",
+            "606422", "Fed Decision in October?", "m-new", "tok-new", "question",
+            {"validation_method": "test"},
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )
+        self.assertEqual(result["polymarket"]["state"], "NO_OBSERVATIONS")
+        self.assertEqual(result["difference"]["current_state"], "MISSING_SIDE")
+        self.assertIsNone(result["difference"]["current_probability_diff_pp"])
+
+    def test_negative_revalidation_fails_the_current_comparison_closed(self):
+        store = new_store(self)
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 40.0), ("2026-09-28T00:00:00Z", 45.0)],
+        )
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 35.0), ("2026-09-28T00:00:00Z", 36.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, instrument_key="tok-old",
+        )
+        store.upsert_mapping_outcome(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, 25, False, "VALIDATED",
+            "606422", "Fed Decision in October?", "m-old", "tok-old", "question",
+            {"validation_method": "test"},
+        )
+        store.mark_mapping_revalidation(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, "NOT_FOUND", now=NOW
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )
+        # The stored history stays inspectable ...
+        self.assertEqual(result["polymarket"]["latest"]["probability_pct"], 36.0)
+        # ... but the current cross-source comparison fails closed.
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "MAPPING_NOT_CURRENT")
+        self.assertEqual(difference["mapping_revalidation_status"], "NOT_FOUND")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertIsNone(difference["current_polymarket_probability_pct"])
+
 
 class MalformedStoredRowTests(unittest.TestCase):
     def test_malformed_rows_are_excluded_with_an_error(self):

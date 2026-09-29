@@ -65,6 +65,9 @@ METHOD_NOTES = [
     "The current cross-source difference is only produced when both sources' latest "
     "observations are within the current-freshness window; a stale observation stays "
     "historical and does not become a current comparison.",
+    "A current validated Polymarket mapping is authoritative for its outcome; when its "
+    "latest automatic re-validation is NOT_FOUND or AMBIGUOUS the current comparison "
+    "fails closed while the stored history remains inspectable.",
     "A probability difference can reflect both genuine market disagreement and the "
     "structural Fed-side binary versus Polymarket broad-tail methodology difference; it "
     "is descriptive research data, not a mispricing or trading signal.",
@@ -105,6 +108,21 @@ def _point_from_row(row: dict) -> dict:
         "observation_count": row["observation_count"],
         "instrument_key": row.get("instrument_key") or "",
     }
+
+
+def _polymarket_mapping(
+    store: FedwatchHistoryStore, meeting_date: str, outcome_bp: int, open_ended: bool
+) -> dict | None:
+    """The stored validated mapping for one Polymarket outcome, if any."""
+    for mapping in store.validated_mappings([meeting_date]):
+        if (
+            mapping.get("source") == POLY_SOURCE
+            and mapping.get("method") == POLY_METHOD
+            and mapping.get("outcome_bp") == outcome_bp
+            and bool(mapping.get("open_ended")) == open_ended
+        ):
+            return mapping
+    return None
 
 
 def change_points(
@@ -149,29 +167,20 @@ def change_points(
             row for row in valid
             if row["outcome_bp"] == outcome_bp and bool(row["open_ended"]) == open_ended
         ]
-        if not matching:
-            return [], errors
-        # A re-created market contributes a new instrument generation. Prefer
-        # the currently validated token when one is stored; otherwise use the
-        # generation with the latest observation. Generations are never mixed.
-        keys = {row["instrument_key"] for row in matching}
-        chosen = None
-        for mapping in store.validated_mappings([meeting_date]):
-            if (
-                mapping.get("source") == POLY_SOURCE
-                and mapping.get("method") == POLY_METHOD
-                and mapping.get("outcome_bp") == outcome_bp
-                and bool(mapping.get("open_ended")) == open_ended
-            ):
-                token = mapping.get("external_token_id") or ""
-                if token in keys:
-                    chosen = token
-                    break
-        if chosen is None:
-            chosen = max(matching, key=lambda row: (row["observed_at"], row["id"]))[
-                "instrument_key"
-            ]
-        matching = [row for row in matching if row["instrument_key"] == chosen]
+        mapping = _polymarket_mapping(store, meeting_date, outcome_bp, open_ended)
+        if mapping is not None:
+            # A current validated mapping is authoritative whether or not any
+            # observation row exists for its token: no rows means no series,
+            # never a silent fallback to an obsolete token generation.
+            token = mapping.get("external_token_id") or ""
+            matching = [row for row in matching if row["instrument_key"] == token]
+        elif matching:
+            # Defensive historical-only path (no stored mapping row): use the
+            # generation with the latest observation; generations are not mixed.
+            latest_key = max(
+                matching, key=lambda row: (row["observed_at"], row["id"])
+            )["instrument_key"]
+            matching = [row for row in matching if row["instrument_key"] == latest_key]
         points = [
             _point_from_row(row)
             for row in sorted(matching, key=lambda row: (row["observed_at"], row["id"]))
@@ -454,6 +463,21 @@ def compute_analytics(
 
     difference = _current_difference(fed_summary, poly_summary, as_of)
     difference["fed_method"] = fed_method
+    mapping = _polymarket_mapping(store, meeting_date, outcome_bp, open_ended)
+    revalidation = mapping.get("last_revalidation_status") if mapping else None
+    difference["mapping_revalidation_status"] = revalidation
+    meeting_status = meeting["status"] if meeting else None
+    if (
+        meeting_status != "RESOLVED"
+        and revalidation in ("NOT_FOUND", "AMBIGUOUS")
+    ):
+        # Current discovery no longer verifies this meeting's Poly mapping:
+        # the stored series stays inspectable, but it must not be presented as
+        # a current cross-source comparison.
+        difference["current_state"] = "MAPPING_NOT_CURRENT"
+        difference["current_probability_diff_pp"] = None
+        difference["current_fed_probability_pct"] = None
+        difference["current_polymarket_probability_pct"] = None
     difference["history"] = divergence_history(fed_points, poly_points, as_of)
     difference["history_basis"] = (
         "UTC calendar days on which each source has an actual accepted observation; "
@@ -463,7 +487,7 @@ def compute_analytics(
 
     return {
         "meeting_date": meeting_date,
-        "meeting_status": meeting["status"] if meeting else None,
+        "meeting_status": meeting_status,
         "actual_outcome_bp": meeting["actual_outcome_bp"] if meeting else None,
         "outcome_bp": outcome_bp,
         "open_ended": open_ended,
