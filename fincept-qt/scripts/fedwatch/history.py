@@ -4,9 +4,10 @@ This module turns the finalized Batch A current-observation contract into
 durable MarketLab history (FEDWATCH_INTEGRATION_PLAN.md section 9) without
 changing the current contract:
 
-* :func:`collect` records an accepted snapshot's Fed-side and Polymarket
-  observations into the SQLite history store, then advances the durable FOMC
-  meeting lifecycle from FRED's official target-range series.
+* :func:`collect` first advances the durable FOMC meeting lifecycle from FRED's
+  official target-range series, then records an accepted snapshot's Fed-side
+  and Polymarket observations into the SQLite history store, so a past
+  unsettled meeting is never given fresh live observations.
 * :func:`backfill_polymarket` imports the qualified CLOB ``prices-history``
   (``interval=max``, ``fidelity=1440``) for already-validated mappings,
   idempotently and with an intentional refresh cadence.

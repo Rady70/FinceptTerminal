@@ -44,10 +44,20 @@ def seed(
     source="investing",
     outcome_bp=25,
     open_ended=False,
-    quality="OK",
+    quality=None,
     instrument_key="",
 ) -> None:
-    """Record production-like observations: the digest covers content only."""
+    """Record production-like observations: the digest covers content only.
+
+    The default quality is the finalized producer's current marker for the
+    series: "OK" for live Fed-side observations, "CURRENT" for live Polymarket
+    observations and "RECONSTRUCTED" for ZQ watch-date reconstructions.
+    """
+    if quality is None:
+        quality = {
+            POLY_METHOD: "CURRENT",
+            FED_METHOD_ZQ: "RECONSTRUCTED",
+        }.get(method, "OK")
     for observed_at, value in points:
         digest = content_digest(
             {
@@ -276,6 +286,53 @@ class DerivedOutcomeTests(unittest.TestCase):
             tail["latest"]["quality_status"], "DERIVED_FROM_MEETING_DISTRIBUTION"
         )
 
+    def test_derived_fed_tail_from_current_observations_remains_current(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 20.0)], outcome_bp=0)
+        seed(store, [("2026-09-28T00:00:00Z", 80.0)], outcome_bp=25)
+        seed(
+            store, [("2026-09-28T00:00:00Z", 75.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, open_ended=True,
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, open_ended=True, as_of=NOW
+        )
+        fed = result["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 80.0)
+        self.assertEqual(
+            fed["latest"]["quality_status"], "DERIVED_FROM_MEETING_DISTRIBUTION"
+        )
+        self.assertTrue(fed["latest"]["current_eligible"])
+        self.assertEqual(result["difference"]["current_state"], "OK")
+        self.assertEqual(result["difference"]["current_probability_diff_pp"], -5.0)
+
+    def test_derived_fed_tail_from_reconstructed_observations_is_not_current(self):
+        store = new_store(self)
+        seed(
+            store, [("2026-09-28T00:00:00Z", 40.0)],
+            method=FED_METHOD_ZQ, source="zq", outcome_bp=0,
+        )
+        seed(
+            store, [("2026-09-28T00:00:00Z", 60.0)],
+            method=FED_METHOD_ZQ, source="zq", outcome_bp=25,
+        )
+        seed(
+            store, [("2026-09-28T00:00:00Z", 65.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, open_ended=True,
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, open_ended=True, fed_method=FED_METHOD_ZQ, as_of=NOW
+        )
+        fed = result["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 60.0)
+        self.assertEqual(
+            fed["latest"]["quality_status"], "DERIVED_FROM_MEETING_DISTRIBUTION"
+        )
+        self.assertFalse(fed["latest"]["current_eligible"])
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+
     def test_absent_bucket_is_zero_only_while_the_distribution_is_complete(self):
         store = new_store(self)
         seed(store, [("2026-09-28T00:00:00Z", 30.0)], outcome_bp=0)
@@ -356,6 +413,8 @@ class DivergenceTests(unittest.TestCase):
         self.assertEqual(difference["current_probability_diff_pp"], 2.0)
         self.assertEqual(difference["current_fed_probability_pct"], 32.0)
         self.assertEqual(difference["current_polymarket_probability_pct"], 34.0)
+        self.assertEqual(difference["fed_latest_quality_status"], "OK")
+        self.assertEqual(difference["polymarket_latest_quality_status"], "CURRENT")
         self.assertEqual(
             [(row["date"], row["probability_diff_pp"]) for row in difference["history"]],
             [("2026-09-20", 5.0), ("2026-09-22", 2.0)],
@@ -430,6 +489,83 @@ class DivergenceTests(unittest.TestCase):
         self.assertEqual(difference["current_state"], "STALE_LATEST_OBSERVATION")
         self.assertGreater(difference["polymarket_latest_age_days"], 3.0)
         self.assertLessEqual(difference["fed_latest_age_days"], 3.0)
+
+    def test_partial_polymarket_observation_is_readable_but_not_current(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 40.0)])
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 35.0), ("2026-09-28T00:00:00Z", 36.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, quality="PARTIAL",
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )
+        # The stored series stays historically readable ...
+        polymarket = result["polymarket"]
+        self.assertEqual(polymarket["state"], "OK")
+        self.assertEqual(polymarket["latest"]["probability_pct"], 36.0)
+        self.assertEqual(polymarket["latest"]["quality_status"], "PARTIAL")
+        self.assertEqual(change(polymarket["latest_change_from_previous_observation"]), 1.0)
+        difference = result["difference"]
+        self.assertEqual([row["date"] for row in difference["history"]], ["2026-09-28"])
+        # ... but a partially covered observation is not current provider data.
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertEqual(difference["polymarket_latest_quality_status"], "PARTIAL")
+
+    def test_stale_polymarket_observation_is_readable_but_not_current(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 40.0)])
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 35.0), ("2026-09-28T00:00:00Z", 36.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, quality="STALE",
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )
+        self.assertEqual(result["polymarket"]["latest"]["probability_pct"], 36.0)
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertEqual(difference["polymarket_latest_quality_status"], "STALE")
+
+    def test_backfilled_polymarket_history_is_readable_but_not_current(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 40.0)])
+        seed(
+            store,
+            [("2026-09-27T00:00:00Z", 35.0), ("2026-09-28T00:00:00Z", 36.0)],
+            method=POLY_METHOD, source=POLY_SOURCE, quality="BACKFILLED",
+        )
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, as_of=NOW
+        )
+        self.assertEqual(result["polymarket"]["latest"]["probability_pct"], 36.0)
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+
+    def test_reconstructed_fed_observations_are_readable_but_not_current(self):
+        store = new_store(self)
+        seed(
+            store,
+            [("2026-09-28T00:00:00Z", 55.0)],
+            method=FED_METHOD_ZQ, source="zq", quality="RECONSTRUCTED",
+        )
+        seed(store, [("2026-09-28T00:00:00Z", 60.0)], method=POLY_METHOD, source=POLY_SOURCE)
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, fed_method=FED_METHOD_ZQ, as_of=NOW
+        )
+        fed = result["fed_side"]
+        self.assertEqual(fed["latest"]["probability_pct"], 55.0)
+        self.assertEqual(fed["latest"]["quality_status"], "RECONSTRUCTED")
+        self.assertFalse(fed["latest"]["current_eligible"])
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertEqual(difference["fed_latest_quality_status"], "RECONSTRUCTED")
 
     def test_conflicting_observation_never_fabricates_a_summed_probability(self):
         store = new_store(self)

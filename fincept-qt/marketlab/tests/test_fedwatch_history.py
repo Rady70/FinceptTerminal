@@ -34,6 +34,7 @@ from fedwatch_test_support import (
     utc,
 )
 
+from fedwatch import analytics as fedwatch_analytics
 from fedwatch import history as fedwatch_history
 from fedwatch import snapshot as fedwatch_snapshot
 from fedwatch.store import FedwatchHistoryStore
@@ -142,6 +143,54 @@ class RecordingTests(unittest.TestCase):
         mappings = self.store.validated_mappings(["2026-10-28"])
         self.assertEqual(len(mappings), 5)
         self.assertEqual(mappings[0]["external_event_id"], "606422")
+
+    def test_partial_polymarket_collection_is_stored_but_not_a_current_comparison(self):
+        meeting = synthetic_fed_meeting("2026-10-28")
+        meeting["polymarket"] = {
+            "meeting_date": "2026-10-28",
+            "mapping_status": "VALIDATED",
+            "event_id": "606422",
+            "event_title": "Fed Decision in October?",
+            "event_end_date": "2026-10-29T03:59:00Z",
+            "mapping_evidence": {"validation_method": "test"},
+            "data_status": "PARTIAL",
+            "freshness": {"status": "PARTIAL", "age_days": None, "basis": "test"},
+            "outcomes": [
+                {
+                    "outcome_bp": 25,
+                    "open_ended": False,
+                    "probability_pct": 33.5,
+                    "source_timestamp": "2026-09-28T11:00:00Z",
+                    "market_id": "606422-1",
+                    "token_id": "606422-tok-25",
+                    "question": "Will the Fed increase interest rates by 25 bps?",
+                }
+            ],
+        }
+        report = fedwatch_history.record_snapshot(
+            self.store,
+            {"retrieved_at": "2026-09-28T12:00:00Z", "meetings": [meeting]},
+            clock=FixedClock(NOW),
+        )
+        self.assertEqual(report["polymarket_observations"], 1)
+        poly_rows = [
+            row for row in self.store.observations(meeting_date="2026-10-28")
+            if row["method"] == "POLYMARKET_CLOB"
+        ]
+        self.assertEqual([row["quality_status"] for row in poly_rows], ["PARTIAL"])
+
+        # The stored partial observation remains historically readable ...
+        result = fedwatch_analytics.compute_analytics(
+            self.store, "2026-10-28", 25, as_of=NOW
+        )
+        self.assertEqual(result["fed_side"]["state"], "OK")
+        self.assertEqual(result["fed_side"]["latest"]["probability_pct"], 50.0)
+        self.assertEqual(result["polymarket"]["latest"]["probability_pct"], 33.5)
+        # ... but it must not become a current cross-source comparison.
+        difference = result["difference"]
+        self.assertEqual(difference["current_state"], "NON_CURRENT_LATEST_OBSERVATION")
+        self.assertIsNone(difference["current_probability_diff_pp"])
+        self.assertEqual(difference["polymarket_latest_quality_status"], "PARTIAL")
 
     def test_replaying_the_same_snapshot_is_a_duplicate(self):
         first = fedwatch_history.record_snapshot(

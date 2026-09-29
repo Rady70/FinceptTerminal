@@ -17,9 +17,11 @@ Guarantees:
   timestamp is reported with it;
 * insufficient coverage is an explicit state, never a fabricated number;
 * the *current* Fed-side versus Polymarket difference is only produced when
-  both latest observations are inside the established current-freshness window;
-  stale observations stay inspectable historically but never silently become a
-  current cross-source comparison;
+  both latest observations are inside the established current-freshness window
+  and their stored quality is explicitly current (live Fed-side "OK", live
+  Polymarket "CURRENT"); stale, partially covered, backfilled and
+  reconstructed observations stay inspectable historically but never silently
+  become a current cross-source comparison;
 * series are isolated by meeting, method, outcome and open-endedness;
 * all dates and instants are UTC, reported as such;
 * ``probability_diff_pp = Polymarket - Fed-side`` (the established sign
@@ -55,6 +57,25 @@ CURRENT_MAX_AGE_DAYS = 3.0
 # history does not usefully predate this window for FedWatch.
 MAX_DIVERGENCE_DAYS = 3700
 
+# Stored observation quality states that represent current usable provider data
+# (the finalized Batch A contract). Live Fed-side observations are recorded
+# "OK"; live Polymarket observations carry the producer's data_status, whose
+# current state is "CURRENT". Every other stored state — partially covered
+# ("PARTIAL"), "STALE", "UNAVAILABLE"/"UNKNOWN", backfilled daily CLOB history
+# ("BACKFILLED") and reconstructed ZQ observations ("RECONSTRUCTED") — is
+# explicitly not current: it stays historically inspectable but must never
+# drive the current cross-source comparison, however recent its stored instant.
+FED_CURRENT_QUALITY = "OK"
+POLY_CURRENT_QUALITY = "CURRENT"
+
+
+def _current_quality_usable(method: str, quality_status) -> bool:
+    """Whether one stored observation's quality is current usable provider data."""
+    if method == POLY_METHOD:
+        return quality_status == POLY_CURRENT_QUALITY
+    return quality_status == FED_CURRENT_QUALITY
+
+
 METHOD_NOTES = [
     "probability_diff_pp = Polymarket - Fed-side.",
     "All historical calculations use the stored accepted-observation chronology on a "
@@ -63,8 +84,10 @@ METHOD_NOTES = [
     "A change is reported only when an accepted observation exists at or before the "
     "lookback instant; the reference observation timestamp is part of the result.",
     "The current cross-source difference is only produced when both sources' latest "
-    "observations are within the current-freshness window; a stale observation stays "
-    "historical and does not become a current comparison.",
+    "observations are within the current-freshness window and their stored quality is "
+    "explicitly current (live Fed-side \"OK\", live Polymarket \"CURRENT\"); partially "
+    "covered, stale, backfilled and reconstructed observations stay historical and never "
+    "become a current comparison.",
     "A current validated Polymarket mapping is authoritative for its outcome; when its "
     "latest automatic re-validation is NOT_FOUND or AMBIGUOUS the current comparison "
     "fails closed while the stored history remains inspectable.",
@@ -98,7 +121,7 @@ def _matches_tail(outcome_bp: int, open_ended: bool, requested_bp: int, requeste
     return outcome_bp <= requested_bp
 
 
-def _point_from_row(row: dict) -> dict:
+def _point_from_row(row: dict, current_eligible: bool) -> dict:
     return {
         "observed_at": row["observed_at"],
         "probability_pct": float(row["probability_pct"]),
@@ -107,6 +130,7 @@ def _point_from_row(row: dict) -> dict:
         "quality_status": row["quality_status"],
         "observation_count": row["observation_count"],
         "instrument_key": row.get("instrument_key") or "",
+        "current_eligible": current_eligible,
     }
 
 
@@ -182,7 +206,9 @@ def change_points(
             )["instrument_key"]
             matching = [row for row in matching if row["instrument_key"] == latest_key]
         points = [
-            _point_from_row(row)
+            _point_from_row(
+                row, _current_quality_usable(POLY_METHOD, row["quality_status"])
+            )
             for row in sorted(matching, key=lambda row: (row["observed_at"], row["id"]))
         ]
         return points, errors
@@ -206,7 +232,9 @@ def change_points(
             # An individually stored outcome is readable as stored; a derived
             # tail or absent bucket additionally requires the complete meeting
             # distribution at that instant (the established comparison rule).
-            point = _point_from_row(matching[0])
+            point = _point_from_row(
+                matching[0], _current_quality_usable(method, matching[0]["quality_status"])
+            )
             points.append(point)
             continue
         active_total = sum(float(row["probability_pct"]) for row in rows_at)
@@ -224,6 +252,12 @@ def change_points(
                 "quality_status": "DERIVED_FROM_MEETING_DISTRIBUTION",
                 "observation_count": max(len(matching), 1),
                 "instrument_key": "",
+                # A derived value is current exactly when every stored
+                # observation of its instant is current usable provider data.
+                "current_eligible": all(
+                    _current_quality_usable(method, row["quality_status"])
+                    for row in rows_at
+                ),
             }
         )
     return points, errors
@@ -318,6 +352,7 @@ def summarize_points(
             "source_observed_at": latest.get("source_observed_at"),
             "retrieved_at": latest.get("retrieved_at"),
             "quality_status": latest.get("quality_status"),
+            "current_eligible": bool(latest.get("current_eligible", False)),
             "instrument_key": latest.get("instrument_key") or None,
         },
         "latest_change_from_previous_observation": _change_entry(
@@ -402,7 +437,7 @@ def divergence_history(
 
 
 def _current_difference(fed_summary: dict, poly_summary: dict, as_of: datetime) -> dict:
-    """The current cross-source difference, gated by latest-observation age."""
+    """The current cross-source difference, gated by stored quality and age."""
     base = {
         "sign_convention": "Polymarket - Fed-side",
         "fed_method": None,
@@ -414,6 +449,8 @@ def _current_difference(fed_summary: dict, poly_summary: dict, as_of: datetime) 
         "current_max_age_days": CURRENT_MAX_AGE_DAYS,
         "fed_latest_age_days": None,
         "polymarket_latest_age_days": None,
+        "fed_latest_quality_status": None,
+        "polymarket_latest_quality_status": None,
     }
     if fed_summary["state"] != "OK" or poly_summary["state"] != "OK":
         base["current_state"] = "MISSING_SIDE"
@@ -426,6 +463,14 @@ def _current_difference(fed_summary: dict, poly_summary: dict, as_of: datetime) 
     base["polymarket_latest_age_days"] = round(poly_age, 6)
     base["current_fed_probability_pct"] = fed_latest["probability_pct"]
     base["current_polymarket_probability_pct"] = poly_latest["probability_pct"]
+    base["fed_latest_quality_status"] = fed_latest.get("quality_status")
+    base["polymarket_latest_quality_status"] = poly_latest.get("quality_status")
+    if not fed_latest.get("current_eligible") or not poly_latest.get("current_eligible"):
+        # A recently timestamped but explicitly non-current stored observation
+        # is not a current observation: the stored series stays inspectable,
+        # but no current cross-source difference is produced from it.
+        base["current_state"] = "NON_CURRENT_LATEST_OBSERVATION"
+        return base
     if fed_age > CURRENT_MAX_AGE_DAYS or poly_age > CURRENT_MAX_AGE_DAYS:
         base["current_state"] = "STALE_LATEST_OBSERVATION"
         return base
