@@ -4182,6 +4182,19 @@ if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
     set_tests_properties(marketlab_ibkr_fixtures PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
+# FedWatch Batch A: the self-contained Fed-side / FRED / FOMC / Polymarket
+# provider fixture suite (scripts/fedwatch/). Registered by name for the same
+# reason as the IBKR suite above; the discovery target above also runs it.
+# Pure-stdlib unittest against captured provider fixtures — no network.
+if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests/test_fedwatch_investing.py")
+    add_test(NAME marketlab_fedwatch_fixtures
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
+                -p "test_fedwatch_*.py")
+    set_tests_properties(marketlab_fedwatch_fixtures PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 # ── Test suite (opt-in; see fincept-qt/tests/CMakeLists.txt) ─────────────────
 # The EXISTS guard is load-bearing: the tests/ tree is not in the repo yet, and
