@@ -707,6 +707,29 @@ Result<std::optional<LinkRelationship>> EtfDataRepository::nport_link_relationsh
     return R::ok(link_relationship_from_id(r.value().value(0).toString()));
 }
 
+Result<QVector<etf_store::IdentityLinkRow>> EtfDataRepository::nport_links_known_at(qint64 instrument_id,
+                                                                                    const QDateTime& known_at) {
+    using R = Result<QVector<etf_store::IdentityLinkRow>>;
+    if (instrument_id <= 0 || !known_at.isValid())
+        return R::err("an instrument and knowledge cutoff are required");
+    auto r = db().execute("SELECT link_id, instrument_id, entity_id, class_id, relationship, link_basis, declared_at "
+                          "FROM etf_identity_links WHERE instrument_id = ? AND declared_at <= ? ORDER BY link_id",
+                          {instrument_id, etf_store::iso_utc(known_at)});
+    if (r.is_err())
+        return R::err(r.error());
+    QVector<etf_store::IdentityLinkRow> out;
+    auto& q = r.value();
+    while (q.next()) {
+        const auto relationship = link_relationship_from_id(q.value(4).toString());
+        const QDateTime declared_at = etf_store::parse_iso_utc(q.value(6).toString());
+        if (!relationship || !declared_at.isValid())
+            return R::err("an identity link has an invalid relationship or declaration time");
+        out.append({q.value(0).toLongLong(), q.value(1).toLongLong(), q.value(2).toLongLong(), q.value(3).toString(),
+                    *relationship, q.value(5).toString(), declared_at});
+    }
+    return R::ok(out);
+}
+
 Result<QVector<MarketSessionDay>> EtfDataRepository::market_sessions(const QString& calendar_id,
                                                                      const QString& calendar_version) {
     using R = Result<QVector<MarketSessionDay>>;

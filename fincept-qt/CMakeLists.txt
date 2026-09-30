@@ -1247,6 +1247,7 @@ set(SERVICE_SOURCES
     src/services/etf/EtfIbkrDailyIngestor.cpp
     src/services/etf/EtfDataService.cpp
     src/services/etf/EtfDerivedAnalytics.cpp
+    src/services/etf/EtfGroupAnalytics.cpp
     src/services/options/OptionChainService.cpp
     src/services/options/OISnapshotter.cpp
     src/services/options/StrategyTemplates.cpp
@@ -2577,6 +2578,7 @@ set_source_files_properties(
     src/services/etf/EtfIbkrDailyIngestor.cpp
     src/services/etf/EtfDataService.cpp
     src/services/etf/EtfDerivedAnalytics.cpp
+    src/services/etf/EtfGroupAnalytics.cpp
     src/app/EtfDataCli.cpp
     src/app/EtfDataSelftest.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
@@ -2678,6 +2680,15 @@ add_executable(FinceptTerminal ${_FINCEPT_EXE_FLAGS}
 
 target_include_directories(FinceptTerminal PRIVATE
     src
+)
+
+# MarketLab-controlled research classification: a reviewed, immutable resource
+# in each binary, not a hosted service or mutable profile database.
+set_source_files_properties(resources/etf_taxonomy_v2.json PROPERTIES
+    QT_RESOURCE_ALIAS "taxonomy_v2.json")
+qt6_add_resources(FinceptTerminal "marketlab_etf_taxonomy"
+    PREFIX "/etf"
+    FILES resources/etf_taxonomy_v2.json
 )
 
 

@@ -3,6 +3,7 @@
 #include "core/logging/Logger.h"
 #include "services/etf/EtfDataService.h"
 #include "services/etf/EtfDerivedAnalytics.h"
+#include "services/etf/EtfGroupAnalytics.h"
 #include "services/etf/EtfRegulatoryFlowAnalytics.h"
 #include "services/etf/EtfRotationMeasures.h"
 #include "services/etf/EtfRoutePolicy.h"
@@ -55,6 +56,10 @@ int usage(const QString& why) {
                                    "[--symbol <SYM> | --con-id <n>] [--reference-symbol <SYM> | --reference-con-id "
                                    "<n>] [--from <yyyy-MM-dd>] [--to <yyyy-MM-dd>]"));
     commands.append(QStringLiteral("--etf-data export --out <file.json>"));
+    commands.append(QStringLiteral("--etf-data groups --out <file.json> --from <yyyy-MM-dd> --to <yyyy-MM-dd> "
+                                   "[--as-of <ISO-8601 with Z or offset>] [--known-at <ISO-8601 with Z or offset>] "
+                                   "[--level <complex|category|asset_class|cross_asset>] [--group <id>] "
+                                   "[--taxonomy-version <version>] [--include-leveraged <true|false>]"));
     commands.append(QStringLiteral("--etf-data status"));
     print_json(QJsonObject{{"ok", false}, {"error", why}, {"usage", commands}});
     return 2;
@@ -162,6 +167,10 @@ bool parse_options(int argc, char* argv[], QString& command, QHash<QString, QStr
         }
         if (!key.startsWith(QLatin1String("--")) || j + 1 >= argc) {
             error = QStringLiteral("expected '--option value', got '%1'").arg(key);
+            return false;
+        }
+        if (options.contains(key.mid(2))) {
+            error = QStringLiteral("duplicate option '%1'").arg(key);
             return false;
         }
         options.insert(key.mid(2), QString::fromLocal8Bit(argv[++j]));
@@ -280,6 +289,72 @@ int run_etf_data_cli(int argc, char* argv[]) {
             return 1;
         }
         print_json(QJsonObject{{"ok", true}, {"command", command}, {"out", out}, {"table_counts", table_counts()}});
+        return 0;
+    }
+
+    if (command == QLatin1String("groups")) {
+        // Batch D reads the same versioned store as Batch C. Explicit bounds
+        // keep an export reviewable; unknown options or duplicate cutoffs fail.
+        static const QStringList kGroupOptions = {QStringLiteral("out"),
+                                                  QStringLiteral("as-of"),
+                                                  QStringLiteral("known-at"),
+                                                  QStringLiteral("from"),
+                                                  QStringLiteral("to"),
+                                                  QStringLiteral("level"),
+                                                  QStringLiteral("group"),
+                                                  QStringLiteral("taxonomy-version"),
+                                                  QStringLiteral("include-leveraged")};
+        for (auto it = options.cbegin(); it != options.cend(); ++it) {
+            if (!kGroupOptions.contains(it.key()))
+                return usage(QStringLiteral("groups does not take --%1").arg(it.key()));
+        }
+        const QString out = options.value(QStringLiteral("out"));
+        if (out.isEmpty())
+            return usage(QStringLiteral("groups needs --out <file.json>"));
+        services::etf::GroupRunRequest req;
+        req.frame.as_of = QDateTime::currentDateTimeUtc();
+        req.frame.known_at = req.frame.as_of;
+        if (options.contains(QStringLiteral("as-of")) &&
+            !parse_instant(options.value(QStringLiteral("as-of")), &req.frame.as_of))
+            return usage(QStringLiteral("--as-of must be an ISO-8601 instant with Z or an offset"));
+        if (options.contains(QStringLiteral("known-at")) &&
+            !parse_instant(options.value(QStringLiteral("known-at")), &req.frame.known_at))
+            return usage(QStringLiteral("--known-at must be an ISO-8601 instant with Z or an offset"));
+        for (const char* key : {"from", "to"}) {
+            const QString text = options.value(QLatin1String(key));
+            const QDate date = QDate::fromString(text, Qt::ISODate);
+            if (!date.isValid() || date.toString(Qt::ISODate) != text)
+                return usage(QStringLiteral("groups needs --from and --to in yyyy-MM-dd format"));
+            (std::strcmp(key, "from") == 0 ? req.output_from : req.output_to) = date;
+        }
+        req.group_level = options.value(QStringLiteral("level"), QStringLiteral("cross_asset"));
+        req.group_id = options.value(QStringLiteral("group"));
+        req.expected_taxonomy_version = options.value(QStringLiteral("taxonomy-version"));
+        if (options.contains(QStringLiteral("include-leveraged"))) {
+            const QString value = options.value(QStringLiteral("include-leveraged"));
+            if (value != QLatin1String("true") && value != QLatin1String("false"))
+                return usage(QStringLiteral("--include-leveraged must be true or false"));
+            req.include_leveraged = value == QLatin1String("true");
+        }
+        auto doc = services::etf::run_group_research(req);
+        if (doc.is_err()) {
+            print_json(
+                QJsonObject{{"ok", false}, {"command", command}, {"error", QString::fromStdString(doc.error())}});
+            return 1;
+        }
+        const QByteArray bytes = QJsonDocument(doc.value()).toJson(QJsonDocument::Indented);
+        QSaveFile file(out);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+            print_json(QJsonObject{{"ok", false}, {"error", QStringLiteral("could not write %1").arg(out)}});
+            return 1;
+        }
+        print_json(QJsonObject{{"ok", true},
+                               {"command", command},
+                               {"out", out},
+                               {"as_of", doc.value().value(QLatin1String("as_of"))},
+                               {"known_at", doc.value().value(QLatin1String("known_at"))},
+                               {"taxonomy_version", doc.value().value(QLatin1String("taxonomy_version"))},
+                               {"taxonomy_sha256", doc.value().value(QLatin1String("taxonomy_sha256"))}});
         return 0;
     }
 

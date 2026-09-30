@@ -191,6 +191,19 @@ struct ListedInstrumentRow {
     QVector<InstrumentSymbolRow> symbols;
 };
 
+/// Every declared link remains visible to Batch D. There is no revocation
+/// history in v052, so a caller must expose conflicting links as ambiguous
+/// instead of guessing that the newest declaration replaced the others.
+struct IdentityLinkRow {
+    qint64 link_id = 0;
+    qint64 instrument_id = 0;
+    qint64 entity_id = 0;
+    QString class_id;
+    services::etf::LinkRelationship relationship = services::etf::LinkRelationship::RegistrantIsInstrument;
+    QString basis;
+    QDateTime declared_at;
+};
+
 /// The lineage of one stored N-PORT filing (never changes once stored).
 struct SecFilingLineageRow {
     QString accession;
@@ -284,6 +297,9 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
     /// link whose declaration time is at or before it.
     Result<std::optional<services::etf::LinkRelationship>> nport_link_relationship_known_at(qint64 instrument_id,
                                                                                             const QDateTime& known_at);
+    /// All declared links visible at the cutoff, including their evidence.
+    /// Batch D uses this to refuse ambiguous attribution and double counting.
+    Result<QVector<etf_store::IdentityLinkRow>> nport_links_known_at(qint64 instrument_id, const QDateTime& known_at);
     /// The persisted session rows of one calendar version, by date.
     Result<QVector<services::etf::MarketSessionDay>> market_sessions(const QString& calendar_id,
                                                                      const QString& calendar_version);
