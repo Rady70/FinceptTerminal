@@ -285,7 +285,7 @@ inline QJsonObject group_flow_month_json(const GroupFlowMonth& m) {
         member_rows.append(item);
     }
     return QJsonObject{
-        {QStringLiteral("method"), QLatin1String("etf_group_analytics_v1")},
+        {QStringLiteral("method"), QLatin1String("etf_group_analytics_v2")},
         {QStringLiteral("taxonomy_version"), m.taxonomy_version},
         {QStringLiteral("group_level"), m.group_level},
         {QStringLiteral("group_id"), m.group_id},

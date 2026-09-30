@@ -135,7 +135,7 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
     using R = Result<QJsonObject>;
     if (const QString problem = group_request_problem(request); !problem.isEmpty())
         return R::err(problem.toStdString());
-    QFile resource(QStringLiteral(":/etf/taxonomy_v1.json"));
+    QFile resource(QStringLiteral(":/etf/taxonomy_v2.json"));
     if (!resource.open(QIODevice::ReadOnly))
         return R::err("the bundled ETF taxonomy could not be opened");
     QString taxonomy_error;
@@ -163,8 +163,20 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
         entities_by_id.insert(e.entity_id, e);
     }
     QHash<qint64, etf_store::ListedInstrumentRow> instruments;
-    for (const auto& i : instrument_read.value())
+    QHash<qint64, QVector<etf_store::IdentityLinkRow>> links_by_instrument;
+    QHash<qint64, QSet<qint64>> instruments_by_entity;
+    // Resolve both directions over the whole knowledge-cutoff universe before
+    // selecting a group. Otherwise a filtered query hides competing mappings.
+    for (const auto& i : instrument_read.value()) {
         instruments.insert(i.con_id, i);
+        auto links = repo.nport_links_known_at(i.instrument_id, request.frame.known_at);
+        if (links.is_err())
+            return R::err(links.error());
+        links_by_instrument.insert(i.instrument_id, links.value());
+        for (const auto& link : links.value())
+            if (link.relationship != LinkRelationship::ClassOfMultiClassSeries)
+                instruments_by_entity[link.entity_id].insert(i.con_id);
+    }
 
     QHash<qint64, RegulatoryFlowAnalytics> regulatory_cache;
     auto analytics_for = [&](qint64 entity_id) -> Result<RegulatoryFlowAnalytics> {
@@ -259,18 +271,33 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
                         if (m.exclusion_reason.isEmpty())
                             m.exclusion_reason = QStringLiteral("instrument_not_recorded_by_known_at");
                     } else {
-                        auto links = repo.nport_links_known_at(found->instrument_id, request.frame.known_at);
-                        if (links.is_err())
-                            return R::err(links.error());
-                        if (links.value().size() > 1) {
+                        const auto& links = links_by_instrument[found->instrument_id];
+                        if (links.size() > 1) {
                             // v052 has no link revocation. No newest-link shortcut.
                             if (m.exclusion_reason.isEmpty())
                                 m.exclusion_reason = QStringLiteral("ambiguous_identity_links");
-                        } else if (links.value().size() == 1) {
-                            const auto& link = links.value().first();
+                        } else if (links.size() == 1) {
+                            const auto& link = links.first();
+                            QList<qint64> linked_instruments = instruments_by_entity.value(link.entity_id).values();
+                            std::sort(linked_instruments.begin(), linked_instruments.end());
+                            QJsonArray linked_keys;
+                            for (const auto con_id : linked_instruments)
+                                linked_keys.append(QString::number(con_id));
+                            m.identity_link =
+                                QJsonObject{{QStringLiteral("link_id"), link.link_id},
+                                            {QStringLiteral("entity_id"), link.entity_id},
+                                            {QStringLiteral("class_id"), link.class_id},
+                                            {QStringLiteral("relationship"),
+                                             QLatin1String(link_relationship_id(link.relationship))},
+                                            {QStringLiteral("basis"), link.basis},
+                                            {QStringLiteral("declared_at"), derived_time_text(link.declared_at)},
+                                            {QStringLiteral("claiming_listed_con_ids"), linked_keys}};
                             if (link.relationship == LinkRelationship::ClassOfMultiClassSeries) {
                                 if (m.exclusion_reason.isEmpty())
                                     m.exclusion_reason = QStringLiteral("multi_class_series_not_etf_flow");
+                            } else if (linked_instruments.size() > 1) {
+                                if (m.exclusion_reason.isEmpty())
+                                    m.exclusion_reason = QStringLiteral("ambiguous_reporting_identity_links");
                             } else {
                                 const auto target = entities_by_id.constFind(link.entity_id);
                                 if (target == entities_by_id.cend()) {
@@ -279,21 +306,14 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
                                 } else {
                                     const TaxonomyLookup reporting_class =
                                         taxonomy.lookup_reporting(target->cik, target->series_id, month);
-                                    if (reporting_class.status == TaxonomyStatus::Classified &&
-                                        group_of(*reporting_class.entry, effective_level) != group_id) {
+                                    const QString conflict =
+                                        linked_taxonomy_problem(e, reporting_class, month, month_end);
+                                    if (!conflict.isEmpty()) {
                                         if (m.exclusion_reason.isEmpty())
-                                            m.exclusion_reason = QStringLiteral("taxonomy_identity_conflict");
+                                            m.exclusion_reason = conflict;
                                     } else {
                                         m.reporting_key = reporting_key(target->cik, target->series_id);
                                         m.identity_basis = QStringLiteral("declared_link");
-                                        m.identity_link = QJsonObject{
-                                            {QStringLiteral("link_id"), link.link_id},
-                                            {QStringLiteral("entity_id"), link.entity_id},
-                                            {QStringLiteral("class_id"), link.class_id},
-                                            {QStringLiteral("relationship"),
-                                             QLatin1String(link_relationship_id(link.relationship))},
-                                            {QStringLiteral("basis"), link.basis},
-                                            {QStringLiteral("declared_at"), derived_time_text(link.declared_at)}};
                                         if (m.exclusion_reason.isEmpty()) {
                                             auto a = analytics_for(target->entity_id);
                                             if (a.is_err())
@@ -326,6 +346,8 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
         for (const TaxonomyEntry& e :
              taxonomy.members(TaxonomySubjectType::Listed, effective_level, group_id, request.frame.as_of.date())) {
             QJsonObject row = taxonomy_entry_json(e);
+            row.insert(QStringLiteral("classification_lookback"), QStringLiteral("not_evaluated"));
+            row.insert(QStringLiteral("comparability"), QStringLiteral("not_evaluated"));
             const auto found = instruments.constFind(e.con_id);
             if ((e.leveraged || e.inverse) && !request.include_leveraged) {
                 row.insert(QStringLiteral("status"), QStringLiteral("excluded"));
@@ -373,12 +395,20 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
                 row.insert(QStringLiteral("total_return"), false);
                 row.insert(QStringLiteral("volume_basis"), QLatin1String(kRotationVolumeBasis));
                 row.insert(QStringLiteral("calendar"), rotation_calendar_json(measures));
-                if (measures.snapshot.has_data && rotation_window_outside_classification(measures.snapshot.values, e))
+                bool usable_component = false;
+                const auto values = rotation_values_json(measures.snapshot.values);
+                for (auto it = values.constBegin(); it != values.constEnd(); ++it)
+                    usable_component =
+                        usable_component || it.value().toObject().value(QStringLiteral("value")).isDouble();
+                if (measures.snapshot.has_data && usable_component) {
+                    const bool outside = rotation_window_outside_classification(measures.snapshot.values, e);
                     row.insert(QStringLiteral("classification_lookback"),
-                               QStringLiteral("history_unverified_for_one_or_more_components"));
-                else
-                    row.insert(QStringLiteral("classification_lookback"),
-                               QStringLiteral("within_classification_interval"));
+                               outside ? QStringLiteral("history_unverified_for_one_or_more_components")
+                                       : QStringLiteral("within_classification_interval"));
+                    row.insert(QStringLiteral("comparability"),
+                               outside ? QStringLiteral("classification_history_unverified")
+                                       : QStringLiteral("individual_component_only_d5"));
+                }
             }
             row.insert(QStringLiteral("calculation_version"), QLatin1String(kRotationProxyMeasuresVersion));
             row.insert(QStringLiteral("calculation_parameters"), rotation_parameters_text());
@@ -386,11 +416,6 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
             row.insert(QStringLiteral("reference_status"), QStringLiteral("not_declared"));
             row.insert(QStringLiteral("measurement_kind"),
                        QLatin1String(measurement_kind_id(MeasurementKind::RotationProxy)));
-            row.insert(QStringLiteral("comparability"),
-                       row.value(QStringLiteral("classification_lookback")).toString() ==
-                               QLatin1String("history_unverified_for_one_or_more_components")
-                           ? QStringLiteral("classification_history_unverified")
-                           : QStringLiteral("individual_component_only_d5"));
             rotation.append(row);
         }
         groups.append(QJsonObject{{QStringLiteral("level"), effective_level},
@@ -442,7 +467,8 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
          QJsonObject{{QStringLiteral("value"), QJsonValue(QJsonValue::Null)},
                      {QStringLiteral("basis"), QStringLiteral("prior_daily_aum_unavailable")}}},
         {QStringLiteral("overlap_policy"),
-         QStringLiteral("reporting_identity_counted_once_per_group; groups_at_different_levels_must_not_be_added; "
+         QStringLiteral("ambiguous_reporting_identity_links_refused_before_grouping; "
+                        "reporting_identity_counted_once_per_group; groups_at_different_levels_must_not_be_added; "
                         "overlapping_etfs_are_not_independent_signals")},
         {QStringLiteral("flow_interpretation"),
          QStringLiteral("ETF_vehicle_creation_redemption_activity_not_cash_entering_referenced_physical_assets")},

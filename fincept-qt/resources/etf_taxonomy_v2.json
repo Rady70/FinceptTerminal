@@ -1,5 +1,5 @@
 {
-  "version": "etf-taxonomy-v1",
+  "version": "etf-taxonomy-v2",
   "entries": [
     {
       "subject_type": "listed",
@@ -18,8 +18,25 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525302111/d14317d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-11-28",
+        "retrieved_on": "2026-09-30",
+        "sha256": "f4c4f6d785af4b4c4def7ff68e34ce9cc7b62069e9af0bc8fb7dd57bbe2d8c7a",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ],
+        "additional_sources": [
+          {
+            "url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525302158/d821436d497k.htm",
+            "sha256": "c28c3bd7d20d35caffe44be7ee4c547e75a6141ab207153b95bdeb3c78fbbe95",
+            "locator": "Principal Investment Strategies: EFA is the underlying fund without a local currency hedge"
+          }
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -30,7 +47,7 @@
       "complex_id": "",
       "exposure_mechanism": "bond_portfolio",
       "fund_structure": "open_end_etf",
-      "region": "us",
+      "region": "us_dollar_bonds",
       "reference": "",
       "currency_hedge": "not_applicable",
       "leveraged": false,
@@ -38,8 +55,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526287952/d128812d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-06-29",
+        "retrieved_on": "2026-09-30",
+        "sha256": "44e09a0b06dab7f64f93ffd0443a1d7e76bb02aecccaaf21a838bc6b72adf4a9",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -58,8 +85,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526287948/d128154d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-06-29",
+        "retrieved_on": "2026-09-30",
+        "sha256": "0151bcdf9144168e6d87a7e00ea651839a67f5054ae0eb5495645d9f26d83884",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -78,8 +115,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526287945/d127751d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-06-29",
+        "retrieved_on": "2026-09-30",
+        "sha256": "8c04e057dce690a53799943da185a31129f6b41a61094f944fb7c4a95723cb99",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -98,8 +145,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526287941/d126827d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-06-29",
+        "retrieved_on": "2026-09-30",
+        "sha256": "b0a2bbd2683c7483833a03931d706a39d86248f1e5cff97dc0518f29c870d4c3",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -118,8 +175,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526081826/d191245d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-02-27",
+        "retrieved_on": "2026-09-30",
+        "sha256": "38c76fb5f3fc7f61c542c806fc6f5121fe8207460e8d7acb5370ff576796d5f3",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -138,8 +205,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1064642/000119312525256752/d50862d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-10-31",
+        "retrieved_on": "2026-09-30",
+        "sha256": "e7192f6821e07bf90c62bc1de45187972d4444bbe13e3c198b9a2a87e77db28e",
+        "locators": [
+          "Investment Objective",
+          "The Fund's Principal Investment Strategy",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -158,8 +235,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/734383/000168386325004858/f42090d1.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-05-29",
+        "retrieved_on": "2026-09-30",
+        "sha256": "452d86df4bf59c4c90587ec9bb568a1f88626c0f7c01c121b06dfa9fb87e8b0f",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -278,8 +365,17 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1064641/000119312526027312/d15107d485bpos.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-01-31",
+        "retrieved_on": "2026-09-30",
+        "sha256": "a5af84937b1a4aa3bf4b61a33f398512c5f798e8ed9adc54a548b1f7e61b1fd7",
+        "locators": [
+          "Energy fund summary: objective and principal strategy",
+          "Statement of Additional Information: General Description of the Trust"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -298,8 +394,17 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1064641/000119312526027312/d15107d485bpos.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-01-31",
+        "retrieved_on": "2026-09-30",
+        "sha256": "a5af84937b1a4aa3bf4b61a33f398512c5f798e8ed9adc54a548b1f7e61b1fd7",
+        "locators": [
+          "Technology fund summary: objective and principal strategy",
+          "Statement of Additional Information: General Description of the Trust"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -338,8 +443,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312526106227/d74002d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2026-03-13",
+        "retrieved_on": "2026-09-30",
+        "sha256": "42b880f656753e4f48e8ed13548057769d4b74434aef54d26f4084753f47dde4",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -350,7 +465,7 @@
       "complex_id": "",
       "exposure_mechanism": "bond_portfolio",
       "fund_structure": "open_end_etf",
-      "region": "us",
+      "region": "us_dollar_bonds",
       "reference": "",
       "currency_hedge": "not_applicable",
       "leveraged": false,
@@ -358,8 +473,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525151228/d945292d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-06-27",
+        "retrieved_on": "2026-09-30",
+        "sha256": "2028abc2204303be3ad7207ad7717cedaa72cfc607f4ebb203b52abaeee64272",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -398,8 +523,19 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/930667/000119312525336668/d946518d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-12-30",
+        "retrieved_on": "2026-09-30",
+        "sha256": "a0871a1d236f33085c73ca9ea4bab4a789e1fff528aa9b1d36be75408aa505d3",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares",
+          "Currency Risk; unhedged MSCI Emerging Markets objective"
+        ]
+      }
     },
     {
       "subject_type": "listed",
@@ -498,7 +634,7 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://www.ishares.com/us/library/stream-document?documentId=925833~926358~926348~925661~925593&iframeUrlOverride=%2Fus%2Fliterature%2Fsummary-prospectus%2Fsp-ishares-core-s-and-p-500-etf-3-31.pdf&product=I-SP500&shareClass=NA&stream=reg",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525069071/d341850d497k.htm",
       "leverage_multiple": 1
     },
     {
@@ -518,8 +654,18 @@
       "option_overlay": false,
       "effective_from": "2026-09-25",
       "effective_to": "",
-      "evidence_url": "https://github.com/Rady70/Market_Lab/blob/0b601b21e520bc614a60a5638979adf1cfd9eb5a/docs/ETF_FLOW_BATCH_A2_QUALIFICATION.md#73-representative-cross-asset-coverage",
-      "leverage_multiple": 1
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525171580/d926637d497k.htm",
+      "leverage_multiple": 1,
+      "evidence_detail": {
+        "document_date": "2025-08-01",
+        "retrieved_on": "2026-09-30",
+        "sha256": "9bc8894a323619a63501ce95ed571f178fca2264fcd5f996b3522150638e55b7",
+        "locators": [
+          "Investment Objective",
+          "Principal Investment Strategies",
+          "Form 497K cover: open-end ETF shares"
+        ]
+      }
     },
     {
       "subject_type": "reporting",
@@ -626,5 +772,16 @@
       "evidence_url": "https://www.sec.gov/Archives/edgar/data/1067839/000110465925123273/tm2529177d1_485bpos.htm",
       "leverage_multiple": 1
     }
-  ]
+  ],
+  "evidence_conventions": {
+    "identity": "conId and SEC identity intervals come from the qualified Batch B/C store; a fund disclosure does not establish an IBKR conId or an SEC/listed link.",
+    "classification": "Asset class, category, mechanism and region are MarketLab mappings from the cited objective/principal strategy. They are not verbatim issuer categories or complete holdings claims.",
+    "fund_structure": "Form 497K covers open-end management companies; its ETF-share cover supports open_end_etf. XLE/XLK instead explicitly identify the open-end trust in the SAI.",
+    "policy_flags": "False leveraged/inverse/option_overlay and +1 mean no such explicit product target or principal overlay strategy, not the absence of derivatives, borrowing or incidental hedging.",
+    "currency_hedge": "Describes the mandate relative to USD: international unhedged equity vs an explicit FX hedge. not_applicable denotes USD-denominated target exposure, not absence of issuer FX risk or all ancillary derivatives.",
+    "region": "us_dollar_bonds is a currency-market scope, not a US issuer-domicile restriction. us on equity denotes the index market, not exclusive domestic business revenue. reit_equity includes the real-estate operating companies disclosed by VNQ.",
+    "empty_fields": "Empty reference means not curated as a benchmark series; empty complex means no reviewed multi-product equivalence, even when a broad category is shared.",
+    "effective_dates": "Listed assignments conservatively begin at the 2026-09-25 qualification, not fund inception; prospectus dates precede that boundary. Taxonomy authored/reviewed later is not historical knowledge.",
+    "review": "Fund-specific provenance correction reviewed 2026-09-30; supporting locators and source hashes in evidence_detail are review metadata covered by the snapshot hash, not runtime source verification."
+  }
 }

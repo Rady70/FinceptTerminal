@@ -2684,11 +2684,11 @@ target_include_directories(FinceptTerminal PRIVATE
 
 # MarketLab-controlled research classification: a reviewed, immutable resource
 # in each binary, not a hosted service or mutable profile database.
-set_source_files_properties(resources/etf_taxonomy_v1.json PROPERTIES
-    QT_RESOURCE_ALIAS "taxonomy_v1.json")
+set_source_files_properties(resources/etf_taxonomy_v2.json PROPERTIES
+    QT_RESOURCE_ALIAS "taxonomy_v2.json")
 qt6_add_resources(FinceptTerminal "marketlab_etf_taxonomy"
     PREFIX "/etf"
-    FILES resources/etf_taxonomy_v1.json
+    FILES resources/etf_taxonomy_v2.json
 )
 
 

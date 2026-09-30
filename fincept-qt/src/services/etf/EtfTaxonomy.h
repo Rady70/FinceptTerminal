@@ -54,6 +54,26 @@ struct TaxonomyLookup {
     std::optional<TaxonomyEntry> entry;
 };
 
+// A declared identity link means the same product, not merely the same
+// requested asset class. Compare its complete exposure and policy contract.
+inline QString linked_taxonomy_problem(const TaxonomyEntry& listed, const TaxonomyLookup& reporting, const QDate& first,
+                                       const QDate& last) {
+    if (reporting.status == TaxonomyStatus::HistoryUnverified)
+        return QStringLiteral("linked_classification_history_unverified");
+    if (reporting.status == TaxonomyStatus::UnknownIdentity)
+        return {}; // A unique explicit link may attach the listed classification.
+    const auto& e = *reporting.entry;
+    if (e.effective_from > first || (e.effective_to.isValid() && e.effective_to < last))
+        return QStringLiteral("linked_classification_month_partial");
+    if (listed.asset_class != e.asset_class || listed.category != e.category || listed.complex_id != e.complex_id ||
+        listed.exposure_mechanism != e.exposure_mechanism || listed.fund_structure != e.fund_structure ||
+        listed.region != e.region || listed.reference != e.reference || listed.currency_hedge != e.currency_hedge ||
+        listed.leveraged != e.leveraged || listed.inverse != e.inverse || listed.option_overlay != e.option_overlay ||
+        listed.leverage_multiple != e.leverage_multiple)
+        return QStringLiteral("taxonomy_identity_conflict");
+    return {};
+}
+
 class TaxonomySnapshot {
   public:
     static std::optional<TaxonomySnapshot> load(const QByteArray& json, QString* error = nullptr) {

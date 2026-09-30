@@ -120,7 +120,7 @@ GroupRunRequest request(const char* time) {
     r.frame = {utc(time), utc(time)};
     r.group_level = QStringLiteral("complex");
     r.group_id = QStringLiteral("sp500");
-    r.expected_taxonomy_version = QStringLiteral("etf-taxonomy-v1");
+    r.expected_taxonomy_version = QStringLiteral("etf-taxonomy-v2");
     r.output_from = QDate(2026, 10, 1);
     r.output_to = QDate(2026, 10, 31);
     return r;
@@ -152,10 +152,171 @@ class EtfGroupStoreTest : public QObject {
         QVERIFY(Database::instance().open(dir_.filePath(QStringLiteral("groups.db"))).is_ok());
     }
     void cleanupTestCase() { Database::instance().close(); }
+    void init() { QVERIFY(Database::instance().begin_transaction().is_ok()); }
+    void cleanup() { QVERIFY(Database::instance().rollback().is_ok()); }
     void identity_link_cutoff_conflict_and_amendment_replay();
     void request_refusals_and_historical_intervals();
     void rotation_staleness_inputs_and_leverage_policy();
+    void reporting_identity_fanout_is_refused_before_group_filtering();
+    void filtered_or_excluded_claims_still_make_identity_ambiguous_data();
+    void filtered_or_excluded_claims_still_make_identity_ambiguous();
+    void cross_domain_conflict_is_independent_of_query_level();
+    void unevaluated_rotation_states();
 };
+
+void EtfGroupStoreTest::reporting_identity_fanout_is_refused_before_group_filtering() {
+    const char* seen = "2026-12-02T00:00:00.000Z";
+    const qint64 reporting = entity("0009999999", "", seen);
+    const qint64 gold = instrument(51529211, "GLD", seen);
+    const qint64 bonds = instrument(15547841, "TLT", seen);
+    QVERIFY(
+        filing(reporting, "0009999999", "0001193125-26-999001", "NPORT-P", "2026-11-25T15:00:00.000Z", seen, 123.0));
+    QVERIFY(repo()
+                .declare_link(gold, reporting, {}, LinkRelationship::RegistrantIsInstrument,
+                              QStringLiteral("fixture first claim"), utc("2026-12-04T00:00:00.000Z"))
+                .is_ok());
+    auto r = request("2026-12-05T00:00:00.000Z");
+    r.group_level = QStringLiteral("asset_class");
+    r.group_id = QStringLiteral("commodity");
+    const auto before = run_group_research(r);
+    QVERIFY(before.is_ok());
+    QCOMPARE(group_month(before.value()).value(QStringLiteral("observed_net_flow_usd")).toDouble(), 123.0);
+    QVERIFY(repo()
+                .declare_link(bonds, reporting, {}, LinkRelationship::RegistrantIsInstrument,
+                              QStringLiteral("fixture competing claim"), utc("2026-12-06T00:00:00.000Z"))
+                .is_ok());
+    QCOMPARE(QJsonDocument(run_group_research(r).value()).toJson(), QJsonDocument(before.value()).toJson());
+    r.frame = {utc("2026-12-07T00:00:00.000Z"), utc("2026-12-07T00:00:00.000Z")};
+    for (const QString& level :
+         {QStringLiteral("asset_class"), QStringLiteral("category"), QStringLiteral("cross_asset")}) {
+        r.group_level = level;
+        r.group_id.clear();
+        const auto all = run_group_research(r);
+        QVERIFY(all.is_ok());
+        int rejected = 0;
+        for (const auto& group : all.value().value(QStringLiteral("groups")).toArray()) {
+            const auto m = group.toObject().value(QStringLiteral("regulatory_months")).toArray()[0].toObject();
+            QVERIFY(m.value(QStringLiteral("observed_net_flow_usd")).isNull());
+            for (const auto& key : {QStringLiteral("51529211"), QStringLiteral("15547841")}) {
+                const auto row = constituent(m, key);
+                if (row.isEmpty())
+                    continue;
+                ++rejected;
+                QCOMPARE(row.value(QStringLiteral("reason")).toString(),
+                         QStringLiteral("ambiguous_reporting_identity_links"));
+                QCOMPARE(row.value(QStringLiteral("identity_link"))
+                             .toObject()
+                             .value(QStringLiteral("claiming_listed_con_ids"))
+                             .toArray()
+                             .size(),
+                         2);
+                QVERIFY(m.value(QStringLiteral("coverage"))
+                            .toObject()
+                            .value(QStringLiteral("regulatory_assets_estimate"))
+                            .isNull());
+            }
+        }
+        QCOMPARE(rejected, 2);
+        if (level != QLatin1String("cross_asset")) {
+            r.group_id =
+                level == QLatin1String("category") ? QStringLiteral("physical_gold") : QStringLiteral("commodity");
+            const auto only = run_group_research(r);
+            QVERIFY(only.is_ok());
+            QCOMPARE(constituent(group_month(only.value()), QStringLiteral("51529211"))
+                         .value(QStringLiteral("reason"))
+                         .toString(),
+                     QStringLiteral("ambiguous_reporting_identity_links"));
+        }
+    }
+}
+
+void EtfGroupStoreTest::cross_domain_conflict_is_independent_of_query_level() {
+    const char* seen = "2026-12-02T00:00:00.000Z";
+    const qint64 spy = entity("0000884394", "", seen);
+    const qint64 qqq = instrument(320227571, "QQQ", seen);
+    QVERIFY(filing(spy, "0000884394", "0001193125-26-999002", "NPORT-P", "2026-11-25T15:00:00.000Z", seen, 77.0));
+    QVERIFY(repo()
+                .declare_link(qqq, spy, {}, LinkRelationship::RegistrantIsInstrument,
+                              QStringLiteral("fixture category conflict"), utc("2026-12-04T00:00:00.000Z"))
+                .is_ok());
+    auto r = request("2026-12-05T00:00:00.000Z");
+    for (const QString& level :
+         {QStringLiteral("asset_class"), QStringLiteral("category"), QStringLiteral("cross_asset")}) {
+        r.group_level = level;
+        r.group_id.clear();
+        const auto all = run_group_research(r);
+        QVERIFY(all.is_ok());
+        bool found = false;
+        for (const auto& group : all.value().value(QStringLiteral("groups")).toArray()) {
+            const auto m = group.toObject().value(QStringLiteral("regulatory_months")).toArray()[0].toObject();
+            const auto row = constituent(m, QStringLiteral("320227571"));
+            if (row.isEmpty())
+                continue;
+            found = true;
+            QCOMPARE(row.value(QStringLiteral("reason")).toString(), QStringLiteral("taxonomy_identity_conflict"));
+            QCOMPARE(row.value(QStringLiteral("status")).toString(), QStringLiteral("unresolved"));
+            QVERIFY(m.value(QStringLiteral("complete_net_flow_usd")).isNull());
+        }
+        QVERIFY(found);
+    }
+}
+
+void EtfGroupStoreTest::filtered_or_excluded_claims_still_make_identity_ambiguous_data() {
+    QTest::addColumn<qint64>("competitor");
+    QTest::newRow("same-complex") << qint64(8991352);       // IVV
+    QTest::newRow("excluded-inverse") << qint64(738523410); // SH
+    QTest::newRow("unclassified") << qint64(99999999);
+}
+
+void EtfGroupStoreTest::filtered_or_excluded_claims_still_make_identity_ambiguous() {
+    QFETCH(qint64, competitor);
+    const char* seen = "2026-12-02T00:00:00.000Z";
+    const qint64 reporting = entity("0009999999", "", seen);
+    const qint64 spy = instrument(756733, "SPY", seen);
+    const qint64 other = instrument(competitor, "FIXTURE", seen);
+    QVERIFY(
+        filing(reporting, "0009999999", "0001193125-26-999003", "NPORT-P", "2026-11-25T15:00:00.000Z", seen, 123.0));
+    for (const qint64 id : {spy, other})
+        QVERIFY(repo()
+                    .declare_link(id, reporting, {}, LinkRelationship::RegistrantIsInstrument,
+                                  QStringLiteral("fixture competing claim"), utc(seen))
+                    .is_ok());
+    auto r = request("2026-12-05T00:00:00.000Z");
+    for (const QString& level :
+         {QStringLiteral("complex"), QStringLiteral("category"), QStringLiteral("asset_class")}) {
+        r.group_level = level;
+        r.group_id = level == QLatin1String("complex")    ? QStringLiteral("sp500")
+                     : level == QLatin1String("category") ? QStringLiteral("us_large_cap")
+                                                          : QStringLiteral("equity");
+        const auto result = run_group_research(r);
+        QVERIFY(result.is_ok());
+        const auto month = group_month(result.value());
+        QVERIFY(month.value(QStringLiteral("observed_net_flow_usd")).isNull());
+        const auto row = constituent(month, QStringLiteral("756733"));
+        QCOMPARE(row.value(QStringLiteral("reason")).toString(), QStringLiteral("ambiguous_reporting_identity_links"));
+        QCOMPARE(row.value(QStringLiteral("status")).toString(), QStringLiteral("unresolved"));
+    }
+}
+
+void EtfGroupStoreTest::unevaluated_rotation_states() {
+    QVERIFY(instrument(51529211, "GLD", "2026-12-02T00:00:00.000Z") > 0);
+    auto r = request("2026-12-05T00:00:00.000Z");
+    r.group_level = QStringLiteral("cross_asset");
+    r.group_id.clear();
+    const auto doc = run_group_research(r);
+    QVERIFY(doc.is_ok());
+    int rows = 0;
+    for (const auto& group : doc.value().value(QStringLiteral("groups")).toArray())
+        for (const auto& item : group.toObject().value(QStringLiteral("rotation_constituents")).toArray()) {
+            ++rows;
+            const auto row = item.toObject();
+            QCOMPARE(row.value(QStringLiteral("comparability")).toString(), QStringLiteral("not_evaluated"));
+            QCOMPARE(row.value(QStringLiteral("classification_lookback")).toString(), QStringLiteral("not_evaluated"));
+            QVERIFY(row.value(QStringLiteral("status")).toString() == QLatin1String("missing") ||
+                    row.value(QStringLiteral("status")).toString() == QLatin1String("excluded"));
+        }
+    QCOMPARE(rows, 26);
+}
 
 void EtfGroupStoreTest::identity_link_cutoff_conflict_and_amendment_replay() {
     const qint64 spy_entity = entity("0000884394", "", "2026-12-02T00:00:00.000Z");
@@ -177,7 +338,7 @@ void EtfGroupStoreTest::identity_link_cutoff_conflict_and_amendment_replay() {
     QVERIFY(initial_month.value(QStringLiteral("complete_net_flow_usd")).isNull());
     QCOMPARE(constituent(initial_month, QStringLiteral("756733")).value(QStringLiteral("reason")).toString(),
              QStringLiteral("identity_not_established"));
-    QCOMPARE(initial.value().value(QStringLiteral("taxonomy_version")).toString(), QStringLiteral("etf-taxonomy-v1"));
+    QCOMPARE(initial.value().value(QStringLiteral("taxonomy_version")).toString(), QStringLiteral("etf-taxonomy-v2"));
     QCOMPARE(initial.value().value(QStringLiteral("taxonomy_sha256")).toString().size(), 64);
     const auto store_after = repo().export_all();
     QVERIFY(store_after.is_ok());
@@ -243,7 +404,7 @@ void EtfGroupStoreTest::identity_link_cutoff_conflict_and_amendment_replay() {
 
 void EtfGroupStoreTest::request_refusals_and_historical_intervals() {
     auto r = request("2026-12-03T00:00:00.000Z");
-    r.expected_taxonomy_version = QStringLiteral("etf-taxonomy-v2");
+    r.expected_taxonomy_version = QStringLiteral("etf-taxonomy-v1");
     const auto mismatch = run_group_research(r);
     QVERIFY(mismatch.is_err());
     QCOMPARE(QString::fromStdString(mismatch.error()), QStringLiteral("taxonomy_version_mismatch"));
@@ -320,6 +481,24 @@ void EtfGroupStoreTest::rotation_staleness_inputs_and_leverage_policy() {
             in.seen_at = utc(seen);
             in.observation_start = utc(seen);
             QVERIFY(repo().record_observation(in).is_ok());
+        }
+        if (n == 1) {
+            // A recorded bar alone cannot establish comparability/history for
+            // a component whose minimum lookback has not been reached.
+            auto one_bar = request("2026-12-03T22:00:00.000Z");
+            one_bar.group_level = QStringLiteral("category");
+            one_bar.group_id = QStringLiteral("physical_gold");
+            const auto result = run_group_research(one_bar);
+            QVERIFY(result.is_ok());
+            const auto row = result.value()
+                                 .value(QStringLiteral("groups"))
+                                 .toArray()[0]
+                                 .toObject()
+                                 .value(QStringLiteral("rotation_constituents"))
+                                 .toArray()[0]
+                                 .toObject();
+            QCOMPARE(row.value(QStringLiteral("comparability")).toString(), QStringLiteral("not_evaluated"));
+            QCOMPARE(row.value(QStringLiteral("classification_lookback")).toString(), QStringLiteral("not_evaluated"));
         }
     }
     auto r = request("2026-12-03T22:00:00.000Z");

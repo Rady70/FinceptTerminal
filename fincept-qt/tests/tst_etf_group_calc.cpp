@@ -65,7 +65,7 @@ GroupFlowMember sec(const QString& key, const RegulatoryFlowAnalytics& analytics
 
 GroupFlowMonth month(const DerivedTimeFrame& tf, const QVector<GroupFlowMember>& members) {
     return aggregate_group_regulatory_month(QStringLiteral("complex"), QStringLiteral("sp500"),
-                                            QStringLiteral("etf-taxonomy-v1"), QDate(2026, 6, 1), tf, members);
+                                            QStringLiteral("etf-taxonomy-v2"), QDate(2026, 6, 1), tf, members);
 }
 } // namespace
 

@@ -442,11 +442,11 @@ target_link_libraries(tst_etf_derived_store PRIVATE Qt6::Sql)
 # group calculation suite is pure Qt Core; store tests use the same SQLite
 # exception as the existing ETF persistence suites.
 fincept_add_test(tst_etf_taxonomy tst_etf_taxonomy.cpp)
-set_source_files_properties("${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v1.json"
-    PROPERTIES QT_RESOURCE_ALIAS "taxonomy_v1.json")
+set_source_files_properties("${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json"
+    PROPERTIES QT_RESOURCE_ALIAS "taxonomy_v2.json")
 qt6_add_resources(tst_etf_taxonomy "test_etf_taxonomy"
     PREFIX "/etf"
-    FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v1.json")
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json")
 fincept_add_test(tst_etf_group_calc tst_etf_group_calc.cpp)
 fincept_add_test(tst_etf_group_store
     tst_etf_group_store.cpp
@@ -455,7 +455,7 @@ fincept_add_test(tst_etf_group_store
 target_link_libraries(tst_etf_group_store PRIVATE Qt6::Sql)
 qt6_add_resources(tst_etf_group_store "test_etf_group_taxonomy"
     PREFIX "/etf"
-    FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v1.json")
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json")
 
 # MarketLab ETF Batch B — HttpClient::get_raw, the raw GET the SEC N-PORT route
 # uses: the declared User-Agent replaces the client's default on the wire, the

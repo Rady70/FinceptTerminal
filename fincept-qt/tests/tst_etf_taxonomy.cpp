@@ -10,16 +10,17 @@
 #include <QJsonObject>
 #include <QSet>
 #include <QTest>
+#include <QUrl>
 
 using namespace fincept::services::etf;
 
 namespace {
 QByteArray shipped_json() {
-    QFile file(QStringLiteral(":/etf/taxonomy_v1.json"));
+    QFile file(QStringLiteral(":/etf/taxonomy_v2.json"));
     if (!file.open(QIODevice::ReadOnly)) {
         file.setFileName(QFileInfo(QString::fromUtf8(__FILE__))
                              .absoluteDir()
-                             .filePath(QStringLiteral("../resources/etf_taxonomy_v1.json")));
+                             .filePath(QStringLiteral("../resources/etf_taxonomy_v2.json")));
         if (!file.open(QIODevice::ReadOnly))
             return {};
     }
@@ -53,6 +54,8 @@ class EtfTaxonomyTest : public QObject {
     void synthetic_hedged_and_crypto_equity_boundaries();
     void new_version_changes_only_its_own_interval();
     void malformed_entries_refused();
+    void linked_policy_and_history_are_checked_without_a_group_level();
+    void shipped_provenance_is_fund_specific();
 };
 
 void EtfTaxonomyTest::shipped_version_and_exact_complex() {
@@ -61,7 +64,7 @@ void EtfTaxonomyTest::shipped_version_and_exact_complex() {
     QString error;
     auto taxonomy = TaxonomySnapshot::load(bytes, &error);
     QVERIFY2(taxonomy.has_value(), qPrintable(error));
-    QCOMPARE(taxonomy->version(), QStringLiteral("etf-taxonomy-v1"));
+    QCOMPARE(taxonomy->version(), QStringLiteral("etf-taxonomy-v2"));
     QCOMPARE(taxonomy->sha256().size(), 64);
     QCOMPARE(taxonomy->entries().size(), 31);
     const auto listed = taxonomy->members(TaxonomySubjectType::Listed, QStringLiteral("complex"),
@@ -82,6 +85,42 @@ void EtfTaxonomyTest::shipped_version_and_exact_complex() {
                 ->members(TaxonomySubjectType::Listed, QStringLiteral("complex"), QStringLiteral("sp500"),
                           date("2026-06-30"))
                 .isEmpty());
+}
+
+void EtfTaxonomyTest::shipped_provenance_is_fund_specific() {
+    const QJsonObject object = shipped_object();
+    QVERIFY(!object.value(QStringLiteral("evidence_conventions")).toObject().isEmpty());
+    const QSet<QString> corrected = {QStringLiteral("EFA"), QStringLiteral("LQD"),  QStringLiteral("TLT"),
+                                     QStringLiteral("IEF"), QStringLiteral("SHY"),  QStringLiteral("TIP"),
+                                     QStringLiteral("BIL"), QStringLiteral("VNQ"),  QStringLiteral("XLE"),
+                                     QStringLiteral("XLK"), QStringLiteral("SGOV"), QStringLiteral("HYG"),
+                                     QStringLiteral("EEM"), QStringLiteral("IWM")};
+    int reviewed = 0;
+    for (const auto& value : object.value(QStringLiteral("entries")).toArray()) {
+        const auto row = value.toObject();
+        const QUrl url(row.value(QStringLiteral("evidence_url")).toString());
+        QVERIFY(url.isValid() && url.scheme() == QLatin1String("https"));
+        // Project category tables cannot serve as primary fund evidence.
+        QVERIFY(url.host() != QLatin1String("github.com"));
+        if (row.value(QStringLiteral("subject_type")) != QLatin1String("listed") ||
+            !corrected.contains(row.value(QStringLiteral("ticker_hint")).toString()))
+            continue;
+        ++reviewed;
+        QCOMPARE(url.host(), QStringLiteral("www.sec.gov"));
+        const auto evidence = row.value(QStringLiteral("evidence_detail")).toObject();
+        const QDate issued = QDate::fromString(evidence.value(QStringLiteral("document_date")).toString(), Qt::ISODate);
+        QVERIFY(issued.isValid());
+        QVERIFY(issued <= QDate::fromString(row.value(QStringLiteral("effective_from")).toString(), Qt::ISODate));
+        QVERIFY(QRegularExpression(QStringLiteral("^[0-9a-f]{64}$"))
+                    .match(evidence.value(QStringLiteral("sha256")).toString())
+                    .hasMatch());
+        QVERIFY(!evidence.value(QStringLiteral("locators")).toArray().isEmpty());
+    }
+    QCOMPARE(reviewed, corrected.size());
+    const auto taxonomy = TaxonomySnapshot::load(shipped_json());
+    QVERIFY(taxonomy);
+    for (qint64 con_id : {qint64(15547816), qint64(43652089)})
+        QCOMPARE(taxonomy->lookup_listed(con_id, date("2026-09-25")).entry->region, QStringLiteral("us_dollar_bonds"));
 }
 
 void EtfTaxonomyTest::no_ticker_identity_and_unknown_state() {
@@ -354,7 +393,7 @@ void EtfTaxonomyTest::new_version_changes_only_its_own_interval() {
         }
     }
     object.insert(QStringLiteral("entries"), entries);
-    object.insert(QStringLiteral("version"), QStringLiteral("etf-taxonomy-v2"));
+    object.insert(QStringLiteral("version"), QStringLiteral("etf-taxonomy-v3"));
     QString error;
     const auto taxonomy = load_object(object, &error);
     QVERIFY2(taxonomy.has_value(), qPrintable(error));
@@ -365,7 +404,7 @@ void EtfTaxonomyTest::new_version_changes_only_its_own_interval() {
                            date("2026-10-01"))
                  .size(),
              0);
-    QCOMPARE(taxonomy->version(), QStringLiteral("etf-taxonomy-v2"));
+    QCOMPARE(taxonomy->version(), QStringLiteral("etf-taxonomy-v3"));
     QVERIFY(taxonomy->sha256() != TaxonomySnapshot::load(shipped_json())->sha256());
     QCOMPARE(TaxonomySnapshot::load(shipped_json())->lookup_listed(51529211, date("2026-10-01")).entry->category,
              QStringLiteral("physical_gold"));
@@ -384,6 +423,62 @@ void EtfTaxonomyTest::malformed_entries_refused() {
     object.insert(QStringLiteral("version"), QStringLiteral("today"));
     QVERIFY(!load_object(object, &error));
     QCOMPARE(error, QStringLiteral("invalid_version"));
+}
+
+void EtfTaxonomyTest::linked_policy_and_history_are_checked_without_a_group_level() {
+    const auto snapshot = TaxonomySnapshot::load(shipped_json());
+    QVERIFY(snapshot);
+    const auto listed = snapshot->lookup_listed(756733, date("2026-10-01")).entry.value();
+    const auto original = snapshot->lookup_reporting(QStringLiteral("0000884394"), {}, date("2026-10-01"));
+    const QDate first = date("2026-10-01"), last = date("2026-10-31");
+    QVERIFY(linked_taxonomy_problem(listed, original, first, last).isEmpty());
+    for (int variant = 0; variant < 11; ++variant) {
+        auto changed = original;
+        switch (variant) {
+            case 0:
+                changed.entry->category = QStringLiteral("another_category");
+                break;
+            case 1:
+                changed.entry->complex_id.clear();
+                break;
+            case 2:
+                changed.entry->exposure_mechanism = QStringLiteral("producer_equity");
+                break;
+            case 3:
+                changed.entry->fund_structure = QStringLiteral("open_end_etf");
+                break;
+            case 4:
+                changed.entry->currency_hedge = QStringLiteral("hedged");
+                break;
+            case 5:
+                changed.entry->leveraged = true;
+                changed.entry->leverage_multiple = 2.0;
+                break;
+            case 6:
+                changed.entry->inverse = true;
+                changed.entry->leverage_multiple = -1.0;
+                break;
+            case 7:
+                changed.entry->option_overlay = true;
+                break;
+            case 8:
+                changed.entry->region = QStringLiteral("different_region");
+                break;
+            case 9:
+                changed.entry->reference = QStringLiteral("different_index");
+                break;
+            case 10:
+                changed.entry->asset_class = QStringLiteral("commodity");
+                break;
+        }
+        QCOMPARE(linked_taxonomy_problem(listed, changed, first, last), QStringLiteral("taxonomy_identity_conflict"));
+    }
+    auto partial = original;
+    partial.entry->effective_to = date("2026-10-15");
+    QCOMPARE(linked_taxonomy_problem(listed, partial, first, last),
+             QStringLiteral("linked_classification_month_partial"));
+    QCOMPARE(linked_taxonomy_problem(listed, {TaxonomyStatus::HistoryUnverified, std::nullopt}, first, last),
+             QStringLiteral("linked_classification_history_unverified"));
 }
 
 QTEST_MAIN(EtfTaxonomyTest)

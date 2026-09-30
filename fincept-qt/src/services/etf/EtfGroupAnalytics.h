@@ -14,7 +14,7 @@
 
 namespace fincept::services::etf {
 
-inline constexpr const char* kGroupAnalyticsVersion = "etf_group_analytics_v1";
+inline constexpr const char* kGroupAnalyticsVersion = "etf_group_analytics_v2";
 
 struct GroupRunRequest {
     DerivedTimeFrame frame;
