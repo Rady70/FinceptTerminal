@@ -158,6 +158,7 @@ class EtfGroupStoreTest : public QObject {
     void request_refusals_and_historical_intervals();
     void rotation_staleness_inputs_and_leverage_policy();
     void reporting_identity_fanout_is_refused_before_group_filtering();
+    void mixed_one_to_one_and_multi_class_claims_are_refused_before_cutoff_filtering();
     void filtered_or_excluded_claims_still_make_identity_ambiguous_data();
     void filtered_or_excluded_claims_still_make_identity_ambiguous();
     void cross_domain_conflict_is_independent_of_query_level();
@@ -226,6 +227,95 @@ void EtfGroupStoreTest::reporting_identity_fanout_is_refused_before_group_filter
                          .value(QStringLiteral("reason"))
                          .toString(),
                      QStringLiteral("ambiguous_reporting_identity_links"));
+        }
+    }
+}
+
+void EtfGroupStoreTest::mixed_one_to_one_and_multi_class_claims_are_refused_before_cutoff_filtering() {
+    const char* seen = "2026-12-02T00:00:00.000Z";
+    const qint64 reporting = entity("0009999998", "S000999998", seen);
+    const qint64 one_to_one = instrument(51529211, "GLD", seen);
+    const qint64 multi_class = instrument(15547841, "TLT", seen);
+    QVERIFY(
+        filing(reporting, "0009999998", "0001193125-26-999004", "NPORT-P", "2026-11-25T15:00:00.000Z", seen, 321.0));
+    QVERIFY(repo()
+                .declare_link(one_to_one, reporting, QStringLiteral("C000999801"), LinkRelationship::SoleClassOfSeries,
+                              QStringLiteral("fixture sole-class claim"), utc("2026-12-04T00:00:00.000Z"))
+                .is_ok());
+
+    // Before the second declaration is known, the one-to-one claim is a
+    // valid unique attribution and the multi-class instrument has no usable
+    // flow link yet.
+    auto old = request("2026-12-05T00:00:00.000Z");
+    old.group_level = QStringLiteral("asset_class");
+    old.group_id = QStringLiteral("commodity");
+    const auto valid_before_conflict = run_group_research(old);
+    QVERIFY(valid_before_conflict.is_ok());
+    const auto valid_month = group_month(valid_before_conflict.value());
+    QCOMPARE(valid_month.value(QStringLiteral("observed_net_flow_usd")).toDouble(), 321.0);
+    QCOMPARE(constituent(valid_month, QStringLiteral("51529211")).value(QStringLiteral("status")).toString(),
+             QStringLiteral("observed"));
+    const QByteArray old_bytes = QJsonDocument(valid_before_conflict.value()).toJson(QJsonDocument::Compact);
+
+    QVERIFY(repo()
+                .declare_link(multi_class, reporting, QStringLiteral("C000999802"),
+                              LinkRelationship::ClassOfMultiClassSeries, QStringLiteral("fixture multi-class claim"),
+                              utc("2026-12-06T00:00:00.000Z"))
+                .is_ok());
+
+    // The later declaration must not retroactively change the earlier
+    // knowledge-cutoff result.
+    QCOMPARE(QJsonDocument(run_group_research(old).value()).toJson(QJsonDocument::Compact), old_bytes);
+
+    auto current = request("2026-12-07T00:00:00.000Z");
+    for (const QString& level :
+         {QStringLiteral("asset_class"), QStringLiteral("category"), QStringLiteral("cross_asset")}) {
+        current.group_level = level;
+        current.group_id.clear();
+        const auto all = run_group_research(current);
+        QVERIFY(all.is_ok());
+        int one_to_one_rejected = 0;
+        int multi_class_rejected = 0;
+        for (const auto& group : all.value().value(QStringLiteral("groups")).toArray()) {
+            const auto month = group.toObject().value(QStringLiteral("regulatory_months")).toArray()[0].toObject();
+            const auto one_row = constituent(month, QStringLiteral("51529211"));
+            if (!one_row.isEmpty()) {
+                ++one_to_one_rejected;
+                QCOMPARE(one_row.value(QStringLiteral("reason")).toString(),
+                         QStringLiteral("ambiguous_reporting_identity_links"));
+                QCOMPARE(one_row.value(QStringLiteral("status")).toString(), QStringLiteral("unresolved"));
+                QVERIFY(month.value(QStringLiteral("observed_net_flow_usd")).isNull());
+            }
+            const auto multi_row = constituent(month, QStringLiteral("15547841"));
+            if (!multi_row.isEmpty()) {
+                ++multi_class_rejected;
+                QCOMPARE(multi_row.value(QStringLiteral("reason")).toString(),
+                         QStringLiteral("multi_class_series_not_etf_flow"));
+                QCOMPARE(multi_row.value(QStringLiteral("status")).toString(), QStringLiteral("unresolved"));
+            }
+        }
+        QCOMPARE(one_to_one_rejected, 1);
+        QCOMPARE(multi_class_rejected, 1);
+
+        // A filtered query cannot hide the mixed relationship either.
+        if (level != QLatin1String("cross_asset")) {
+            current.group_id =
+                level == QLatin1String("category") ? QStringLiteral("physical_gold") : QStringLiteral("commodity");
+            const auto one_group = run_group_research(current);
+            QVERIFY(one_group.is_ok());
+            QCOMPARE(constituent(group_month(one_group.value()), QStringLiteral("51529211"))
+                         .value(QStringLiteral("reason"))
+                         .toString(),
+                     QStringLiteral("ambiguous_reporting_identity_links"));
+
+            current.group_id =
+                level == QLatin1String("category") ? QStringLiteral("treasury_long") : QStringLiteral("fixed_income");
+            const auto multi_group = run_group_research(current);
+            QVERIFY(multi_group.is_ok());
+            QCOMPARE(constituent(group_month(multi_group.value()), QStringLiteral("15547841"))
+                         .value(QStringLiteral("reason"))
+                         .toString(),
+                     QStringLiteral("multi_class_series_not_etf_flow"));
         }
     }
 }

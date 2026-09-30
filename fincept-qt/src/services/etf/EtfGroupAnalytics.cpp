@@ -173,9 +173,12 @@ Result<QJsonObject> run_group_research(const GroupRunRequest& request) {
         if (links.is_err())
             return R::err(links.error());
         links_by_instrument.insert(i.instrument_id, links.value());
+        // Every visible listed claim participates in reverse ambiguity. A
+        // class-of-multi-class-series link is not usable for ETF-specific
+        // flow, but it still prevents another listed claim from being treated
+        // as the reporting entity's unique ETF attribution.
         for (const auto& link : links.value())
-            if (link.relationship != LinkRelationship::ClassOfMultiClassSeries)
-                instruments_by_entity[link.entity_id].insert(i.con_id);
+            instruments_by_entity[link.entity_id].insert(i.con_id);
     }
 
     QHash<qint64, RegulatoryFlowAnalytics> regulatory_cache;
