@@ -1805,6 +1805,7 @@ set(SCREEN_SOURCES
     src/screens/economics/panels/CftcPanel.cpp
     src/screens/economics/panels/FedWatchPanel.cpp
     src/screens/economics/panels/FedWatchHistoryChart.cpp
+    src/screens/economics/panels/FedWatchCurrentChart.cpp
     src/screens/economics/panels/CftcPositioningChart.cpp
     src/screens/economics/panels/CftcPricePositioningChart.cpp
     src/screens/economics/panels/CftcHeatmap.cpp

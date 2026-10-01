@@ -10,6 +10,7 @@ class QToolButton;
 class QGridLayout;
 namespace fincept::screens {
 class FedWatchHistoryChart;
+class FedWatchCurrentChart;
 class FedWatchPanel : public EconPanelBase {
     Q_OBJECT
   public:
@@ -72,6 +73,7 @@ class FedWatchPanel : public EconPanelBase {
     void render_history();
     QString backfill_status() const;
     void arrange_charts();
+    void arrange_controls();
     QWidget* make_chip_row(const QString& kind, Selection* model, int height);
     void sync_chips();
     bool resolved() const;
@@ -87,6 +89,8 @@ class FedWatchPanel : public EconPanelBase {
     };
     QHash<QString, Pending> pending_;
     QWidget* controls_ = nullptr;
+    QGridLayout* controls_layout_ = nullptr;
+    QWidget *meeting_control_ = nullptr, *outcome_control_ = nullptr, *range_control_ = nullptr;
     QWidget *meeting_chips_ = nullptr, *outcome_chips_ = nullptr, *method_chips_ = nullptr, *range_chips_ = nullptr;
     QPushButton* update_upcoming_ = nullptr;
     QPushButton* load_history_ = nullptr;
@@ -101,6 +105,7 @@ class FedWatchPanel : public EconPanelBase {
     QTableWidget *distribution_ = nullptr, *indicators_ = nullptr;
     QPlainTextEdit* details_ = nullptr;
     FedWatchHistoryChart *probability_ = nullptr, *polymarket_ = nullptr, *divergence_ = nullptr;
+    FedWatchCurrentChart* current_chart_ = nullptr;
     QJsonObject snapshot_, overview_, series_, analytics_;
     QString selected_meeting_, restored_outcome_;
     QString selected_outcome_;
@@ -111,6 +116,7 @@ class FedWatchPanel : public EconPanelBase {
     bool backfill_in_flight_ = false;
     bool meeting_explicitly_selected_ = false;
     QString current_error_, inventory_error_, series_error_, analytics_error_;
+    QStringList analytics_error_context_;
     struct BackfillResult {
         QJsonObject data;
         QString error;

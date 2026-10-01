@@ -51,6 +51,15 @@ def main() -> None:
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
                          allow_nan=False))
         return
+    if case == "mapping-without-history":
+        mapping = next(m for m in store.validated_mappings(["2026-10-28"])
+                       if m["outcome_bp"] == 25 and not m["open_ended"])
+        store.upsert_mapping_outcome(
+            mapping["meeting_date"], mapping["source"], mapping["method"], 25, False, "VALIDATED",
+            mapping["external_event_id"], mapping["external_event_title"], mapping["external_market_id"],
+            "fixture-new-token-without-observations", mapping["question"], {"fixture": True}, now=utc(2026, 9, 28, 12))
+        print(json.dumps({"success": True}))
+        return
     now = utc(2026, 9, 28, 12)
     envelope = snapshot.build_snapshot(
         make_snapshot_transport(now), clock=FixedClock(now), sleep=lambda _: None

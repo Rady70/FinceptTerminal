@@ -198,6 +198,7 @@ fincept_add_test(tst_fedwatch_panel
     "${PROJECT_SOURCE_DIR}/src/core/session/ScreenStateManager.h"
     "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchPanel.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchHistoryChart.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchCurrentChart.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/EconPanelBase.cpp"
     "${PROJECT_SOURCE_DIR}/src/ui/widgets/PaginationBar.cpp"
     "${PROJECT_SOURCE_DIR}/src/ui/charts/TimeSeriesChartView.cpp"

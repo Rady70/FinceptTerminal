@@ -3,6 +3,7 @@
 #include "core/config/ProfileManager.h"
 #include "core/session/ScreenStateManager.h"
 #include "screens/common/IStatefulScreen.h"
+#include "screens/economics/panels/FedWatchCurrentChart.h"
 #include "screens/economics/panels/FedWatchHistoryChart.h"
 #include "services/economics/EconomicsEnvelopeParse.h"
 #include "ui/theme/Theme.h"
@@ -189,8 +190,12 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
     auto* distribution_title = new QLabel(tr("Current comparison · all outcomes"), content);
     distribution_title->setObjectName("fedwatchDistributionTitle");
     layout->addWidget(distribution_title);
+    current_chart_ = new FedWatchCurrentChart(content);
+    current_chart_->setObjectName("fedwatchCurrentChart");
+    layout->addWidget(current_chart_);
     distribution_ = table(layout, "fedwatchDistribution",
                           {tr("Outcome"), tr("Fed-side %"), tr("Polymarket %"), tr("Difference pp")});
+    distribution_->setMaximumHeight(190);
     auto* toggle = new QToolButton(content);
     toggle->setObjectName("fedwatchDetailsToggle");
     toggle->setText(tr("Research details"));
@@ -295,8 +300,8 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     });
     controls_ = new QWidget(this);
     controls_->setObjectName("fedwatchControlRow");
-    auto* timeline_layout = new QHBoxLayout(controls_);
-    timeline_layout->setContentsMargins(0, 0, 0, 0);
+    controls_layout_ = new QGridLayout(controls_);
+    controls_layout_->setContentsMargins(0, 0, 0, 0);
     meetings_ = new Selection(this);
     outcomes_ = new Selection(this);
     methods_ = new Selection(this);
@@ -309,12 +314,20 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     ranges_->addItem(tr("90D"), 90);
     ranges_->addItem(tr("Full retained"), 0);
     ranges_->setCurrentIndex(3);
-    timeline_layout->addWidget(new QLabel(tr("Meeting"), controls_));
-    timeline_layout->addWidget(make_chip_row("meeting", meetings_, 48), 4);
-    timeline_layout->addWidget(new QLabel(tr("Outcome"), controls_));
-    timeline_layout->addWidget(make_chip_row("outcome", outcomes_, 48), 4);
-    timeline_layout->addWidget(new QLabel(tr("Range"), controls_));
-    timeline_layout->addWidget(make_chip_row("range", ranges_, 48), 3);
+    auto group = [this](const QString& kind, const QString& label, Selection* selection) {
+        auto* widget = new QWidget(controls_);
+        auto* row = new QHBoxLayout(widget);
+        row->setContentsMargins(0, 0, 0, 0);
+        auto* caption = new QLabel(label, widget);
+        caption->setObjectName("fedwatch" + kind.left(1).toUpper() + kind.mid(1) + "Label");
+        row->addWidget(caption);
+        row->addWidget(make_chip_row(kind, selection, 48), 1);
+        return widget;
+    };
+    meeting_control_ = group("meeting", tr("Meeting"), meetings_);
+    outcome_control_ = group("outcome", tr("Outcome"), outcomes_);
+    range_control_ = group("range", tr("Range"), ranges_);
+    arrange_controls();
     meetings_->changed = [this] {
         if (selected_meeting_ != meetings_->currentData().toString()) {
             series_error_.clear();
@@ -718,22 +731,35 @@ void FedWatchPanel::on_result(const QString& id, const services::EconomicsResult
     }
 }
 void FedWatchPanel::render() {
+    const QStringList context{selected_meeting_, outcomes_->currentData().toString(),
+                              methods_->currentData().toString()};
+    if (analytics_error_context_ != context) {
+        analytics_error_.clear();
+        analytics_error_context_ = context;
+    }
     const auto target = snapshot_["current_target_range"].toObject();
     const auto stored = meeting();
     const auto current = current_meeting();
     const auto fed = current["fed_side"].toObject();
     const auto poly = current["polymarket"].toObject();
     const bool show_current = current_ok_ && !resolved();
-    summary_->setText(tr("%1 · %2%3    |    Target %4 – %5\nSnapshot retrieved  %6")
-                          .arg(selected_meeting_,
-                               stored["status"].toString(current["status"].toString(tr("Unavailable"))),
-                               stored["actual_outcome_bp"].isDouble()
-                                   ? tr(" · Actual policy outcome: %1 bp").arg(stored["actual_outcome_bp"].toInt())
-                                   : QString{},
-                               show_current ? fedwatch::number(target["lower"], "%") : tr("Unavailable"),
-                               show_current ? fedwatch::number(target["upper"], "%") : tr("Unavailable"),
-                               show_current ? snapshot_["retrieved_at"].toString(tr("Unavailable"))
-                                            : tr("Not refreshed; stored history only")));
+    if (resolved())
+        summary_->setText(tr("%1 · RESOLVED%2\nStored history only · no live refresh")
+                              .arg(selected_meeting_,
+                                   stored["actual_outcome_bp"].isDouble()
+                                       ? tr(" · Actual policy outcome: %1 bp").arg(stored["actual_outcome_bp"].toInt())
+                                       : QString{}));
+    else
+        summary_->setText(tr("%1 · %2%3    |    Target %4 – %5\nSnapshot retrieved  %6")
+                              .arg(selected_meeting_,
+                                   stored["status"].toString(current["status"].toString(tr("Unavailable"))),
+                                   stored["actual_outcome_bp"].isDouble()
+                                       ? tr(" · Actual policy outcome: %1 bp").arg(stored["actual_outcome_bp"].toInt())
+                                       : QString{},
+                                   show_current ? fedwatch::number(target["lower"], "%") : tr("Unavailable"),
+                                   show_current ? fedwatch::number(target["upper"], "%") : tr("Unavailable"),
+                                   show_current ? snapshot_["retrieved_at"].toString(tr("Unavailable"))
+                                                : tr("Not refreshed; stored history only")));
     QStringList state;
     if (resolved())
         state << tr("RESOLVED · stored local history; no live collection");
@@ -823,10 +849,15 @@ void FedWatchPanel::render() {
                                       : history_issue_present ? tr("Historical data unavailable")
                                                               : tr("Loading historical data"));
     QMap<QString, QJsonObject> rows;
+    const bool fed_current = show_current && fed["local_status"].toString() == "OK" &&
+                             fed["freshness"].toObject()["status"].toString() != "STALE";
+    const bool poly_current =
+        show_current && poly["mapping_status"].toString() == "VALIDATED" && poly["data_status"].toString() == "CURRENT";
     if (show_current) {
         for (const auto& value : fed["local_probabilities"].toArray()) {
             auto row = value.toObject();
-            row["fed_probability_pct"] = row["probability_pct"];
+            if (fed_current)
+                row["fed_probability_pct"] = row["probability_pct"];
             rows[key(row["outcome_bp"].toInt(), false)] = row;
         }
         if (poly["mapping_status"].toString() == "VALIDATED")
@@ -835,16 +866,29 @@ void FedWatchPanel::render() {
                 auto& entry = rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())];
                 entry["outcome_bp"] = row["outcome_bp"];
                 entry["open_ended"] = row["open_ended"];
-                entry["polymarket_probability_pct"] = row["probability_pct"];
+                if (poly_current)
+                    entry["polymarket_probability_pct"] = row["probability_pct"];
             }
         for (const auto& value : current["comparison"].toArray()) {
-            const auto row = value.toObject();
+            auto row = value.toObject();
+            if (!fed_current)
+                row.remove("fed_probability_pct");
+            if (!poly_current)
+                row.remove("polymarket_probability_pct");
+            if (!fed_current || !poly_current)
+                row.remove("probability_diff_pp");
             rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())] = row;
         }
     }
+    const auto current_rows = ordered_outcomes(rows);
+    current_chart_->set_rows(current_rows);
+    current_chart_->setVisible(!resolved());
+    findChild<QLabel*>("fedwatchDistributionTitle")->setVisible(!resolved());
+    distribution_->setVisible(!resolved());
+    selected_current_->setVisible(!resolved());
     distribution_->setRowCount(rows.size());
     int r = 0;
-    for (const auto& row : ordered_outcomes(rows)) {
+    for (const auto& row : current_rows) {
         cell(distribution_, r, 0, fedwatch::outcome_label(row["outcome_bp"].toInt(), row["open_ended"].toBool()));
         cell(distribution_, r, 1, fedwatch::number(row["fed_probability_pct"]));
         cell(distribution_, r, 2, fedwatch::number(row["polymarket_probability_pct"]));
@@ -1036,10 +1080,17 @@ void FedWatchPanel::render_history() {
     const auto revalidation = mapping["last_revalidation_status"].toString();
     const bool history_not_loaded =
         meeting()["polymarket_backfill"].toObject().isEmpty() && !backfill_results_.contains(selected_meeting_);
+    // An attempt record is not usable history. Check the full retained selected
+    // series, not a range-filtered chart that may simply exclude existing points.
+    const bool retry_history =
+        quality.contains("PROVIDER_ERROR") && !analytics_.isEmpty() && probabilities[1].points.isEmpty();
+    contextual_load_history_->setText(retry_history ? tr("Retry history") : tr("Load history"));
+    contextual_load_history_->setAccessibleName(retry_history ? tr("Retry Polymarket history")
+                                                              : tr("Load Polymarket history"));
     contextual_load_history_->setVisible(diagnostics_->isHidden() && !resolved() && selected_token &&
                                          mapping["mapping_status"].toString() == "VALIDATED" &&
                                          revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS" &&
-                                         history_not_loaded);
+                                         (history_not_loaded || retry_history));
     contextual_load_history_->setEnabled(!collect_in_flight_ && !backfill_in_flight_);
     QDateTime first, last;
     for (const auto& series : filtered)
@@ -1157,6 +1208,35 @@ void FedWatchPanel::refresh_panel_theme() {
         divergence_->update();
     if (polymarket_)
         polymarket_->update();
+    if (current_chart_)
+        current_chart_->update();
+}
+void FedWatchPanel::arrange_controls() {
+    if (!controls_layout_ || !meeting_control_ || !outcome_control_ || !range_control_)
+        return;
+    for (auto* group : {meeting_control_, outcome_control_, range_control_})
+        controls_layout_->removeWidget(group);
+    for (int column = 0; column < 3; ++column)
+        controls_layout_->setColumnStretch(column, 0);
+    if (width() >= 1100) {
+        controls_layout_->addWidget(meeting_control_, 0, 0);
+        controls_layout_->addWidget(outcome_control_, 0, 1);
+        controls_layout_->addWidget(range_control_, 0, 2);
+        controls_layout_->setColumnStretch(0, 4);
+        controls_layout_->setColumnStretch(1, 4);
+        controls_layout_->setColumnStretch(2, 3);
+    } else if (width() >= 700) {
+        controls_layout_->addWidget(meeting_control_, 0, 0, 1, 2);
+        controls_layout_->addWidget(outcome_control_, 1, 0);
+        controls_layout_->addWidget(range_control_, 1, 1);
+        controls_layout_->setColumnStretch(0, 1);
+        controls_layout_->setColumnStretch(1, 1);
+    } else {
+        controls_layout_->addWidget(meeting_control_, 0, 0);
+        controls_layout_->addWidget(outcome_control_, 1, 0);
+        controls_layout_->addWidget(range_control_, 2, 0);
+        controls_layout_->setColumnStretch(0, 1);
+    }
 }
 void FedWatchPanel::arrange_charts() {
     if (!charts_layout_ || !probability_section_ || !polymarket_section_)
@@ -1171,6 +1251,7 @@ void FedWatchPanel::arrange_charts() {
 }
 void FedWatchPanel::resizeEvent(QResizeEvent* event) {
     EconPanelBase::resizeEvent(event);
+    arrange_controls();
     arrange_charts();
     // Reflow changes each strip's viewport without changing its selection.
     // Keep active choices visible once the new scrollbar ranges have settled.
