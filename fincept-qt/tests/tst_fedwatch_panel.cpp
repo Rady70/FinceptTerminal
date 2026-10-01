@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QFile>
 #include <QJsonDocument>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
@@ -897,6 +898,109 @@ class TestFedWatchPanel : public QObject {
             if (line.contains("{\"fedwatch\", \"FedWatch\""))
                 QVERIFY(!hexColor.match(line).hasMatch());
     }
+    void chartCoverageAndContextualHistoryAreVisible() {
+        openUpcoming();
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-25:exact"));
+        flush();
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points.size(), 1);
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("1 observation retained"));
+        QVERIFY(text("fedwatchFedHistoryState").contains("1 observation retained"));
+        const auto bounds = chart("fedwatchProbabilityChart")->value_bounds();
+        QCOMPARE(bounds, chart("fedwatchPolymarketChart")->value_bounds());
+        QVERIFY(bounds.second < 5);
+        auto* action = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
+        QVERIFY(!action->isHidden());
+        QVERIFY(action->isEnabled());
+        const auto before = sent_.size();
+        action->click();
+        QCOMPARE(sent_.size(), before + 1);
+        QCOMPARE(pending_.first().command, QString("history_backfill"));
+        QVERIFY(!action->isEnabled());
+        const auto request = pending_.takeFirst();
+        deliver(request, process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                                 {database_, "backfill-coverage-two"}));
+        flush();
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points.size(), 2);
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("Limited history: 2 observations"));
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("missing UTC days (line breaks)"));
+        QVERIFY(action->isHidden());
+        // No interpolation/forward-fill: both rendered points are exact backend rows.
+        const auto retained = rawDetails()["analytics"].toObject()["polymarket"].toObject()["history"].toArray();
+        QCOMPARE(retained.size(), 2);
+        for (int i = 0; i < retained.size(); ++i) {
+            QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points[i].value,
+                     retained[i].toObject()["probability_pct"].toDouble());
+            QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points[i].instant,
+                     QDateTime::fromString(retained[i].toObject()["observed_at"].toString(), Qt::ISODate));
+        }
+        control("fedwatchMethod")->selectIndex(control("fedwatchMethod")->findData("HISTORICAL_ZQ_RECONSTRUCTED"));
+        flush();
+        QVERIFY(text("fedwatchFedHistoryState").contains("No observations in this range"));
+        QVERIFY(text("fedwatchProbabilityTitle").contains("ZQ reconstructed"));
+        QVERIFY(chart("fedwatchProbabilityChart")->series()[0].points.isEmpty());
+        QCOMPARE(chart("fedwatchProbabilityChart")->time_bounds(), chart("fedwatchPolymarketChart")->time_bounds());
+        QCOMPARE(chart("fedwatchProbabilityChart")->value_bounds(), chart("fedwatchPolymarketChart")->value_bounds());
+    }
+    void normalMultiPointHistoryPreservesBackendValuesAndSharedScale() {
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                {database_, "backfill-coverage-normal"});
+        openUpcoming();
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-25:exact"));
+        flush();
+        const auto* fed = chart("fedwatchProbabilityChart");
+        const auto* poly = chart("fedwatchPolymarketChart");
+        QCOMPARE(poly->series()[0].points.size(), 9);
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("9 observations retained"));
+        QVERIFY(!text("fedwatchPolymarketHistoryState").contains("Limited history"));
+        const auto bounds = fed->value_bounds();
+        QCOMPARE(bounds, poly->value_bounds());
+        for (const auto* view : {fed, poly})
+            for (const auto& point : view->series()[0].points)
+                QVERIFY(point.value >= bounds.first && point.value <= bounds.second);
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(7));
+        QCOMPARE(fed->time_bounds(), poly->time_bounds());
+        QCOMPARE(fed->value_bounds(), poly->value_bounds());
+        QCOMPARE(poly->series()[0].points.size(), 1);
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("1 observation retained"));
+        QVERIFY(text("fedwatchProbabilityTitle").contains("Investing-derived"));
+        QCOMPARE(fed->time_bounds().first, fed->time_bounds().second.addDays(-7));
+        QVERIFY(!text("fedwatchProbabilityTitle").contains("CME"));
+    }
+    void hoverSynchronizesDateAndLeavesMissingPeerObservationsMissing() {
+        openUpcoming();
+        panel_->resize(1280, 800);
+        panel_->show();
+        QTest::qWait(100);
+        auto* fed = chart("fedwatchProbabilityChart");
+        auto* poly = chart("fedwatchPolymarketChart");
+        // Hover an actual retained Polymarket point on Sep 27: Fed has no
+        // observation that day. Matching by date must not supply Sep 26/28.
+        const auto first = poly->time_bounds().first.toMSecsSinceEpoch();
+        const auto last = poly->time_bounds().second.toMSecsSinceEpoch();
+        const auto point = *std::find_if(poly->series()[0].points.begin(), poly->series()[0].points.end(),
+                                         [](const auto& p) { return p.instant.date() == QDate(2026, 9, 27); });
+        const auto bounds = poly->value_bounds();
+        const QPoint cursor(
+            65 + qRound(double(point.instant.toMSecsSinceEpoch() - first) / (last - first) * (poly->width() - 90)),
+            50 + qRound((bounds.second - point.value) / (bounds.second - bounds.first) * (poly->height() - 110)));
+        // Deliver the real Qt widget mouse event deterministically; external
+        // desktop windows must not steal the OS cursor from this widget test.
+        QSignalSpy dates(poly, &FedWatchHistoryChart::date_hovered);
+        QMouseEvent move(QEvent::MouseMove, QPointF(cursor), QPointF(poly->mapToGlobal(cursor)), Qt::NoButton,
+                         Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(poly, &move);
+        QCOMPARE(dates.size(), 1);
+        QCOMPARE(fed->hover_date(), QDate(2026, 9, 27));
+        QCOMPARE(poly->hover_date(), fed->hover_date());
+        QVERIFY(fed->hover_text().contains("No observation"));
+        QVERIFY(poly->hover_text().contains("32% @ 12:00 UTC"));
+        QVERIFY(fed->accessibleDescription().contains("No observation"));
+        QCOMPARE(fed->series()[0].points.size(), 3);
+        QEvent leave(QEvent::Leave);
+        QApplication::sendEvent(poly, &leave);
+        QVERIFY(!fed->hover_date().isValid());
+        QVERIFY(!poly->hover_date().isValid());
+    }
     void explicitPolymarketHistoryUsesBackendAndCoalescesWriters() {
         openUpcoming();
         auto* button = panel_->findChild<QPushButton*>("fedwatchLoadHistory");
@@ -1006,6 +1110,7 @@ class TestFedWatchPanel : public QObject {
         deliver(request, response);
         flush();
         QVERIFY(text("fedwatchDiagnosticStatus").contains("PARTIAL"));
+        QVERIFY(text("fedwatchPolymarketHistoryState").contains("Meeting history partial"));
         QVERIFY(text("fedwatchCoverage").contains("PARTIAL"));
         QVERIFY(text("fedwatchSourceStatus").contains("1 accepted points"));
         QVERIFY(text("fedwatchSourceStatus").contains("Dropped: 1 malformed / 1 future / 1 out of range"));
@@ -1035,6 +1140,9 @@ class TestFedWatchPanel : public QObject {
         flush();
         QVERIFY(text("fedwatchDiagnosticStatus").contains(status));
         QVERIFY(text("fedwatchSourceStatus").contains(status));
+        if (status == "PARTIAL" || status == "PROVIDER_ERROR")
+            QVERIFY(text("fedwatchPolymarketHistoryState")
+                        .contains(status == "PARTIAL" ? "Meeting history partial" : "Meeting history provider error"));
         QVERIFY(text("fedwatchCoverage").contains(status));
     }
     void persistedBackfillQualitySurvivesFreshPanelReload_data() {
@@ -1063,6 +1171,8 @@ class TestFedWatchPanel : public QObject {
         flush();
         QVERIFY(rawDetails()["polymarket_history_update"].toObject().isEmpty());
         QVERIFY(text("fedwatchSourceStatus").contains(status));
+        QVERIFY(text("fedwatchPolymarketHistoryState")
+                    .contains(status == "PARTIAL" ? "Meeting history partial" : "Meeting history provider error"));
         QVERIFY(text("fedwatchCoverage").contains(QString("%1 backfill points").arg(points)));
         QVERIFY(text("fedwatchCoverage").contains("Last backfill 2026-09-28T12:00:00Z"));
         QVERIFY(!chart("fedwatchPolymarketChart")->series()[0].points.isEmpty());

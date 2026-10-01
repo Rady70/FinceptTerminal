@@ -122,13 +122,36 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
         return section;
     };
     probability_section_ = chart_section("fedwatchProbabilityTitle", tr("Fed-side history (%)"));
+    fed_history_state_ = new QLabel(probability_section_);
+    fed_history_state_->setObjectName("fedwatchFedHistoryState");
+    fed_history_state_->setWordWrap(true);
+    probability_section_->layout()->addWidget(fed_history_state_);
     probability_ = new FedWatchHistoryChart(probability_section_);
     probability_->setObjectName("fedwatchProbabilityChart");
+    probability_->setMaximumHeight(340);
     probability_section_->layout()->addWidget(probability_);
     polymarket_section_ = chart_section("fedwatchPolymarketTitle", tr("Polymarket history (%)"));
+    poly_history_state_ = new QLabel(polymarket_section_);
+    poly_history_state_->setObjectName("fedwatchPolymarketHistoryState");
+    poly_history_state_->setWordWrap(true);
+    polymarket_section_->layout()->addWidget(poly_history_state_);
     polymarket_ = new FedWatchHistoryChart(polymarket_section_);
     polymarket_->setObjectName("fedwatchPolymarketChart");
+    polymarket_->setMaximumHeight(340);
     polymarket_section_->layout()->addWidget(polymarket_);
+    contextual_load_history_ = new QPushButton(tr("Load history"), polymarket_section_);
+    contextual_load_history_->setObjectName("fedwatchContextLoadHistory");
+    contextual_load_history_->setAccessibleName(tr("Load Polymarket history"));
+    contextual_load_history_->setToolTip(load_history_->toolTip());
+    polymarket_section_->layout()->addWidget(contextual_load_history_);
+    static_cast<QVBoxLayout*>(probability_section_->layout())->addStretch();
+    static_cast<QVBoxLayout*>(polymarket_section_->layout())->addStretch();
+    connect(contextual_load_history_, &QPushButton::clicked, load_history_, &QPushButton::click);
+    for (auto* source : {probability_, polymarket_}) {
+        auto* peer = source == probability_ ? polymarket_ : probability_;
+        connect(source, &FedWatchHistoryChart::date_hovered, peer, &FedWatchHistoryChart::set_hover_date);
+        connect(source, &FedWatchHistoryChart::hover_finished, peer, [peer] { peer->set_hover_date({}); });
+    }
     arrange_charts();
     selected_current_ = new QLabel(content);
     selected_current_->setObjectName("fedwatchSelectedCurrent");
@@ -216,6 +239,7 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
         toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
     });
     connect(toggle, &QToolButton::toggled, this, [this] { notify_state(this); });
+    connect(toggle, &QToolButton::toggled, this, [this] { render_history(); });
     auto* research = new QLabel(diagnostics_);
     research->setObjectName("fedwatchResearchNotice");
     research->setWordWrap(true);
@@ -968,6 +992,55 @@ void FedWatchPanel::render_history() {
     const auto filtered = fedwatch::filter_range(probabilities, ranges_->currentData().toInt(), anchor);
     probability_->set_series({filtered[0]});
     polymarket_->set_series({filtered[1]});
+    const auto bounds = fedwatch::shared_probability_bounds(filtered);
+    probability_->set_value_bounds(bounds.first, bounds.second);
+    polymarket_->set_value_bounds(bounds.first, bounds.second);
+    const QString scale =
+        tr("Shared scale %1–%2%").arg(QString::number(bounds.first, 'f', 2), QString::number(bounds.second, 'f', 2));
+    fed_history_state_->setText(fedwatch::history_coverage(filtered[0].points) + " · " + scale);
+    poly_history_state_->setText(fedwatch::history_coverage(filtered[1].points) + " · " + scale);
+    if (!series_error_.isEmpty() || !analytics_error_.isEmpty()) {
+        fed_history_state_->setText(fed_history_state_->text() + tr(" · History incomplete; see Research details"));
+        poly_history_state_->setText(poly_history_state_->text() + tr(" · History incomplete; see Research details"));
+    }
+    QStringList quality;
+    for (const auto& status : meeting()["polymarket_backfill"].toObject()["statuses"].toArray())
+        quality << status.toString();
+    for (const auto& value : backfill_results_.value(selected_meeting_).data["backfills"].toArray()) {
+        const auto row = value.toObject();
+        if (row["meeting_date"].toString() == selected_meeting_)
+            quality << row["status"].toString();
+    }
+    QString quality_note;
+    if (quality.contains("PROVIDER_ERROR"))
+        quality_note = tr("Meeting history provider error; retained observations shown");
+    else if (quality.contains("PARTIAL"))
+        quality_note = tr("Meeting history partial; accepted observations shown");
+    else if (quality.contains("EMPTY"))
+        quality_note = tr("Some meeting outcomes have no backfill points");
+    if (!quality_note.isEmpty())
+        poly_history_state_->setText(poly_history_state_->text() + " · " + quality_note);
+    // Reserve equal caption space so state wrapping cannot misalign the plots.
+    for (auto* label : {fed_history_state_, poly_history_state_}) {
+        label->setFixedHeight(label->fontMetrics().lineSpacing() * 4);
+        label->setToolTip(label->text());
+    }
+    const auto mapping = meeting()["polymarket_mapping"].toObject();
+    bool selected_token = false;
+    for (const auto& value : mapping["outcomes"].toArray()) {
+        const auto row = value.toObject();
+        if (key(row["outcome_bp"].toInt(), row["open_ended"].toBool()) == outcomes_->currentData().toString() &&
+            !row["external_token_id"].toString().isEmpty())
+            selected_token = true;
+    }
+    const auto revalidation = mapping["last_revalidation_status"].toString();
+    const bool history_not_loaded =
+        meeting()["polymarket_backfill"].toObject().isEmpty() && !backfill_results_.contains(selected_meeting_);
+    contextual_load_history_->setVisible(diagnostics_->isHidden() && !resolved() && selected_token &&
+                                         mapping["mapping_status"].toString() == "VALIDATED" &&
+                                         revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS" &&
+                                         history_not_loaded);
+    contextual_load_history_->setEnabled(!collect_in_flight_ && !backfill_in_flight_);
     QDateTime first, last;
     for (const auto& series : filtered)
         for (const auto& point : series.points) {
@@ -976,6 +1049,10 @@ void FedWatchPanel::render_history() {
             if (!last.isValid() || point.instant > last)
                 last = point.instant;
         }
+    if (ranges_->currentData().toInt() > 0 && anchor.isValid()) {
+        first = anchor.addDays(-ranges_->currentData().toInt());
+        last = anchor;
+    }
     probability_->set_time_bounds(first, last);
     polymarket_->set_time_bounds(first, last);
     findChild<QLabel*>("fedwatchProbabilityTitle")

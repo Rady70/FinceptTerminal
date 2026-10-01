@@ -27,9 +27,13 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
     if case == "failure":
         transport.add_json("prices-history", TransportError("fixture HTTP 500", status_code=500))
     else:
+        outcome = -25 if case.startswith("coverage-") else 25
         mapping = next(m for m in store.validated_mappings([meeting])
-                       if m["outcome_bp"] == 25 and not m["open_ended"])
+                       if m["outcome_bp"] == outcome and not m["open_ended"])
         points = [{"t": epoch(utc(2026, 8, 2)), "p": 0.42}]
+        if case.startswith("coverage-"):
+            points = [{"t": epoch(utc(2026, 8, day + 1)), "p": 0.003 + day * 0.0001}
+                      for day in range(8 if case == "coverage-normal" else 1)]
         if case == "partial":
             points.extend([{"t": "invalid", "p": 0.3},
                            {"t": epoch(utc(2026, 8, 3)), "p": 2.5},
@@ -43,7 +47,8 @@ def main() -> None:
     store = FedwatchHistoryStore(Path(sys.argv[1]))
     case = sys.argv[2] if len(sys.argv) > 2 else ""
     if case.startswith("backfill-"):
-        print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"))},
+        meeting = sys.argv[3] if len(sys.argv) > 3 else "2026-10-28"
+        print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
                          allow_nan=False))
         return
     now = utc(2026, 9, 28, 12)

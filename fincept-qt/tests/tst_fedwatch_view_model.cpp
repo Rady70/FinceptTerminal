@@ -33,6 +33,10 @@ class TestFedWatchViewModel : public QObject {
         QCOMPARE(result[0].instant.date(), QDate(2026, 9, 26));
         QCOMPARE(result[1].value, 60.0);
         QCOMPARE(result[1].instant.time(), QTime(12, 0));
+        const auto tiny =
+            points(QJsonArray{QJsonObject{{"observed_at", "2026-09-28T12:00:00Z"}, {"probability_pct", 0.0034}}},
+                   "observed_at", "probability_pct");
+        QVERIFY(tiny[0].detail.contains("0.0034%"));
     }
     void divergenceUsesBackendValues() {
         const auto result = points(QJsonArray{QJsonObject{{"date", "2026-09-26"}, {"probability_diff_pp", -8.8}},
@@ -74,6 +78,37 @@ class TestFedWatchViewModel : public QObject {
         QCOMPARE(shortRange[2].points.size(), 0);
         QCOMPARE(retained[0].points.size(), 2);
         QCOMPARE(filter_range(retained, 0)[2].points[0].value, 45.0);
+    }
+    void displayCoverageDistinguishesSparseAndGappedHistory() {
+        QVector<Point> retained;
+        QCOMPARE(history_coverage(retained), QString("No observations in this range"));
+        const auto start = QDateTime::fromString("2026-09-01T12:00:00Z", Qt::ISODate);
+        retained.append({start, 0.25, {}});
+        QCOMPARE(history_coverage(retained), QString("1 observation retained"));
+        retained.append({start.addDays(3), 0.4, {}});
+        QVERIFY(history_coverage(retained).contains("Limited history: 2 observations"));
+        QVERIFY(history_coverage(retained).contains("2 missing UTC days (line breaks)"));
+        QVERIFY(!adjacent_observations(retained[0], retained[1]));
+        QCOMPARE(retained.size(), 2); // Missing dates remain absent.
+        retained.clear();
+        for (int day = 0; day < 8; ++day)
+            retained.append({start.addDays(day), 0.25 + day * 0.01, {}});
+        QCOMPARE(history_coverage(retained), QString("8 observations retained"));
+    }
+    void sharedAdaptiveProbabilityScaleNeverClipsValues() {
+        const auto start = QDateTime::fromString("2026-09-01T12:00:00Z", Qt::ISODate);
+        const QVector<Series> sources{{"Fed", {{start, 0.0, {}}, {start.addDays(1), 0.4, {}}}},
+                                      {"Poly", {{start, 0.8, {}}}}};
+        const auto bounds = shared_probability_bounds(sources);
+        QCOMPARE(bounds.first, 0.0);
+        QCOMPARE(bounds.second, 1.3);
+        QVERIFY(bounds.second < 100); // A tiny shared band is readable.
+        for (const auto& series : sources)
+            for (const auto& point : series.points)
+                QVERIFY(point.value >= bounds.first && point.value <= bounds.second);
+        QCOMPARE(shared_probability_bounds({{"Fed", {{start, 100, {}}}}}), (QPair<double, double>{99.5, 100}));
+        QCOMPARE(shared_probability_bounds({}), (QPair<double, double>{0, 100}));
+        QCOMPARE(sources[0].points[1].value, 0.4); // Scale is presentation only.
     }
 };
 QTEST_GUILESS_MAIN(TestFedWatchViewModel)

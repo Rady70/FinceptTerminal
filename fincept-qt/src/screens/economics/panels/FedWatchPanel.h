@@ -90,9 +90,11 @@ class FedWatchPanel : public EconPanelBase {
     QWidget *meeting_chips_ = nullptr, *outcome_chips_ = nullptr, *method_chips_ = nullptr, *range_chips_ = nullptr;
     QPushButton* update_upcoming_ = nullptr;
     QPushButton* load_history_ = nullptr;
+    QPushButton* contextual_load_history_ = nullptr;
     Selection *meetings_ = nullptr, *outcomes_ = nullptr, *methods_ = nullptr, *ranges_ = nullptr;
     QLabel *summary_ = nullptr, *status_ = nullptr, *coverage_ = nullptr;
     QLabel* diagnostic_status_ = nullptr;
+    QLabel *fed_history_state_ = nullptr, *poly_history_state_ = nullptr;
     QLabel *selected_current_ = nullptr, *source_status_ = nullptr;
     QWidget *probability_section_ = nullptr, *polymarket_section_ = nullptr, *diagnostics_ = nullptr;
     QGridLayout* charts_layout_ = nullptr;
