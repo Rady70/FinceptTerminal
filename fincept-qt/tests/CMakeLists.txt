@@ -468,6 +468,7 @@ fincept_add_test(tst_etf_ui
     "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfFlowsScreen.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfMonthlyChart.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfResearchLoader.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfResearchVisuals.cpp"
     "${PROJECT_SOURCE_DIR}/src/ui/theme/ThemeManager.cpp"
     "${PROJECT_SOURCE_DIR}/src/ui/tables/DataTable.cpp")
 target_link_libraries(tst_etf_ui PRIVATE Qt6::Sql Qt6::Widgets Qt6::Concurrent)

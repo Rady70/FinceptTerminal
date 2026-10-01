@@ -24,7 +24,20 @@ void EtfMonthlyChart::set_months(const QJsonArray& months) {
                     " · " + etf_ui::quality(m));
     }
     setToolTip(tips.join(QLatin1Char('\n')));
+    bool measured = false;
+    for (const auto& value : months_)
+        measured = measured || value.toObject().value("observed_net_flow_usd").isDouble();
+    setMinimumHeight(measured ? 280 : 150);
+    setMaximumHeight(measured ? QWIDGETSIZE_MAX : 170);
     update();
+}
+
+QJsonArray EtfMonthlyChart::displayed_months() const {
+    const int count = std::min({12, static_cast<int>(months_.size()), std::max(1, (width() - 20) / 85)});
+    QJsonArray displayed;
+    for (int i = static_cast<int>(months_.size()) - count; i < months_.size(); ++i)
+        displayed.append(months_[i]);
+    return displayed;
 }
 
 void EtfMonthlyChart::paintEvent(QPaintEvent*) {
@@ -32,7 +45,8 @@ void EtfMonthlyChart::paintEvent(QPaintEvent*) {
     const auto& t = ui::ThemeManager::instance().tokens();
     p.fillRect(rect(), QColor(t.bg_surface));
     p.setPen(QColor(t.text_primary));
-    const int count = std::min({12, static_cast<int>(months_.size()), std::max(1, (width() - 20) / 85)});
+    const auto displayed = displayed_months();
+    const int count = static_cast<int>(displayed.size());
     p.drawText(QRect(10, 5, width() - 20, 25), Qt::AlignLeft,
                tr("SEC N-PORT · monthly USD · observed subset · latest %1 months").arg(count));
     p.drawText(
@@ -43,19 +57,26 @@ void EtfMonthlyChart::paintEvent(QPaintEvent*) {
         return;
     }
     double scale = 0.0;
-    const int first = static_cast<int>(months_.size()) - count;
-    for (int i = first; i < months_.size(); ++i) {
-        const auto v = months_[i].toObject().value("observed_net_flow_usd");
+    for (const auto& month : displayed) {
+        const auto v = month.toObject().value("observed_net_flow_usd");
         if (v.isDouble() && std::isfinite(v.toDouble()))
             scale = std::max(scale, std::abs(v.toDouble()));
     }
     const double step = static_cast<double>(width() - 20) / count;
     const double mid = (height() + 35.0) / 2.0;
     const double half = (height() - 150.0) / 2.0;
+    if (scale == 0.0) {
+        bool any_value = false;
+        for (const auto& value : displayed)
+            any_value = any_value || value.toObject().value("observed_net_flow_usd").isDouble();
+        if (!any_value)
+            p.drawText(QRect(10, 68, width() - 20, 30), Qt::AlignCenter,
+                       tr("No measured regulatory flow in this history · missing is not zero"));
+    }
     p.setPen(QColor(t.border_med));
     p.drawLine(QPointF(10, mid), QPointF(width() - 10, mid));
     for (int j = 0; j < count; ++j) {
-        const auto month = months_[first + j].toObject();
+        const auto month = displayed[j].toObject();
         const auto v = month.value("observed_net_flow_usd");
         const double x = 10.0 + j * step;
         const bool present = v.isDouble() && std::isfinite(v.toDouble());

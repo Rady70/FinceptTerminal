@@ -5,6 +5,8 @@
 #include "services/etf/EtfSessionCalendar.h"
 #include "storage/repositories/EtfDataRepository.h"
 
+#include <algorithm>
+
 namespace etf_ui_fixtures {
 using namespace fincept;
 using namespace fincept::services::etf;
@@ -56,7 +58,7 @@ qint64 instrument(qint64 con_id, const char* symbol, const char* seen) {
 }
 
 bool filing(qint64 subject, const char* cik, const char* accession, const char* form, const char* accepted,
-            const char* seen, double net_flow, const char* amends = "") {
+            const char* seen, double net_flow, const char* amends = "", const QDate& month = QDate(2026, 10, 1)) {
     const qint64 retrieval_id = retrieval(seen);
     if (retrieval_id <= 0)
         return false;
@@ -69,11 +71,12 @@ bool filing(qint64 subject, const char* cik, const char* accession, const char* 
     f.filer_cik = QLatin1String(cik);
     f.form = QLatin1String(form);
     f.filing_date = utc(accepted).date();
-    f.report_date = QStringLiteral("2026-10-31");
+    const QDate month_end(month.year(), month.month(), month.daysInMonth());
+    f.report_date = month_end.toString(Qt::ISODate);
     f.accepted_at = utc(accepted);
     f.entity_id = subject;
     f.amends_accession = QLatin1String(amends);
-    f.rep_pd_date = QDate(2026, 10, 31);
+    f.rep_pd_date = month_end;
     f.document_sha256 = QStringLiteral("hash-") + f.accession;
     const auto saved = repo().upsert_sec_filing(f, retrieval_id, utc(seen));
     if (saved.is_err())
@@ -92,12 +95,14 @@ bool filing(qint64 subject, const char* cik, const char* accession, const char* 
         in.source_document = f.accession;
         in.filing_id = saved.value().first;
         in.amended_filing = f.form == QLatin1String("NPORT-P/A");
-        in.effective_date = QDate(2026, 10, 31);
-        in.period_start = QDate(2026, 10, 1);
-        in.period_end = QDate(2026, 10, 31);
-        in.report_period = QDate(2026, 10, 31);
+        in.effective_date = month_end;
+        in.period_start = QDate(month.year(), month.month(), 1);
+        in.period_end = month_end;
+        in.report_period = month_end;
         in.accepted_at = f.accepted_at;
-        in.value = FieldValue::reported_value(i == 0 ? net_flow : 0.0);
+        in.value = FieldValue::reported_value(i == 0   ? std::max(0.0, net_flow)
+                                              : i == 1 ? std::max(0.0, -net_flow)
+                                                       : 0.0);
         in.retrieval_id = retrieval_id;
         in.seen_at = utc(seen);
         in.observation_start = start.value();

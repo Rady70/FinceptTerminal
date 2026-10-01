@@ -16,9 +16,12 @@ class QPushButton;
 class QSplitter;
 class QTableWidget;
 class QTabWidget;
+class QScrollArea;
 
 namespace fincept::screens {
 class EtfMonthlyChart;
+class EtfGroupBoard;
+class EtfSessionChart;
 
 class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     Q_OBJECT
@@ -31,6 +34,9 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
   signals:
     void research_loaded(bool success);
 
+  protected:
+    void resizeEvent(QResizeEvent* event) override;
+
   private:
     void populate_groups();
     void recompute();
@@ -41,9 +47,11 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     void select_group();
     void select_month();
     void inspect_subject(QTableWidget* table);
-    void render_subject(const QJsonObject& subject, const QJsonObject& result);
+    void render_subject(const QJsonObject& subject, const QJsonObject& result, const QJsonObject& group);
     void show_provenance(const QJsonObject& object);
     void refresh_theme();
+    void navigate(const QString& level, const QString& group);
+    void update_browse_choices();
     QString subject_name(const QJsonObject& row) const;
 
     std::optional<services::etf::TaxonomySnapshot> taxonomy_;
@@ -57,6 +65,15 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     bool busy_ = false;
 
     QWidget* controls_ = nullptr;
+    QWidget* primary_controls_ = nullptr;
+    QWidget* browse_choices_ = nullptr;
+    QWidget* rotation_choices_ = nullptr;
+    QComboBox* selected_month_ = nullptr;
+    EtfGroupBoard* board_ = nullptr;
+    EtfMonthlyChart* individual_flow_chart_ = nullptr;
+    EtfSessionChart* individual_rotation_chart_ = nullptr;
+    QWidget* individual_family_choices_ = nullptr;
+    QScrollArea* board_scroll_ = nullptr;
     QComboBox* level_ = nullptr;
     QComboBox* group_ = nullptr;
     QDateEdit* from_ = nullptr;

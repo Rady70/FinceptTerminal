@@ -102,4 +102,25 @@ inline QJsonObject last_month(const QJsonObject& group) {
     return months.isEmpty() ? QJsonObject{} : months.last().toObject();
 }
 
+// Counts describe emitted backend states, never an aggregate/rank of returns.
+inline QString rotation_availability(const QJsonObject& group) {
+    int components = 0, stale = 0, missing = 0, excluded = 0;
+    for (const auto& value : group.value(QStringLiteral("rotation_constituents")).toArray()) {
+        const QString state = value.toObject().value(QStringLiteral("status")).toString();
+        if (state == QLatin1String("component_only"))
+            ++components;
+        else if (state == QLatin1String("stale"))
+            ++stale;
+        else if (state == QLatin1String("excluded"))
+            ++excluded;
+        else
+            ++missing;
+    }
+    return QStringLiteral("Session components: %1 snapshots · %2 stale · %3 missing · %4 excluded")
+        .arg(components)
+        .arg(stale)
+        .arg(missing)
+        .arg(excluded);
+}
+
 } // namespace fincept::screens::etf_ui

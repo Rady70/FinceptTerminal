@@ -1482,6 +1482,7 @@ set(SCREEN_SOURCES
     src/screens/etf/EtfFlowsScreen.cpp
     src/screens/etf/EtfMonthlyChart.cpp
     src/screens/etf/EtfResearchLoader.cpp
+    src/screens/etf/EtfResearchVisuals.cpp
     src/screens/auth/LoginScreen.cpp
     src/screens/auth/RegisterScreen.cpp
     src/screens/auth/ForgotPasswordScreen.cpp

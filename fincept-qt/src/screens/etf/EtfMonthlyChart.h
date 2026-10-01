@@ -8,6 +8,7 @@ class EtfMonthlyChart : public QWidget {
   public:
     explicit EtfMonthlyChart(QWidget* parent = nullptr);
     void set_months(const QJsonArray& months);
+    QJsonArray displayed_months() const;
 
   protected:
     void paintEvent(QPaintEvent* event) override;
