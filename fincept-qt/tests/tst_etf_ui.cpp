@@ -15,6 +15,7 @@
 #include <QCryptographicHash>
 #include <QDateTimeEdit>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QLabel>
@@ -26,11 +27,14 @@
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QSqlRecord>
+#include <QTabBar>
 #include <QTabWidget>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThreadPool>
+#include <QTimer>
 #include <QVBoxLayout>
 
 using namespace fincept;
@@ -74,6 +78,25 @@ int row_containing(QTableWidget* table, int column, const QString& text) {
             return row;
     return -1;
 }
+QTableView* detail_view(EtfFlowsScreen& screen) {
+    auto* button = widget<QPushButton>(screen, "etfExactIndividual");
+    button->setChecked(true);
+    return widget<QTableView>(screen, "etfIndividual");
+}
+int row_containing(QTableView* view, int column, const QString& text) {
+    for (int row = 0; row < view->model()->rowCount(); ++row)
+        if (view->model()->index(row, column).data().toString().contains(text))
+            return row;
+    return -1;
+}
+QString provenance_text(EtfFlowsScreen& screen) {
+    auto* tabs = widget<QTabWidget>(screen, "etfTabs");
+    const int previous = tabs->currentIndex();
+    tabs->setCurrentIndex(5);
+    const auto text = widget<QPlainTextEdit>(screen, "etfProvenance")->toPlainText();
+    tabs->setCurrentIndex(previous);
+    return text;
+}
 void select_group(EtfFlowsScreen& screen, const QString& id) {
     auto* overview = widget<QTableWidget>(screen, "etfOverview");
     const int row = row_containing(overview, 0, id);
@@ -102,12 +125,13 @@ void capture_synthetic(EtfFlowsScreen& screen, const QString& name) {
         banner->setWordWrap(true);
         static_cast<QVBoxLayout*>(screen.layout())->insertWidget(0, banner);
     }
+    widget<QPushButton>(screen, "etfExactIndividual")->setChecked(false);
     screen.show();
     QTest::qWait(30);
     QVERIFY(screen.grab().save(output + '/' + name + ".png"));
 }
-bool seed_rotation(qint64 con_id, const char* symbol) {
-    const char* seen = "2026-12-02T23:00:00.000Z";
+bool seed_rotation(qint64 con_id, const char* symbol, const QDate& first = QDate(2026, 8, 3),
+                   const QDate& last = QDate(2026, 11, 30), const char* seen = "2026-12-02T23:00:00.000Z") {
     const qint64 listed = instrument(con_id, symbol, seen);
     if (listed <= 0)
         return false;
@@ -125,7 +149,7 @@ bool seed_rotation(qint64 con_id, const char* symbol) {
     const auto id = repo().record_retrieval(ret);
     if (id.is_err())
         return false;
-    const auto days = UsEquityCalendar::weekdays_in(QDate(2026, 8, 3), QDate(2026, 11, 30));
+    const auto days = UsEquityCalendar::weekdays_in(first, last);
     if (repo().upsert_sessions(days).is_err())
         return false;
     int n = 0;
@@ -268,11 +292,11 @@ class EtfUiTest : public QObject {
         constituents->setCurrentCell(row, 0);
         emit constituents->itemActivated(constituents->item(row, 0));
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 15000);
-        auto* individual = widget<QTableWidget>(screen, "etfIndividual");
+        auto* individual = detail_view(screen);
         const int net = row_containing(individual, 1, "Net flow");
         QVERIFY(net >= 0);
-        QCOMPARE(individual->item(net, 2)->text(), "USD 0.00");
-        const auto provenance = widget<QPlainTextEdit>(screen, "etfProvenance")->toPlainText();
+        QCOMPARE(individual->model()->index(net, 2).data().toString(), "USD 0.00");
+        const auto provenance = provenance_text(screen);
         QVERIFY(provenance.contains("regulatory_flow_analytics_v1"));
         QVERIFY(provenance.contains("0001193125-26-990001"));
         QCOMPARE(store_digest(), before);
@@ -282,7 +306,7 @@ class EtfUiTest : public QObject {
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 3, 15000);
         QCOMPARE(overview->item(0, 1)->text(), "USD 10.00");
         QVERIFY(overview->item(0, 3)->text().contains("revised inputs"));
-        QVERIFY(widget<QPlainTextEdit>(screen, "etfProvenance")->toPlainText().contains("filing_vintages"));
+        QVERIFY(provenance_text(screen).contains("filing_vintages"));
         configure(screen, "complex", "sp500", QDate(2026, 10, 1), "2026-12-03T22:00:00.000Z");
         widget<QPushButton>(screen, "etfRecompute")->click();
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 4, 15000);
@@ -317,13 +341,12 @@ class EtfUiTest : public QObject {
         rotation->setCurrentCell(gold, 0);
         emit rotation->itemActivated(rotation->item(gold, 0));
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 15000);
-        QVERIFY(widget<QTableWidget>(screen, "etfIndividual")->rowCount() > 0);
+        QVERIFY(detail_view(screen)->model()->rowCount() > 0);
         QVERIFY(widget<QLabel>(screen, "etfIndividualStatus")->text().contains("exchange sessions"));
         // The monthly attribution row remains missing rather than zero.
-        const int missing_flow = row_containing(widget<QTableWidget>(screen, "etfIndividual"), 1, "Net flow");
+        const int missing_flow = row_containing(detail_view(screen), 1, "Net flow");
         QVERIFY(missing_flow >= 0);
-        QCOMPARE(widget<QTableWidget>(screen, "etfIndividual")->item(missing_flow, 2)->text(),
-                 "Unavailable / not counted");
+        QCOMPARE(detail_view(screen)->model()->index(missing_flow, 2).data().toString(), "Unavailable / not counted");
         capture_synthetic(screen, "individual_rotation_synthetic");
         QCOMPARE(widget<QTableWidget>(screen, "etfUnclassified")->rowCount(), 1);
         select_group(screen, "Equity");
@@ -334,7 +357,7 @@ class EtfUiTest : public QObject {
         QVERIFY(rotation->item(inverse, 8)->text().contains("-1x"));
         rotation->setCurrentCell(inverse, 0);
         emit rotation->itemActivated(rotation->item(inverse, 0));
-        QCOMPARE(widget<QTableWidget>(screen, "etfIndividual")->rowCount(), 0);
+        QCOMPARE(detail_view(screen)->model()->rowCount(), 0);
         QVERIFY(widget<QLabel>(screen, "etfIndividualStatus")->text().contains("excluded"));
         capture_synthetic(screen, "leveraged_inverse_excluded_synthetic");
         widget<QCheckBox>(screen, "etfLeveraged")->setChecked(true);
@@ -415,6 +438,7 @@ class EtfUiTest : public QObject {
         auto* restored_splitter = other->findChild<QSplitter*>();
         QCOMPARE(restored_splitter->childrenCollapsible(), splitter->childrenCollapsible());
         QCOMPARE(restored_splitter->handleWidth(), splitter->handleWidth());
+        QCOMPARE(widget<QTabWidget>(*other, "etfTabs")->currentIndex(), 1);
         QCOMPARE(restored_splitter->sizes(), splitter->sizes());
         for (const auto* key : {"from", "to"})
             QCOMPARE(other->save_state().value(key).toDate(), saved.value(key).toDate());
@@ -457,21 +481,22 @@ class EtfUiTest : public QObject {
         members->setCurrentCell(0, 0);
         emit members->itemActivated(members->item(0, 0));
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 15000);
-        auto* individual = widget<QTableWidget>(screen, "etfIndividual");
+        auto* individual = detail_view(screen);
         const int net = row_containing(individual, 1, "Net flow");
         QVERIFY2(net >= 0, "Batch D has observed linked regulatory flow, but individual ETF history drops it");
-        QCOMPARE(individual->item(net, 0)->text(), "2026-10");
-        QCOMPARE(individual->item(net, 2)->text(), "USD 123.00");
-        QVERIFY(individual->item(net, 5)->text().contains(
+        QCOMPARE(individual->model()->index(net, 0).data().toString(), "2026-10");
+        QCOMPARE(individual->model()->index(net, 2).data().toString(), "USD 123.00");
+        QVERIFY(individual->model()->index(net, 5).data().toString().contains(
             member.value("net_flow").toObject().value("available_from").toString()));
         QVERIFY(row_containing(individual, 1, "Price return 21") >= 0);
-        const auto provenance = widget<QPlainTextEdit>(screen, "etfProvenance")->toPlainText();
+        const auto provenance = provenance_text(screen);
         QVERIFY(provenance.contains("synthetic one-to-one declaration"));
         QVERIFY(provenance.contains("0001193125-26-991001"));
-        QCOMPARE(individual->item(net, 6)->text(), "SEC regulatory flow (monthly)");
+        QCOMPARE(individual->model()->index(net, 6).data().toString(), "SEC regulatory flow (monthly)");
         const int price = row_containing(individual, 1, "Price return 21");
-        QCOMPARE(individual->item(price, 6)->text(), "Market rotation (sessions)");
-        QCOMPARE(individual->item(net, 0)->data(Qt::UserRole).toJsonObject().value("constituent").toObject(), member);
+        QCOMPARE(individual->model()->index(price, 6).data().toString(), "Market rotation (sessions)");
+        QCOMPARE(individual->model()->index(net, 0).data(Qt::UserRole).toJsonObject().value("constituent").toObject(),
+                 member);
         screen.resize(1440, 1000);
         widget<QPushButton>(screen, "etfIndividualMonthly")->click();
         capture_synthetic(screen, "individual_linked_regulatory_synthetic");
@@ -481,9 +506,10 @@ class EtfUiTest : public QObject {
         members->setCurrentCell(0, 0);
         emit members->itemActivated(members->item(0, 0));
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 4, 15000);
+        detail_view(screen);
         const int before_link = row_containing(individual, 1, "Net flow");
         QVERIFY(before_link >= 0);
-        QCOMPARE(individual->item(before_link, 2)->text(), "Unavailable / not counted");
+        QCOMPARE(individual->model()->index(before_link, 2).data().toString(), "Unavailable / not counted");
         QCOMPARE(store_digest(), before);
     }
     void linked_listed_refusals_data() {
@@ -529,12 +555,14 @@ class EtfUiTest : public QObject {
         members->setCurrentCell(row, 0);
         emit members->itemActivated(members->item(row, 0));
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 15000);
-        auto* individual = widget<QTableWidget>(screen, "etfIndividual");
+        auto* individual = detail_view(screen);
         const int net = row_containing(individual, 1, "Net flow");
         QVERIFY(net >= 0);
-        QCOMPARE(individual->item(net, 2)->text(), "Unavailable / not counted");
-        QVERIFY(individual->item(net, 3)->text().contains(duplicate ? "Duplicate reporting identity" : "Unresolved"));
-        QCOMPARE(individual->item(net, 0)->data(Qt::UserRole).toJsonObject().value("constituent").toObject(), member);
+        QCOMPARE(individual->model()->index(net, 2).data().toString(), "Unavailable / not counted");
+        QVERIFY(individual->model()->index(net, 3).data().toString().contains(duplicate ? "Duplicate reporting identity"
+                                                                                        : "Unresolved"));
+        QCOMPARE(individual->model()->index(net, 0).data(Qt::UserRole).toJsonObject().value("constituent").toObject(),
+                 member);
         QCOMPARE(store_digest(), before);
     }
     void multi_month_history_chart_and_synthetic_captures() {
@@ -601,9 +629,10 @@ class EtfUiTest : public QObject {
             image.save(qEnvironmentVariable("MARKETLAB_ETF_UI_SYNTHETIC_CAPTURE_DIR") + "/chart_painter_synthetic.png");
         const QColor accent(ui::ThemeManager::instance().tokens().accent);
         const auto accent_pixels = [&](int month_index, bool above) {
-            const int step = (painted.width() - 20) / 12;
-            const int x = 10 + month_index * step + step / 2;
-            const int mid = static_cast<int>((painted.height() + 35.0) / 2.0);
+            const auto plot = painted.plot_rect();
+            const double step = plot.width() / 12;
+            const int x = qRound(plot.left() + month_index * step + step / 2);
+            const int mid = qRound(plot.center().y());
             int count = 0;
             for (int y = above ? mid - 35 : mid + 3; y < (above ? mid - 3 : mid + 35); ++y)
                 if (image.pixelColor(qRound(x * image.devicePixelRatio()) + 1, qRound(y * image.devicePixelRatio()))
@@ -629,8 +658,8 @@ class EtfUiTest : public QObject {
         screen.resize(740, 900);
         capture_synthetic(screen, "narrow_monthly_synthetic");
         chart->resize(650, 360);
-        QCOMPARE(chart->displayed_months().size(), 7);
-        QCOMPARE(chart->displayed_months()[0].toObject().value("month").toString(), "2026-04");
+        QCOMPARE(chart->displayed_months().size(), 6);
+        QCOMPARE(chart->displayed_months()[0].toObject().value("month").toString(), "2026-05");
         QCOMPARE(store_digest(), before);
     }
     void graphical_hierarchy_navigation_and_replay() {
@@ -660,6 +689,9 @@ class EtfUiTest : public QObject {
             const auto monthly = board->month_for(group);
             QVERIFY(monthly.contains("observed_net_flow_usd"));
             QVERIFY(board->rect().contains(board->card_rect(i)));
+            QCOMPARE(board->rotation_summary(group), etf_ui::rotation_availability(group));
+            if (group.value("group_id").toString() == QLatin1String("equity"))
+                QVERIFY(board->rotation_summary(group).contains("2 excluded"));
         }
         QCOMPARE(classes, QSet<QString>({"equity", "fixed_income", "commodity", "currency", "crypto", "real_estate"}));
         QVERIFY(board->accessibleDescription().contains("USD 321.00"));
@@ -670,6 +702,15 @@ class EtfUiTest : public QObject {
             QVERIFY(board->rect().contains(board->card_rect(i)));
         QCOMPARE(widget<QScrollArea>(screen, "etfBoardScroll")->horizontalScrollBar()->maximum(), 0);
         QCOMPARE(widget<QScrollArea>(screen, "etfResearchScroll")->horizontalScrollBar()->maximum(), 0);
+        auto* tabs = widget<QTabWidget>(screen, "etfTabs");
+        QCOMPARE(tabs->tabText(0), "Flow");
+        QCOMPARE(tabs->tabText(1), "Rotation");
+        for (int tab = 0; tab < tabs->count(); ++tab) {
+            QVERIFY(!tabs->tabText(tab).contains("..."));
+            QVERIFY(!tabs->tabToolTip(tab).isEmpty());
+            QVERIFY(tabs->tabBar()->tabRect(tab).width() >=
+                    tabs->tabBar()->fontMetrics().horizontalAdvance(tabs->tabText(tab)));
+        }
         capture_synthetic(screen, "narrow_cross_asset_synthetic");
         screen.resize(1440, 1000);
         int equity = -1;
@@ -698,6 +739,21 @@ class EtfUiTest : public QObject {
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 5, 15000);
         widget<QTabWidget>(screen, "etfTabs")->setCurrentIndex(1);
         QVERIFY(widget<QPushButton>(screen, "etfRotationSubject_738523410")->text().contains("Excluded"));
+        QVERIFY(widget<QLabel>(screen, "etfRotationStatus")->text().contains("Excluded is not zero"));
+        QVERIFY(widget<QTabWidget>(screen, "etfTabs")->maximumHeight() < 400);
+        QTest::qWait(30);
+        auto* compact_tabs = widget<QTabWidget>(screen, "etfTabs");
+        auto* selection = widget<QLabel>(screen, "etfSelection");
+        QVERIFY(compact_tabs->geometry().top() - selection->geometry().bottom() < 30);
+        auto* compact_splitter = screen.findChild<QSplitter*>();
+        QVERIFY2(compact_splitter->height() < 650,
+                 qPrintable(QString("splitter %1 min %2 max %3; tabs %4 max %5; board min %6")
+                                .arg(compact_splitter->height())
+                                .arg(compact_splitter->minimumHeight())
+                                .arg(compact_splitter->maximumHeight())
+                                .arg(compact_tabs->height())
+                                .arg(compact_tabs->maximumHeight())
+                                .arg(widget<QScrollArea>(screen, "etfBoardScroll")->minimumHeight())));
         capture_synthetic(screen, "leveraged_inverse_excluded_synthetic");
 
         widget<QPushButton>(screen, "etfAdvancedReplay")->click();
@@ -705,6 +761,233 @@ class EtfUiTest : public QObject {
         widget<QPushButton>(screen, "etfAdvancedReplay")->click();
         QVERIFY(!widget<QDateTimeEdit>(screen, "etfAsOf")->isVisible());
         QCOMPARE(store_digest(), before);
+    }
+    void session_chart_observed_ranges_and_references_data() {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("flat") << QStringLiteral("flat");
+        QTest::newRow("signed_and_gap") << QStringLiteral("mixed");
+        QTest::newRow("all_missing") << QStringLiteral("missing");
+    }
+    void session_chart_observed_ranges_and_references() {
+        QFETCH(QString, scenario);
+        const QStringList fields{"price_return_21", "trend_efficiency_21", "return_acceleration_21",
+                                 "volume_ratio_5_63"};
+        const QStringList units{"price_return_ratio", "efficiency_ratio_minus1_1", "price_return_difference",
+                                "self_relative_volume_ratio"};
+        const double flat[]{0.2, 1.0, 0.0, 1.0};
+        const double mixed[4][4]{
+            {-0.1, 0.2, 0.0, 0.05}, {1.0, 1.0, 0.0, 1.0}, {0.02, -0.04, 0.0, 0.01}, {0.8, 1.2, 0.0, 1.05}};
+        QJsonArray sessions;
+        for (int day = 0; day < 4; ++day) {
+            QJsonObject values;
+            for (int panel = 0; panel < 4; ++panel) {
+                const bool missing = scenario == "missing" || (scenario == "mixed" && day == 2);
+                values.insert(
+                    fields[panel],
+                    QJsonObject{{"value", missing ? QJsonValue()
+                                                  : QJsonValue(scenario == "flat" ? flat[panel] : mixed[panel][day])},
+                                {"units", units[panel]},
+                                {"state", missing ? "MISSING" : "PROXY"}});
+            }
+            sessions.append(
+                QJsonObject{{"session", QDate(2026, 10, 1).addDays(day).toString(Qt::ISODate)}, {"values", values}});
+        }
+        EtfSessionChart chart;
+        chart.setAttribute(Qt::WA_DontShowOnScreen);
+        chart.set_sessions(sessions);
+        chart.resize(1200, 500);
+        chart.show();
+        QTest::qWait(30);
+        QCOMPARE(chart.sessions(), sessions);
+        QVERIFY(chart.toolTip().size() < 1500);
+        for (int panel = 0; panel < 4; ++panel) {
+            const auto state = chart.panel_state(panel);
+            QCOMPARE(state.value("reference").toDouble(), panel == 3 ? 1.0 : 0.0);
+            if (scenario == "missing") {
+                QVERIFY(state.value("observed_min").isNull());
+                QVERIFY(state.value("observed_max").isNull());
+                QCOMPARE(state.value("value_label").toString(), "Unavailable");
+                QCOMPARE(state.value("range_label").toString(), "Observed range unavailable");
+            } else if (scenario == "flat") {
+                QCOMPARE(state.value("observed_min").toDouble(), flat[panel]);
+                QCOMPARE(state.value("observed_max").toDouble(), flat[panel]);
+                const auto formatted = etf_ui::number(flat[panel], units[panel]);
+                QCOMPARE(state.value("value_label").toString(), formatted);
+                QCOMPARE(state.value("range_label").toString(), "Observed: " + formatted + " to " + formatted);
+            } else {
+                const double minimum = std::min({mixed[panel][0], mixed[panel][1], mixed[panel][3]});
+                const double maximum = std::max({mixed[panel][0], mixed[panel][1], mixed[panel][3]});
+                QCOMPARE(state.value("observed_min").toDouble(), minimum);
+                QCOMPARE(state.value("observed_max").toDouble(), maximum);
+                QCOMPARE(state.value("range_label").toString(), "Observed: " + etf_ui::number(minimum, units[panel]) +
+                                                                    " to " + etf_ui::number(maximum, units[panel]));
+            }
+        }
+        if (scenario == "flat") {
+            QCOMPARE(chart.panel_state(0).value("range_label").toString(), "Observed: 20.00% to 20.00%");
+            QCOMPARE(chart.panel_state(1).value("range_label").toString(), "Observed: 1.00 to 1.00");
+            QCOMPARE(chart.panel_state(2).value("value_label").toString(), "0.00 pp");
+            QCOMPARE(chart.panel_state(3).value("value_label").toString(), "1.00x");
+            QVERIFY(!chart.accessibleDescription().contains("0.5 to 1.5"));
+        }
+        const auto pixels = chart.grab().toImage();
+        const auto plot = chart.panel_plot_rect(0);
+        const auto accent = QColor(ui::ThemeManager::instance().tokens().accent);
+        if (scenario == "mixed") {
+            // No segment may bridge the null third session to the last observed point.
+            const int x = qRound(plot.left() + plot.width() * 2.0 / 3.0);
+            int colored = 0;
+            for (int y = plot.top(); y <= plot.bottom(); ++y)
+                colored +=
+                    pixels.pixelColor(qRound(x * pixels.devicePixelRatio()), qRound(y * pixels.devicePixelRatio()))
+                        .rgb() == accent.rgb();
+            QCOMPARE(colored, 0);
+        }
+    }
+    void linked_listed_revision_is_visible_in_chart_and_exact_model_data() {
+        QTest::addColumn<double>("amended_flow");
+        QTest::newRow("positive") << 173.0;
+        QTest::newRow("zero") << 0.0;
+    }
+    void linked_listed_revision_is_visible_in_chart_and_exact_model() {
+        QFETCH(double, amended_flow);
+        const char* seen = "2026-12-02T00:00:00.000Z";
+        const qint64 reporting = entity("0009999999", "", seen);
+        QVERIFY(seed_rotation(51529211, "GLD"));
+        const qint64 listed = instrument(51529211, "GLD", seen);
+        QVERIFY(filing(reporting, "0009999999", "0001193125-26-994001", "NPORT-P", "2026-11-25T15:00:00.000Z", seen,
+                       123.0));
+        QVERIFY(repo()
+                    .declare_link(listed, reporting, {}, LinkRelationship::RegistrantIsInstrument,
+                                  "synthetic amended one-to-one link", utc("2026-12-04T00:00:00.000Z"))
+                    .is_ok());
+        QVERIFY(filing(reporting, "0009999999", "0001193125-26-994002", "NPORT-P/A", "2026-12-04T15:00:00.000Z",
+                       "2026-12-06T00:00:00.000Z", amended_flow, "0001193125-26-994001"));
+        const auto before = store_digest();
+        EtfFlowsScreen screen;
+        screen.setAttribute(Qt::WA_DontShowOnScreen);
+        configure(screen, "category", "physical_gold");
+        screen.resize(1440, 1000);
+        screen.show();
+        QSignalSpy loaded(&screen, &EtfFlowsScreen::research_loaded);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 15000);
+        auto* members = widget<QTableWidget>(screen, "etfConstituents");
+        const auto expected = members->item(0, 0)->data(Qt::UserRole).toJsonObject();
+        QCOMPARE(expected.value("net_flow").toObject().value("state").toString(), "REVISED");
+        members->setCurrentCell(0, 0);
+        emit members->itemActivated(members->item(0, 0));
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 15000);
+        auto* chart = widget<EtfMonthlyChart>(screen, "etfIndividualFlowChart");
+        QCOMPARE(chart->displayed_months().size(), 1);
+        QCOMPARE(chart->displayed_months()[0].toObject().value("quality").toString(), "REVISED");
+        QVERIFY(chart->displayed_months()[0].toObject().value("has_revised_inputs").toBool());
+        QVERIFY(chart->accessibleDescription().contains("Revised"));
+        auto* exact = detail_view(screen);
+        const int net = row_containing(exact, 1, "Net flow");
+        QVERIFY(net >= 0);
+        QCOMPARE(exact->model()->index(net, 2).data().toString(), etf_ui::number(amended_flow, "USD"));
+        QVERIFY(exact->model()->index(net, 3).data().toString().contains("Revised"));
+        QCOMPARE(exact->model()->index(net, 0).data(Qt::UserRole).toJsonObject().value("constituent").toObject(),
+                 expected);
+        widget<QPushButton>(screen, "etfIndividualMonthly")->click();
+        capture_synthetic(screen, amended_flow == 0.0 ? "individual_linked_revised_zero_regulatory_synthetic"
+                                                      : "individual_linked_revised_regulatory_synthetic");
+        QCOMPARE(store_digest(), before);
+    }
+    void selected_month_status_tracks_missing_and_measured_months() {
+        const auto reporting = entity("0000884394", "", "2026-12-02T00:00:00.000Z");
+        QVERIFY(filing(reporting, "0000884394", "0001193125-26-994010", "NPORT-P", "2026-11-25T15:00:00.000Z",
+                       "2026-12-02T00:00:00.000Z", 17.0));
+        EtfFlowsScreen screen;
+        screen.setAttribute(Qt::WA_DontShowOnScreen);
+        configure(screen, "complex", "sp500", QDate(2026, 9, 1));
+        widget<QDateEdit>(screen, "etfTo")->setDate(QDate(2026, 10, 31));
+        QSignalSpy loaded(&screen, &EtfFlowsScreen::research_loaded);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 15000);
+        auto* month = widget<QComboBox>(screen, "etfSelectedMonth");
+        QVERIFY(widget<QLabel>(screen, "etfStatus")->text().contains("2026-10: stored research ready"));
+        month->setCurrentText("2026-09");
+        QVERIFY(widget<QLabel>(screen, "etfStatus")->text().contains("2026-09: No measured regulatory flow"));
+        month->setCurrentText("2026-10");
+        QVERIFY(widget<QLabel>(screen, "etfStatus")->text().contains("2026-10: stored research ready"));
+    }
+    void maximum_window_rotation_detail_is_lazy_and_lossless() {
+        QVERIFY(Database::instance().execute("BEGIN").is_ok());
+        QVERIFY(seed_rotation(51529211, "GLD", QDate(2019, 1, 1), QDate(2028, 12, 31), "2029-01-03T23:00:00.000Z"));
+        QVERIFY(Database::instance().execute("COMMIT").is_ok());
+        const auto before = store_digest();
+        EtfFlowsScreen screen;
+        screen.setAttribute(Qt::WA_DontShowOnScreen);
+        configure(screen, "category", "physical_gold", QDate(2019, 1, 1), "2029-02-10T22:00:00.000Z");
+        widget<QDateEdit>(screen, "etfTo")->setDate(QDate(2028, 12, 31));
+        screen.resize(1440, 1000);
+        screen.show();
+        QSignalSpy loaded(&screen, &EtfFlowsScreen::research_loaded);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 45000);
+        auto* rotation = widget<QTableWidget>(screen, "etfRotation");
+        const int row = row_containing(rotation, 0, "51529211");
+        QVERIFY(row >= 0);
+        QElapsedTimer heartbeat;
+        heartbeat.start();
+        qint64 longest_gap = 0;
+        QTimer timer;
+        timer.setInterval(10);
+        connect(&timer, &QTimer::timeout, &screen, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
+        timer.start();
+        rotation->setCurrentCell(row, 0);
+        emit rotation->itemActivated(rotation->item(row, 0));
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 45000);
+        timer.stop();
+        auto* chart = widget<EtfSessionChart>(screen, "etfSessionChart");
+        auto* view = widget<QTableView>(screen, "etfIndividual");
+        QVERIFY(chart->sessions().size() > 2000);
+        QCOMPARE(view->model()->rowCount(), 0);
+        QVERIFY(view->isHidden());
+        QCOMPARE(widget<QPlainTextEdit>(screen, "etfProvenance")->toPlainText().size(), 0);
+        QVERIFY(chart->toolTip().size() < 1500);
+        int expected_rows = 0;
+        for (const auto& session : chart->sessions())
+            expected_rows += static_cast<int>(session.toObject().value("values").toObject().size());
+        // One exact Batch D regulatory status per requested month is also retained.
+        expected_rows += widget<QTableWidget>(screen, "etfMonths")->rowCount();
+        QElapsedTimer opening;
+        opening.start();
+        widget<QPushButton>(screen, "etfExactIndividual")->setChecked(true);
+        const auto opening_ms = opening.elapsed();
+        QCOMPARE(view->model()->rowCount(), expected_rows);
+        const auto last_row = view->model()->index(expected_rows - 1, 0);
+        QCOMPARE(last_row.data().toString(), chart->sessions().last().toObject().value("session").toString());
+        const auto exact_json = provenance_text(screen);
+        const auto context = QJsonDocument::fromJson(exact_json.toUtf8()).object();
+        const auto individual = context.value("selected_record").toObject().value("individual_research").toObject();
+        const auto retained = individual.value("rotation_proxy")
+                                  .toArray()[0]
+                                  .toObject()
+                                  .value("measures")
+                                  .toObject()
+                                  .value("sessions")
+                                  .toArray();
+        QCOMPARE(retained, chart->sessions());
+        view->setCurrentIndex(last_row);
+        const auto selected_context = QJsonDocument::fromJson(provenance_text(screen).toUtf8()).object();
+        QCOMPARE(selected_context.value("individual_research").toObject(), individual);
+        QCOMPARE(store_digest(), before);
+        const auto output = qEnvironmentVariable("MARKETLAB_ETF_UI_SYNTHETIC_CAPTURE_DIR");
+        if (!output.isEmpty()) {
+            QFile report(output + "/maximum-window-performance.json");
+            QVERIFY(report.open(QIODevice::WriteOnly));
+            report.write(QJsonDocument(QJsonObject{{"requested_months", 120},
+                                                   {"sessions", chart->sessions().size()},
+                                                   {"exact_rows", expected_rows},
+                                                   {"hidden_exact_rows_before_disclosure", 0},
+                                                   {"hidden_provenance_chars", 0},
+                                                   {"chart_summary_chars", chart->toolTip().size()},
+                                                   {"open_model_elapsed_ms", opening_ms},
+                                                   {"largest_heartbeat_gap_ms", longest_gap},
+                                                   {"full_provenance_sessions_equal", true},
+                                                   {"fixture", "synthetic"}})
+                             .toJson());
+        }
     }
     void representative_profile() {
         if (!representative_)
@@ -779,7 +1062,7 @@ class EtfUiTest : public QObject {
                 ++expected;
                 QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), expected, 60000);
                 QVERIFY(loaded.last()[0].toBool());
-                QVERIFY(widget<QTableWidget>(screen, "etfIndividual")->rowCount() > 0);
+                QVERIFY(detail_view(screen)->model()->rowCount() > 0);
                 if (!output.isEmpty())
                     QVERIFY(screen.grab().save(output + "/individual_rotation.png"));
             }
@@ -798,7 +1081,7 @@ class EtfUiTest : public QObject {
         ++expected;
         QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), expected, 60000);
         QVERIFY(loaded.last()[0].toBool());
-        QVERIFY(widget<QTableWidget>(screen, "etfIndividual")->rowCount() > 0);
+        QVERIFY(detail_view(screen)->model()->rowCount() > 0);
         if (!output.isEmpty()) {
             QVERIFY(screen.grab().save(output + "/individual_sec.png"));
             widget<QTabWidget>(screen, "etfTabs")->setCurrentIndex(2);

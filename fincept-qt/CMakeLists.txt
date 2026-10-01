@@ -1973,6 +1973,11 @@ set(APP_SOURCES
 # Infrastructure layers (core, network, auth, storage, services) still benefit from unity.
 set_source_files_properties(
     src/screens/common/ComingSoonScreen.cpp
+    # Batch E follows the screen exclusion policy and must not re-batch release unity sources.
+    src/screens/etf/EtfFlowsScreen.cpp
+    src/screens/etf/EtfMonthlyChart.cpp
+    src/screens/etf/EtfResearchLoader.cpp
+    src/screens/etf/EtfResearchVisuals.cpp
     src/screens/about/AboutScreen.cpp
     src/screens/akshare/AkShareScreen.cpp
     src/screens/algo_trading/AlgoTradingScreen.cpp

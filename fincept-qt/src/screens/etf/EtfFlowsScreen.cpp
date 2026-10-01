@@ -7,6 +7,7 @@
 #include "ui/tables/DataTable.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <QAbstractTableModel>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateEdit>
@@ -23,7 +24,9 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QTabBar>
 #include <QTabWidget>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTimeZone>
 #include <QTimer>
@@ -31,6 +34,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <iterator>
 
 namespace fincept::screens {
 namespace {
@@ -93,6 +97,115 @@ QString timing(const QJsonObject& v) {
     return (available.isString() ? available.toString() : QStringLiteral("Availability unavailable")) +
            QStringLiteral(" · ") + etf_ui::label(v.value("point_in_time_status").toString());
 }
+
+// The exact view reads the retained service JSON on demand. It never creates
+// one widget item per value, even for a 120-month history.
+class IndividualHistoryModel final : public QAbstractTableModel {
+  public:
+    explicit IndividualHistoryModel(QObject* parent) : QAbstractTableModel(parent) {}
+    void set_history(const QJsonArray& periods, const QString& time_key, const QJsonArray& attribution) {
+        beginResetModel();
+        periods_ = periods;
+        time_key_ = time_key;
+        attribution_ = attribution;
+        ends_.clear();
+        rows_ = static_cast<int>(attribution_.size());
+        for (const auto& period : periods_) {
+            rows_ += static_cast<int>(period.toObject().value("values").toObject().size());
+            ends_.append(rows_);
+        }
+        endResetModel();
+    }
+    int rowCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : rows_; }
+    int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 7; }
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
+        if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
+            return {};
+        const QStringList labels{tr("Month / exchange session"),
+                                 tr("Component"),
+                                 tr("Value / units"),
+                                 tr("Quality / missing reason"),
+                                 tr("Window / input count"),
+                                 tr("Available from / timing"),
+                                 tr("Measurement family")};
+        return section >= 0 && section < labels.size() ? labels[section] : QVariant{};
+    }
+    QVariant data(const QModelIndex& index, int role) const override {
+        if (!index.isValid() || index.row() < 0 || index.row() >= rows_)
+            return {};
+        if (index.row() < attribution_.size()) {
+            const auto evidence = attribution_[index.row()].toObject();
+            const auto member = evidence.value("constituent").toObject();
+            const auto net = member.value("net_flow").toObject();
+            const bool observed = member.value("status").toString() == QLatin1String("observed") &&
+                                  member.value("identity_basis").toString() == QLatin1String("declared_link");
+            if (role == Qt::UserRole)
+                return QVariant::fromValue(evidence);
+            if (role != Qt::DisplayRole && role != Qt::ToolTipRole)
+                return {};
+            switch (index.column()) {
+                case 0:
+                    return evidence.value("month_context").toObject().value("month").toString();
+                case 1:
+                    return tr("Net flow · Batch D attribution");
+                case 2:
+                    return observed ? etf_ui::component(net) : tr("Unavailable / not counted");
+                case 3:
+                    return etf_ui::label(member.value("status").toString()) + " · " +
+                           (observed ? etf_ui::label(net.value("state").toString())
+                                     : etf_ui::reason(member.value("reason").toString()));
+                case 4:
+                    return tr("Calendar month · exact listed constituent");
+                case 5:
+                    return observed ? timing(net) : tr("No attributed value available");
+                case 6:
+                    return tr("SEC regulatory flow (monthly)");
+                default:
+                    return {};
+            }
+        }
+        const auto found = std::upper_bound(ends_.cbegin(), ends_.cend(), index.row());
+        const int period_index = static_cast<int>(found - ends_.cbegin());
+        const int first = period_index == 0 ? static_cast<int>(attribution_.size()) : ends_[period_index - 1];
+        const auto period = periods_[period_index].toObject();
+        const auto values = period.value("values").toObject();
+        auto field = values.begin();
+        std::advance(field, index.row() - first);
+        const auto value = field.value().toObject();
+        if (role == Qt::UserRole)
+            return QVariant::fromValue(period);
+        if (role != Qt::DisplayRole && role != Qt::ToolTipRole)
+            return {};
+        switch (index.column()) {
+            case 0:
+                return period.value(time_key_).toString();
+            case 1:
+                return time_key_ == QLatin1String("session") ? etf_ui::component_label(field.key())
+                                                             : etf_ui::label(field.key());
+            case 2:
+                return etf_ui::component(value);
+            case 3:
+                return etf_ui::label(value.value("state").toString()) + " · " +
+                       etf_ui::reason(value.value("reason").toString());
+            case 4:
+                return value.value("window_first").toString() + " to " + value.value("window_last").toString() + " · " +
+                       QString::number(value.value("input_count").toInt()) + tr(" inputs");
+            case 5:
+                return timing(value);
+            case 6:
+                return time_key_ == QLatin1String("session") ? tr("Market rotation (sessions)")
+                                                             : tr("SEC regulatory flow (monthly)");
+            default:
+                return {};
+        }
+    }
+
+  private:
+    QJsonArray periods_, attribution_;
+    QList<int> ends_;
+    QString time_key_;
+    int rows_ = 0;
+};
 } // namespace
 
 EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
@@ -246,8 +359,8 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
     tabs_ = new QTabWidget(detail);
     tabs_->setObjectName("etfTabs");
     tabs_->setUsesScrollButtons(true);
-    tabs_->setElideMode(Qt::ElideRight);
-    tabs_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    tabs_->setElideMode(Qt::ElideNone);
+    tabs_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     detail_layout->addWidget(tabs_, 1);
     auto* regulatory = new QWidget(tabs_);
     auto* reg_layout = new QVBoxLayout(regulatory);
@@ -263,7 +376,7 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
               {tr("Calendar month"), tr("Observed subset (USD)"), tr("Complete group (USD)"), tr("Quality / revisions"),
                tr("SEC identity coverage"), tr("Assets coverage basis"), tr("Available from / timing")},
               regulatory);
-    auto* exact_months = new QPushButton(tr("Inspect exact monthly values and coverage"), regulatory);
+    auto* exact_months = exact_months_ = new QPushButton(tr("Inspect exact monthly values and coverage"), regulatory);
     exact_months->setCheckable(true);
     months_->hide();
     months_->setMinimumHeight(180);
@@ -286,11 +399,14 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
                tr("Trend efficiency 21 sessions"), tr("Return acceleration 21 sessions"),
                tr("Volume ratio 5 / 63 sessions"), tr("Classification / comparability"), tr("Structure / target")},
               rotation_page);
+    rotation_status_ = text_label({}, rotation_page);
+    rotation_status_->setObjectName("etfRotationStatus");
+    rot_layout->addWidget(rotation_status_);
     rotation_choices_ = new QWidget(rotation_page);
     rotation_choices_->setObjectName("etfRotationChoices");
     new QGridLayout(rotation_choices_);
     rot_layout->addWidget(rotation_choices_);
-    auto* exact_rotation = new QPushButton(tr("Inspect exact rotation components"), rotation_page);
+    auto* exact_rotation = exact_rotation_ = new QPushButton(tr("Inspect exact rotation components"), rotation_page);
     exact_rotation->setCheckable(true);
     rotation_->hide();
     rotation_->setMinimumHeight(180);
@@ -328,11 +444,20 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
     families->addWidget(rotation_family);
     families->addStretch();
     ind_layout->addWidget(individual_family_choices_);
-    individual_ =
-        table("etfIndividual",
-              {tr("Month / exchange session"), tr("Component"), tr("Value / units"), tr("Quality / missing reason"),
-               tr("Window / input count"), tr("Available from / timing"), tr("Measurement family")},
-              individual_page);
+    individual_ = new QTableView(individual_page);
+    individual_->setObjectName("etfIndividual");
+    individual_->setModel(new IndividualHistoryModel(individual_));
+    individual_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    individual_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    individual_->setSelectionMode(QAbstractItemView::SingleSelection);
+    individual_->verticalHeader()->hide();
+    individual_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    individual_->horizontalHeader()->setDefaultSectionSize(180);
+    individual_->horizontalHeader()->setStretchLastSection(true);
+    individual_->setAlternatingRowColors(true);
+    individual_detail_status_ = text_label({}, individual_page);
+    individual_detail_status_->setObjectName("etfIndividualDetailStatus");
+    individual_detail_status_->hide();
     individual_flow_chart_ = new EtfMonthlyChart(individual_page);
     individual_flow_chart_->setObjectName("etfIndividualFlowChart");
     individual_flow_chart_->setMinimumHeight(280);
@@ -344,17 +469,28 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
     connect(monthly_family, &QPushButton::clicked, this, [this] {
         individual_flow_chart_->show();
         individual_rotation_chart_->hide();
+        update_detail_layout();
     });
     connect(rotation_family, &QPushButton::clicked, this, [this] {
         individual_flow_chart_->hide();
         individual_rotation_chart_->show();
+        update_detail_layout();
     });
-    auto* exact_individual = new QPushButton(tr("Inspect exact individual values, timing and inputs"), individual_page);
+    auto* exact_individual = exact_individual_ =
+        new QPushButton(tr("Inspect exact individual values, timing and inputs"), individual_page);
+    exact_individual->setObjectName("etfExactIndividual");
     exact_individual->setCheckable(true);
     individual_->hide();
     individual_->setMinimumHeight(180);
-    connect(exact_individual, &QPushButton::toggled, individual_, &QWidget::setVisible);
+    connect(exact_individual, &QPushButton::toggled, this, [this](bool checked) {
+        if (checked)
+            materialize_individual_detail();
+        individual_->setVisible(checked);
+        individual_detail_status_->setVisible(checked);
+        update_detail_layout();
+    });
     ind_layout->addWidget(exact_individual);
+    ind_layout->addWidget(individual_detail_status_);
     ind_layout->addWidget(individual_);
     tabs_->addTab(individual_page, tr("Individual research"));
     provenance_ = new QPlainTextEdit(tabs_);
@@ -370,6 +506,9 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
     connect(tabs_, &QTabWidget::currentChanged, this, [this](int tab) {
         board_scroll_->setVisible(tab != 4 && tab != 5);
         browse_choices_->setVisible(tab != 4 && tab != 5 && browse_choices_->layout()->count() > 0);
+        if (tab == 5)
+            materialize_provenance();
+        update_detail_layout();
     });
     root->addWidget(body_scroll, 1);
     root->addWidget(text_label(
@@ -400,6 +539,7 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
     });
     connect(selected_month_, &QComboBox::currentTextChanged, this, [this](const QString& month) {
         board_->set_groups(result_.value("groups").toArray(), month);
+        update_research_status();
         if (!group_result_.isEmpty())
             select_group();
     });
@@ -418,11 +558,17 @@ EtfFlowsScreen::EtfFlowsScreen(QWidget* parent) : QWidget(parent) {
         connect(t, &QTableWidget::itemSelectionChanged, this, [this, t]() { show_provenance(selected_row(t)); });
         connect(t, &QTableWidget::itemActivated, this, [this, t]() { inspect_subject(t); });
     }
-    connect(individual_, &QTableWidget::itemSelectionChanged, this,
-            [this]() { show_provenance(selected_row(individual_)); });
+    connect(individual_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
+            [this](const QModelIndex& current) {
+                if (current.isValid())
+                    show_provenance(current.siblingAtColumn(0).data(Qt::UserRole).toJsonObject());
+            });
+    for (auto* toggle : {exact_months_, exact_rotation_})
+        connect(toggle, &QPushButton::toggled, this, [this] { update_detail_layout(); });
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this, &EtfFlowsScreen::refresh_theme);
     populate_groups();
     refresh_theme();
+    update_detail_layout();
     // Lets DockScreenRouter restore lightweight controls before the first read.
     QTimer::singleShot(0, this, &EtfFlowsScreen::recompute);
 }
@@ -517,13 +663,17 @@ void EtfFlowsScreen::resizeEvent(QResizeEvent* event) {
     const int columns = width() >= 980 ? 3 : width() >= 580 ? 2 : 1;
     const int shown = std::min(6, static_cast<int>(board_->groups().size()));
     board_scroll_->setMinimumHeight(std::max(1, (shown + columns - 1) / columns) * 148 + 4);
+    update_detail_layout();
 }
 
 void EtfFlowsScreen::clear_results() {
     result_ = {};
     group_result_ = {};
     selected_subject_ = {};
-    for (auto* t : {overview_, months_, constituents_, rotation_, unresolved_, individual_}) {
+    reset_individual_detail();
+    pending_provenance_ = {};
+    provenance_dirty_ = false;
+    for (auto* t : {overview_, months_, constituents_, rotation_, unresolved_}) {
         const QSignalBlocker blocker(t);
         t->setRowCount(0);
     }
@@ -538,6 +688,7 @@ void EtfFlowsScreen::clear_results() {
     context_->clear();
     month_status_->clear();
     provenance_->clear();
+    rotation_status_->clear();
     selection_->setText(tr("Select a group to inspect its monthly history and exact constituents."));
     individual_status_->setText(tr("Open an exact constituent to inspect individual research."));
 }
@@ -555,7 +706,9 @@ void EtfFlowsScreen::set_busy(bool busy) {
     board_->setEnabled(!busy);
     browse_choices_->setEnabled(!busy);
     rotation_choices_->setEnabled(!busy);
-    for (auto* t : {overview_, months_, constituents_, rotation_, unresolved_, individual_})
+    individual_->setEnabled(!busy);
+    exact_individual_->setEnabled(!busy);
+    for (auto* t : {overview_, months_, constituents_, rotation_, unresolved_})
         t->setEnabled(!busy);
 }
 
@@ -602,6 +755,15 @@ void EtfFlowsScreen::recompute() {
         loaded_request_ = request;
         result_ = response.value();
         render_groups();
+        if (restored_tab_ >= 0) {
+            tabs_->setCurrentIndex(restored_tab_);
+            restored_tab_ = -1;
+            if (!restored_splitter_state_.isEmpty()) {
+                splitter_->restoreState(restored_splitter_state_);
+                restored_splitter_state_.clear();
+            }
+            update_detail_layout();
+        }
         emit research_loaded(true);
     });
     watcher->setFuture(QtConcurrent::run([request]() { return etf_ui::load_groups(request); }));
@@ -658,11 +820,9 @@ void EtfFlowsScreen::render_groups() {
     overview_->setSortingEnabled(false);
     const QSignalBlocker blocker(overview_);
     overview_->setRowCount(groups.size());
-    bool measured = false;
     for (int row = 0; row < groups.size(); ++row) {
         const auto group = groups[row].toObject();
         const auto m = etf_ui::last_month(group);
-        measured = measured || m.value("observed_net_flow_usd").isDouble();
         cell(overview_, row, 0,
              etf_ui::label(group.value("group_id").toString()) + " · " +
                  (m.isEmpty() ? tr("No classified monthly history") : m.value("month").toString()),
@@ -676,10 +836,7 @@ void EtfFlowsScreen::render_groups() {
     }
     overview_->setSortingEnabled(true);
     overview_->resizeColumnToContents(0);
-    status_->setText(groups.isEmpty() ? tr("No supported group exists for this selection.")
-                     : measured ? tr("Stored research ready. Observed subsets are not extrapolated to complete groups.")
-                                : tr("No measured regulatory flow in the last selected month. Inspect history, "
-                                     "rotation and coverage gaps."));
+    update_research_status();
     unresolved_->setSortingEnabled(false);
     unresolved_->setRowCount(0);
     for (const auto& key : {QStringLiteral("unclassified_tracked_at_as_of"),
@@ -719,7 +876,7 @@ void EtfFlowsScreen::select_group() {
     board_->set_selected(group_result_.value("group_id").toString());
     update_browse_choices();
     selected_subject_ = {};
-    individual_->setRowCount(0);
+    reset_individual_detail();
     individual_flow_chart_->hide();
     individual_rotation_chart_->hide();
     individual_status_->setText(tr("Open an exact constituent to inspect individual research."));
@@ -777,6 +934,24 @@ void EtfFlowsScreen::select_group() {
                  QString::number(r.value("leverage_multiple").toDouble()) + "x target");
     }
     rotation_->setSortingEnabled(true);
+    bool has_rotation_values = false;
+    bool has_exclusions = false;
+    for (const auto& entry : rotation) {
+        const auto record = entry.toObject();
+        has_exclusions = has_exclusions || record.value("status").toString() == QLatin1String("excluded");
+        const auto values = record.value("latest").toObject().value("values").toObject();
+        for (const auto& value : values)
+            has_rotation_values = has_rotation_values || value.toObject().value("value").isDouble();
+    }
+    rotation_status_->setText(
+        has_rotation_values ? etf_ui::rotation_availability(group_result_)
+        : has_exclusions
+            ? tr("No rotation components are available in this group. Policy-excluded instruments remain "
+                 "inspectable as metadata. Use Advanced / replay to explicitly include leveraged/inverse "
+                 "exposures, or choose another asset/category. Excluded is not zero.")
+            : tr("No measured rotation components are stored for this group. Missing/history-unverified "
+                 "values remain unavailable. Choose an individual for its exact reasons or explore another "
+                 "asset/category; recompute reads the store only."));
     clear_choices(rotation_choices_);
     for (int row = 0; row < rotation_->rowCount(); ++row) {
         const auto record = rotation_->item(row, 0)->data(kJsonRole).toJsonObject();
@@ -797,6 +972,7 @@ void EtfFlowsScreen::select_group() {
                 }
         });
     }
+    update_detail_layout();
 }
 
 void EtfFlowsScreen::select_month() {
@@ -844,7 +1020,98 @@ void EtfFlowsScreen::show_provenance(const QJsonObject& object) {
     context.insert("selected_record", object);
     if (!selected_subject_.isEmpty())
         context.insert("individual_subject", selected_subject_);
-    provenance_->setPlainText(QString::fromUtf8(QJsonDocument(context).toJson(QJsonDocument::Indented)));
+    if (!individual_research_.isEmpty() && !object.contains("individual_research"))
+        context.insert("individual_research", individual_research_);
+    pending_provenance_ = context;
+    provenance_dirty_ = true;
+    provenance_->clear();
+    if (tabs_->currentIndex() == 5)
+        materialize_provenance();
+}
+
+void EtfFlowsScreen::reset_individual_detail() {
+    individual_research_ = {};
+    individual_periods_ = {};
+    individual_attribution_ = {};
+    individual_time_key_.clear();
+    const QSignalBlocker blocker(exact_individual_);
+    exact_individual_->setChecked(false);
+    individual_->hide();
+    individual_detail_status_->hide();
+    static_cast<IndividualHistoryModel*>(individual_->model())->set_history({}, {}, {});
+}
+
+void EtfFlowsScreen::materialize_individual_detail() {
+    static_cast<IndividualHistoryModel*>(individual_->model())
+        ->set_history(individual_periods_, individual_time_key_, individual_attribution_);
+    individual_detail_status_->setText(tr("%1 exact component/status rows. All returned history is available; "
+                                          "cells are read on demand while scrolling. No research values are truncated.")
+                                           .arg(individual_->model()->rowCount()));
+}
+
+void EtfFlowsScreen::materialize_provenance() {
+    if (!provenance_dirty_)
+        return;
+    provenance_->setPlainText(QString::fromUtf8(QJsonDocument(pending_provenance_).toJson(QJsonDocument::Indented)));
+    provenance_dirty_ = false;
+}
+
+void EtfFlowsScreen::update_research_status() {
+    const auto groups = result_.value("groups").toArray();
+    bool measured = false;
+    for (const auto& group : groups)
+        measured = measured || board_->month_for(group.toObject()).value("observed_net_flow_usd").isDouble();
+    status_->setText(groups.isEmpty() ? tr("No supported group exists for this selection.")
+                     : measured
+                         ? tr("%1: stored research ready. Observed subsets are not extrapolated to complete groups.")
+                               .arg(selected_month_->currentText())
+                         : tr("%1: No measured regulatory flow. Inspect history, rotation and coverage gaps.")
+                               .arg(selected_month_->currentText()));
+}
+
+void EtfFlowsScreen::update_detail_layout() {
+    const QStringList full{tr("Monthly regulatory flow"),     tr("Market rotation"),     tr("Exact constituents"),
+                           tr("Unclassified / history gaps"), tr("Individual research"), tr("Provenance / versions")};
+    const QStringList compact{tr("Flow"), tr("Rotation"),   tr("Members"),
+                              tr("Gaps"), tr("Individual"), tr("Provenance")};
+    for (int i = 0; i < tabs_->count(); ++i) {
+        tabs_->setTabText(i, width() < 1200 ? compact[i] : full[i]);
+        tabs_->setTabToolTip(i, full[i]);
+    }
+    bool flow_present = false, rotation_present = false;
+    for (const auto& value : group_result_.value("regulatory_months").toArray())
+        flow_present = flow_present || value.toObject().value("observed_net_flow_usd").isDouble();
+    for (const auto& entry : group_result_.value("rotation_constituents").toArray()) {
+        const auto values = entry.toObject().value("latest").toObject().value("values").toObject();
+        for (const auto& value : values)
+            rotation_present = rotation_present || value.toObject().value("value").isDouble();
+    }
+    const bool compact_flow = tabs_->currentIndex() == 0 && !flow_present && !exact_months_->isChecked();
+    const bool compact_rotation = tabs_->currentIndex() == 1 && !rotation_present && !exact_rotation_->isChecked();
+    // Word-wrapped labels' minimumSizeHint uses their narrowest possible width,
+    // which greatly overstates the height of a compact state at desktop width.
+    auto* page = tabs_->currentWidget();
+    // Measure styled fonts before show and after replay consistently.
+    page->ensurePolished();
+    const int wrapped_height = page->layout() ? page->layout()->totalHeightForWidth(std::max(1, width() - 60)) : -1;
+    const int content_minimum = (wrapped_height >= 0 ? wrapped_height : page->minimumSizeHint().height()) +
+                                tabs_->tabBar()->sizeHint().height() + 8;
+    tabs_->setMinimumHeight(std::max(180, content_minimum));
+    tabs_->setMaximumHeight(compact_flow || compact_rotation ? std::max(260, content_minimum) : QWIDGETSIZE_MAX);
+    const bool compact_state = compact_flow || compact_rotation;
+    board_scroll_->setMaximumHeight(compact_state ? board_scroll_->minimumHeight() : QWIDGETSIZE_MAX);
+    const int selection_height = std::max(24, selection_->heightForWidth(std::max(1, width() - 40)));
+    const int navigation_height = browse_choices_->isHidden() ? 0 : browse_choices_->sizeHint().height();
+    const int summary_height =
+        board_scroll_->isHidden() ? 0 : board_scroll_->minimumHeight() + splitter_->handleWidth();
+    const int compact_height = summary_height + selection_height + navigation_height + tabs_->maximumHeight() + 24;
+    auto* detail = tabs_->parentWidget();
+    detail->layout()->setAlignment(compact_state ? Qt::AlignTop : Qt::Alignment{});
+    // QSplitter derives its maximum from its children's limits during layout.
+    // Bound the detail child too, so it cannot undo the compact body limit.
+    detail->setMaximumHeight(compact_state ? compact_height - summary_height : QWIDGETSIZE_MAX);
+    splitter_->setMinimumHeight(compact_state ? compact_height : 0);
+    splitter_->setMaximumHeight(compact_state ? compact_height : QWIDGETSIZE_MAX);
 }
 
 void EtfFlowsScreen::inspect_subject(QTableWidget* table) {
@@ -856,7 +1123,7 @@ void EtfFlowsScreen::inspect_subject(QTableWidget* table) {
     // Excluded products remain inspectable as metadata, without circumventing
     // the selected backend inclusion policy for their rotation calculations.
     tabs_->setCurrentIndex(4);
-    individual_->setRowCount(0);
+    reset_individual_detail();
     individual_flow_chart_->hide();
     individual_rotation_chart_->hide();
     individual_flow_chart_->set_months({});
@@ -903,6 +1170,7 @@ void EtfFlowsScreen::inspect_subject(QTableWidget* table) {
 }
 
 void EtfFlowsScreen::render_subject(const QJsonObject& subject, const QJsonObject& result, const QJsonObject& group) {
+    individual_research_ = result;
     const bool listed = subject.value("subject_type").toString() == QLatin1String("listed_instrument");
     individual_status_->setText(
         tr("%1 · %2 · same UTC cutoffs and displayed range · %3")
@@ -918,37 +1186,12 @@ void EtfFlowsScreen::render_subject(const QJsonObject& subject, const QJsonObjec
         individual_status_->setText(individual_status_->text() + QStringLiteral(" · ") +
                                     etf_ui::label(subject.value("classification_lookback").toString()));
     individual_family_choices_->show();
-    individual_->setSortingEnabled(false);
     QJsonArray flow_history, session_history;
-    const auto append = [this](const QJsonArray& series, const QString& time_key) {
-        for (const auto& entry : series) {
-            const auto s = entry.toObject();
-            const auto values = s.value("values").toObject();
-            for (auto it = values.begin(); it != values.end(); ++it) {
-                const auto v = it.value().toObject();
-                const int row = individual_->rowCount();
-                individual_->insertRow(row);
-                cell(individual_, row, 0, s.value(time_key).toString(), s);
-                cell(individual_, row, 1,
-                     time_key == QLatin1String("session") ? etf_ui::component_label(it.key())
-                                                          : etf_ui::label(it.key()));
-                cell(individual_, row, 2, etf_ui::component(v));
-                cell(individual_, row, 3,
-                     etf_ui::label(v.value("state").toString()) + " · " + etf_ui::reason(v.value("reason").toString()));
-                cell(individual_, row, 4,
-                     v.value("window_first").toString() + " to " + v.value("window_last").toString() + " · " +
-                         QString::number(v.value("input_count").toInt()) + tr(" inputs"));
-                cell(individual_, row, 5, timing(v));
-                cell(individual_, row, 6,
-                     time_key == QLatin1String("session") ? tr("Market rotation (sessions)")
-                                                          : tr("SEC regulatory flow (monthly)"));
-            }
-        }
-    };
+    individual_time_key_ = listed ? QStringLiteral("session") : QStringLiteral("month");
     for (const auto& v : result.value(listed ? "rotation_proxy" : "regulatory_flow").toArray()) {
         const auto row = v.toObject();
         const auto data = row.value(listed ? "measures" : "analytics").toObject();
-        append(data.value(listed ? "sessions" : "months").toArray(), listed ? "session" : "month");
+        individual_periods_ = data.value(listed ? "sessions" : "months").toArray();
         if (listed)
             session_history = data.value("sessions").toArray();
         else
@@ -978,36 +1221,27 @@ void EtfFlowsScreen::render_subject(const QJsonObject& subject, const QJsonObjec
                                       member.value("identity_basis").toString() == QLatin1String("declared_link");
                 const auto net = member.value("net_flow").toObject();
                 const auto value = observed ? net.value("value") : QJsonValue(QJsonValue::Null);
-                flow_history.append(QJsonObject{{"month", month.value("month")},
-                                                {"observed_net_flow_usd", value},
-                                                {"complete_net_flow_usd", value},
-                                                {"quality", member.value("status")}});
-                const int row = individual_->rowCount();
-                individual_->insertRow(row);
-                cell(individual_, row, 0, month.value("month").toString(), evidence);
-                cell(individual_, row, 1, tr("Net flow · Batch D attribution"));
-                cell(individual_, row, 2, observed ? etf_ui::component(net) : tr("Unavailable / not counted"));
-                cell(individual_, row, 3,
-                     etf_ui::label(member.value("status").toString()) + " · " +
-                         (observed ? etf_ui::label(net.value("state").toString())
-                                   : etf_ui::reason(member.value("reason").toString())));
-                cell(individual_, row, 4, tr("Calendar month · exact listed constituent"));
-                cell(individual_, row, 5, observed ? timing(net) : tr("No attributed value available"));
-                cell(individual_, row, 6, tr("SEC regulatory flow (monthly)"));
+                flow_history.append(QJsonObject{
+                    {"month", month.value("month")},
+                    {"observed_net_flow_usd", value},
+                    {"complete_net_flow_usd", value},
+                    {"quality", observed ? net.value("state") : member.value("status")},
+                    {"has_revised_inputs", observed && net.value("state").toString() == QLatin1String("REVISED")}});
             }
         }
     }
-    individual_->setSortingEnabled(true);
+    individual_attribution_ = attribution;
     individual_flow_chart_->set_months(flow_history);
     individual_flow_chart_->setVisible(!listed && !flow_history.isEmpty());
     individual_rotation_chart_->set_sessions(session_history);
     individual_rotation_chart_->setVisible(listed);
     individual_family_choices_->findChild<QPushButton*>("etfIndividualMonthly")->setEnabled(!flow_history.isEmpty());
     individual_family_choices_->findChild<QPushButton*>("etfIndividualRotation")->setEnabled(listed);
-    if (individual_->rowCount() == 0)
+    if (individual_periods_.isEmpty() && individual_attribution_.isEmpty())
         individual_status_->setText(individual_status_->text() + tr(" · No available history in this range."));
     show_provenance(QJsonObject{
         {"subject", subject}, {"individual_research", result}, {"group_regulatory_attribution", attribution}});
+    update_detail_layout();
 }
 
 QVariantMap EtfFlowsScreen::save_state() const {
@@ -1040,20 +1274,24 @@ void EtfFlowsScreen::restore_state(const QVariantMap& state) {
         known_at_->setDateTime(state.value("known_at").toDateTime().toUTC());
     leveraged_->setChecked(state.value("include_leveraged", false).toBool());
     const int tab = state.value("tab", 0).toInt();
-    if (tab >= 0 && tab < tabs_->count())
+    if (tab >= 0 && tab < tabs_->count()) {
+        restored_tab_ = tab;
         tabs_->setCurrentIndex(tab);
-    if (state.contains("splitter_base64"))
-        splitter_->restoreState(QByteArray::fromBase64(state.value("splitter_base64").toString().toLatin1()));
+    }
+    if (state.contains("splitter_base64")) {
+        restored_splitter_state_ = QByteArray::fromBase64(state.value("splitter_base64").toString().toLatin1());
+        splitter_->restoreState(restored_splitter_state_);
+    }
 }
 
 void EtfFlowsScreen::refresh_theme() {
     const auto& t = ui::ThemeManager::instance().tokens();
-    setStyleSheet(QStringLiteral(
-                      "QWidget#etfFlowsScreen { background: %1; color: %2; } "
-                      "QTableWidget { background: %3; alternate-background-color: %4; color: %2; gridline-color: %5; } "
-                      "QHeaderView::section { color: %2; } QTabBar::tab { color: %6; } "
-                      "QTabBar::tab:selected { color: %2; } QCheckBox, QPushButton { color: %2; } "
-                      "QPushButton:disabled, QCheckBox:disabled { color: %6; }")
+    setStyleSheet(QStringLiteral("QWidget#etfFlowsScreen { background: %1; color: %2; } "
+                                 "QTableWidget, QTableView { background: %3; alternate-background-color: %4; color: "
+                                 "%2; gridline-color: %5; } "
+                                 "QHeaderView::section { color: %2; } QTabBar::tab { color: %6; } "
+                                 "QTabBar::tab:selected { color: %2; } QCheckBox, QPushButton { color: %2; } "
+                                 "QPushButton:disabled, QCheckBox:disabled { color: %6; }")
                       .arg(t.bg_base, t.text_primary, t.bg_surface, t.row_alt, t.border_dim, t.text_secondary));
 }
 } // namespace fincept::screens

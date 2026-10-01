@@ -15,6 +15,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QSplitter;
 class QTableWidget;
+class QTableView;
 class QTabWidget;
 class QScrollArea;
 
@@ -52,6 +53,11 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     void refresh_theme();
     void navigate(const QString& level, const QString& group);
     void update_browse_choices();
+    void update_research_status();
+    void update_detail_layout();
+    void reset_individual_detail();
+    void materialize_individual_detail();
+    void materialize_provenance();
     QString subject_name(const QJsonObject& row) const;
 
     std::optional<services::etf::TaxonomySnapshot> taxonomy_;
@@ -60,6 +66,12 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     QJsonObject result_;
     QJsonObject group_result_;
     QJsonObject selected_subject_;
+    QJsonObject pending_provenance_;
+    QJsonObject individual_research_;
+    QJsonArray individual_periods_;
+    QJsonArray individual_attribution_;
+    QString individual_time_key_;
+    bool provenance_dirty_ = false;
     QFutureWatcher<Result<QJsonObject>>* watcher_ = nullptr;
     quint64 generation_ = 0;
     bool busy_ = false;
@@ -87,14 +99,21 @@ class EtfFlowsScreen : public QWidget, public IStatefulScreen {
     QLabel* selection_ = nullptr;
     QLabel* month_status_ = nullptr;
     QLabel* individual_status_ = nullptr;
+    QLabel* rotation_status_ = nullptr;
+    QLabel* individual_detail_status_ = nullptr;
+    QPushButton* exact_individual_ = nullptr;
+    QPushButton* exact_months_ = nullptr;
+    QPushButton* exact_rotation_ = nullptr;
     QSplitter* splitter_ = nullptr;
+    int restored_tab_ = -1;
+    QByteArray restored_splitter_state_;
     QTabWidget* tabs_ = nullptr;
     QTableWidget* overview_ = nullptr;
     QTableWidget* months_ = nullptr;
     QTableWidget* constituents_ = nullptr;
     QTableWidget* rotation_ = nullptr;
     QTableWidget* unresolved_ = nullptr;
-    QTableWidget* individual_ = nullptr;
+    QTableView* individual_ = nullptr;
     QPlainTextEdit* provenance_ = nullptr;
     EtfMonthlyChart* chart_ = nullptr;
 };

@@ -30,7 +30,23 @@ inline QString number(const QJsonValue& value, const QString& units) {
     if (units == QLatin1String("price_return_ratio") || units == QLatin1String("fraction_of_regulatory_net_assets") ||
         units == QLatin1String("percentile_rank_0_1") || units == QLatin1String("relative_price_return_ratio"))
         return QStringLiteral("%1%").arg(QLocale::c().toString(n * 100.0, 'f', 2));
+    if (units == QLatin1String("price_return_difference"))
+        return QStringLiteral("%1 pp").arg(QLocale::c().toString(n * 100.0, 'f', 2));
+    if (units == QLatin1String("efficiency_ratio_minus1_1"))
+        return QLocale::c().toString(n, 'f', 2);
+    if (units == QLatin1String("self_relative_volume_ratio"))
+        return QStringLiteral("%1x").arg(QLocale::c().toString(n, 'f', 2));
     return QStringLiteral("%1 (%2)").arg(QLocale::c().toString(n, 'g', 8), label(units));
+}
+
+inline QString compact_usd(double value) {
+    if (std::abs(value) >= 1e9)
+        return QStringLiteral("USD %1 bn").arg(value / 1e9, 0, 'f', 2);
+    if (std::abs(value) >= 1e6)
+        return QStringLiteral("USD %1 m").arg(value / 1e6, 0, 'f', 2);
+    if (std::abs(value) >= 1e3)
+        return QStringLiteral("USD %1 k").arg(value / 1e3, 0, 'f', 2);
+    return QStringLiteral("USD %1").arg(value, 0, 'f', 2);
 }
 
 inline QString quality(const QJsonObject& month) {
@@ -116,7 +132,7 @@ inline QString rotation_availability(const QJsonObject& group) {
         else
             ++missing;
     }
-    return QStringLiteral("Session components: %1 snapshots · %2 stale · %3 missing · %4 excluded")
+    return QStringLiteral("Rotation: %1 snapshots · %2 stale · %3 missing · %4 excluded")
         .arg(components)
         .arg(stale)
         .arg(missing)

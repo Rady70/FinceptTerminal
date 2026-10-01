@@ -13,6 +13,7 @@ class EtfGroupBoard : public QWidget {
     void set_selected(const QString& group);
     QJsonArray groups() const { return groups_; }
     QJsonObject month_for(const QJsonObject& group) const;
+    QString rotation_summary(const QJsonObject& group) const;
     QRect card_rect(int index) const;
   signals:
     void group_activated(const QString& group);
@@ -36,12 +37,16 @@ class EtfSessionChart : public QWidget {
     explicit EtfSessionChart(QWidget* parent = nullptr);
     void set_sessions(const QJsonArray& sessions);
     QJsonArray sessions() const { return sessions_; }
+    QJsonObject panel_state(int index) const;
+    QRect panel_plot_rect(int index) const;
 
   protected:
     void paintEvent(QPaintEvent*) override;
     void resizeEvent(QResizeEvent*) override;
 
   private:
+    void fit_height();
     QJsonArray sessions_;
+    QList<QJsonObject> panels_;
 };
 } // namespace fincept::screens

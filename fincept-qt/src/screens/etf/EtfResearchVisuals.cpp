@@ -117,23 +117,7 @@ void EtfGroupBoard::paintEvent(QPaintEvent*) {
                               m.value("complete_net_flow_usd").isDouble() ? Qt::SolidPattern : Qt::BDiagPattern));
             p.drawRect(QRectF(len < 0 ? axis + len : axis, r.y() + 82, std::max(1.0, std::abs(len)), 12));
         }
-        int ready = 0, stale = 0, missing = 0, excluded = 0;
-        for (const auto& entry : group.value("rotation_constituents").toArray()) {
-            const auto status = entry.toObject().value("status").toString();
-            if (status == "component_only")
-                ++ready;
-            else if (status == "stale")
-                ++stale;
-            else if (status == "excluded")
-                ++excluded;
-            else
-                ++missing;
-        }
-        text(p, QRect(x, r.y() + 100, w, 33),
-             excluded > 0 && ready + stale + missing == 0
-                 ? tr("Rotation: excluded by policy")
-                 : tr("Rotation: %1 snapshots · %2 stale · %3 missing").arg(ready).arg(stale).arg(missing),
-             12, QColor(t.text_primary));
+        text(p, QRect(x, r.y() + 100, w, 33), rotation_summary(group), 12, QColor(t.text_primary));
     }
     if (groups_.isEmpty())
         text(p, rect().adjusted(15, 10, -15, -10),
@@ -163,101 +147,163 @@ void EtfGroupBoard::keyPressEvent(QKeyEvent* e) {
     emit group_activated(groups_[focus_index_].toObject().value("group_id").toString());
 }
 
+QString EtfGroupBoard::rotation_summary(const QJsonObject& group) const {
+    return etf_ui::rotation_availability(group);
+}
+
 EtfSessionChart::EtfSessionChart(QWidget* parent) : QWidget(parent) {
     setObjectName("etfSessionChart");
-    setMinimumHeight(370);
-    setAccessibleName(tr("Individual market-rotation session histories, no composite score"));
+    setAccessibleName(tr("Individual market-rotation session histories, independent axes, no composite score"));
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this, [this] { update(); });
+    set_sessions({});
 }
 void EtfSessionChart::set_sessions(const QJsonArray& sessions) {
     sessions_ = sessions;
-    QStringList tips;
-    for (const auto& entry : sessions_) {
-        const auto session = entry.toObject();
-        for (const auto& field :
-             {"price_return_21", "trend_efficiency_21", "return_acceleration_21", "volume_ratio_5_63"}) {
-            const auto value = session.value("values").toObject().value(field).toObject();
-            tips.append(session.value("session").toString() + " · " + etf_ui::component_label(field) + " · " +
-                        etf_ui::component(value) + " · " + etf_ui::label(value.value("state").toString()));
+    panels_.clear();
+    const QStringList fields{"price_return_21", "trend_efficiency_21", "return_acceleration_21", "volume_ratio_5_63"};
+    const QStringList units{"price_return_ratio", "efficiency_ratio_minus1_1", "price_return_difference",
+                            "self_relative_volume_ratio"};
+    const QStringList references{tr("0%: flat price return"), tr("0: neutral efficiency (-1 to +1)"),
+                                 tr("0 pp: unchanged return"), tr("1.00x: recent volume equals baseline")};
+    QStringList descriptions;
+    for (int panel = 0; panel < fields.size(); ++panel) {
+        double observed_min = 0, observed_max = 0;
+        int count = 0;
+        QJsonObject latest;
+        for (const auto& entry : sessions_) {
+            const auto value = entry.toObject().value("values").toObject().value(fields[panel]).toObject();
+            latest = value;
+            const auto number = value.value("value");
+            if (!number.isDouble() || !std::isfinite(number.toDouble()))
+                continue;
+            const double n = number.toDouble();
+            if (count == 0)
+                observed_min = observed_max = n;
+            else {
+                observed_min = std::min(observed_min, n);
+                observed_max = std::max(observed_max, n);
+            }
+            ++count;
         }
+        const double reference = panel == 3 ? 1.0 : 0.0;
+        double plot_min = std::min(observed_min, reference), plot_max = std::max(observed_max, reference);
+        if (panel == 1) {
+            // The qualified efficiency scale is fixed; observed data stays separate.
+            plot_min = -1.0;
+            plot_max = 1.0;
+        } else if (plot_min == plot_max) {
+            const double padding = std::max(0.01, std::abs(plot_min) * 0.05);
+            plot_min -= padding;
+            plot_max += padding;
+        }
+        const QString range =
+            count > 0 ? tr("Observed: %1 to %2")
+                            .arg(etf_ui::number(observed_min, units[panel]), etf_ui::number(observed_max, units[panel]))
+                      : tr("Observed range unavailable");
+        const QString value = etf_ui::number(latest.value("value"), units[panel]);
+        panels_.append(QJsonObject{{"field", fields[panel]},
+                                   {"units", units[panel]},
+                                   {"observed_min", count > 0 ? QJsonValue(observed_min) : QJsonValue()},
+                                   {"observed_max", count > 0 ? QJsonValue(observed_max) : QJsonValue()},
+                                   {"plot_min", plot_min},
+                                   {"plot_max", plot_max},
+                                   {"reference", reference},
+                                   {"reference_label", references[panel]},
+                                   {"value_label", value},
+                                   {"range_label", range},
+                                   {"observations", count}});
+        descriptions.append(etf_ui::component_label(fields[panel]) + ": " + value + "; " + range + "; " +
+                            references[panel]);
     }
-    setToolTip(tips.join('\n'));
-    setAccessibleDescription(tips.join('\n'));
+    // Summary only: full input/availability history belongs to lazy exact detail.
+    setToolTip(descriptions.join('\n'));
+    setAccessibleDescription(descriptions.join('\n'));
+    fit_height();
     update();
+}
+QJsonObject EtfSessionChart::panel_state(int index) const {
+    return index >= 0 && index < panels_.size() ? panels_[index] : QJsonObject{};
+}
+QRect EtfSessionChart::panel_plot_rect(int index) const {
+    const int columns = width() < 700 ? 1 : 2, rows = 4 / columns;
+    return QRect((index % columns) * width() / columns + 8, (index / columns) * height() / rows + 5,
+                 width() / columns - 16, height() / rows - 10)
+        .adjusted(12, 82, -12, -48);
+}
+void EtfSessionChart::fit_height() {
+    bool measured = false;
+    for (const auto& panel : panels_)
+        measured = measured || panel.value("observations").toInt() > 0;
+    setMinimumHeight(measured ? (width() < 700 ? 840 : 420) : (width() < 700 ? 400 : 200));
+    setMaximumHeight(measured ? QWIDGETSIZE_MAX : minimumHeight());
 }
 void EtfSessionChart::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
-    setMinimumHeight(width() < 700 ? 700 : 370);
+    fit_height();
 }
 void EtfSessionChart::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     const auto& t = ui::ThemeManager::instance().tokens();
     p.fillRect(rect(), QColor(t.bg_surface));
-    const QStringList fields{"price_return_21", "trend_efficiency_21", "return_acceleration_21", "volume_ratio_5_63"};
-    const QStringList titles{tr("21-session price return"), tr("21-session trend efficiency"),
-                             tr("21-session return acceleration"), tr("Volume ratio · 5 / 63 sessions")};
+    const QStringList titles{tr("21-session price return"), tr("21-session trend efficiency (-1 to +1)"),
+                             tr("21-session return acceleration (percentage points)"),
+                             tr("Volume ratio: 5 / 63 sessions")};
     const int columns = width() < 700 ? 1 : 2, rows = 4 / columns;
-    for (int panel = 0; panel < 4; ++panel) {
+    for (int panel = 0; panel < panels_.size(); ++panel) {
+        const auto state = panel_state(panel);
         const QRect box((panel % columns) * width() / columns + 8, (panel / columns) * height() / rows + 5,
                         width() / columns - 16, height() / rows - 10);
         p.setPen(QColor(t.border_med));
         p.setBrush(Qt::NoBrush);
         p.drawRoundedRect(box, 4, 4);
-        text(p, box.adjusted(10, 4, -10, -box.height() + 28), titles[panel], 14, QColor(t.text_secondary));
-        double low = 0, high = 0;
-        bool have = false;
-        QJsonObject latest;
-        for (const auto& entry : sessions_) {
-            const auto v = entry.toObject().value("values").toObject().value(fields[panel]).toObject();
-            latest = v;
-            if (!v.value("value").isDouble())
-                continue;
-            const double n = v.value("value").toDouble();
-            if (!have)
-                low = high = n;
-            else {
-                low = std::min(low, n);
-                high = std::max(high, n);
-            }
-            have = true;
-        }
-        text(p, QRect(box.x() + 10, box.y() + 31, box.width() - 20, 26), etf_ui::component(latest), 18,
+        text(p, box.adjusted(10, 4, -10, -box.height() + 28), titles[panel], 13, QColor(t.text_secondary));
+        text(p, QRect(box.x() + 10, box.y() + 30, box.width() - 20, 25), state.value("value_label").toString(), 18,
              QColor(t.text_primary));
-        const QRect plot = box.adjusted(12, 66, -12, -30);
-        if (!have || sessions_.size() < 2) {
-            text(p, plot, tr("Component history unavailable"), 14, QColor(t.text_secondary));
+        text(p, QRect(box.x() + 10, box.y() + 55, box.width() - 20, 19), state.value("range_label").toString(), 11,
+             QColor(t.text_secondary));
+        if (state.value("observations").toInt() == 0)
             continue;
-        }
-        if (low == high) {
-            low -= 0.5;
-            high += 0.5;
-        }
+        const QRect plot = panel_plot_rect(panel);
+        const double low = state.value("plot_min").toDouble(), high = state.value("plot_max").toDouble();
+        const auto y_for = [&plot, low, high](double n) {
+            return plot.bottom() - (n - low) / (high - low) * plot.height();
+        };
+        p.setPen(QPen(QColor(t.text_secondary), 1, Qt::DashLine));
+        p.drawLine(QPointF(plot.left(), y_for(state.value("reference").toDouble())),
+                   QPointF(plot.right(), y_for(state.value("reference").toDouble())));
         QPainterPath path;
         bool connected = false;
         for (int i = 0; i < sessions_.size(); ++i) {
-            const auto v = sessions_[i].toObject().value("values").toObject().value(fields[panel]).toObject();
-            if (!v.value("value").isDouble()) {
+            const auto value = sessions_[i]
+                                   .toObject()
+                                   .value("values")
+                                   .toObject()
+                                   .value(state.value("field").toString())
+                                   .toObject()
+                                   .value("value");
+            if (!value.isDouble() || !std::isfinite(value.toDouble())) {
                 connected = false;
                 continue;
             }
-            const QPointF point(plot.x() + static_cast<double>(i) * plot.width() / (sessions_.size() - 1),
-                                plot.bottom() - (v.value("value").toDouble() - low) / (high - low) * plot.height());
+            const QPointF point(plot.x() + static_cast<double>(i) * plot.width() /
+                                               std::max(1, static_cast<int>(sessions_.size()) - 1),
+                                y_for(value.toDouble()));
             if (connected)
                 path.lineTo(point);
             else
                 path.moveTo(point);
             connected = true;
+            p.setPen(QPen(QColor(t.accent), 1.5));
+            p.drawEllipse(point, 1.5, 1.5);
         }
-        text(p, QRect(plot.x(), plot.y() - 15, plot.width(), 14),
-             tr("Range: %1 to %2 · independent component axis")
-                 .arg(QString::number(low, 'g', 4), QString::number(high, 'g', 4)),
-             10, QColor(t.text_secondary));
         p.setPen(QPen(QColor(t.accent), 1.5));
         p.drawPath(path);
-        text(p, QRect(plot.x(), box.bottom() - 26, plot.width(), 21),
-             sessions_.first().toObject().value("session").toString() + " → " +
-                 sessions_.last().toObject().value("session").toString() + tr(" · exchange sessions"),
+        text(p, QRect(plot.x(), box.bottom() - 44, plot.width(), 19), state.value("reference_label").toString(), 10,
+             QColor(t.text_secondary));
+        text(p, QRect(plot.x(), box.bottom() - 24, plot.width(), 19),
+             sessions_.first().toObject().value("session").toString() + " to " +
+                 sessions_.last().toObject().value("session").toString() + tr(" : exchange sessions"),
              11, QColor(t.text_secondary));
     }
 }
