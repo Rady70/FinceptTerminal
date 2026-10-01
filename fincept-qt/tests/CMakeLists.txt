@@ -180,6 +180,39 @@ fincept_add_test(tst_market_parse
 fincept_add_test(tst_economics_envelope
     tst_economics_envelope.cpp)
 
+# FedWatch Batch C presentation semantics: missing/zero, exact/tail identity,
+# UTC chronology and display-only ranges. Header-only, Qt Core.
+fincept_add_test(tst_fedwatch_view_model
+    tst_fedwatch_view_model.cpp)
+
+# Deliberate widget-test exception: exercise the actual native FedWatch panel,
+# base widgets and chart with an injected command dispatcher. The explicit
+# test-local EconomicsService transport stub aborts on accidental default
+# dispatch, and does not claim real-service/PythonRunner integration. History
+# responses come from the shipped Python CLI reading a temporary SQLite seeded
+# by the finalized backend with captured provider fixtures (no live HTTP).
+fincept_add_test(tst_fedwatch_panel
+    tst_fedwatch_panel.cpp
+    fedwatch_economics_transport_stub.cpp
+    "${PROJECT_SOURCE_DIR}/src/services/economics/EconomicsService.h"
+    "${PROJECT_SOURCE_DIR}/src/core/session/ScreenStateManager.h"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchPanel.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchHistoryChart.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/EconPanelBase.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/widgets/PaginationBar.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/TimeSeriesChartView.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/TimeAxisNavigator.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/ChartFactory.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/theme/ThemeManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_fedwatch_panel PRIVATE Qt6::Widgets Qt6::Charts)
+target_compile_definitions(tst_fedwatch_panel PRIVATE
+    FEDWATCH_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+set(FINCEPT_FEDWATCH_TEST_PYTHON "$ENV{LOCALAPPDATA}/com.marketlab.terminal/venv-numpy2/Scripts/python.exe"
+    CACHE FILEPATH "Existing MarketLab Python runtime for deterministic FedWatch widget/CLI tests")
+set_tests_properties(tst_fedwatch_panel PROPERTIES
+    ENVIRONMENT "FEDWATCH_TEST_PYTHON=${FINCEPT_FEDWATCH_TEST_PYTHON}")
+
 # MarketLab: the CFTC net-position sign rule — a positive net gets "+", an
 # exact zero is neutral and must not render as "+0". Header-only over Qt Core;
 # no app sources.

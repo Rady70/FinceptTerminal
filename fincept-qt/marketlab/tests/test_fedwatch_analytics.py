@@ -662,6 +662,75 @@ class InstrumentGenerationTests(unittest.TestCase):
         self.assertIsNone(difference["current_polymarket_probability_pct"])
 
 
+class ApplicationHistoryContractTests(unittest.TestCase):
+    def test_history_keeps_real_instants_and_applies_the_summary_as_of(self):
+        store = new_store(self)
+        seed(store, [
+            ("2026-09-21T00:00:00Z", 40.0),
+            ("2026-09-23T00:00:00Z", 40.0),
+            ("2026-09-29T00:00:00Z", 60.0),
+        ])
+        result = fedwatch_analytics.compute_analytics(store, "2026-10-28", 25, as_of=NOW)
+        points = result["fed_side"]["history"]
+        self.assertEqual([p["observed_at"] for p in points], [
+            "2026-09-21T00:00:00Z", "2026-09-23T00:00:00Z",
+        ])
+        self.assertEqual([p["probability_pct"] for p in points], [40.0, 40.0])
+        self.assertEqual(points[-1]["probability_pct"], result["fed_side"]["latest"]["probability_pct"])
+        self.assertEqual(result["polymarket"]["history"], [])
+        self.assertTrue(points[-1]["current_eligible"])
+        points[-1]["probability_pct"] = 99.0
+        again = fedwatch_analytics.compute_analytics(store, "2026-10-28", 25, as_of=NOW)
+        self.assertEqual(again["fed_side"]["history"][-1]["probability_pct"], 40.0)
+
+    def test_history_exposes_backend_derived_tails_and_preserves_incomplete_gaps(self):
+        store = new_store(self)
+        seed(store, [("2026-09-21T00:00:00Z", 20.0)], outcome_bp=0)
+        seed(store, [
+            ("2026-09-21T00:00:00Z", 80.0),
+            ("2026-09-23T00:00:00Z", 60.0),
+        ])
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, open_ended=True, as_of=NOW,
+        )
+        points = result["fed_side"]["history"]
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["probability_pct"], 80.0)
+        self.assertEqual(points[0]["quality_status"], "DERIVED_FROM_MEETING_DISTRIBUTION")
+        self.assertEqual(points[0]["observed_at"], "2026-09-21T00:00:00Z")
+        absent = fedwatch_analytics.compute_analytics(store, "2026-10-28", -25, as_of=NOW)
+        self.assertEqual([p["probability_pct"] for p in absent["fed_side"]["history"]], [0.0])
+
+    def test_history_exposes_only_the_validated_token_generation(self):
+        store = new_store(self)
+        seed(store, [("2026-09-27T00:00:00Z", 30.0)],
+             method=POLY_METHOD, source=POLY_SOURCE, instrument_key="old")
+        seed(store, [("2026-09-28T00:00:00Z", 65.0)],
+             method=POLY_METHOD, source=POLY_SOURCE, instrument_key="new")
+        store.upsert_mapping_outcome(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, 25, False, "VALIDATED",
+            "event", "October decision", "market", "new", "question", {},
+        )
+        result = fedwatch_analytics.compute_analytics(store, "2026-10-28", 25, as_of=NOW)
+        self.assertEqual([p["instrument_key"] for p in result["polymarket"]["history"]], ["new"])
+        store.upsert_mapping_outcome(
+            "2026-10-28", POLY_SOURCE, POLY_METHOD, 25, False, "VALIDATED",
+            "event", "October decision", "market-next", "next", "question", {},
+        )
+        empty = fedwatch_analytics.compute_analytics(store, "2026-10-28", 25, as_of=NOW)
+        self.assertEqual(empty["polymarket"]["history"], [])
+
+    def test_zq_history_retains_its_method_and_non_current_quality(self):
+        store = new_store(self)
+        seed(store, [("2026-09-28T00:00:00Z", 70.0)], method=FED_METHOD_ZQ)
+        result = fedwatch_analytics.compute_analytics(
+            store, "2026-10-28", 25, fed_method=FED_METHOD_ZQ, as_of=NOW,
+        )
+        self.assertEqual(result["fed_side"]["method"], FED_METHOD_ZQ)
+        self.assertEqual(result["fed_side"]["history"][0]["quality_status"], "RECONSTRUCTED")
+        self.assertFalse(result["fed_side"]["history"][0]["current_eligible"])
+
+
 class MalformedStoredRowTests(unittest.TestCase):
     def test_malformed_rows_are_excluded_with_an_error(self):
         tmp = tempfile.TemporaryDirectory()

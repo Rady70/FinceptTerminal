@@ -213,6 +213,12 @@
   "sinks_note": "Network-sink inventory. Sink kinds: tcp_socket (QTcpSocket / connectToHost), network_access_manager (any QNetworkAccessManager owned outside the shared HttpClient), websocket (QWebSocket), open_url (QDesktopServices::openUrl, ShellExecute, or a QProcess browser launch). C++ sink scope is src/ only \u2014 a sink in tests/ is not in the product. The Python sink scope (py_http_client, py_urllib, py_socket, py_websocket) is the transitive local-import closure of the .py entry points named as string literals in src/ \u2014 the Python children the application actually launches, which do their own networking inside the child process. Selectors are an exact path or a \"dir/**\" subtree; the \"*\" catch-all is rejected by the loader, because disposing of every present and future sink in one line is precisely the defect this section exists to remove. A subtree selector is used only where every file under it genuinely shares one disposition and one reason.",
   "sinks": [
     {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": ["scripts/fedwatch/transport.py"],
+      "note": "FedWatch Batch C makes the finalized Batch A/B read-only provider transport reachable through EconomicsService/PythonRunner. Its requests import and GET call serve fixed public Investing.com, FRED, Federal Reserve and Polymarket Gamma/CLOB endpoints selected inside the provider modules; the UI passes meeting/outcome/database parameters, never a destination URL. No Fincept-owned host, authentication, broker, wallet or order route is present. This is a destination disposition, not a claim of a transport host guard."
+    },
+    {
       "sink": "tcp_socket",
       "disposition": "guarded",
       "files": [
@@ -659,6 +665,9 @@
   ],
   "sink_counts_note": "Pinned occurrence count of every (file, sink) pair in the scanned sink scopes (under src/, and the reachable production Python under scripts/), exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included \u2014 editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
   "sink_counts": {
+    "scripts/fedwatch/transport.py": {
+      "py_http_client": 2
+    },
     "scripts/Analytics/corporateFinance/deal_database/deal_scanner.py": {
       "py_urllib": 3
     },

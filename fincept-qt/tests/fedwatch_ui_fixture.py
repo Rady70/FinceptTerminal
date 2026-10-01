@@ -1,0 +1,52 @@
+"""Build deterministic Batch C UI evidence through the real Batch A/B backend.
+
+Captured provider fixtures use FakeTransport; history is a temporary real SQLite
+database. This helper never contacts live providers. Qt tests subsequently read
+the database with the shipped fedwatch_data.py CLI, not canned history JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "marketlab" / "tests"))
+
+from fedwatch_test_support import FixedClock, make_snapshot_transport, utc
+from test_fedwatch_analytics import seed
+from fedwatch import history, snapshot
+from fedwatch.store import FedwatchHistoryStore
+
+
+def main() -> None:
+    store = FedwatchHistoryStore(Path(sys.argv[1]))
+    now = utc(2026, 9, 28, 12)
+    envelope = snapshot.build_snapshot(
+        make_snapshot_transport(now), clock=FixedClock(now), sleep=lambda _: None
+    )
+    history.record_snapshot(store, envelope["data"], clock=FixedClock(now))
+    seed(store, [("2026-08-01T12:00:00Z", 30), ("2026-09-26T12:00:00Z", 35)], outcome_bp=25)
+    mappings = [m for m in store.validated_mappings() if m["meeting_date"] == "2026-10-28"]
+    mapping = next(m for m in mappings if m["outcome_bp"] == 25 and not m["open_ended"])
+    seed(store, [("2026-08-01T12:00:00Z", 20), ("2026-09-27T12:00:00Z", 32)],
+         method=history.POLY_METHOD, source=history.POLY_SOURCE,
+         instrument_key=mapping["external_token_id"])
+    seed(store, [("2026-08-01T00:00:00Z", 45)], method=history.FED_METHOD_ZQ, source=history.ZQ_SOURCE)
+
+    # Resolved history has no live collection requirement and its actual outcome
+    # is supplied explicitly by the store, never inferred by the UI.
+    resolved = "2026-09-16"
+    store.upsert_meeting(resolved, now=now)
+    seed(store, [("2026-09-01T12:00:00Z", 60), ("2026-09-13T12:00:00Z", 65),
+                 ("2026-09-14T12:00:00Z", 70), ("2026-09-15T12:00:00Z", 75)], meeting=resolved)
+    seed(store, [("2026-09-01T12:00:00Z", 55), ("2026-09-13T12:00:00Z", 60),
+                 ("2026-09-14T12:00:00Z", 65), ("2026-09-15T12:00:00Z", 70)],
+         meeting=resolved, method=history.POLY_METHOD, source=history.POLY_SOURCE)
+    store.mark_resolved(resolved, 25, "deterministic UI fixture", now=now)
+    print(json.dumps(envelope, allow_nan=False))
+
+
+if __name__ == "__main__":
+    main()
