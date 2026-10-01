@@ -74,7 +74,7 @@ static const struct {
     {"ons", "ONS UK", "#0277BD"},
     {"global_cb", "Central Banks", "#4A148C"},
     {"federal_reserve", "Federal Reserve", "#1A237E"},
-    {"fedwatch", "FedWatch", "#3B82F6"},
+    {"fedwatch", "FedWatch", nullptr},
     {"fiscal_data", "Fiscal Data", "#006064"},
     {"nber", "NBER Cycles", "#7C3AED"},
     {"owid", "Our World In Data", "#6D28D9"},
@@ -212,7 +212,7 @@ void EconomicsScreen::build_ui() {
         SourceEntry entry;
         entry.id = src.id;
         entry.label = src.label;
-        entry.color = src.color;
+        entry.color = src.color ? src.color : ui::colors::AMBER();
 
         auto* btn = new QPushButton(src.label);
         btn->setCheckable(true);
@@ -265,7 +265,8 @@ void EconomicsScreen::refresh_theme() {
     for (const auto& entry : sources_) {
         if (!entry.badge)
             continue;
-        QColor c(entry.color);
+        const QString color = entry.id == "fedwatch" ? QString(ui::colors::AMBER()) : entry.color;
+        QColor c(color);
         QString rgba = QString("%1,%2,%3").arg(c.red()).arg(c.green()).arg(c.blue());
         static_cast<QPushButton*>(entry.badge)
             ->setStyleSheet(QString("QPushButton { background:%1; color:%2; border:1px solid %3;"
@@ -274,7 +275,7 @@ void EconomicsScreen::refresh_theme() {
                                     "QPushButton:checked { background:rgba(%6,0.12); color:%7;"
                                     "  border-color:%7; }")
                                 .arg(BG_SURFACE(), TEXT_TERTIARY(), BORDER_DIM(), TEXT_PRIMARY(), BORDER_BRIGHT())
-                                .arg(rgba, entry.color));
+                                .arg(rgba, color));
     }
 
     stack_->setStyleSheet(QString("background:%1;").arg(BG_BASE()));
@@ -292,8 +293,7 @@ void EconomicsScreen::retranslateUi() {
     if (title_)
         title_->setText(tr("ECONOMICS DATA EXPLORER"));
     if (subtitle_)
-        subtitle_->setText(
-            tr("%1 global data sources · 1000+ indicators").arg(static_cast<int>(std::size(kSources))));
+        subtitle_->setText(tr("%1 global data sources · 1000+ indicators").arg(static_cast<int>(std::size(kSources))));
     // Source badge labels are brand/source names (data) and are not translated.
 }
 

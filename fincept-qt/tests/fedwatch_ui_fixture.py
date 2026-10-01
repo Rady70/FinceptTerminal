@@ -14,14 +14,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "marketlab" / "tests"))
 
-from fedwatch_test_support import FixedClock, make_snapshot_transport, utc
+from fedwatch_test_support import FakeTransport, FixedClock, epoch, make_clob_history, make_snapshot_transport, utc
 from test_fedwatch_analytics import seed
 from fedwatch import history, snapshot
 from fedwatch.store import FedwatchHistoryStore
+from fedwatch.transport import TransportError
+
+
+def backfill_fixture(store, case, meeting="2026-10-28"):
+    now = utc(2026, 9, 28, 12)
+    transport = FakeTransport()
+    if case == "failure":
+        transport.add_json("prices-history", TransportError("fixture HTTP 500", status_code=500))
+    else:
+        mapping = next(m for m in store.validated_mappings([meeting])
+                       if m["outcome_bp"] == 25 and not m["open_ended"])
+        points = [{"t": epoch(utc(2026, 8, 2)), "p": 0.42}]
+        if case == "partial":
+            points.extend([{"t": "invalid", "p": 0.3},
+                           {"t": epoch(utc(2026, 8, 3)), "p": 2.5},
+                           {"t": epoch(utc(2030, 1, 1)), "p": 0.5}])
+        transport.add_json("prices-history", make_clob_history({mapping["external_token_id"]: points}))
+    return history.backfill_polymarket(store, transport, meeting_dates=[meeting], force=True,
+                                      clock=FixedClock(now), sleep=lambda _: None)
 
 
 def main() -> None:
     store = FedwatchHistoryStore(Path(sys.argv[1]))
+    case = sys.argv[2] if len(sys.argv) > 2 else ""
+    if case.startswith("backfill-"):
+        print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"))},
+                         allow_nan=False))
+        return
     now = utc(2026, 9, 28, 12)
     envelope = snapshot.build_snapshot(
         make_snapshot_transport(now), clock=FixedClock(now), sleep=lambda _: None
@@ -45,6 +69,9 @@ def main() -> None:
                  ("2026-09-14T12:00:00Z", 65), ("2026-09-15T12:00:00Z", 70)],
          meeting=resolved, method=history.POLY_METHOD, source=history.POLY_SOURCE)
     store.mark_resolved(resolved, 25, "deterministic UI fixture", now=now)
+    if case == "review":
+        backfill_fixture(store, "partial")
+        backfill_fixture(store, "failure", "2026-12-09")
     print(json.dumps(envelope, allow_nan=False))
 
 

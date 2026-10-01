@@ -70,6 +70,7 @@ class FedWatchPanel : public EconPanelBase {
     void load_analytics();
     void render();
     void render_history();
+    QString backfill_status() const;
     void arrange_charts();
     QWidget* make_chip_row(const QString& kind, Selection* model, int height);
     void sync_chips();
@@ -82,6 +83,7 @@ class FedWatchPanel : public EconPanelBase {
     struct Pending {
         QString command;
         int generation;
+        QString meeting;
     };
     QHash<QString, Pending> pending_;
     QWidget* controls_ = nullptr;
@@ -90,12 +92,13 @@ class FedWatchPanel : public EconPanelBase {
     QPushButton* load_history_ = nullptr;
     Selection *meetings_ = nullptr, *outcomes_ = nullptr, *methods_ = nullptr, *ranges_ = nullptr;
     QLabel *summary_ = nullptr, *status_ = nullptr, *coverage_ = nullptr;
+    QLabel* diagnostic_status_ = nullptr;
     QLabel *selected_current_ = nullptr, *source_status_ = nullptr;
-    QWidget *probability_section_ = nullptr, *divergence_section_ = nullptr;
+    QWidget *probability_section_ = nullptr, *polymarket_section_ = nullptr, *diagnostics_ = nullptr;
     QGridLayout* charts_layout_ = nullptr;
     QTableWidget *distribution_ = nullptr, *indicators_ = nullptr;
     QPlainTextEdit* details_ = nullptr;
-    FedWatchHistoryChart *probability_ = nullptr, *divergence_ = nullptr;
+    FedWatchHistoryChart *probability_ = nullptr, *polymarket_ = nullptr, *divergence_ = nullptr;
     QJsonObject snapshot_, overview_, series_, analytics_;
     QString selected_meeting_, restored_outcome_;
     QString selected_outcome_;
@@ -105,9 +108,13 @@ class FedWatchPanel : public EconPanelBase {
     bool collect_in_flight_ = false;
     bool backfill_in_flight_ = false;
     bool meeting_explicitly_selected_ = false;
-    QString current_error_, history_error_;
-    QString backfill_error_;
-    QJsonObject backfill_result_;
+    QString current_error_, inventory_error_, series_error_, analytics_error_;
+    struct BackfillResult {
+        QJsonObject data;
+        QString error;
+    };
+    QHash<QString, BackfillResult> backfill_results_;
+    QString backfill_meeting_;
     int workspace_page_ = -1;
 };
 } // namespace fincept::screens

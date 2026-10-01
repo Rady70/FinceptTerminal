@@ -45,6 +45,10 @@ void FedWatchHistoryChart::paintEvent(QPaintEvent*) {
         painter.drawText(rect(), Qt::AlignCenter, tr("No accepted observations in this range"));
         return;
     }
+    if (first_.isValid() && last_.isValid() && first_ <= last_) {
+        first = qMin(first, first_.toMSecsSinceEpoch());
+        last = qMax(last, last_.toMSecsSinceEpoch());
+    }
     if (probability_scale_) {
         low = 0;
         high = 100;
@@ -67,11 +71,12 @@ void FedWatchHistoryChart::paintEvent(QPaintEvent*) {
                      QDateTime::fromMSecsSinceEpoch(first, QTimeZone::UTC).toString("yyyy-MM-dd"));
     painter.drawText(QRectF(plot.left(), plot.bottom() + 8, plot.width(), 20), Qt::AlignRight,
                      QDateTime::fromMSecsSinceEpoch(last, QTimeZone::UTC).toString("yyyy-MM-dd"));
-    const QVector<QColor> colors{QColor("#3B82F6"), QColor("#F59E0B")};
+    const auto& colors = ui::ThemeManager::instance().tokens().chart_colors;
     for (int i = 0; i < series_.size(); ++i) {
         const auto& s = series_[i];
-        painter.setPen(colors[i % colors.size()]);
-        painter.setBrush(colors[i % colors.size()]);
+        const QColor color(colors[(s.label == "POLYMARKET_CLOB" ? 1 : i) % colors.size()]);
+        painter.setPen(color);
+        painter.setBrush(color);
         painter.drawText(QRectF(12, 5 + i * 19, width() - 24, 19), Qt::AlignLeft, fedwatch::source_label(s.label));
         QPointF previous_position;
         const fedwatch::Point* previous = nullptr;
@@ -80,7 +85,7 @@ void FedWatchHistoryChart::paintEvent(QPaintEvent*) {
             const double y = low == high ? 0.5 : (p.value - low) / (high - low);
             QPointF pos(plot.left() + x * plot.width(), plot.bottom() - y * plot.height());
             if (previous && fedwatch::adjacent_observations(*previous, p)) {
-                painter.setPen(QPen(colors[i % colors.size()], 2));
+                painter.setPen(QPen(color, 2));
                 painter.drawLine(previous_position, pos);
             }
             painter.drawEllipse(pos, 3, 3);

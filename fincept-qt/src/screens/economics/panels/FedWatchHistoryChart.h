@@ -9,6 +9,12 @@ class FedWatchHistoryChart : public QWidget {
   public:
     explicit FedWatchHistoryChart(QWidget* parent = nullptr);
     void set_series(const QVector<fedwatch::Series>& series);
+    void set_time_bounds(const QDateTime& first, const QDateTime& last) {
+        first_ = first;
+        last_ = last;
+        update();
+    }
+    QPair<QDateTime, QDateTime> time_bounds() const { return {first_, last_}; }
     void set_probability_scale(bool enabled) {
         probability_scale_ = enabled;
         update();
@@ -23,5 +29,6 @@ class FedWatchHistoryChart : public QWidget {
     QVector<fedwatch::Series> series_;
     QVector<QPair<QPointF, QString>> hit_points_;
     bool probability_scale_ = true;
+    QDateTime first_, last_;
 };
 } // namespace fincept::screens
