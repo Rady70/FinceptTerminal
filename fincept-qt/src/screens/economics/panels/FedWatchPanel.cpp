@@ -1095,5 +1095,19 @@ void FedWatchPanel::arrange_charts() {
 void FedWatchPanel::resizeEvent(QResizeEvent* event) {
     EconPanelBase::resizeEvent(event);
     arrange_charts();
+    // Reflow changes each strip's viewport without changing its selection.
+    // Keep active choices visible once the new scrollbar ranges have settled.
+    QTimer::singleShot(0, this, [this] {
+        for (auto* container : {meeting_chips_, outcome_chips_, range_chips_}) {
+            if (!container)
+                continue;
+            auto* scroll = qobject_cast<QScrollArea*>(container->parentWidget()->parentWidget());
+            if (!scroll)
+                continue;
+            for (auto* button : container->findChildren<QPushButton*>(QString{}, Qt::FindDirectChildrenOnly))
+                if (button->isChecked() && !button->isHidden())
+                    scroll->ensureWidgetVisible(button, 0, 0);
+        }
+    });
 }
 } // namespace fincept::screens

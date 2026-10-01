@@ -1201,14 +1201,22 @@ class TestFedWatchPanel : public QObject {
         QCOMPARE(panel_->save_panel_state()["meeting"], state["meeting"]);
         QCOMPARE(panel_->save_panel_state()["outcome_bp"], state["outcome_bp"]);
         QCOMPARE(panel_->save_panel_state()["range_days"], state["range_days"]);
-        panel_->resize(640, 480);
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(0));
+        panel_->resize(1280, 800);
         panel_->show();
+        QTest::qWait(50);
+        panel_->resize(640, 480);
         QTest::qWait(50);
         QVERIFY(!panel_->grab().isNull());
         QVERIFY(control("fedwatchMeeting")->isVisible());
         auto* header = panel_->findChild<QLabel*>("fedwatchSummary");
         QVERIFY2(header->heightForWidth(header->width()) <= header->height(),
                  "The compact meeting/target/retrieval header must not clip at narrow panel width");
+        auto* strip = panel_->findChild<QScrollArea*>("fedwatchRangeStrip");
+        auto* selected = control("fedwatchRange")->buttons()[control("fedwatchRange")->findData(0)];
+        const QRect selectedBounds(selected->mapTo(strip->viewport(), QPoint(0, 0)), selected->size());
+        QVERIFY2(strip->viewport()->rect().contains(selectedBounds),
+                 "The selected last range must remain physically inside its strip after narrowing");
     }
 };
 QTEST_MAIN(TestFedWatchPanel)
