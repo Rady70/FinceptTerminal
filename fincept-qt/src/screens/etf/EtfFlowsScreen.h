@@ -1,0 +1,84 @@
+#pragma once
+#include "screens/common/IStatefulScreen.h"
+#include "services/etf/EtfGroupAnalytics.h"
+#include "services/etf/EtfTaxonomy.h"
+
+#include <QFutureWatcher>
+#include <QWidget>
+
+class QCheckBox;
+class QComboBox;
+class QDateEdit;
+class QDateTimeEdit;
+class QLabel;
+class QPlainTextEdit;
+class QPushButton;
+class QSplitter;
+class QTableWidget;
+class QTabWidget;
+
+namespace fincept::screens {
+class EtfMonthlyChart;
+
+class EtfFlowsScreen : public QWidget, public IStatefulScreen {
+    Q_OBJECT
+  public:
+    explicit EtfFlowsScreen(QWidget* parent = nullptr);
+    void restore_state(const QVariantMap& state) override;
+    QVariantMap save_state() const override;
+    QString state_key() const override { return QStringLiteral("etf_flows"); }
+
+  signals:
+    void research_loaded(bool success);
+
+  private:
+    void populate_groups();
+    void recompute();
+    void invalidate();
+    void set_busy(bool busy);
+    void clear_results();
+    void render_groups();
+    void select_group();
+    void select_month();
+    void inspect_subject(QTableWidget* table);
+    void render_subject(const QJsonObject& subject, const QJsonObject& result);
+    void show_provenance(const QJsonObject& object);
+    void refresh_theme();
+    QString subject_name(const QJsonObject& row) const;
+
+    std::optional<services::etf::TaxonomySnapshot> taxonomy_;
+    QString taxonomy_error_;
+    services::etf::GroupRunRequest loaded_request_;
+    QJsonObject result_;
+    QJsonObject group_result_;
+    QJsonObject selected_subject_;
+    QFutureWatcher<Result<QJsonObject>>* watcher_ = nullptr;
+    quint64 generation_ = 0;
+    bool busy_ = false;
+
+    QWidget* controls_ = nullptr;
+    QComboBox* level_ = nullptr;
+    QComboBox* group_ = nullptr;
+    QDateEdit* from_ = nullptr;
+    QDateEdit* to_ = nullptr;
+    QDateTimeEdit* as_of_ = nullptr;
+    QDateTimeEdit* known_at_ = nullptr;
+    QCheckBox* leveraged_ = nullptr;
+    QPushButton* recompute_ = nullptr;
+    QLabel* status_ = nullptr;
+    QLabel* context_ = nullptr;
+    QLabel* selection_ = nullptr;
+    QLabel* month_status_ = nullptr;
+    QLabel* individual_status_ = nullptr;
+    QSplitter* splitter_ = nullptr;
+    QTabWidget* tabs_ = nullptr;
+    QTableWidget* overview_ = nullptr;
+    QTableWidget* months_ = nullptr;
+    QTableWidget* constituents_ = nullptr;
+    QTableWidget* rotation_ = nullptr;
+    QTableWidget* unresolved_ = nullptr;
+    QTableWidget* individual_ = nullptr;
+    QPlainTextEdit* provenance_ = nullptr;
+    EtfMonthlyChart* chart_ = nullptr;
+};
+} // namespace fincept::screens

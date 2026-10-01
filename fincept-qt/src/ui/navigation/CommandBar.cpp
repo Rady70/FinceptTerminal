@@ -212,6 +212,12 @@ void CommandBar::build_commands() {
          "",
          {"surface", "volatility", "correlation", "pca"}},
         // Economics & Data
+        {"etf_flows",
+         tr("ETF Capital Flows"),
+         "Stored monthly SEC flow and separate market-rotation research",
+         {"etf", "etfflows", "etf_flows"},
+         "",
+         {"etf", "capital", "flow", "rotation"}},
         {"economics",
          tr("Economics"),
          "Economic indicators",

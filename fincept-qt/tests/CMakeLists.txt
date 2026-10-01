@@ -457,6 +457,24 @@ qt6_add_resources(tst_etf_group_store "test_etf_group_taxonomy"
     PREFIX "/etf"
     FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json")
 
+# Batch E tests the shipped native widgets and asynchronous loader over a
+# committed SQLite fixture. Widgets/Concurrent are intentionally linked here:
+# user-facing binding/lifecycle is the seam under test, not widget construction.
+fincept_add_test(tst_etf_ui
+    tst_etf_ui.cpp
+    ${_FINCEPT_ETF_STORE_SOURCES}
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfDerivedAnalytics.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/etf/EtfGroupAnalytics.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfFlowsScreen.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfMonthlyChart.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf/EtfResearchLoader.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/theme/ThemeManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/tables/DataTable.cpp")
+target_link_libraries(tst_etf_ui PRIVATE Qt6::Sql Qt6::Widgets Qt6::Concurrent)
+qt6_add_resources(tst_etf_ui "test_etf_ui_taxonomy"
+    PREFIX "/etf"
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json")
+
 # MarketLab ETF Batch B — HttpClient::get_raw, the raw GET the SEC N-PORT route
 # uses: the declared User-Agent replaces the client's default on the wire, the
 # body arrives byte for byte, an HTTP error keeps its status and body, and a
