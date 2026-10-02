@@ -274,6 +274,8 @@ class TestFedWatchPanel : public QObject {
         QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("0:exact"));
         QCOMPARE(rawDetails()["analytics"].toObject()["outcome_bp"].toInt(), 0);
         captureFixture("fresh_default_no_change");
+        QVERIFY(panel_->findChild<QWidget*>("fedwatchHistoryControls")->height() <=
+                panel_->findChild<QScrollArea*>("fedwatchRangeStrip")->height() + 8);
         control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-50:tail"));
         flush();
         panel_->findChild<QPushButton*>("econFetchBtn")->click();

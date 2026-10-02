@@ -300,6 +300,7 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
     status_->setMaximumHeight(48);
     history_controls_ = new QWidget(content);
     history_controls_->setObjectName("fedwatchHistoryControls");
+    history_controls_->setFixedHeight(48);
     auto* history_row = new QHBoxLayout(history_controls_);
     history_row->setContentsMargins(0, 0, 0, 0);
     layout->removeWidget(status_);
