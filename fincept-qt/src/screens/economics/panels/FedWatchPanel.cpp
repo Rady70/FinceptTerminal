@@ -1188,10 +1188,14 @@ void FedWatchPanel::render_history() {
             .arg(ranges_->currentText())
             .arg(filtered[0].points.size())
             .arg(filtered[1].points.size()));
-    if (retained_history && filtered[0].points.isEmpty() && filtered[1].points.isEmpty())
+    QStringList outside_range;
+    if (filtered[0].points.isEmpty() && !probabilities[0].points.isEmpty())
+        outside_range << tr("Fed-side %1").arg(probabilities[0].points.size());
+    if (filtered[1].points.isEmpty() && !probabilities[1].points.isEmpty())
+        outside_range << tr("Polymarket %1").arg(probabilities[1].points.size());
+    if (!outside_range.isEmpty())
         compact_coverage_->setText(compact_coverage_->text() +
-                                   tr(" · %1 retained outside this range")
-                                       .arg(probabilities[0].points.size() + probabilities[1].points.size()));
+                                   tr("\nRetained outside this range: %1").arg(outside_range.join(" · ")));
     arrange_charts();
     QDateTime first, last;
     for (const auto& series : filtered)

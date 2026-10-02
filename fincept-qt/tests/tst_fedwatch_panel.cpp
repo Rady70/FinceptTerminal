@@ -1823,6 +1823,7 @@ class TestFedWatchPanel : public QObject {
                                   .arg(left->series()[0].points.size())
                                   .arg(right->series()[0].points.size());
         QVERIFY(text("fedwatchCompactCoverage").contains(expected));
+        QVERIFY(!text("fedwatchCompactCoverage").contains("Retained outside this range"));
         QCOMPARE(panel_->findChild<QWidget*>("fedwatchHistoryControls")->isVisible(), fed || poly);
         if (!fed || !poly) {
             auto* difference = panel_->findChild<QToolButton*>("fedwatchDifferenceToggle");
@@ -1897,7 +1898,7 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(panel_->findChild<QWidget*>("fedwatchHistoryControls")->isVisible());
         QVERIFY(control("fedwatchRange")->isVisible());
         QVERIFY(text("fedwatchCompactCoverage").contains("History (30D): Fed-side 0 · Polymarket 0 observations"));
-        QVERIFY(text("fedwatchCompactCoverage").contains("2 retained outside this range"));
+        QVERIFY(text("fedwatchCompactCoverage").contains("Retained outside this range: Fed-side 1 · Polymarket 1"));
         control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(0));
         QCOMPARE(fed->series()[0].points.size(), 1);
         QCOMPARE(poly->series()[0].points.size(), 1);
@@ -1921,6 +1922,60 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(!toggle->isChecked());
         QVERIFY(!chart("fedwatchDivergenceChart")->isVisible());
         captureFixture("retained_history_without_difference");
+    }
+    void asymmetricRangeCoverageNamesRetainedSource_data() {
+        QTest::addColumn<QString>("olderSource");
+        QTest::newRow("older-fed-side") << QString("fed_side");
+        QTest::newRow("older-polymarket") << QString("polymarket");
+    }
+    void asymmetricRangeCoverageNamesRetainedSource() {
+        QFETCH(QString, olderSource);
+        openUpcoming();
+        // Presentation-only response subset: preserve original backend timestamps
+        // and values, retaining the older source's earliest observation only.
+        // Its peer and the authoritative paired-date anchor remain unchanged.
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("25:exact"));
+        const auto request = pending_.takeFirst();
+        auto envelope = backend(request);
+        auto data = envelope["data"].toObject();
+        auto older = data[olderSource].toObject();
+        const auto retained = older["history"].toArray();
+        QVERIFY(retained.size() > 1);
+        older["history"] = QJsonArray{retained[0]};
+        data[olderSource] = older;
+        envelope["data"] = data;
+        deliver(request, envelope);
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(30));
+        const bool olderFed = olderSource == "fed_side";
+        auto* olderChart = chart(olderFed ? "fedwatchProbabilityChart" : "fedwatchPolymarketChart");
+        auto* peerChart = chart(olderFed ? "fedwatchPolymarketChart" : "fedwatchProbabilityChart");
+        QVERIFY(olderChart->series()[0].points.isEmpty());
+        QVERIFY(!peerChart->series()[0].points.isEmpty());
+        QVERIFY(!olderChart->isVisible());
+        QVERIFY(peerChart->isVisible());
+        QTRY_VERIFY(peerChart->width() > panel_->width() * 0.85);
+        QVERIFY(panel_->findChild<QWidget*>("fedwatchHistoryControls")->isVisible());
+        QVERIFY(control("fedwatchRange")->isVisible());
+        QCOMPARE(olderChart->time_bounds(), peerChart->time_bounds());
+        const auto expected = QString("History (30D): Fed-side %1 · Polymarket %2 observations")
+                                  .arg(olderFed ? 0 : peerChart->series()[0].points.size())
+                                  .arg(olderFed ? peerChart->series()[0].points.size() : 0);
+        QVERIFY(text("fedwatchCompactCoverage").contains(expected));
+        QCOMPARE(text("fedwatchCompactCoverage").section('\n', -1),
+                 QString("Retained outside this range: %1 1").arg(olderFed ? "Fed-side" : "Polymarket"));
+        captureFixture(QString("asymmetric_range_") + QTest::currentDataTag());
+        panel_->show(); // The capture helper hides the panel after detaching its hidden frame.
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(0));
+        QCOMPARE(olderChart->series()[0].points.size(), 1);
+        QCOMPARE(olderChart->series()[0].points[0].value, retained[0].toObject()["probability_pct"].toDouble());
+        QCOMPARE(olderChart->series()[0].points[0].instant,
+                 QDateTime::fromString(retained[0].toObject()["observed_at"].toString(), Qt::ISODate));
+        QVERIFY(olderChart->isVisible() && peerChart->isVisible());
+        QVERIFY(text("fedwatchCompactCoverage").contains("History (Full retained)"));
+        QVERIFY(!text("fedwatchCompactCoverage").contains("Retained outside this range"));
     }
     void compactMeetingNavigationSelectsWithoutRibbon() {
         openUpcoming();
