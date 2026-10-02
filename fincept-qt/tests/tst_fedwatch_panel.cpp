@@ -285,7 +285,7 @@ class TestFedWatchPanel : public QObject {
         panel_->activate();
         flush();
         QCOMPARE(control("fedwatchMeeting")->currentData().toString(), QString("2026-09-16"));
-        QVERIFY(text("fedwatchStatus").contains("RESOLVED", Qt::CaseInsensitive));
+        QVERIFY(text("fedwatchDiagnosticStatus").contains("Resolved", Qt::CaseInsensitive));
         QVERIFY(text("fedwatchSummary").contains("Actual policy outcome: 25"));
         QVERIFY(!chart("fedwatchProbabilityChart")->series()[0].points.isEmpty());
         auto* refresh = panel_->findChild<QPushButton*>("econFetchBtn");
@@ -497,9 +497,12 @@ class TestFedWatchPanel : public QObject {
         request = pending_.takeFirst();
         deliver(request, QJsonObject{{"success", true}, {"data", QJsonObject{{"meetings", QJsonArray{}}}}});
         QVERIFY(pending_.isEmpty());
-        QVERIFY(text("fedwatchStatus").contains("No meetings"));
+        QVERIFY(text("fedwatchSummary").contains("select a meeting"));
         QVERIFY(text("fedwatchSourceStatus").contains("FRED target unavailable"));
-        QVERIFY(text("fedwatchSummary").contains("Unavailable"));
+        QVERIFY(!text("fedwatchSummary").contains("Unavailable"));
+        QVERIFY(currentChart()->isHidden());
+        QVERIFY(!chart("fedwatchProbabilityChart")->isVisible());
+        QVERIFY(!chart("fedwatchPolymarketChart")->isVisible());
         for (const auto& series : chart("fedwatchProbabilityChart")->series())
             QVERIFY(series.points.isEmpty());
     }
@@ -685,10 +688,10 @@ class TestFedWatchPanel : public QObject {
         click("range", 30);
         QCOMPARE(sent_.size(), beforeRange);
         QCOMPARE(panel_->save_panel_state()["range_days"].toInt(), 30);
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
         click("outcome", "0:exact");
         QCOMPARE(panel_->save_panel_state()["outcome_bp"].toInt(), 0);
         QVERIFY(!panel_->save_panel_state()["open_ended"].toBool());
-        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
         click("method", "HISTORICAL_ZQ_RECONSTRUCTED");
         QCOMPARE(panel_->save_panel_state()["fed_method"].toString(), QString("HISTORICAL_ZQ_RECONSTRUCTED"));
         const int beforeResolved = sent_.size();
@@ -721,6 +724,7 @@ class TestFedWatchPanel : public QObject {
     }
     void analyticsResponsePreservesFocusedChipAndTimelineScroll() {
         openUpcoming();
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
         panel_->resize(1280, 800);
         panel_->show();
         QApplication::setActiveWindow(panel_.get()); // Logical Qt focus only; the widget stays off the desktop.
@@ -776,6 +780,7 @@ class TestFedWatchPanel : public QObject {
     }
     void queuedScrollDoesNotRecenterSupersededMeeting() {
         openUpcoming();
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
         panel_->resize(1280, 800);
         panel_->show();
         QTest::qWait(50);
@@ -802,6 +807,7 @@ class TestFedWatchPanel : public QObject {
         panel_->restore_panel_state({{"meeting", "2027-09-15"}, {"outcome_bp", 0}});
         panel_->activate();
         flush();
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
         QTest::qWait(50);
         QCOMPARE(control("fedwatchMeeting")->currentData().toString(), QString("2027-09-15"));
         QVERIFY(control("fedwatchMeeting")->count() >= 10);
@@ -905,8 +911,12 @@ class TestFedWatchPanel : public QObject {
         QCOMPARE(fedPosition.y(), polyPosition.y());
         QVERIFY(fedPosition.x() + fed->width() <= polyPosition.x());
         auto* table = panel_->findChild<QTableWidget*>("fedwatchDistribution");
-        QVERIFY(table->isVisible());
-        QVERIFY(table->mapTo(panel_.get(), QPoint(0, 0)).y() > fedPosition.y() + fed->height());
+        QVERIFY(!table->isVisible());
+        QVERIFY(diagnostics->isAncestorOf(table));
+        QVERIFY(currentChart()->mapTo(panel_.get(), QPoint()).y() + currentChart()->height() < fedPosition.y());
+        QVERIFY(!control("fedwatchOutcome")->isVisible());
+        QVERIFY(!control("fedwatchMeeting")->isVisible());
+        QVERIFY(panel_->findChild<QToolButton*>("fedwatchNextMeeting")->isVisible());
         QCOMPARE(table->rowCount(), 5);
         QCOMPARE(table->columnCount(), 4);
         QVERIFY(chart("fedwatchDivergenceChart")->isHidden());
@@ -915,6 +925,7 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(!chart("fedwatchDivergenceChart")->series()[0].points.isEmpty());
         toggle->click();
         QVERIFY(diagnostics->isVisible());
+        QVERIFY(table->isVisible());
         QVERIFY(panel_->findChild<QLabel*>("fedwatchSourceStatus")->isVisible());
         QVERIFY(panel_->findChild<QPushButton*>("fedwatchLoadHistory")->isVisible());
         QVERIFY(panel_->save_panel_state()["details_visible"].toBool());
@@ -1509,7 +1520,7 @@ class TestFedWatchPanel : public QObject {
         openUpcoming();
         currentChart()->set_rows({QJsonObject{{"outcome_bp", 0}, {"fed_probability_pct", QJsonValue::Null}}});
         QVERIFY(currentChart()->bars().isEmpty());
-        QVERIFY(currentChart()->accessibleDescription().contains("Fed-side Unavailable; Polymarket Unavailable"));
+        QVERIFY(currentChart()->rows().isEmpty());
         currentChart()->set_rows({QJsonObject{{"outcome_bp", 0}, {"fed_probability_pct", 0}}});
         QCOMPARE(currentChart()->bars().size(), 1);
         QCOMPARE(currentChart()->bars()[0].value, 0.0);
@@ -1526,9 +1537,7 @@ class TestFedWatchPanel : public QObject {
         // No physical mouse, global input, window activation or desktop capture.
         const auto rows = current->rows();
         QVERIFY(!rows.isEmpty());
-        const double groupWidth = (current->width() - 62.0) / rows.size();
-        const double barWidth = qMin(44.0, groupWidth * 0.28);
-        const QPointF position(48 + groupWidth / 2 - barWidth / 2 - 2, 70);
+        const QPointF position(qMin(150.0, current->width() * 0.25) + 10, 62);
         QMouseEvent hover(QEvent::MouseMove, position, current->mapToGlobal(position.toPoint()), Qt::NoButton,
                           Qt::NoButton, Qt::NoModifier);
         QApplication::sendEvent(current, &hover);
@@ -1539,6 +1548,138 @@ class TestFedWatchPanel : public QObject {
                 QVERIFY2(widget->testAttribute(Qt::WA_DontShowOnScreen),
                          "Every shown test window must stay off the desktop");
         QToolTip::hideText();
+    }
+    void primaryBarsFilterEmptyCategoriesAndRetainOneSidedZero() {
+        openUpcoming();
+        currentChart()->set_rows(
+            {{{"outcome_bp", -50}, {"open_ended", true}},
+             {{"outcome_bp", -25}, {"fed_probability_pct", 0}},
+             {{"outcome_bp", 0}, {"polymarket_probability_pct", 69.125}},
+             {{"outcome_bp", 50}, {"open_ended", true}, {"fed_probability_pct", QJsonValue::Null}}});
+        QCOMPARE(currentChart()->rows().size(), 2);
+        QCOMPARE(currentChart()->rows()[0]["outcome_bp"].toInt(), -25);
+        QCOMPARE(currentChart()->rows()[1]["outcome_bp"].toInt(), 0);
+        const auto bars = currentChart()->bars();
+        QCOMPARE(bars.size(), 2);
+        QCOMPARE(bars[0].source, 0);
+        QCOMPARE(bars[0].value, 0.0);
+        QCOMPARE(bars[1].source, 1);
+        QCOMPARE(bars[1].value, 69.125);
+    }
+    void currentCategoryMouseAndKeyboardSelectAuthoritativeHistory() {
+        openUpcoming();
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        const auto rows = currentChart()->rows();
+        const auto row = rows[0];
+        QTest::mouseClick(currentChart(), Qt::LeftButton, Qt::NoModifier, QPoint(25, 62));
+        QCOMPARE(pending_.size(), 1);
+        QCOMPARE(pending_.first().command, QString("history_analytics"));
+        QCOMPARE(panel_->save_panel_state()["outcome_bp"].toInt(), row["outcome_bp"].toInt());
+        QCOMPARE(panel_->save_panel_state()["open_ended"].toBool(), row["open_ended"].toBool());
+        flush();
+        const auto analytics = rawDetails()["analytics"].toObject();
+        QCOMPARE(analytics["outcome_bp"], row["outcome_bp"]);
+        QCOMPARE(analytics["open_ended"].toBool(), row["open_ended"].toBool());
+        QTest::keyClick(currentChart(), Qt::Key_Down);
+        flush();
+        QCOMPARE(panel_->save_panel_state()["outcome_bp"].toInt(), rows[1]["outcome_bp"].toInt());
+        QVERIFY(text("fedwatchStatus").contains(control("fedwatchOutcome")->currentText()));
+        QVERIFY(!panel_->findChild<QWidget*>("fedwatchDiagnostics")->isVisible());
+    }
+    void historicalPanelsAdaptToRetainedObservations_data() {
+        QTest::addColumn<bool>("fed");
+        QTest::addColumn<bool>("poly");
+        QTest::newRow("both") << true << true;
+        QTest::newRow("fed-only") << true << false;
+        QTest::newRow("polymarket-only") << false << true;
+        QTest::newRow("neither") << false << false;
+    }
+    void historicalPanelsAdaptToRetainedObservations() {
+        QFETCH(bool, fed);
+        QFETCH(bool, poly);
+        if (!poly)
+            process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                    {database_, "mapping-without-history", fed ? "25" : "-25"});
+        openUpcoming();
+        if (!fed) {
+            control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-25:exact"));
+            flush();
+            control("fedwatchMethod")->selectIndex(control("fedwatchMethod")->findData("HISTORICAL_ZQ_RECONSTRUCTED"));
+            flush();
+        }
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(50);
+        auto* left = chart("fedwatchProbabilityChart");
+        auto* right = chart("fedwatchPolymarketChart");
+        QCOMPARE(left->isVisible(), fed);
+        QCOMPARE(right->isVisible(), poly);
+        QCOMPARE(left->series()[0].points.isEmpty(), !fed);
+        QCOMPARE(right->series()[0].points.isEmpty(), !poly);
+        QCOMPARE(left->time_bounds(), right->time_bounds());
+        QCOMPARE(left->value_bounds(), right->value_bounds());
+        if (fed && poly) {
+            QCOMPARE(left->mapTo(panel_.get(), QPoint()).y(), right->mapTo(panel_.get(), QPoint()).y());
+            QVERIFY(left->mapTo(panel_.get(), QPoint()).x() + left->width() < right->mapTo(panel_.get(), QPoint()).x());
+        } else if (fed || poly) {
+            auto* populated = fed ? left : right;
+            QVERIFY(populated->width() > panel_->width() * 0.85);
+        } else {
+            QVERIFY(!left->parentWidget()->parentWidget()->isVisible());
+        }
+        const auto expected = QString("History: Fed-side %1 observations · Polymarket %2 observations")
+                                  .arg(left->series()[0].points.size())
+                                  .arg(right->series()[0].points.size());
+        QVERIFY(text("fedwatchCompactCoverage").contains(expected));
+        if (!poly) {
+            auto* action = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
+            QVERIFY(action->isVisible());
+            QCOMPARE(action->text(), QString("Load Polymarket history"));
+        }
+        captureFixture(QString("adaptive_history_") + QTest::currentDataTag());
+    }
+    void compactCurrentCoverageKeepsQualityAuditable() {
+        const auto original = snapshot_;
+        changeCurrentSection("polymarket", {{"data_status", "PARTIAL"}});
+        openUpcoming();
+        snapshot_ = original;
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        QVERIFY(text("fedwatchCompactCoverage").contains("Current: Fed-side 5 outcomes · Polymarket 0 outcomes"));
+        QCOMPARE(currentChart()->bars().size(), 5);
+        for (const auto& bar : currentChart()->bars())
+            QCOMPARE(bar.source, 0);
+        QVERIFY(!text("fedwatchStatus").contains("PARTIAL"));
+        auto* table = panel_->findChild<QTableWidget*>("fedwatchDistribution");
+        QVERIFY(!table->isVisible());
+        QCOMPARE(table->rowCount(), 5);
+        for (int i = 0; i < table->rowCount(); ++i)
+            QCOMPARE(table->item(i, 2)->text(), QString("Unavailable"));
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
+        QVERIFY(table->isVisible());
+        QVERIFY(text("fedwatchSourceStatus").contains("PARTIAL"));
+        QVERIFY(rawDetails()["current_snapshot"].isObject());
+    }
+    void compactMeetingNavigationSelectsWithoutRibbon() {
+        openUpcoming();
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        auto* next = panel_->findChild<QToolButton*>("fedwatchNextMeeting");
+        auto* previous = panel_->findChild<QToolButton*>("fedwatchPreviousMeeting");
+        QVERIFY(next->isVisible());
+        QVERIFY(previous->isVisible());
+        QVERIFY(!control("fedwatchMeeting")->isVisible());
+        QTest::mouseClick(next, Qt::LeftButton);
+        flush();
+        QCOMPARE(panel_->save_panel_state()["meeting"].toString(), QString("2026-12-09"));
+        QTest::mouseClick(previous, Qt::LeftButton);
+        flush();
+        QCOMPARE(panel_->save_panel_state()["meeting"].toString(), QString("2026-10-28"));
+        QCOMPARE(control("fedwatchMeeting")->currentData().toString(), QString("2026-10-28"));
     }
     void analyticsFailuresBelongToOutcomeAndMethodContext_data() {
         QTest::addColumn<QString>("kind");
@@ -1637,8 +1778,9 @@ class TestFedWatchPanel : public QObject {
         snapshot_["failed_components"] = QJsonArray{"FRED context"};
         openUpcoming();
         snapshot_ = original;
-        QVERIFY(text("fedwatchSummary").contains("Snapshot retrieved"));
-        QVERIFY(text("fedwatchSummary").contains(original["data"].toObject()["retrieved_at"].toString()));
+        QVERIFY(!text("fedwatchSummary").contains("Snapshot retrieved"));
+        QVERIFY(text("fedwatchSourceStatus").contains("Snapshot retrieved"));
+        QVERIFY(text("fedwatchSourceStatus").contains(original["data"].toObject()["retrieved_at"].toString()));
         QVERIFY(!text("fedwatchSummary").contains("Updated"));
         QVERIFY(text("fedwatchSourceStatus").contains("Partial provider result: FRED context"));
     }
@@ -1661,7 +1803,9 @@ class TestFedWatchPanel : public QObject {
         panel_->resize(640, 480);
         QTest::qWait(50);
         QVERIFY(!panel_->grab().isNull());
-        QVERIFY(control("fedwatchMeeting")->isVisible());
+        QVERIFY(!control("fedwatchMeeting")->isVisible());
+        QVERIFY(panel_->findChild<QToolButton*>("fedwatchPreviousMeeting")->isVisible());
+        QVERIFY(panel_->findChild<QToolButton*>("fedwatchNextMeeting")->isVisible());
         auto* header = panel_->findChild<QLabel*>("fedwatchSummary");
         QVERIFY2(header->heightForWidth(header->width()) <= header->height(),
                  "The compact meeting/target/retrieval header must not clip at narrow panel width");
@@ -1670,9 +1814,19 @@ class TestFedWatchPanel : public QObject {
         const QRect selectedBounds(selected->mapTo(strip->viewport(), QPoint(0, 0)), selected->size());
         QVERIFY2(strip->viewport()->rect().contains(selectedBounds),
                  "The selected last range must remain physically inside its strip after narrowing");
-        auto* viewport = panel_->findChild<QWidget*>("fedwatchControlRow")->parentWidget()->parentWidget();
+        captureFixture("narrow_workspace", 640);
+        panel_->show();
+        panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->click();
+        QTest::qWait(50);
+        auto* mainScroll =
+            panel_->findChild<QWidget*>("fedwatchDiagnostics")->parentWidget()->parentWidget()->parentWidget();
+        auto* areaMain = qobject_cast<QScrollArea*>(mainScroll);
+        QVERIFY(areaMain);
+        areaMain->ensureWidgetVisible(panel_->findChild<QWidget*>("fedwatchControlRow"));
+        QTest::qWait(50);
+        auto* viewport = areaMain->viewport();
         int previousY = -1;
-        for (const auto& kind : {QString("Meeting"), QString("Outcome"), QString("Range")}) {
+        for (const auto& kind : {QString("Meeting"), QString("Outcome")}) {
             const auto name = "fedwatch" + kind;
             auto* label = panel_->findChild<QLabel*>(name + "Label");
             QVERIFY(label->isVisible());
@@ -1689,7 +1843,11 @@ class TestFedWatchPanel : public QObject {
             QVERIFY2(viewport->rect().contains(QRect(chip->mapTo(viewport, QPoint()), chip->size())),
                      qPrintable(name + " selected choice must fit the main viewport"));
         }
-        captureFixture("narrow_workspace", 640);
+        // Primary range selection remains independently available above history.
+        areaMain->ensureWidgetVisible(strip);
+        QTest::qWait(50);
+        QVERIFY(strip->isVisible());
+        QVERIFY(viewport->rect().contains(QRect(selected->mapTo(viewport, QPoint()), selected->size())));
     }
 };
 QTEST_MAIN(TestFedWatchPanel)

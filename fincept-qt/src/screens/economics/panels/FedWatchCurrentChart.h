@@ -21,14 +21,23 @@ class FedWatchCurrentChart : public QWidget {
     QVector<Bar> bars() const;
     QColor series_color(int source) const;
     QPair<double, double> value_bounds() const { return {0, 100}; }
+    void set_selected_outcome(int bp, bool open);
+  signals:
+    void outcome_selected(int bp, bool open);
 
   protected:
     void paintEvent(QPaintEvent*) override;
     void mouseMoveEvent(QMouseEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void keyPressEvent(QKeyEvent*) override;
     void leaveEvent(QEvent*) override;
 
   private:
     QList<QJsonObject> rows_;
     QVector<QPair<QRectF, QString>> hits_;
+    QVector<QRectF> categories_;
+    int selected_bp_ = 0;
+    bool selected_open_ = false;
+    void select_row(int index);
 };
 } // namespace fincept::screens

@@ -52,10 +52,11 @@ def main() -> None:
                          allow_nan=False))
         return
     if case == "mapping-without-history":
+        outcome = int(sys.argv[3]) if len(sys.argv) > 3 else 25
         mapping = next(m for m in store.validated_mappings(["2026-10-28"])
-                       if m["outcome_bp"] == 25 and not m["open_ended"])
+                       if m["outcome_bp"] == outcome and not m["open_ended"])
         store.upsert_mapping_outcome(
-            mapping["meeting_date"], mapping["source"], mapping["method"], 25, False, "VALIDATED",
+            mapping["meeting_date"], mapping["source"], mapping["method"], outcome, False, "VALIDATED",
             mapping["external_event_id"], mapping["external_event_title"], mapping["external_market_id"],
             "fixture-new-token-without-observations", mapping["question"], {"fixture": True}, now=utc(2026, 9, 28, 12))
         print(json.dumps({"success": True}))
