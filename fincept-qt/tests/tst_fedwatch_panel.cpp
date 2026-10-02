@@ -1388,12 +1388,17 @@ class TestFedWatchPanel : public QObject {
         QTest::newRow("unavailable") << QString("UNAVAILABLE") << QString("CURRENT");
         QTest::newRow("partial") << QString("PARTIAL") << QString("CURRENT");
         QTest::newRow("stale") << QString("OK") << QString("STALE");
+        QTest::newRow("unavailable-freshness") << QString("OK") << QString("UNAVAILABLE");
+        QTest::newRow("unknown-freshness") << QString("OK") << QString("FUTURE_UNKNOWN_STATE");
+        QTest::newRow("empty-freshness") << QString("OK") << QString("");
+        QTest::newRow("missing-freshness") << QString("OK") << QString("<missing>");
     }
     void currentFedAvailabilityGatesBarsAndExactValues() {
         QFETCH(QString, local);
         QFETCH(QString, freshness);
         const auto original = snapshot_;
-        changeCurrentSection("fed_side", {{"local_status", local}, {"freshness", QJsonObject{{"status", freshness}}}});
+        const auto state = freshness == "<missing>" ? QJsonObject{} : QJsonObject{{"status", freshness}};
+        changeCurrentSection("fed_side", {{"local_status", local}, {"freshness", state}});
         openUpcoming();
         snapshot_ = original;
         for (const auto& bar : currentChart()->bars())
@@ -1405,7 +1410,41 @@ class TestFedWatchPanel : public QObject {
             QCOMPARE(table->item(row, 3)->text(), QString("Unavailable"));
         }
         QVERIFY(text("fedwatchSelectedCurrent").contains("Fed-side Unavailable"));
+        QVERIFY(text("fedwatchSelectedCurrent").contains("Difference Unavailable"));
         QVERIFY(!chart("fedwatchProbabilityChart")->series()[0].points.isEmpty());
+    }
+    void establishedFedFreshnessRemainsEligible_data() {
+        QTest::addColumn<QString>("freshness");
+        for (const char* status : {"CURRENT", "OK", "SOURCE_TIMESTAMP_UNAVAILABLE"})
+            QTest::newRow(status) << QString::fromLatin1(status);
+    }
+    void establishedFedFreshnessRemainsEligible() {
+        QFETCH(QString, freshness);
+        const auto original = snapshot_;
+        changeCurrentSection("fed_side", {{"local_status", "OK"}, {"freshness", QJsonObject{{"status", freshness}}}});
+        openUpcoming();
+        snapshot_ = original;
+        const auto bars = currentChart()->bars();
+        QCOMPARE(std::count_if(bars.begin(), bars.end(), [](const auto& bar) { return bar.source == 0; }), 5);
+        QVERIFY(text("fedwatchSelectedCurrent").contains("Fed-side 70.00%"));
+        QVERIFY(text("fedwatchSelectedCurrent").contains("Difference -4.50 pp"));
+        auto* table = panel_->findChild<QTableWidget*>("fedwatchDistribution");
+        QCOMPARE(table->item(3, 1)->text(), QString("70.00"));
+        QCOMPARE(table->item(3, 3)->text(), QString("-4.50"));
+    }
+    void diagnosticsCopyUsesResearchDetailsDestination() {
+        openUpcoming();
+        QCOMPARE(panel_->findChild<QToolButton*>("fedwatchDetailsToggle")->text(), QString("Research details"));
+        QFile file(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/src/screens/economics/panels/FedWatchPanel.cpp"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QVERIFY2(!QString::fromUtf8(file.readAll()).contains("see Sources"),
+                 "Diagnostic paths must point to the existing Research details section");
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        const auto request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("history_meetings"));
+        deliver(request, {{"success", false}, {"error", "fixture inventory failure"}});
+        flush();
+        QVERIFY(text("fedwatchDiagnosticStatus").contains("History incomplete · see Research details"));
     }
     void groupedBarsUseSameBackendValuesAsExactTable() {
         openUpcoming();

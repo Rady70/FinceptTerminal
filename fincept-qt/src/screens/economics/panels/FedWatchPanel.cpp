@@ -823,11 +823,11 @@ void FedWatchPanel::render() {
         concise << tr("Polymarket %1 · mapping %2").arg(data_label, mapping_label);
     }
     if (history_issue_present)
-        concise << tr("History incomplete · see Sources");
+        concise << tr("History incomplete · see Research details");
     if (!backfill.isEmpty())
         concise << backfill.section('\n', 0, 0);
     if (!current_error_.isEmpty())
-        concise << tr("Provider issue · see Sources");
+        concise << tr("Provider issue · see Research details");
     const bool selected_backfill_pending = backfill_in_flight_ && backfill_meeting_ == selected_meeting_;
     if (selected_backfill_pending)
         concise << tr("Loading Polymarket history…");
@@ -849,8 +849,10 @@ void FedWatchPanel::render() {
                                       : history_issue_present ? tr("Historical data unavailable")
                                                               : tr("Loading historical data"));
     QMap<QString, QJsonObject> rows;
-    const bool fed_current = show_current && fed["local_status"].toString() == "OK" &&
-                             fed["freshness"].toObject()["status"].toString() != "STALE";
+    const auto fed_freshness = fed["freshness"].toObject()["status"].toString();
+    const bool fed_current =
+        show_current && fed["local_status"].toString() == "OK" &&
+        (fed_freshness == "CURRENT" || fed_freshness == "OK" || fed_freshness == "SOURCE_TIMESTAMP_UNAVAILABLE");
     const bool poly_current =
         show_current && poly["mapping_status"].toString() == "VALIDATED" && poly["data_status"].toString() == "CURRENT";
     if (show_current) {
@@ -1011,9 +1013,9 @@ QString FedWatchPanel::backfill_status() const {
     if (stored["last_backfill_at"].isString())
         summary += tr(" · Last backfill %1").arg(stored["last_backfill_at"].toString());
     if (!warnings.isEmpty())
-        summary += tr(" · Warnings · see Sources");
+        summary += tr(" · Warnings · see Research details");
     if (!immediate.error.isEmpty())
-        summary += tr(" · Update issue · see Sources");
+        summary += tr(" · Update issue · see Research details");
     return (QStringList{summary} + details).join('\n');
 }
 void FedWatchPanel::render_history() {
