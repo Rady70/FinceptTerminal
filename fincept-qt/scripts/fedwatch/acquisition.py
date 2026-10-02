@@ -118,7 +118,9 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
         (m.get("polymarket") or {}).get("mapping_status") == "VALIDATED"
         for m in active_meetings
     )
-    if (not force and saved and not local.get("partial") and not data.get("errors") and
+    # A selected attempt proves only that meeting's coverage. An unscoped
+    # refresh must discover the complete upcoming inventory explicitly.
+    if (meeting_date is not None and not force and saved and not local.get("partial") and not data.get("errors") and
             age is not None and 0 <= age < CURRENT_REUSE_HOURS and wanted_present and quoted_usable):
         data["acquisition"]["reason"] = "RECENT_VALID_ACQUISITION"
         return local

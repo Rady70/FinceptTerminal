@@ -36,7 +36,9 @@ Current reuse is limited to **6 hours** and requires a complete acquisition,
 the requested meeting, usable Fed-side values, validated Polymarket mappings,
 and still-current CLOB quotes under the existing three-day window. Partial
 attempts are not replayed as a successful current refresh. `--force` retries
-explicitly. Loading old saved data re-evaluates quote age and meeting lifecycle:
+explicitly. An unscoped `collect` always discovers the complete upcoming
+inventory: a selected meeting cannot prove that inventory is complete.
+Loading old saved data re-evaluates quote age and meeting lifecycle:
 stale Fed-side values cannot populate current distributions, stale Polymarket
 values retain `STALE`, and current comparisons are cleared. Resolved/past/pending
 selected meetings return retained history without a current provider call.

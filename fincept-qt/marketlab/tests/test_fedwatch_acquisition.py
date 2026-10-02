@@ -129,6 +129,14 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual({r["outcome_bp"] for r in published["observations"]}, {400, 425})
         self.assertEqual(published["financial_object"], "TARGET_RANGE_UPPER_BP")
 
+    def test_unscoped_refresh_does_not_reuse_one_meetings_incomplete_inventory(self):
+        self.refresh()
+        before = len(self.transport.text_calls + self.transport.json_calls)
+        result = acquisition.refresh_current(self.store, transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        self.assertGreater(len(self.transport.text_calls + self.transport.json_calls), before)
+        self.assertIn("2026-12-09", [m["meeting_date"] for m in result["data"]["meetings"]])
+
     def test_expired_saved_current_is_gated_without_fetch(self):
         self.refresh()
         later = FixedClock(NOW + timedelta(days=4))
