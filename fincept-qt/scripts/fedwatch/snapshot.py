@@ -77,6 +77,7 @@ def build_snapshot(
     clock=timeutil.utc_now,
     fallback_path=None,
     sleep=time.sleep,
+    selected_meeting_dates: list[date] | None = None,
 ) -> dict:
     """Build the full current snapshot envelope (``data`` + partial markers)."""
     transport = transport or HttpTransport()
@@ -256,6 +257,8 @@ def build_snapshot(
         # Official upcoming dates only: an Investing-only date must never be a
         # candidate for Polymarket mapping validation.
         meeting_dates = set(official_upcoming_dates)
+        if selected_meeting_dates is not None:
+            meeting_dates &= set(selected_meeting_dates)
         try:
             polymarket_section = polymarket.build_section(
                 transport, sorted(meeting_dates), clock=clock, sleep=sleep
@@ -337,6 +340,8 @@ def build_snapshot(
 
     meetings = []
     for meeting_date in sorted(meeting_dates_all):
+        if selected_meeting_dates is not None and meeting_date not in selected_meeting_dates:
+            continue
         calendar_row = fomc_by_end.get(meeting_date)
         fed_section = fed_sections.get(meeting_date.isoformat())
         polymarket_entry = polymarket_by_date.get(meeting_date)

@@ -14,6 +14,7 @@
 // HARD RULE in tests/CMakeLists.txt).
 
 #include "services/economics/EconomicsEnvelopeParse.h"
+#include "services/economics/FedwatchAcquisitionPolicy.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -37,6 +38,7 @@ class TstEconomicsEnvelope : public QObject {
     Q_OBJECT
 
   private slots:
+    void fedwatch_acquisition_requires_manual_dispatch();
     void cftc_object_error_is_a_failure();
     void string_error_is_a_failure();
     void array_error_is_a_failure();
@@ -80,10 +82,10 @@ void TstEconomicsEnvelope::array_error_is_a_failure() {
 }
 
 void TstEconomicsEnvelope::null_and_empty_error_values_are_not_failures() {
-    for (const char* json : {R"({"success": true, "data": {"x": 1}, "error": null})",
-                             R"({"success": true, "data": {"x": 1}, "error": ""})",
-                             R"({"success": true, "data": {"x": 1}, "error": {}})",
-                             R"({"success": true, "data": {"x": 1}, "error": []})"}) {
+    for (const char* json :
+         {R"({"success": true, "data": {"x": 1}, "error": null})",
+          R"({"success": true, "data": {"x": 1}, "error": ""})", R"({"success": true, "data": {"x": 1}, "error": {}})",
+          R"({"success": true, "data": {"x": 1}, "error": []})"}) {
         const EnvelopeDecision d = classify(obj_from(json));
         QVERIFY2(d.ok, json);
         QVERIFY(d.error.isEmpty());
@@ -177,8 +179,7 @@ void TstEconomicsEnvelope::failed_series_without_flag_is_a_failure() {
 }
 
 void TstEconomicsEnvelope::partial_flag_without_details_is_a_failure() {
-    const EnvelopeDecision d =
-        classify(obj_from(R"({"success": true, "partial": true, "data": [{"x": 1}]})"));
+    const EnvelopeDecision d = classify(obj_from(R"({"success": true, "partial": true, "data": [{"x": 1}]})"));
     QVERIFY(!d.ok);
     QVERIFY(d.partial);
     QVERIFY(d.error.contains(QStringLiteral("some components failed")));
@@ -187,10 +188,15 @@ void TstEconomicsEnvelope::partial_flag_without_details_is_a_failure() {
 // `errors` is a generic key some scripts use for benign notices; it must not
 // make an otherwise complete payload fail.
 void TstEconomicsEnvelope::benign_errors_key_is_not_a_partial_signal() {
-    const EnvelopeDecision d = classify(
-        obj_from(R"({"success": true, "errors": ["cache warm"], "data": [{"x": 1}]})"));
+    const EnvelopeDecision d = classify(obj_from(R"({"success": true, "errors": ["cache warm"], "data": [{"x": 1}]})"));
     QVERIFY(d.ok);
     QVERIFY(!d.partial);
+}
+
+void TstEconomicsEnvelope::fedwatch_acquisition_requires_manual_dispatch() {
+    using fincept::services::economics_detail::fedwatch_requires_manual_dispatch;
+    QVERIFY(fedwatch_requires_manual_dispatch(QStringLiteral("fedwatch_data.py")));
+    QVERIFY(!fedwatch_requires_manual_dispatch(QStringLiteral("fred_data.py")));
 }
 
 QTEST_GUILESS_MAIN(TstEconomicsEnvelope)

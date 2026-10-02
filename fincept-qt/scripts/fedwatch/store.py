@@ -72,7 +72,7 @@ from pathlib import Path
 from fedwatch.errors import HistoryStoreError
 from fedwatch import timeutil
 
-HISTORY_SCHEMA_VERSION = 2
+HISTORY_SCHEMA_VERSION = 3
 # Version 1 was an unreleased pre-review schema (first as a compressed value
 # episode, then as an observation-instant schema without instrument identity).
 # It is refused explicitly instead of being silently reused.
@@ -90,6 +90,13 @@ MEETING_STATUSES = (
 )
 
 _SCHEMA_TABLE_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS fedwatch_current_acquisition (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        acquired_at TEXT NOT NULL,
+        envelope_json TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS fedwatch_meetings (
         meeting_date TEXT PRIMARY KEY,
@@ -187,6 +194,7 @@ _SCHEMA_INDEX_STATEMENTS = (
 )
 
 _REQUIRED_COLUMNS = {
+    "fedwatch_current_acquisition": {"singleton", "acquired_at", "envelope_json"},
     "fedwatch_meetings": {
         "meeting_date", "status", "status_reason", "calendar_json",
         "first_seen_at", "last_updated_at", "resolved_at", "actual_outcome_bp",
@@ -345,6 +353,38 @@ class FedwatchHistoryStore:
 
     def close(self) -> None:
         """Compatibility no-op; connections are opened per operation."""
+
+    def save_current_acquisition(self, envelope: dict, acquired_at: str) -> None:
+        """Retain the latest explicit attempt, including truthful provider errors."""
+        acquired_at = _require_iso_instant(acquired_at, "acquired_at")
+        payload = json.dumps(envelope, allow_nan=False, sort_keys=True)
+        conn = self._connect()
+        try:
+            self._prepare(conn)
+            with conn:
+                conn.execute(
+                    "INSERT INTO fedwatch_current_acquisition VALUES (1, ?, ?) "
+                    "ON CONFLICT(singleton) DO UPDATE SET "
+                    "acquired_at=excluded.acquired_at, envelope_json=excluded.envelope_json",
+                    (acquired_at, payload),
+                )
+        except sqlite3.Error as exc:
+            raise HistoryStoreError("FEDWATCH_HISTORY_WRITE_FAILED", str(exc)) from exc
+        finally:
+            conn.close()
+
+    def current_acquisition(self) -> dict | None:
+        conn = self._connect()
+        try:
+            self._prepare(conn)
+            row = conn.execute("SELECT * FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()
+            if row is None:
+                return None
+            return {"acquired_at": row["acquired_at"], "envelope": json.loads(row["envelope_json"])}
+        except (sqlite3.Error, ValueError) as exc:
+            raise HistoryStoreError("FEDWATCH_HISTORY_READ_FAILED", str(exc)) from exc
+        finally:
+            conn.close()
 
     # ── meetings ──────────────────────────────────────────────────────────
 

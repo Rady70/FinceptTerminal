@@ -59,6 +59,7 @@ class StoreSchemaTests(unittest.TestCase):
                 "fedwatch_source_mappings",
                 "fedwatch_probability_observations",
                 "fedwatch_backfills",
+                "fedwatch_current_acquisition",
                 "sqlite_sequence",
             },
         )

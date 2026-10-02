@@ -272,6 +272,7 @@ def build_month_frame(
     watch_date: date,
     meeting_end_dates: list[date],
     contracts: list[dict],
+    final_month: tuple[int, int] | None = None,
 ) -> tuple[list[MonthRecord], list[str]]:
     """One month record per calendar month from the watch month to the last meeting.
 
@@ -288,7 +289,7 @@ def build_month_frame(
     months: list[MonthRecord] = []
     warnings: list[str] = []
     year, month = watch_date.year, watch_date.month
-    while (year, month) <= (last_meeting_date.year, last_meeting_date.month):
+    while (year, month) <= (final_month or (last_meeting_date.year, last_meeting_date.month)):
         record = MonthRecord(year=year, month=month)
         record.meeting_end_dates = [
             day for day in all_dates if day.year == year and day.month == month
@@ -416,6 +417,7 @@ def run_deconvolution(
     contracts: list[dict],
     current_rate_upper: float,
     current_rate_lower: float,
+    selected_meeting: date | None = None,
 ) -> dict:
     """Run the full qualified deconvolution for one watch date.
 
@@ -426,6 +428,8 @@ def run_deconvolution(
     backward buffer are excluded rather than silently emitted as missing.
     """
     horizon = sorted(day for day in meeting_end_dates if day >= watch_date)
+    if selected_meeting is not None:
+        horizon = [day for day in horizon if day <= selected_meeting]
     if not horizon:
         raise ZqDataError(
             "FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE",
@@ -461,7 +465,11 @@ def run_deconvolution(
             },
         )
 
-    months, build_warnings = build_month_frame(watch_date, meeting_end_dates, contracts)
+    # The bounded selected-meeting path includes its following contract month
+    # as a propagation anchor while retaining the full calendar classification.
+    # The original all-meeting path and the propagation formula are unchanged.
+    final_month = _add_months(selected_meeting.year, selected_meeting.month, 1) if selected_meeting else None
+    months, build_warnings = build_month_frame(watch_date, meeting_end_dates, contracts, final_month=final_month)
     months, propagate_warnings = propagate_prices(months)
     month_lookup = {(record.year, record.month): record for record in months}
 

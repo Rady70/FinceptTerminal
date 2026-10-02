@@ -46,6 +46,7 @@ from fedwatch import history as fedwatch_history  # noqa: E402
 from fedwatch import snapshot as fedwatch_snapshot  # noqa: E402
 from fedwatch import store as fedwatch_store  # noqa: E402
 from fedwatch import timeutil as fedwatch_timeutil  # noqa: E402
+from fedwatch import acquisition, published_history, sources  # noqa: E402
 from fedwatch.errors import FedwatchError  # noqa: E402
 from fedwatch.transport import HttpTransport  # noqa: E402
 
@@ -63,6 +64,10 @@ USAGE = {
         "fomc_meetings": "Federal Reserve FOMC calendar",
         "polymarket_fomc": "Polymarket FOMC discovery, mapping validation and current prices",
         "collect": "current snapshot + durable recording + meeting lifecycle",
+        "local_snapshot": "saved current attempt and coverage; no network acquisition",
+        "history_sources": "public availability, implemented routes and local coverage",
+        "history_cme_import": "explicit local CME-published target-range CSV import",
+        "history_compare_cme": "date/band matched published versus ZQ cumulative history",
         "history_meetings": "durable meeting lifecycle and observation coverage",
         "history_series": "stored observations for a meeting outcome",
         "history_analytics": "historical probability calculations for a meeting outcome",
@@ -76,7 +81,9 @@ USAGE = {
         "history_analytics": "--meeting YYYY-MM-DD --outcome-bp N [--open-ended] "
         "[--fed-method METHOD] [--as-of ISO-INSTANT]",
         "history_backfill": "[--meeting YYYY-MM-DD ...] [--force] [--refresh-hours HOURS]",
-        "history_zq_import": "--data-dir PATH --watch-date YYYY-MM-DD [--watch-date ...]",
+        "history_zq_import": "--data-dir PATH --watch-date YYYY-MM-DD [--watch-date ...] [--input-format qualified|investing] [--meeting YYYY-MM-DD] [--force]",
+        "collect": "[--meeting YYYY-MM-DD] [--force]; complete recent attempts are reused",
+        "history_cme_import": "--file PATH --meeting YYYY-MM-DD --source-url CME-URL (documented CSV, not native XLS/XLSX)",
     },
 }
 
@@ -118,12 +125,7 @@ def _open_store(args) -> fedwatch_store.FedwatchHistoryStore:
 
 def _collect(args) -> dict:
     store = _open_store(args)
-    snapshot_envelope = fedwatch_snapshot.build_snapshot()
-    data = dict(snapshot_envelope.get("data") or {})
-    history_result = fedwatch_history.collect(store, data)
-    data["history"] = history_result
-    data["errors"] = list(data.get("errors") or []) + list(history_result.get("errors") or [])
-    return _envelope(data)
+    return acquisition.refresh_current(store, args.meeting, force=args.force)
 
 
 def _history_meetings(args) -> dict:
@@ -201,6 +203,9 @@ def _history_zq_import(args) -> dict:
         HttpTransport(),
         Path(args.data_dir),
         watch_dates,
+        input_format=args.input_format,
+        meeting_date=args.meeting,
+        force=args.force,
     )
     return _envelope(payload)
 
@@ -221,7 +226,32 @@ def _dispatch(command: str, argv: list[str]) -> dict:
     if command == "collect":
         parser = _parser(command)
         parser.add_argument("--db", default=None)
+        parser.add_argument("--meeting", default=None)
+        parser.add_argument("--force", action="store_true")
         return _collect(parser.parse_args(argv))
+
+    if command in ("local_snapshot", "history_sources", "history_compare_cme"):
+        parser = _parser(command)
+        parser.add_argument("--db", default=None)
+        parser.add_argument("--meeting", default=None)
+        args = parser.parse_args(argv)
+        store = _open_store(args)
+        if command == "local_snapshot":
+            return acquisition.local_snapshot(store, args.meeting)
+        if command == "history_sources":
+            return _envelope(sources.describe(store, args.meeting))
+        if not args.meeting:
+            raise InvalidArgumentsError("--meeting is required")
+        return _envelope(published_history.compare_reconstruction(store, args.meeting))
+
+    if command == "history_cme_import":
+        parser = _parser(command)
+        parser.add_argument("--db", default=None)
+        parser.add_argument("--meeting", required=True)
+        parser.add_argument("--file", required=True)
+        parser.add_argument("--source-url", required=True)
+        args = parser.parse_args(argv)
+        return _envelope(published_history.import_file(_open_store(args), args.file, args.meeting, args.source_url))
 
     if command == "history_meetings":
         parser = _parser(command)
@@ -260,6 +290,9 @@ def _dispatch(command: str, argv: list[str]) -> dict:
         parser.add_argument("--db", default=None)
         parser.add_argument("--data-dir", default=None)
         parser.add_argument("--watch-date", action="append", default=None)
+        parser.add_argument("--input-format", choices=("qualified", "investing"), default="qualified")
+        parser.add_argument("--meeting", default=None)
+        parser.add_argument("--force", action="store_true")
         return _history_zq_import(parser.parse_args(argv))
 
     raise UnknownCommandError(command)

@@ -1,0 +1,168 @@
+# FedWatch bounded acquisition
+
+This backend change starts from `main` at
+`dcaf3bec15e5ff0fa25080f773cba8a7bffcbaca`. It is separate from the still-open
+Batch C UI PR #39. No Batch C panel/chart files are changed here.
+
+The workflow is **explicit acquisition → validation → durable storage → local
+reuse**. There is no scheduler, browser automation, paid API, or background
+collection. `EconomicsService` bypasses its generic result cache for
+`fedwatch_data.py` and excludes that script from DataHub refresh replay. The
+Python backend owns acquisition reuse and freshness.
+
+## Commands and consumer contract
+
+All commands retain the existing Economics JSON envelope. Use the existing
+Economics service, script `fedwatch_data.py`, source tag `fedwatch`.
+
+| User operation | Backend command | Internet |
+|---|---|---|
+| Open saved research | `local_snapshot` | None |
+| Change meeting/outcome/range/method; view details | `local_snapshot`, `history_meetings`, `history_series`, `history_analytics`, `history_sources`, `history_compare_cme` | None |
+| Manual current Refresh | `collect --meeting YYYY-MM-DD` | Existing bounded current requests; complete valid recent attempts reused |
+| Explicit refresh even when recently retained | `collect --meeting YYYY-MM-DD --force` | Existing current requests |
+| Load Polymarket history | `history_backfill --meeting YYYY-MM-DD` | Existing validated-token CLOB backfill; stored refresh state reused |
+| Import permitted published history | `history_cme_import --meeting YYYY-MM-DD --file PATH --source-url CME-URL` | None |
+| Reconstruct from permitted monthly exports | `history_zq_import --input-format investing --data-dir PATH --watch-date YYYY-MM-DD --meeting YYYY-MM-DD` | Official calendar and two FRED target histories, once per import batch; unchanged input/complete retained selected dates reused locally |
+
+`--db PATH` is supported for isolated research/tests; normal runtime uses the
+existing `FINCEPT_DATA_DIR/fedwatch/fedwatch_history.db`. The `snapshot`,
+`fed_side`, `fred_target`, `fomc_meetings`, and `polymarket_fomc` commands remain
+explicit current-provider commands for existing callers. They must not be used
+for saved-data navigation. Direct CLI invocation is user-triggered; it is not a
+background acquisition mechanism.
+
+Current reuse is limited to **6 hours** and requires a complete acquisition,
+the requested meeting, usable Fed-side values, validated Polymarket mappings,
+and still-current CLOB quotes under the existing three-day window. Partial
+attempts are not replayed as a successful current refresh. `--force` retries
+explicitly. Loading old saved data re-evaluates quote age and meeting lifecycle:
+stale Fed-side values cannot populate current distributions, stale Polymarket
+values retain `STALE`, and current comparisons are cleared. Resolved/past/pending
+selected meetings return retained history without a current provider call.
+
+Schema **v3** adds only the latest current-attempt envelope to the existing
+SQLite database. Opening v2 adds the table without changing observation rows;
+v1/newer incompatible schemas are still refused. An older v2 application will
+refuse a v3 database. Qualification uses temporary databases, not the user's
+application profile. The latest attempt includes provider errors; accepted
+history survives a failed attempt.
+
+## Public availability and access limitations
+
+The detailed 2026-10-03 source audit, live request accounting, and validation
+record are in the control repository's
+`docs/FEDWATCH_FREE_ACQUISITION.md`. `history_sources` exposes route availability,
+implementation, automation limitations and actual retained method coverage.
+
+These are distinct: `AVAILABLE_AND_INTEGRATED`,
+`AVAILABLE_NOT_IMPLEMENTED`, `AVAILABLE_MANUAL_OR_USER_TRIGGERED`,
+`DERIVED_OR_RECONSTRUCTED`, `PARTIAL`, `PROVIDER_TEMPORARILY_FAILED`,
+`NOT_QUALIFIED_FOR_AUTOMATED_COLLECTION`, and `UNAVAILABLE` for a specific
+requested observation/coverage. A provider error changes an attempt's quality;
+it does not establish that public data does not exist.
+
+CME's public guide describes historical Excel downloads for selected meetings
+with up to one year of history. Its website data-use restrictions prevent
+qualifying a new automated downloader here. Investing exposes monthly futures
+history but also restricts storage/reuse without permission. These imports
+accept only files lawfully obtained and permitted for this use; selecting a URL
+or supplying a file is not proof of provider permission. The existing qualified
+Investing current parser is preserved, not newly licensed by this work.
+
+Yahoo is a reference-only route: one individual contract working once does not
+prove a full monthly ladder or historical depth. FRED target/EFFR series and
+the Fed calendar are official contextual inputs, not probability histories.
+Polymarket's current mapping/quality rules and daily CLOB backfill remain intact.
+
+## Published probability import
+
+This is a small explicit **CSV interchange**, not a qualified parser for CME's
+native XLS/XLSX. Preserve the permitted original workbook locally. Export/map
+the selected meeting's sheet to UTF-8 CSV with these exact columns:
+
+```csv
+meeting_date,observation_date,rate_low_bp,rate_high_bp,probability_pct
+2026-10-28,2026-09-25,375,400,60
+2026-10-28,2026-09-25,400,425,40
+```
+
+These are **synthetic format examples**, not source observations. Rates are
+absolute target bounds in bp (375 means 3.75%); probability is percent, not a
+0–1 fraction. Meeting identity must match every row and a retained official
+calendar entry. Future calendar fallback identity requires its existing freshness
+window; historical entries may be checked against the retained dated calendar.
+Observation dates cannot exceed the meeting or import date. Bands are exact
+25 bp targets, with complete totals within 0.5 pp of 100. Rounding normalization
+retains raw values and factors. Missing/empty/invalid input is rejected before
+writing, never zero-filled.
+
+The method is `HISTORICAL_CME_PUBLISHED_TARGET_RANGE`, source `cme_published`,
+quality `PUBLISHED_USER_IMPORT`, provenance `USER_DECLARED_CME_PUBLISHED`.
+`outcome_bp` for this method is **absolute upper target bp**, with financial
+object `TARGET_RANGE_UPPER_BP`. It is not an outcome delta. The CLI reports this
+object explicitly. This method is excluded from local-change analytics and
+current differences. A cumulative target distribution for a later meeting
+cannot be equated with the change made at that meeting.
+
+Each row retains the file SHA-256, source URL, target bounds, report date, raw
+percent and normalized percent. Date-only observations use UTC midnight as a
+storage key; publication time is unknown. They are not intraday/PIT evidence.
+Identical date/band/value reimports are duplicates; same-band restatements
+revise those rows using the existing store semantics. Conflicting duplicates
+inside one input or revisions changing the retained bucket set are rejected
+for review, preserving stored history. Files are bounded to 5 MB/50,000 rows.
+Native download format, actual export compatibility and rights remain live
+qualification limitations until a permitted representative file is supplied.
+
+## Monthly futures reconstruction
+
+The optional `qualified` input format remains available and unchanged in
+structure. `--input-format investing` adds a local adapter for permitted daily
+exports. Name each file `ZQ<month code><yy>.csv`, prepend the verified monthly
+symbol and contract-specific URL, then retain Investing's export header:
+
+```csv
+Symbol: ZQV26
+Source: https://www.investing.com/rates-bonds/cbot-30-day-federal-funds-comp-c1-futures-historical-data?cid=VERIFIED_CONTRACT_ID
+Date,Price,Open,High,Low,Vol.,Change %
+"Sep 25, 2026",96.4,96.4,96.4,96.4,1K,0%
+```
+
+This is a synthetic format example. Verify the **actual monthly contract** from
+the provider before adding the declaration. Rolling `FFc1`/`FFcN` and the `cid`
+alone do not establish a fixed month. The adapter retains user-declared identity,
+URL, digest, span and price type. `Price` is an indicative daily close, not CME
+settlement. Missing close is `None`; absent OI/volume remain `None` and confidence
+is flagged. Conflicting duplicates, malformed input and generic-symbol declarations
+are rejected. No website collection is implemented. Input is bounded to 60
+files, 5 MB and 20,000 rows per file.
+
+For a watch date in September 2026, the 28 October meeting requires the
+September, October and November contracts (`ZQU26`, `ZQV26`, `ZQX26`), with
+observations on/before the watch date. The 9 December meeting also requires
+December and the following January (`ZQZ26`, `ZQF27`). Generally retain every
+month from watch month through the selected meeting's following month. Full
+calendar classification includes meetings earlier in the watch month. A
+selected-meeting frame explicitly includes the following-month propagation
+anchor; the existing formula and default all-meeting path are unchanged.
+
+Accepted local changes retain `HISTORICAL_ZQ_RECONSTRUCTED`. Per-meeting
+cumulative distributions and input digests are retained in detail for
+`history_compare_cme`: compare only matching report dates/absolute target
+bands; missing bands are `null`. Differences are **ZQ minus published** in pp,
+not evidence of equivalence. Timing is date matched, not necessarily simultaneous.
+The existing current Fed-side/Polymarket difference remains Polymarket minus
+Fed-side. No history is interpolated or created by polling current quotes.
+
+## Batch C follow-on wiring
+
+The concurrent UI corrections remain in their own PR/worktree. This branch
+does not claim full UI navigation qualification. Once that UI is finalized,
+its opening/meeting-change path must use `local_snapshot` and local history
+commands, its manual Refresh must use `collect --meeting`, and history buttons
+must invoke explicit import/backfill commands. Display actual observation
+counts and source/method labels; put exact errors/rights/timing limitations in
+Research details. A published absolute-target series needs target-band labels;
+never feed its `outcome_bp` into a local-change selector. Keep imported coverage
+actionable rather than calling a public but unintegrated route nonexistent.

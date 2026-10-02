@@ -1287,6 +1287,7 @@ class CliTests(unittest.TestCase):
         code, payload, stderr = self.run_cli(
             "history_analytics", "--db", str(store.path),
             "--meeting", "2026-10-28", "--outcome-bp", "25",
+            "--as-of", "2026-09-28T12:00:00Z",
         )
         self.assertEqual(code, 0, stderr)
         difference = payload["data"]["difference"]
@@ -1328,7 +1329,7 @@ class CliTests(unittest.TestCase):
         store = new_store(self)
         fixture = build_snapshot_at(NOW)
         original = fedwatch_snapshot.build_snapshot
-        fedwatch_snapshot.build_snapshot = lambda: fixture
+        fedwatch_snapshot.build_snapshot = lambda *args, **kwargs: fixture
         try:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
