@@ -266,6 +266,127 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(sent_.first().command == "history_meetings");
         QVERIFY(std::any_of(sent_.begin(), sent_.end(), [](const auto& r) { return r.command == "collect"; }));
     }
+    void freshUpcomingPrefersExactNoChangeAndPreservesUserChoice() {
+        // No restoration and no openUpcoming() helper: exercise a genuinely fresh panel.
+        panel_->activate();
+        flush();
+        QCOMPARE(control("fedwatchMeeting")->currentData().toString(), QString("2026-10-28"));
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("0:exact"));
+        QCOMPARE(rawDetails()["analytics"].toObject()["outcome_bp"].toInt(), 0);
+        captureFixture("fresh_default_no_change");
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-50:tail"));
+        flush();
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("-50:tail"));
+        const auto saved = panel_->save_panel_state();
+        makePanel();
+        panel_->restore_panel_state(saved);
+        panel_->activate();
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("-50:tail"));
+    }
+    void freshResolvedPrefersActualExactOutcomeOverFirstIdentity() {
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                {database_, "resolved-alternative-outcomes"});
+        panel_->restore_panel_state({{"meeting", "2026-09-16"}}); // Meeting only, no saved outcome.
+        panel_->activate();
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->buttons()[0]->property("selection_value").toString(),
+                 QString("-25:exact"));
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("25:exact"));
+        QCOMPARE(rawDetails()["analytics"].toObject()["outcome_bp"].toInt(), 25);
+        captureFixture("fresh_default_resolved_actual");
+        for (const auto& request : sent_)
+            QVERIFY(request.command != "collect" && request.command != "history_backfill");
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("-25:exact"));
+        flush();
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("-25:exact"));
+    }
+    void implicitChoiceDoesNotOverrideActualOutcomeOnMeetingSwitch() {
+        panel_->activate();
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("0:exact"));
+        control("fedwatchMeeting")->selectIndex(control("fedwatchMeeting")->findData("2026-09-16"));
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("25:exact"));
+        control("fedwatchMeeting")->selectIndex(control("fedwatchMeeting")->findData("2026-10-28"));
+        flush();
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("0:exact"));
+    }
+    void freshNoZeroFallsBackToUsableCurrentCategory_data() {
+        QTest::addColumn<bool>("usable");
+        QTest::newRow("usable-current-category") << true;
+        QTest::newRow("no-usable-current-category") << false;
+    }
+    void freshNoZeroFallsBackToUsableCurrentCategory() {
+        QFETCH(bool, usable);
+        // UI-only opaque response variant: omit zero identities and retain a single
+        // original backend numeric quote. All other current values remain missing.
+        panel_->activate();
+        int count = 0;
+        while (!pending_.isEmpty()) {
+            QVERIFY(++count < 40);
+            const auto request = pending_.takeFirst();
+            auto envelope = backend(request);
+            auto data = envelope["data"].toObject();
+            auto strip = [](const QJsonArray& values, bool current = false) {
+                QJsonArray result;
+                for (const auto& value : values) {
+                    auto row = value.toObject();
+                    if (row["outcome_bp"].toInt() == 0)
+                        continue;
+                    if (current) {
+                        row["polymarket_probability_pct"] = QJsonValue::Null;
+                        if (row["outcome_bp"].toInt() != 25 || row["open_ended"].toBool()) {
+                            row["probability_pct"] = QJsonValue::Null;
+                            row["fed_probability_pct"] = QJsonValue::Null;
+                        }
+                    }
+                    result.append(row);
+                }
+                return result;
+            };
+            if (request.command == "history_meetings" || request.command == "collect") {
+                auto meetings = data["meetings"].toArray();
+                for (int i = 0; i < meetings.size(); ++i) {
+                    auto meeting = meetings[i].toObject();
+                    auto mapping = meeting["polymarket_mapping"].toObject();
+                    mapping["outcomes"] = strip(mapping["outcomes"].toArray());
+                    meeting["polymarket_mapping"] = mapping;
+                    auto fed = meeting["fed_side"].toObject();
+                    fed["local_probabilities"] = strip(fed["local_probabilities"].toArray(), true);
+                    if (!usable)
+                        fed["local_status"] = "UNAVAILABLE";
+                    meeting["fed_side"] = fed;
+                    auto poly = meeting["polymarket"].toObject();
+                    poly["outcomes"] = strip(poly["outcomes"].toArray());
+                    poly["data_status"] = "STALE";
+                    meeting["polymarket"] = poly;
+                    meeting["comparison"] = strip(meeting["comparison"].toArray(), true);
+                    meetings[i] = meeting;
+                }
+                data["meetings"] = meetings;
+            } else if (request.command == "history_series")
+                data["observations"] = strip(data["observations"].toArray());
+            envelope["data"] = data;
+            deliver(request, envelope);
+        }
+        QVERIFY(control("fedwatchOutcome")->findData("0:exact") < 0);
+        QVERIFY(control("fedwatchOutcome")->findData("-50:tail") >= 0);
+        QCOMPARE(currentChart()->rows().size(), usable ? 1 : 0);
+        QCOMPARE(currentChart()->bars().size(), usable ? 1 : 0);
+        if (!usable) {
+            QVERIFY(control("fedwatchOutcome")->currentData().toString().isEmpty());
+            QVERIFY(!panel_->save_panel_state().contains("outcome_bp"));
+            return;
+        }
+        QCOMPARE(currentChart()->bars()[0].value, 70.0);
+        QCOMPARE(control("fedwatchOutcome")->currentData().toString(), QString("25:exact"));
+        QCOMPARE(rawDetails()["analytics"].toObject()["outcome_bp"].toInt(), 25);
+    }
     void rangeOnlyFiltersViewAndRestores() {
         openUpcoming();
         const auto full = chart("fedwatchProbabilityChart")->series();
@@ -1566,6 +1687,73 @@ class TestFedWatchPanel : public QObject {
         QCOMPARE(bars[1].source, 1);
         QCOMPARE(bars[1].value, 69.125);
     }
+    void currentKeyboardStartsAtFirstVisibleRowWhenHistoricalChoiceIsAbsent() {
+        auto* current = currentChart();
+        current->set_rows({{{"outcome_bp", -25}, {"fed_probability_pct", 0}},
+                           {{"outcome_bp", 50}, {"open_ended", true}, {"polymarket_probability_pct", 10}}});
+        current->set_selected_outcome(999, false);
+        QSignalSpy selected(current, &FedWatchCurrentChart::outcome_selected);
+        QTest::keyClick(current, Qt::Key_Down);
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(selected[0][0].toInt(), -25);
+        QCOMPARE(selected[0][1].toBool(), false);
+        QTest::keyClick(current, Qt::Key_Down);
+        QCOMPARE(selected.size(), 2);
+        QCOMPARE(selected[1][0].toInt(), 50);
+        QCOMPARE(selected[1][1].toBool(), true);
+        current->set_selected_outcome(999, false);
+        QTest::keyClick(current, Qt::Key_Up);
+        QCOMPARE(selected.last()[0].toInt(), 50);
+    }
+    void currentSourceColumnsAdaptToUsableBars_data() {
+        QTest::addColumn<int>("source");
+        QTest::newRow("paired") << -1;
+        QTest::newRow("fed-only") << 0;
+        QTest::newRow("polymarket-only") << 1;
+    }
+    void currentSourceColumnsAdaptToUsableBars() {
+        QFETCH(int, source);
+        const auto original = snapshot_;
+        if (source == 0)
+            changeCurrentSection("polymarket", {{"data_status", "PARTIAL"}});
+        else if (source == 1)
+            changeCurrentSection("fed_side", {{"local_status", "UNAVAILABLE"}});
+        openUpcoming();
+        snapshot_ = original;
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        const auto* current = currentChart();
+        const auto left = current->source_plot_bounds(0), right = current->source_plot_bounds(1);
+        const double labelWidth = qMin(150.0, current->width() * 0.25);
+        if (source == -1) {
+            QVERIFY(!left.isEmpty() && !right.isEmpty());
+            QCOMPARE(left.width(), right.width());
+            QVERIFY(left.right() < right.left());
+            QCOMPARE(left.left(), labelWidth);
+        } else {
+            const auto plot = current->source_plot_bounds(source);
+            QVERIFY(current->source_plot_bounds(1 - source).isEmpty());
+            QCOMPARE(plot.left(), labelWidth);
+            QCOMPARE(plot.width(), current->width() - labelWidth - 16 - 64);
+            QVERIFY(plot.width() > current->width() * 0.8);
+            QCOMPARE(current->bars().size(), 5);
+            for (const auto& bar : current->bars())
+                QCOMPARE(bar.source, source);
+        }
+        const auto image = currentChart()->grab().toImage();
+        for (int side = 0; side < 2; ++side) {
+            bool colorFound = false;
+            for (int y = 0; y < image.height() && !colorFound; ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if (image.pixelColor(x, y) == current->series_color(side)) {
+                        colorFound = true;
+                        break;
+                    }
+            QCOMPARE(colorFound, source == -1 || source == side);
+        }
+        captureFixture(QString("current_columns_") + QTest::currentDataTag());
+    }
     void currentCategoryMouseAndKeyboardSelectAuthoritativeHistory() {
         openUpcoming();
         panel_->resize(1440, 1000);
@@ -1629,10 +1817,18 @@ class TestFedWatchPanel : public QObject {
         } else {
             QVERIFY(!left->parentWidget()->parentWidget()->isVisible());
         }
-        const auto expected = QString("History: Fed-side %1 observations · Polymarket %2 observations")
+        const auto expected = QString("History (Full retained): Fed-side %1 · Polymarket %2 observations")
                                   .arg(left->series()[0].points.size())
                                   .arg(right->series()[0].points.size());
         QVERIFY(text("fedwatchCompactCoverage").contains(expected));
+        QCOMPARE(panel_->findChild<QWidget*>("fedwatchHistoryControls")->isVisible(), fed || poly);
+        if (!fed || !poly) {
+            auto* difference = panel_->findChild<QToolButton*>("fedwatchDifferenceToggle");
+            QVERIFY(!difference->isVisible());
+            QVERIFY(!difference->isEnabled());
+            difference->click();
+            QVERIFY(!chart("fedwatchDivergenceChart")->isVisible());
+        }
         if (!poly) {
             auto* action = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
             QVERIFY(action->isVisible());
@@ -1662,6 +1858,67 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(table->isVisible());
         QVERIFY(text("fedwatchSourceStatus").contains("PARTIAL"));
         QVERIFY(rawDetails()["current_snapshot"].isObject());
+    }
+    void emptyRangeKeepsControlsForRetainedHistoryAndSuppressesEmptyDifference() {
+        openUpcoming();
+        // Deterministic presentation-only subset: retained probability rows are
+        // outside the latest paired-date anchor. This is not live provider evidence.
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("25:exact"));
+        const auto request = pending_.takeFirst();
+        auto envelope = backend(request);
+        auto data = envelope["data"].toObject();
+        for (const auto& source : {QString("fed_side"), QString("polymarket")}) {
+            auto side = data[source].toObject();
+            const auto history = side["history"].toArray();
+            QVERIFY(history.size() > 1);
+            side["history"] = QJsonArray{history[0]};
+            data[source] = side;
+        }
+        auto difference = data["difference"].toObject();
+        const auto paired = difference["history"].toArray();
+        QVERIFY(!paired.isEmpty());
+        auto point = paired[0].toObject();
+        point["date"] = "2026-09-28";
+        difference["history"] = QJsonArray{point};
+        data["difference"] = difference;
+        envelope["data"] = data;
+        deliver(request, envelope);
+        panel_->resize(1440, 1000);
+        panel_->show();
+        QTest::qWait(30);
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(30));
+        auto* fed = chart("fedwatchProbabilityChart");
+        auto* poly = chart("fedwatchPolymarketChart");
+        QVERIFY(fed->series()[0].points.isEmpty());
+        QVERIFY(poly->series()[0].points.isEmpty());
+        QVERIFY(!fed->isVisible() && !poly->isVisible());
+        QVERIFY(panel_->findChild<QWidget*>("fedwatchHistoryControls")->isVisible());
+        QVERIFY(control("fedwatchRange")->isVisible());
+        QVERIFY(text("fedwatchCompactCoverage").contains("History (30D): Fed-side 0 · Polymarket 0 observations"));
+        QVERIFY(text("fedwatchCompactCoverage").contains("2 retained outside this range"));
+        control("fedwatchRange")->selectIndex(control("fedwatchRange")->findData(0));
+        QCOMPARE(fed->series()[0].points.size(), 1);
+        QCOMPARE(poly->series()[0].points.size(), 1);
+        QCOMPARE(fed->series()[0].points[0].value,
+                 data["fed_side"].toObject()["history"].toArray()[0].toObject()["probability_pct"].toDouble());
+        QCOMPARE(fed->time_bounds(), poly->time_bounds());
+        QVERIFY(text("fedwatchCompactCoverage")
+                    .contains("History (Full retained): Fed-side 1 · Polymarket 1 observations"));
+        // A separate real-backend case already covers one-source history with no
+        // paired observations. Here remove only the paired subset, retaining both sources.
+        auto* toggle = panel_->findChild<QToolButton*>("fedwatchDifferenceToggle");
+        toggle->click();
+        QVERIFY(chart("fedwatchDivergenceChart")->isVisible());
+        control("fedwatchOutcome")->selectIndex(control("fedwatchOutcome")->findData("25:exact"));
+        const auto next = pending_.takeFirst();
+        difference["history"] = QJsonArray{};
+        data["difference"] = difference;
+        envelope["data"] = data;
+        deliver(next, envelope);
+        QVERIFY(!toggle->isVisible());
+        QVERIFY(!toggle->isChecked());
+        QVERIFY(!chart("fedwatchDivergenceChart")->isVisible());
+        captureFixture("retained_history_without_difference");
     }
     void compactMeetingNavigationSelectsWithoutRibbon() {
         openUpcoming();

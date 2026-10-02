@@ -68,6 +68,7 @@ class FedWatchPanel : public EconPanelBase {
     void rebuild_meetings();
     void load_meeting();
     void rebuild_outcomes();
+    QList<QJsonObject> current_outcome_rows() const;
     void load_analytics();
     void render();
     void render_history();
@@ -100,6 +101,7 @@ class FedWatchPanel : public EconPanelBase {
     QLabel *summary_ = nullptr, *status_ = nullptr, *coverage_ = nullptr;
     QLabel* diagnostic_status_ = nullptr;
     QLabel* compact_coverage_ = nullptr;
+    QWidget* history_controls_ = nullptr;
     QToolButton *previous_meeting_ = nullptr, *next_meeting_ = nullptr;
     QLabel *fed_history_state_ = nullptr, *poly_history_state_ = nullptr;
     QLabel *selected_current_ = nullptr, *source_status_ = nullptr;
@@ -118,6 +120,7 @@ class FedWatchPanel : public EconPanelBase {
     bool collect_in_flight_ = false;
     bool backfill_in_flight_ = false;
     bool meeting_explicitly_selected_ = false;
+    bool outcome_explicitly_selected_ = false;
     QString current_error_, inventory_error_, series_error_, analytics_error_;
     QStringList analytics_error_context_;
     struct BackfillResult {

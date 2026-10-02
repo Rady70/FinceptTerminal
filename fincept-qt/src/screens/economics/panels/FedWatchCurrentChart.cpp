@@ -29,7 +29,7 @@ FedWatchCurrentChart::FedWatchCurrentChart(QWidget* parent) : QWidget(parent) {
 void FedWatchCurrentChart::set_rows(const QList<QJsonObject>& rows) {
     rows_.clear();
     for (const auto& row : rows)
-        if (available(row[fields[0]]) || available(row[fields[1]]))
+        if (has_current_value(row))
             rows_.push_back(row);
     setFixedHeight(72 + rows_.size() * 42);
     QStringList descriptions;
@@ -42,6 +42,26 @@ void FedWatchCurrentChart::set_rows(const QList<QJsonObject>& rows) {
     categories_.clear();
     hits_.clear();
     update();
+}
+bool FedWatchCurrentChart::has_current_value(const QJsonObject& row) {
+    return available(row[fields[0]]) || available(row[fields[1]]);
+}
+QVector<int> FedWatchCurrentChart::active_sources() const {
+    QVector<int> result;
+    for (int source = 0; source < 2; ++source)
+        if (std::any_of(rows_.begin(), rows_.end(),
+                        [source](const auto& row) { return available(row[fields[source]]); }))
+            result.push_back(source);
+    return result;
+}
+QRectF FedWatchCurrentChart::source_plot_bounds(int source) const {
+    const auto sources = active_sources();
+    const int column = sources.indexOf(source);
+    if (column < 0)
+        return {};
+    const double label_width = qMin(150.0, width() * 0.25);
+    const double column_width = (width() - label_width - 16) / sources.size();
+    return {label_width + column * column_width, 42, qMax(1.0, column_width - 64), qMax(1.0, height() - 70.0)};
 }
 void FedWatchCurrentChart::set_selected_outcome(int bp, bool open) {
     selected_bp_ = bp;
@@ -74,15 +94,16 @@ void FedWatchCurrentChart::paintEvent(QPaintEvent*) {
         return;
     }
     const double label_width = qMin(150.0, width() * 0.25);
-    const double column_width = (width() - label_width - 16) / 2;
-    const double plot_width = qMax(1.0, column_width - 64);
-    for (int source = 0; source < 2; ++source) {
-        const double left = label_width + source * column_width;
+    const auto active = active_sources();
+    const double column_width = (width() - label_width - 16) / active.size();
+    for (int source : active) {
+        const auto plot = source_plot_bounds(source);
+        const double left = plot.left();
         painter.fillRect(QRectF(left, 14, 12, 12), series_color(source));
         painter.setPen(QColor(TEXT_PRIMARY()));
         painter.drawText(QRectF(left + 18, 10, column_width - 18, 22), sources[source]);
         for (int tick = 0; tick <= 100; tick += 25) {
-            const double x = left + plot_width * tick / 100;
+            const double x = left + plot.width() * tick / 100;
             painter.setPen(QColor(BORDER_DIM()));
             painter.drawLine(QPointF(x, 42), QPointF(x, height() - 28));
             painter.setPen(QColor(TEXT_SECONDARY()));
@@ -101,14 +122,15 @@ void FedWatchCurrentChart::paintEvent(QPaintEvent*) {
         const QString label = fedwatch::outcome_label(row["outcome_bp"].toInt(), row["open_ended"].toBool());
         painter.setPen(QColor(TEXT_PRIMARY()));
         painter.drawText(QRectF(8, y, label_width - 16, 40), Qt::AlignVCenter | Qt::TextWordWrap, label);
-        for (int source = 0; source < 2; ++source) {
+        for (int source : active) {
             const auto value = row[fields[source]];
             if (!available(value))
                 continue;
-            const double x = label_width + source * column_width;
+            const auto plot = source_plot_bounds(source);
+            const double x = plot.left();
             const QString detail = label + "\n" + sources[source] + ": " + exact_value(value);
             hits_.push_back({QRectF(x, y, column_width, 40), detail});
-            const double length = plot_width * value.toDouble() / 100;
+            const double length = plot.width() * value.toDouble() / 100;
             painter.fillRect(QRectF(x, y + 12, length, 16), series_color(source));
             if (value.toDouble() == 0) {
                 painter.setPen(series_color(source));
@@ -136,14 +158,16 @@ void FedWatchCurrentChart::mousePressEvent(QMouseEvent* event) {
     QWidget::mousePressEvent(event);
 }
 void FedWatchCurrentChart::keyPressEvent(QKeyEvent* event) {
-    int index = 0;
+    int index = -1;
     for (int i = 0; i < rows_.size(); ++i)
         if (rows_[i]["outcome_bp"].toInt() == selected_bp_ && rows_[i]["open_ended"].toBool() == selected_open_)
             index = i;
-    if (event->key() == Qt::Key_Down || event->key() == Qt::Key_Up)
-        select_row(qBound(0, index + (event->key() == Qt::Key_Down ? 1 : -1), qMax(0, rows_.size() - 1)));
-    else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Space)
-        select_row(index);
+    if (event->key() == Qt::Key_Down || event->key() == Qt::Key_Up) {
+        const bool down = event->key() == Qt::Key_Down;
+        select_row(index < 0 ? (down ? 0 : rows_.size() - 1)
+                             : qBound(0, index + (down ? 1 : -1), qMax(0, rows_.size() - 1)));
+    } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Space)
+        select_row(index < 0 ? 0 : index);
     else
         QWidget::keyPressEvent(event);
 }

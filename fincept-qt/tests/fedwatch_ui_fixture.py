@@ -84,6 +84,9 @@ def main() -> None:
                  ("2026-09-14T12:00:00Z", 65), ("2026-09-15T12:00:00Z", 70)],
          meeting=resolved, method=history.POLY_METHOD, source=history.POLY_SOURCE)
     store.mark_resolved(resolved, 25, "deterministic UI fixture", now=now)
+    if case == "resolved-alternative-outcomes":
+        for outcome in [-25, 0]:
+            seed(store, [("2026-09-14T12:00:00Z", 10)], meeting=resolved, outcome_bp=outcome)
     if case == "review":
         backfill_fixture(store, "partial")
         backfill_fixture(store, "failure", "2026-12-09")

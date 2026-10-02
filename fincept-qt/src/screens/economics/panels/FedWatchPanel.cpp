@@ -184,7 +184,8 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
     divergence_->hide();
     layout->addWidget(divergence_);
     connect(difference_toggle, &QToolButton::toggled, this, [this, difference_toggle](bool expanded) {
-        divergence_->setVisible(expanded);
+        divergence_->setVisible(expanded && !divergence_->series().isEmpty() &&
+                                !divergence_->series()[0].points.isEmpty());
         difference_toggle->setText(expanded ? tr("Hide historical difference") : tr("Show historical difference"));
     });
     auto table = [&](QVBoxLayout* target, const char* name, const QStringList& headings) {
@@ -297,11 +298,14 @@ FedWatchPanel::FedWatchPanel(Dispatch dispatch, QWidget* parent)
     range_control_->setParent(content);
     range_control_->setFixedHeight(48);
     status_->setMaximumHeight(48);
-    auto* history_row = new QHBoxLayout;
+    history_controls_ = new QWidget(content);
+    history_controls_->setObjectName("fedwatchHistoryControls");
+    auto* history_row = new QHBoxLayout(history_controls_);
+    history_row->setContentsMargins(0, 0, 0, 0);
     layout->removeWidget(status_);
     history_row->addWidget(status_, 1);
     history_row->addWidget(range_control_, 1);
-    layout->insertLayout(0, history_row);
+    layout->insertWidget(0, history_controls_);
     layout->removeWidget(distribution_title);
     layout->removeWidget(current_chart_);
     layout->insertWidget(0, current_chart_);
@@ -406,6 +410,7 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     outcomes_->changed = [this, selection] {
         const auto identity = outcomes_->currentData().toString();
         if (!identity.isEmpty()) {
+            outcome_explicitly_selected_ = true;
             selected_outcome_ = identity;
             restored_outcome_.clear();
         }
@@ -673,9 +678,9 @@ void FedWatchPanel::load_meeting() {
     request("history_series", {"--meeting", selected_meeting_});
 }
 void FedWatchPanel::rebuild_outcomes() {
-    const QString previous = !restored_outcome_.isEmpty()                     ? restored_outcome_
-                             : !outcomes_->currentData().toString().isEmpty() ? outcomes_->currentData().toString()
-                                                                              : selected_outcome_;
+    const QString previous = !restored_outcome_.isEmpty()   ? restored_outcome_
+                             : outcome_explicitly_selected_ ? selected_outcome_
+                                                            : QString{};
     QSignalBlocker blocker(outcomes_);
     outcomes_->clear();
     QMap<QString, QJsonObject> available;
@@ -697,11 +702,71 @@ void FedWatchPanel::rebuild_outcomes() {
         outcomes_->addItem(fedwatch::outcome_label(row["outcome_bp"].toInt(), row["open_ended"].toBool()),
                            key(row["outcome_bp"].toInt(), row["open_ended"].toBool()));
     int index = outcomes_->findData(previous);
-    outcomes_->setCurrentIndex(index < 0 ? 0 : index);
-    if (!outcomes_->currentData().toString().isEmpty() && (index >= 0 || previous.isEmpty()))
+    const bool prior_choice_available = index >= 0;
+    if (index < 0) {
+        if (resolved()) {
+            const auto actual = meeting()["actual_outcome_bp"];
+            if (actual.isDouble())
+                index = outcomes_->findData(key(actual.toInt(), false));
+            if (index < 0 && outcomes_->count() > 0)
+                index = 0;
+        } else {
+            index = outcomes_->findData(key(0, false));
+            if (index < 0)
+                for (const auto& row : current_outcome_rows())
+                    if (FedWatchCurrentChart::has_current_value(row)) {
+                        index = outcomes_->findData(key(row["outcome_bp"].toInt(), row["open_ended"].toBool()));
+                        if (index >= 0)
+                            break;
+                    }
+        }
+    }
+    outcomes_->setCurrentIndex(index);
+    if (!outcomes_->currentData().toString().isEmpty() && (prior_choice_available || !outcome_explicitly_selected_))
         selected_outcome_ = outcomes_->currentData().toString();
-    if (index >= 0)
+    if (prior_choice_available)
         restored_outcome_.clear();
+}
+QList<QJsonObject> FedWatchPanel::current_outcome_rows() const {
+    const auto current = current_meeting();
+    const auto fed = current["fed_side"].toObject();
+    const auto poly = current["polymarket"].toObject();
+    const bool show_current = current_ok_ && !resolved();
+    QMap<QString, QJsonObject> rows;
+    const auto fed_freshness = fed["freshness"].toObject()["status"].toString();
+    const bool fed_current =
+        show_current && fed["local_status"].toString() == "OK" &&
+        (fed_freshness == "CURRENT" || fed_freshness == "OK" || fed_freshness == "SOURCE_TIMESTAMP_UNAVAILABLE");
+    const bool poly_current =
+        show_current && poly["mapping_status"].toString() == "VALIDATED" && poly["data_status"].toString() == "CURRENT";
+    if (show_current) {
+        for (const auto& value : fed["local_probabilities"].toArray()) {
+            auto row = value.toObject();
+            if (fed_current)
+                row["fed_probability_pct"] = row["probability_pct"];
+            rows[key(row["outcome_bp"].toInt(), false)] = row;
+        }
+        if (poly["mapping_status"].toString() == "VALIDATED")
+            for (const auto& value : poly["outcomes"].toArray()) {
+                const auto row = value.toObject();
+                auto& entry = rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())];
+                entry["outcome_bp"] = row["outcome_bp"];
+                entry["open_ended"] = row["open_ended"];
+                if (poly_current)
+                    entry["polymarket_probability_pct"] = row["probability_pct"];
+            }
+        for (const auto& value : current["comparison"].toArray()) {
+            auto row = value.toObject();
+            if (!fed_current)
+                row.remove("fed_probability_pct");
+            if (!poly_current)
+                row.remove("polymarket_probability_pct");
+            if (!fed_current || !poly_current)
+                row.remove("probability_diff_pp");
+            rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())] = row;
+        }
+    }
+    return ordered_outcomes(rows);
 }
 void FedWatchPanel::load_analytics() {
     render();
@@ -892,41 +957,10 @@ void FedWatchPanel::render() {
     status_->setAccessibleDescription(!selected_backfill_pending && !analytics_.isEmpty() ? tr("Historical data loaded")
                                       : history_issue_present ? tr("Historical data unavailable")
                                                               : tr("Loading historical data"));
+    const auto current_rows = current_outcome_rows();
     QMap<QString, QJsonObject> rows;
-    const auto fed_freshness = fed["freshness"].toObject()["status"].toString();
-    const bool fed_current =
-        show_current && fed["local_status"].toString() == "OK" &&
-        (fed_freshness == "CURRENT" || fed_freshness == "OK" || fed_freshness == "SOURCE_TIMESTAMP_UNAVAILABLE");
-    const bool poly_current =
-        show_current && poly["mapping_status"].toString() == "VALIDATED" && poly["data_status"].toString() == "CURRENT";
-    if (show_current) {
-        for (const auto& value : fed["local_probabilities"].toArray()) {
-            auto row = value.toObject();
-            if (fed_current)
-                row["fed_probability_pct"] = row["probability_pct"];
-            rows[key(row["outcome_bp"].toInt(), false)] = row;
-        }
-        if (poly["mapping_status"].toString() == "VALIDATED")
-            for (const auto& value : poly["outcomes"].toArray()) {
-                const auto row = value.toObject();
-                auto& entry = rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())];
-                entry["outcome_bp"] = row["outcome_bp"];
-                entry["open_ended"] = row["open_ended"];
-                if (poly_current)
-                    entry["polymarket_probability_pct"] = row["probability_pct"];
-            }
-        for (const auto& value : current["comparison"].toArray()) {
-            auto row = value.toObject();
-            if (!fed_current)
-                row.remove("fed_probability_pct");
-            if (!poly_current)
-                row.remove("polymarket_probability_pct");
-            if (!fed_current || !poly_current)
-                row.remove("probability_diff_pp");
-            rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())] = row;
-        }
-    }
-    const auto current_rows = ordered_outcomes(rows);
+    for (const auto& row : current_rows)
+        rows[key(row["outcome_bp"].toInt(), row["open_ended"].toBool())] = row;
     current_chart_->set_rows(current_rows);
     current_chart_->setVisible(!resolved() && !current_chart_->rows().isEmpty());
     current_chart_->set_selected_outcome(outcomes_->currentData().toString().section(':', 0, 0).toInt(),
@@ -1084,6 +1118,8 @@ void FedWatchPanel::render_history() {
                 if (!anchor.isValid() || point.instant > anchor)
                     anchor = point.instant;
     const auto filtered = fedwatch::filter_range(probabilities, ranges_->currentData().toInt(), anchor);
+    const bool retained_history = !probabilities[0].points.isEmpty() || !probabilities[1].points.isEmpty();
+    history_controls_->setVisible(retained_history);
     probability_->set_series({filtered[0]});
     polymarket_->set_series({filtered[1]});
     const auto bounds = fedwatch::shared_probability_bounds(filtered);
@@ -1147,9 +1183,14 @@ void FedWatchPanel::render_history() {
     compact_coverage_->setText(
         (resolved() ? QString{}
                     : tr("Current: Fed-side %1 outcomes · Polymarket %2 outcomes\n").arg(fed_count).arg(poly_count)) +
-        tr("History: Fed-side %1 observations · Polymarket %2 observations")
+        tr("History (%1): Fed-side %2 · Polymarket %3 observations")
+            .arg(ranges_->currentText())
             .arg(filtered[0].points.size())
             .arg(filtered[1].points.size()));
+    if (retained_history && filtered[0].points.isEmpty() && filtered[1].points.isEmpty())
+        compact_coverage_->setText(compact_coverage_->text() +
+                                   tr(" · %1 retained outside this range")
+                                       .arg(probabilities[0].points.size() + probabilities[1].points.size()));
     arrange_charts();
     QDateTime first, last;
     for (const auto& series : filtered)
@@ -1167,7 +1208,18 @@ void FedWatchPanel::render_history() {
     polymarket_->set_time_bounds(first, last);
     findChild<QLabel*>("fedwatchProbabilityTitle")
         ->setText(tr("Fed-side history · %1 (%)").arg(fedwatch::source_label(methods_->currentData().toString())));
-    divergence_->set_series(fedwatch::filter_range(differences, ranges_->currentData().toInt(), anchor));
+    const auto filtered_difference = fedwatch::filter_range(differences, ranges_->currentData().toInt(), anchor);
+    divergence_->set_series(filtered_difference);
+    const bool paired_points = !filtered_difference[0].points.isEmpty();
+    auto* difference_toggle = findChild<QToolButton*>("fedwatchDifferenceToggle");
+    difference_toggle->setVisible(paired_points);
+    difference_toggle->setEnabled(paired_points);
+    if (!paired_points) {
+        QSignalBlocker blocker(difference_toggle);
+        difference_toggle->setChecked(false);
+        difference_toggle->setText(tr("Show historical difference"));
+    }
+    divergence_->setVisible(paired_points && difference_toggle->isChecked());
     const QString full_coverage =
         tr("History method: %1 · Polymarket: %2\nFed coverage: %3 → %4 · Polymarket coverage: %5 → "
            "%6\nBoth charts share latest retained observation anchor %8. Missing periods are absent; no lines "
@@ -1217,6 +1269,7 @@ void FedWatchPanel::restore_panel_state(const QVariantMap& state) {
     selected_meeting_ = state.value("meeting").toString();
     meeting_explicitly_selected_ = !selected_meeting_.isEmpty();
     if (state.contains("outcome_bp")) {
+        outcome_explicitly_selected_ = true;
         restored_outcome_ = key(state.value("outcome_bp").toInt(), state.value("open_ended").toBool());
         selected_outcome_ = restored_outcome_;
     }

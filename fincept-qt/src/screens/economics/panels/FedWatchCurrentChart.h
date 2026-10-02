@@ -22,6 +22,8 @@ class FedWatchCurrentChart : public QWidget {
     QColor series_color(int source) const;
     QPair<double, double> value_bounds() const { return {0, 100}; }
     void set_selected_outcome(int bp, bool open);
+    static bool has_current_value(const QJsonObject& row);
+    QRectF source_plot_bounds(int source) const;
   signals:
     void outcome_selected(int bp, bool open);
 
@@ -39,5 +41,6 @@ class FedWatchCurrentChart : public QWidget {
     int selected_bp_ = 0;
     bool selected_open_ = false;
     void select_row(int index);
+    QVector<int> active_sources() const;
 };
 } // namespace fincept::screens
