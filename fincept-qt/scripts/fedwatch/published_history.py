@@ -1,5 +1,6 @@
 """Explicit local import of CME-published TARGET RANGE probabilities.
 
+Provisional: only synthetic fixtures have been consumed; zero native files.
 This is a small CSV interchange, not a CME downloader or a parser claiming
 native workbook qualification. Save permitted downloaded Excel data as the
 documented five-column CSV; preserve the original file outside Git.

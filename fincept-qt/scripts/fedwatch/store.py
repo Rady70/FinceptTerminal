@@ -72,7 +72,7 @@ from pathlib import Path
 from fedwatch.errors import HistoryStoreError
 from fedwatch import timeutil
 
-HISTORY_SCHEMA_VERSION = 3
+HISTORY_SCHEMA_VERSION = 4
 # Version 1 was an unreleased pre-review schema (first as a compressed value
 # episode, then as an observation-instant schema without instrument identity).
 # It is refused explicitly instead of being silently reused.
@@ -92,7 +92,7 @@ MEETING_STATUSES = (
 _SCHEMA_TABLE_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS fedwatch_current_acquisition (
-        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        meeting_date TEXT PRIMARY KEY,
         acquired_at TEXT NOT NULL,
         envelope_json TEXT NOT NULL
     )
@@ -194,7 +194,7 @@ _SCHEMA_INDEX_STATEMENTS = (
 )
 
 _REQUIRED_COLUMNS = {
-    "fedwatch_current_acquisition": {"singleton", "acquired_at", "envelope_json"},
+    "fedwatch_current_acquisition": {"meeting_date", "acquired_at", "envelope_json"},
     "fedwatch_meetings": {
         "meeting_date", "status", "status_reason", "calendar_json",
         "first_seen_at", "last_updated_at", "resolved_at", "actual_outcome_bp",
@@ -302,6 +302,14 @@ class FedwatchHistoryStore:
                     "semantics; delete the file or start a new history store",
                     detail={"database_version": version, "supported_version": HISTORY_SCHEMA_VERSION},
                 )
+            legacy_current = None
+            if version == 3:
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(fedwatch_current_acquisition)")}
+                if columns == {"singleton", "acquired_at", "envelope_json"}:
+                    legacy_current = conn.execute("SELECT * FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()
+                    # Transactional DDL: invalid retained JSON must not destroy v3.
+                    conn.execute("BEGIN")
+                    conn.execute("ALTER TABLE fedwatch_current_acquisition RENAME TO fedwatch_current_acquisition_v3")
             for statement in _SCHEMA_TABLE_STATEMENTS:
                 conn.execute(statement)
             incompatible = []
@@ -334,10 +342,14 @@ class FedwatchHistoryStore:
                 )
             for statement in _SCHEMA_INDEX_STATEMENTS:
                 conn.execute(statement)
+            if version == 3 and conn.execute("SELECT 1 FROM sqlite_master WHERE name='fedwatch_current_acquisition_v3'").fetchone():
+                if legacy_current:
+                    self._write_current_attempt(conn, json.loads(legacy_current["envelope_json"]), legacy_current["acquired_at"])
+                conn.execute("DROP TABLE fedwatch_current_acquisition_v3")
             if version < HISTORY_SCHEMA_VERSION:
                 conn.execute(f"PRAGMA user_version = {HISTORY_SCHEMA_VERSION}")
                 conn.commit()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             raise HistoryStoreError(
                 "FEDWATCH_HISTORY_UNAVAILABLE",
                 f"FedWatch history schema cannot be initialized: {exc}",
@@ -354,39 +366,56 @@ class FedwatchHistoryStore:
     def close(self) -> None:
         """Compatibility no-op; connections are opened per operation."""
 
-    def save_current_acquisition(self, envelope: dict, acquired_at: str) -> None:
-        """Retain the latest explicit attempt, including truthful provider errors."""
+    @staticmethod
+    def _write_current_attempt(conn, envelope, acquired_at, meeting_date=None):
+        meetings = envelope["data"].get("meetings", [])
+        days = {meeting_date} if meeting_date else {m["meeting_date"] for m in meetings}
+        if meeting_date is None:
+            # A full refresh replaces every prior attempt, including omitted
+            # meetings after a provider failure. Empty key retains an unscoped
+            # failure diagnostic if no meeting has been acquired yet.
+            days.update(row[0] for row in conn.execute("SELECT meeting_date FROM fedwatch_current_acquisition"))
+        for day in days or {""}:
+            if day:
+                timeutil.parse_date(day)
+            retained = dict(envelope)
+            retained["data"] = dict(envelope["data"], meetings=[m for m in meetings if m["meeting_date"] == day])
+            conn.execute(
+                "INSERT INTO fedwatch_current_acquisition VALUES (?, ?, ?) "
+                "ON CONFLICT(meeting_date) DO UPDATE SET "
+                "acquired_at=excluded.acquired_at, envelope_json=excluded.envelope_json",
+                (day, acquired_at, json.dumps(retained, allow_nan=False, sort_keys=True)),
+            )
+
+    def save_current_acquisition(self, envelope: dict, acquired_at: str, meeting_date: str | None = None) -> None:
+        """Replace the selected meeting's latest attempt, including empty failures."""
         acquired_at = _require_iso_instant(acquired_at, "acquired_at")
-        payload = json.dumps(envelope, allow_nan=False, sort_keys=True)
         conn = self._connect()
         try:
             self._prepare(conn)
             with conn:
-                conn.execute(
-                    "INSERT INTO fedwatch_current_acquisition VALUES (1, ?, ?) "
-                    "ON CONFLICT(singleton) DO UPDATE SET "
-                    "acquired_at=excluded.acquired_at, envelope_json=excluded.envelope_json",
-                    (acquired_at, payload),
-                )
+                self._write_current_attempt(conn, envelope, acquired_at, meeting_date)
         except sqlite3.Error as exc:
             raise HistoryStoreError("FEDWATCH_HISTORY_WRITE_FAILED", str(exc)) from exc
         finally:
             conn.close()
 
-    def current_acquisition(self) -> dict | None:
+    def current_acquisitions(self) -> list[dict]:
         conn = self._connect()
         try:
             self._prepare(conn)
-            row = conn.execute("SELECT * FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()
-            if row is None:
-                return None
-            return {"acquired_at": row["acquired_at"], "envelope": json.loads(row["envelope_json"])}
+            return [{"meeting_date": row["meeting_date"], "acquired_at": row["acquired_at"],
+                     "envelope": json.loads(row["envelope_json"])}
+                    for row in conn.execute("SELECT * FROM fedwatch_current_acquisition ORDER BY acquired_at DESC, meeting_date")]
         except (sqlite3.Error, ValueError) as exc:
             raise HistoryStoreError("FEDWATCH_HISTORY_READ_FAILED", str(exc)) from exc
         finally:
             conn.close()
 
-    # ── meetings ──────────────────────────────────────────────────────────
+    def current_acquisition(self, meeting_date: str | None = None) -> dict | None:
+        """One meeting's attempt; no argument returns the latest attempt for diagnostics."""
+        rows = self.current_acquisitions()
+        return next((r for r in rows if meeting_date is None or r["meeting_date"] == meeting_date), None)
 
     def upsert_meeting(
         self,

@@ -1,4 +1,7 @@
-"""Bounded local Investing monthly-contract export adapter; no web transport."""
+"""Bounded local Investing monthly-contract export adapter; no web transport.
+
+Provisional qualification: synthetic fixtures only; real provider export
+compatibility has not been established."""
 from __future__ import annotations
 
 import csv

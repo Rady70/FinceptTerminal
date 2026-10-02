@@ -10,10 +10,8 @@ from fedwatch import analytics, history, snapshot, timeutil
 CURRENT_REUSE_HOURS = 6
 
 
-def local_snapshot(store, meeting_date=None, clock=timeutil.utc_now):
-    """Opening saved research never constructs a provider transport."""
-    now = clock()
-    saved = store.current_acquisition()
+def _local_attempt(store, saved, now):
+    """Qualify one retained attempt using its own clock and provider metadata."""
     result = copy.deepcopy(saved["envelope"]) if saved else {"success": True, "data": {"meetings": [], "errors": []}}
     data = result["data"]
     age = (now - timeutil.parse_iso_z(saved["acquired_at"])).total_seconds() / 3600 if saved else None
@@ -25,8 +23,6 @@ def local_snapshot(store, meeting_date=None, clock=timeutil.utc_now):
     meetings = []
     for meeting in data.get("meetings", []):
         day = meeting["meeting_date"]
-        if meeting_date and day != meeting_date:
-            continue
         retained_meeting = store.get_meeting(day)
         historical = (timeutil.parse_date(day) < now.date() or
                       (retained_meeting and retained_meeting["status"] in ("RESOLVED", "PENDING")))
@@ -53,9 +49,50 @@ def local_snapshot(store, meeting_date=None, clock=timeutil.utc_now):
             meeting["comparison"] = []
         meetings.append(meeting)
     data["meetings"] = meetings
-    data["history"] = history.meetings_overview(store)
     if age is None or age < 0 or age > analytics.CURRENT_MAX_AGE_DAYS * 24:
         data["current_target_range"] = None
+    return result
+
+
+def local_snapshot(store, meeting_date=None, clock=timeutil.utc_now):
+    """Network-free reads; never infer current quotes from historical rows."""
+    now = clock()
+    if meeting_date:
+        result = _local_attempt(store, store.current_acquisition(meeting_date), now)
+    else:
+        attempts = store.current_acquisitions()
+        result = _local_attempt(store, None, now)
+        data = result["data"]
+        data.update(retrieved_at=None, sources=[], warnings=[], method_notes=[])
+        data["acquisition"]["attempts"] = {}
+        qualified = []
+        for saved in attempts:
+            local = _local_attempt(store, saved, now)
+            current = local["data"]
+            qualified.append(current)
+            data["acquisition"]["attempts"][saved["meeting_date"]] = current["acquisition"]
+            for meeting in current.get("meetings", []):
+                meeting["acquisition"] = current["acquisition"]
+                meeting["current_target_range"] = current.get("current_target_range")
+                meeting["retrieved_at"] = current.get("retrieved_at")
+                data["meetings"].append(meeting)
+            data["errors"].extend(current.get("errors") or [])
+            data["sources"].extend(dict(source, meeting_date=saved["meeting_date"]) for source in current.get("sources", []))
+            data["warnings"].extend(current.get("warnings", []))
+            data["method_notes"] = list(dict.fromkeys(data["method_notes"] + current.get("method_notes", [])))
+        if attempts:
+            # The overview exposes per-meeting acquisition timestamps. Its age
+            # is conservative, so a new meeting cannot freshen an older quote.
+            ages = [d["acquisition"]["age_hours"] for d in qualified]
+            meta = data["acquisition"]
+            meta["age_hours"] = min(ages) if min(ages) < 0 else max(ages)
+            meta["current_state"] = ("STALE_RETAINED" if any(d["acquisition"]["current_state"] == "STALE_RETAINED" for d in qualified)
+                                     else "RETAINED_ATTEMPT")
+            targets = [d.get("current_target_range") for d in qualified]
+            data["current_target_range"] = targets[0] if all(t == targets[0] for t in targets) else None
+            result["partial"] = any(a["envelope"].get("partial") for a in attempts) or bool(data["errors"])
+            result["failed_components"] = sorted({c for a in attempts for c in a["envelope"].get("failed_components", [])})
+    result["data"]["history"] = history.meetings_overview(store)
     return result
 
 
@@ -69,7 +106,7 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
             result = local_snapshot(store, meeting_date, clock)
             result["data"]["acquisition"]["reason"] = "HISTORICAL_MEETING"
             return result
-    saved = store.current_acquisition()
+    saved = store.current_acquisition(meeting_date)
     local = local_snapshot(store, meeting_date, clock)
     data = local["data"]
     age = data["acquisition"]["age_hours"]
@@ -93,6 +130,6 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
     data["errors"] = list(data.get("errors") or []) + list(recorded.get("errors") or [])
     result["partial"] = bool(data["errors"])
     result["failed_components"] = sorted({e["provider"] for e in data["errors"]})
-    store.save_current_acquisition(result, timeutil.iso_z(now))
+    store.save_current_acquisition(result, timeutil.iso_z(now), meeting_date=meeting_date)
     data["acquisition"] = {"mode": "MANUAL_REFRESH", "acquired_at": timeutil.iso_z(now), "age_hours": 0}
     return result

@@ -41,12 +41,27 @@ stale Fed-side values cannot populate current distributions, stale Polymarket
 values retain `STALE`, and current comparisons are cleared. Resolved/past/pending
 selected meetings return retained history without a current provider call.
 
-Schema **v3** adds only the latest current-attempt envelope to the existing
-SQLite database. Opening v2 adds the table without changing observation rows;
-v1/newer incompatible schemas are still refused. An older v2 application will
-refuse a v3 database. Qualification uses temporary databases, not the user's
-application profile. The latest attempt includes provider errors; accepted
-history survives a failed attempt.
+Schema **v4** stores the latest current attempt independently for each meeting.
+A selected refresh replaces that meeting's attempt even when it returns no
+meetings; other meetings keep their original values, errors and timestamps.
+A full refresh replaces all prior attempts, including omitted meetings after a
+failure. Accepted observation history is never used to manufacture current
+state. Local overview reads qualify each meeting separately and expose its
+acquisition age; overview `retrieved_at` is null because there is no single
+retrieval instant. Source entries carry their meeting scope. The top-level
+target context is null when retained contexts disagree or any is stale.
+
+Opening v2 adds the table without changing observations. Opening v3 migrates
+its singleton envelope transactionally into the meetings actually present;
+it cannot recover meetings already overwritten by the old singleton. An empty
+legacy attempt remains an unscoped diagnostic. Invalid legacy JSON refuses the
+migration and preserves the v3 table. Older v2/v3 applications refuse v4.
+Qualification uses temporary databases, not the user's application profile.
+
+Default `history_series` returns only `LIVE_INVESTING_DERIVED`,
+`HISTORICAL_ZQ_RECONSTRUCTED`, and `POLYMARKET_CLOB` local-change rows, labelled
+`LOCAL_MEETING_CHANGE_BP`. Published CME absolute target bands require an
+explicit `--method HISTORICAL_CME_PUBLISHED_TARGET_RANGE` request.
 
 ## Public availability and access limitations
 
@@ -54,6 +69,10 @@ The detailed 2026-10-03 source audit, live request accounting, and validation
 record are in the control repository's
 `docs/FEDWATCH_FREE_ACQUISITION.md`. `history_sources` exposes route availability,
 implementation, automation limitations and actual retained method coverage.
+CME interchange and Investing monthly imports are explicitly
+`PROVISIONAL_FIXTURE_ONLY`: zero representative real provider files have been
+consumed. Native CME workbook and real Investing export compatibility remain
+unqualified until a permitted representative input is supplied.
 
 These are distinct: `AVAILABLE_AND_INTEGRATED`,
 `AVAILABLE_NOT_IMPLEMENTED`, `AVAILABLE_MANUAL_OR_USER_TRIGGERED`,
@@ -115,7 +134,7 @@ for review, preserving stored history. Files are bounded to 5 MB/50,000 rows.
 Native download format, actual export compatibility and rights remain live
 qualification limitations until a permitted representative file is supplied.
 
-## Monthly futures reconstruction
+## Monthly futures reconstruction (provisional)
 
 The optional `qualified` input format remains available and unchanged in
 structure. `--input-format investing` adds a local adapter for permitted daily
@@ -166,3 +185,17 @@ counts and source/method labels; put exact errors/rights/timing limitations in
 Research details. A published absolute-target series needs target-band labels;
 never feed its `outcome_bp` into a local-change selector. Keep imported coverage
 actionable rather than calling a public but unintegrated route nonexistent.
+
+## Review correction validation
+
+The review regressions first reproduced both defects on the reviewed head.
+The corrected offline suite includes October/December retention across store
+and process restarts, failed selected/full attempts, independent quote ages,
+v2 preservation, transactional v3 migration/rollback, and default financial
+object separation. The C++ dispatch test links the real EconomicsService and
+DataHub with small test-only process/cache recorders. Explicit `collect
+--meeting` dispatches once; producer/hub replay cannot dispatch FedWatch, while
+the same hub successfully replays a non-FedWatch control request. This is
+service integration evidence, not finalized Batch C panel or desktop evidence.
+Exact-head full application build receipts are retained in the paired control
+record; panel wiring still requires finalized PR #39 and combined validation.

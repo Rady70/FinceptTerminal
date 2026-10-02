@@ -5,6 +5,7 @@ from fedwatch import history, published_history
 def describe(store, meeting_date=None):
     routes = [
         {"source": "cme_published", "method": published_history.METHOD,
+         "qualification": "PROVISIONAL_FIXTURE_ONLY",
          "availability": "AVAILABLE_MANUAL_OR_USER_TRIGGERED", "integration": "LOCAL_CSV_IMPORT",
          "automated_collection": "NOT_QUALIFIED_FOR_AUTOMATED_COLLECTION",
          "financial_object": published_history.OBJECT,
@@ -16,6 +17,7 @@ def describe(store, meeting_date=None):
          "financial_object": "LOCAL_MEETING_CHANGE_BP", "action": "Refresh", "command": "collect",
          "limitation": "Qualified current parser retained. Website storage/reuse terms are restrictive; technical qualification is not data-use permission."},
         {"source": "investing_monthly", "method": history.FED_METHOD_ZQ,
+         "qualification": "PROVISIONAL_FIXTURE_ONLY",
          "availability": "DERIVED_OR_RECONSTRUCTED", "integration": "LOCAL_MONTHLY_CSV_IMPORT",
          "automated_collection": "NOT_QUALIFIED_FOR_AUTOMATED_COLLECTION",
          "financial_object": "LOCAL_MEETING_CHANGE_BP", "action": "Load history", "command": "history_zq_import",

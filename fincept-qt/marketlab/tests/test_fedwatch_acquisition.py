@@ -90,6 +90,45 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(untouched.text_calls + untouched.json_calls, [])
         self.assertEqual(self.store.count_observations(), count)
 
+    def test_current_attempts_survive_other_meeting_refresh_and_failure(self):
+        self.refresh()
+        december = "2026-12-09"
+        acquisition.refresh_current(self.store, december, transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        restarted = FedwatchHistoryStore(self.store.path)
+        with patch("fedwatch.transport.HttpTransport._request", side_effect=AssertionError("network")):
+            for day in (MEETING, december):
+                result = acquisition.local_snapshot(restarted, day, self.clock)
+                self.assertEqual([m["meeting_date"] for m in result["data"]["meetings"]], [day])
+                self.assertIsNotNone(result["data"]["meetings"][0]["fed_side"])
+                process = subprocess.run([sys.executable, str(CLI), "local_snapshot", "--db", str(self.store.path),
+                                          "--meeting", day],
+                                         capture_output=True, text=True, timeout=10)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertEqual(json.loads(process.stdout)["data"]["meetings"][0]["meeting_date"], day)
+        december_before = acquisition.local_snapshot(restarted, december, self.clock)
+        acquisition.refresh_current(restarted, MEETING, force=True, transport=FakeTransport(),
+                                    clock=self.clock, sleep=lambda _: None)
+        october = acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), MEETING, self.clock)
+        self.assertTrue(october["partial"])
+        self.assertFalse(any(m.get("fed_side") or m.get("comparison") for m in october["data"]["meetings"]))
+        december_after = acquisition.local_snapshot(restarted, december, self.clock)
+        self.assertEqual(december_after["data"]["meetings"], december_before["data"]["meetings"])
+        self.assertFalse(december_after["partial"])
+
+    def test_default_series_excludes_absolute_target_bands(self):
+        self.refresh()  # live Investing and Polymarket local outcomes
+        self.import_monthly(self.monthly_files())
+        self.import_cme(self.cme_file())
+        default = history.series(self.store, MEETING)
+        self.assertEqual({r["method"] for r in default["observations"]},
+                         {history.FED_METHOD_LIVE, history.FED_METHOD_ZQ, history.POLY_METHOD})
+        self.assertTrue(all(r["outcome_bp"] not in (400, 425) for r in default["observations"]))
+        self.assertEqual(default["financial_object"], "LOCAL_MEETING_CHANGE_BP")
+        published = history.series(self.store, MEETING, method=published_history.METHOD)
+        self.assertEqual({r["outcome_bp"] for r in published["observations"]}, {400, 425})
+        self.assertEqual(published["financial_object"], "TARGET_RANGE_UPPER_BP")
+
     def test_expired_saved_current_is_gated_without_fetch(self):
         self.refresh()
         later = FixedClock(NOW + timedelta(days=4))
@@ -235,6 +274,68 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIsNone(reopened.current_acquisition())
         with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
             self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], HISTORY_SCHEMA_VERSION)
+
+    def test_schema_v3_upgrade_splits_retained_meetings_preserving_history(self):
+        result = acquisition.refresh_current(self.store, transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        count = self.store.count_observations()
+        days = [m["meeting_date"] for m in result["data"]["meetings"]]
+        self.assertGreater(len(days), 1)
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            conn.execute("DROP TABLE fedwatch_current_acquisition")
+            conn.execute("CREATE TABLE fedwatch_current_acquisition (singleton INTEGER PRIMARY KEY CHECK(singleton=1), acquired_at TEXT NOT NULL, envelope_json TEXT NOT NULL)")
+            conn.execute("INSERT INTO fedwatch_current_acquisition VALUES (1, ?, ?)",
+                         ("2026-09-28T12:00:00Z", json.dumps(result)))
+            conn.execute("PRAGMA user_version=3")
+            conn.commit()
+        reopened = FedwatchHistoryStore(self.store.path)
+        self.assertEqual(reopened.count_observations(), count)
+        self.assertEqual({a["meeting_date"] for a in reopened.current_acquisitions()}, set(days))
+        for day in days:
+            saved = acquisition.local_snapshot(reopened, day, self.clock)
+            self.assertEqual([m["meeting_date"] for m in saved["data"]["meetings"]], [day])
+            self.assertEqual(saved["data"]["acquisition"]["acquired_at"], "2026-09-28T12:00:00Z")
+
+    def test_schema_v3_malformed_attempt_rolls_back_migration(self):
+        self.store.ensure_schema()
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            conn.execute("DROP TABLE fedwatch_current_acquisition")
+            conn.execute("CREATE TABLE fedwatch_current_acquisition (singleton INTEGER PRIMARY KEY, acquired_at TEXT, envelope_json TEXT)")
+            conn.execute("INSERT INTO fedwatch_current_acquisition VALUES (1, '2026-09-28T12:00:00Z', 'invalid JSON')")
+            conn.execute("PRAGMA user_version=3")
+            conn.commit()
+        with self.assertRaises(FedwatchError):
+            FedwatchHistoryStore(self.store.path).ensure_schema()
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(conn.execute("SELECT envelope_json FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()[0], "invalid JSON")
+
+    def test_each_retained_meeting_uses_its_own_age_and_errors(self):
+        self.refresh()
+        december = "2026-12-09"
+        acquisition.refresh_current(self.store, december, transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        old = self.store.current_acquisition(MEETING)["envelope"]
+        self.store.save_current_acquisition(old, "2026-09-24T12:00:00Z", meeting_date=MEETING)
+        overview = acquisition.local_snapshot(self.store, clock=self.clock)["data"]
+        by_day = {m["meeting_date"]: m for m in overview["meetings"]}
+        self.assertIsNone(by_day[MEETING]["fed_side"])
+        self.assertIsNotNone(by_day[december]["fed_side"])
+        self.assertEqual(by_day[MEETING]["acquisition"]["age_hours"], 96)
+        self.assertEqual(by_day[december]["acquisition"]["age_hours"], 0)
+
+    def test_failed_full_refresh_replaces_all_previous_current_attempts(self):
+        self.refresh()
+        acquisition.refresh_current(self.store, "2026-12-09", transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        count = self.store.count_observations()
+        acquisition.refresh_current(self.store, force=True, transport=FakeTransport(),
+                                    clock=self.clock, sleep=lambda _: None)
+        for day in (MEETING, "2026-12-09"):
+            saved = acquisition.local_snapshot(self.store, day, self.clock)
+            self.assertTrue(saved["partial"])
+            self.assertFalse(any(m.get("fed_side") for m in saved["data"]["meetings"]))
+        self.assertEqual(self.store.count_observations(), count)
 
     def test_local_cli_survives_fresh_process(self):
         self.import_cme(self.cme_file())

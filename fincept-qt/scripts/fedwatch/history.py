@@ -1332,6 +1332,10 @@ def series(
     rows = store.observations(
         meeting_date=meeting_date, method=method, outcome_bp=outcome_bp, open_ended=open_ended
     )
+    if method is None:
+        # Legacy consumers interpret outcome_bp as a local meeting change.
+        # Published absolute target bands require an explicit method request.
+        rows = [r for r in rows if r["method"] in (FED_METHOD_LIVE, FED_METHOD_ZQ, POLY_METHOD)]
     errors: list[dict] = []
     valid: list[dict] = []
     for row in rows:
@@ -1349,8 +1353,7 @@ def series(
     return {
         "meeting_date": meeting_date,
         "method": method,
-        "financial_object": ("METHOD_SPECIFIC" if method is None else
-                             "TARGET_RANGE_UPPER_BP" if method == "HISTORICAL_CME_PUBLISHED_TARGET_RANGE" else "LOCAL_MEETING_CHANGE_BP"),
+        "financial_object": ("TARGET_RANGE_UPPER_BP" if method == "HISTORICAL_CME_PUBLISHED_TARGET_RANGE" else "LOCAL_MEETING_CHANGE_BP"),
         "outcome_bp": outcome_bp,
         "open_ended": open_ended,
         "observation_count": len(valid),
