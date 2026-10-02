@@ -34,6 +34,11 @@ import pandas as pd
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
+if __package__:
+    from .vbt_returns import ReturnsAccessor
+else:
+    from vbt_returns import ReturnsAccessor
+
 
 def safe_float(val, default: float = 0.0) -> float:
     """Safely convert value to float, handling NaN/inf/None."""
@@ -63,6 +68,9 @@ def extract_full_metrics(
     close_series: pd.Series,
     vbt=None,
     risk_free_rate: float = 0.0,
+    n_trials: Optional[int] = None,
+    trial_sharpe_variance: Optional[float] = None,
+    periods_per_year: Optional[float] = 252,
 ) -> Dict[str, Any]:
     """
     Extract comprehensive metrics from a VBT Portfolio.
@@ -73,6 +81,9 @@ def extract_full_metrics(
         close_series: Original price series
         vbt: vectorbt module reference
         risk_free_rate: Annualized risk-free rate (0.04 = 4%)
+        n_trials: Declared effective independent trials; unknown by default
+        trial_sharpe_variance: Cross-trial variance of per-observation Sharpes
+        periods_per_year: Required to convert a nonzero annual risk-free rate
 
     Returns:
         Dict with all extracted metrics
@@ -99,7 +110,9 @@ def extract_full_metrics(
 
     # --- Extended Stats (SQN, Kelly, CAGR, etc.) ---
     extended_stats = _extract_extended_stats(
-        portfolio, stats, initial_capital, close_series
+        portfolio, stats, initial_capital, close_series,
+        n_trials=n_trials, trial_sharpe_variance=trial_sharpe_variance,
+        risk_free_rate=risk_free_rate, periods_per_year=periods_per_year,
     )
 
     return {
@@ -678,7 +691,11 @@ def _extract_risk_metrics(portfolio) -> Dict[str, Any]:
 # ============================================================================
 
 def _extract_extended_stats(
-    portfolio, stats, initial_capital: float, close_series: pd.Series
+    portfolio, stats, initial_capital: float, close_series: pd.Series,
+    n_trials: Optional[int] = None,
+    trial_sharpe_variance: Optional[float] = None,
+    risk_free_rate: float = 0.0,
+    periods_per_year: Optional[float] = 252,
 ) -> Dict[str, Any]:
     """
     Extract extended statistics for the System Quality section.
@@ -702,7 +719,11 @@ def _extract_extended_stats(
         'avgDrawdown': 0.0,
         'maxDrawdownDuration': '-',
         'avgTradeDuration': '-',
-        'deflatedSharpe': 0.0,
+        'probabilisticSharpe': None,
+        'deflatedSharpe': None,
+        'deflatedSharpeStatus': 'Unavailable: portfolio return observations unavailable',
+        'deflatedSharpeTrials': None,
+        'deflatedSharpeTrialVariance': None,
     }
 
     try:
@@ -712,6 +733,16 @@ def _extract_extended_stats(
 
         if n_days < 2:
             return extended
+
+        # Share the Returns Analysis calculation; never reuse the annualized
+        # headline Sharpe or silently drop non-finite/missing equity returns.
+        with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+            period_returns = np.diff(equity_vals) / equity_vals[:-1]
+        if np.any(equity_vals[:-1] <= 0):
+            period_returns[:] = np.nan
+        extended.update(ReturnsAccessor(
+            pd.Series(period_returns), year_freq=periods_per_year,
+        ).sharpe_inference(n_trials, trial_sharpe_variance, risk_free_rate))
 
         final_val = equity_vals[-1]
 
@@ -797,19 +828,6 @@ def _extract_extended_stats(
                         extended['avgTradeDuration'] = f'{avg_dur:.1f} days'
         except Exception:
             pass
-
-        # Deflated Sharpe Ratio (adjusts for multiple testing)
-        sharpe = safe_stat(stats, 'Sharpe Ratio', 0)
-        if sharpe != 0 and n_days > 60:
-            # Simplified deflated Sharpe: adjusts for skewness and kurtosis
-            daily_returns = np.diff(equity_vals) / equity_vals[:-1]
-            daily_returns = daily_returns[np.isfinite(daily_returns)]
-            if len(daily_returns) > 3:
-                skew = _calc_skewness(daily_returns)
-                kurt = _calc_kurtosis(daily_returns)
-                # Bailey & Lopez de Prado (2014) approximation
-                dsr = sharpe * np.sqrt(1 - skew * sharpe + (kurt - 1) / 4 * sharpe ** 2)
-                extended['deflatedSharpe'] = safe_float(dsr)
 
     except Exception:
         pass

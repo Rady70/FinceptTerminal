@@ -267,9 +267,13 @@ class VectorBTProvider(BacktestingProviderBase):
 
             # --- Extract comprehensive metrics ---
             risk_free_rate = request.get('riskFreeRate', 0.0)
+            inference_params = request.get('params') or {}
             all_metrics = metrics.extract_full_metrics(
                 portfolio, initial_capital, close_series, vbt,
-                risk_free_rate=risk_free_rate
+                risk_free_rate=risk_free_rate,
+                n_trials=inference_params.get('n_trials'),
+                trial_sharpe_variance=inference_params.get('trial_sharpe_variance'),
+                periods_per_year=request.get('periodsPerYear', 252 if interval == '1d' else None),
             )
 
             # --- Build result data structures ---
@@ -838,7 +842,12 @@ class VectorBTProvider(BacktestingProviderBase):
             close_series, using_synthetic = self._load_market_data(
                 self._normalize_symbols(symbols), start_date, end_date
             )
-            returns = close_series.pct_change().dropna()
+            if analysis_type == 'returns_stats':
+                # Only the first change is structurally undefined. Keep later
+                # gaps visible to Sharpe inference; preserve other modes.
+                returns = close_series.pct_change(fill_method=None).iloc[1:]
+            else:
+                returns = close_series.pct_change().dropna()
 
             # Load benchmark if provided
             benchmark_rets = None
@@ -863,19 +872,20 @@ class VectorBTProvider(BacktestingProviderBase):
             }
 
             if analysis_type == 'returns_stats':
-                risk_free = params.get('risk_free', 0.0)
-                n_trials = params.get('n_trials', 1)
+                risk_free = params.get('risk_free', request.get('riskFreeRate', 0.0))
+                n_trials = params.get('n_trials')
+                trial_sharpe_variance = params.get('trial_sharpe_variance')
                 omega_threshold = params.get('omega_threshold', 0.0)
 
                 acc = ret.ReturnsAccessor(returns, benchmark_rets=benchmark_rets)
-                stats = acc.stats()
-                result_data['stats'] = {k: float(v) if isinstance(v, (int, float, np.floating, np.integer)) else str(v) for k, v in stats.items()}
+                stats = acc.stats(n_trials, trial_sharpe_variance, risk_free)
+                result_data['stats'] = {
+                    k: None if v is None else float(v)
+                    if isinstance(v, (int, float, np.floating, np.integer)) else str(v)
+                    for k, v in stats.items()
+                }
 
                 # Add extra metrics
-                try:
-                    result_data['stats']['Deflated Sharpe'] = float(acc.deflated_sharpe_ratio(n_trials=n_trials))
-                except Exception:
-                    pass
                 try:
                     result_data['stats']['Up Capture'] = float(acc.up_capture())
                     result_data['stats']['Down Capture'] = float(acc.down_capture())
