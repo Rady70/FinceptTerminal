@@ -20,6 +20,10 @@ Capture Ratios:
   - up_capture, down_capture, up_down_ratio
 """
 
+import math
+from numbers import Integral, Real
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -38,8 +42,10 @@ class ReturnsAccessor:
         returns: pd.Series,
         benchmark_rets: Optional[pd.Series] = None,
         freq: str = '1D',
-        year_freq: int = 252,
+        year_freq: Optional[float] = 252,
     ):
+        # Sharpe inference must see missing observations, not the legacy zero fill.
+        self._observed_returns = returns.copy()
         self._returns = returns.fillna(0.0)
         self._benchmark = benchmark_rets.fillna(0.0) if benchmark_rets is not None else None
         self._freq = freq
@@ -156,39 +162,118 @@ class ReturnsAccessor:
         active_return = float(np.mean(active) * self._ann_factor)
         return float(active_return / tracking_error)
 
-    def deflated_sharpe_ratio(self, n_trials: int = 1) -> float:
+    def sharpe_inference(
+        self,
+        n_trials: Optional[int] = None,
+        trial_sharpe_variance: Optional[float] = None,
+        risk_free: float = 0.0,
+    ) -> dict:
+        """PSR against zero and DSR (Bailey & Lopez de Prado, 2014, eqs. 1-2).
+
+        Use arithmetic per-observation excess returns, sample standard deviation,
+        Pearson kurtosis and T-1. ``risk_free`` is an annual simple rate, divided
+        by ``year_freq``. ``trial_sharpe_variance`` is the cross-trial variance of
+        *per-observation* Sharpes, not return variance or annualized variance.
+
+        The effective independent trial count must be supplied explicitly. One
+        declared trial reduces DSR to PSR; multiple trials also require their
+        Sharpe variance. Unknown/invalid inputs produce None plus a reason.
+        PSR remains separately available when only trial metadata is missing.
         """
-        Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014).
-
-        Adjusts Sharpe for skewness, kurtosis, and multiple testing.
-        """
-        n = len(self.values)
-        if n < 10:
-            return 0.0
-
-        sr = self.sharpe_ratio()
-        skew = self._skewness()
-        kurt = self._kurtosis()
-
-        # Variance of Sharpe estimator
-        sr_var = (1 - skew * sr + (kurt - 1) / 4 * sr ** 2) / n
-
-        if sr_var <= 0:
-            return sr
-
-        # Expected max Sharpe under null (multiple testing)
-        if n_trials > 1:
-            e_max_sr = np.sqrt(2 * np.log(n_trials)) * (
-                1 - np.euler_gamma / (2 * np.log(n_trials))
+        result = {
+            'probabilisticSharpe': None,
+            'deflatedSharpe': None,
+            'deflatedSharpeStatus': 'Unavailable: invalid return observations',
+            'deflatedSharpeTrials': None,
+            'deflatedSharpeTrialVariance': None,
+        }
+        try:
+            values = self._observed_returns.to_numpy(dtype=float)
+            if values.ndim != 1 or not np.all(np.isfinite(values)):
+                return result
+            n = len(values)
+            if n < 10:
+                result['deflatedSharpeStatus'] = 'Unavailable: fewer than 10 return observations'
+                return result
+            if np.all(values == values[0]):
+                result['deflatedSharpeStatus'] = 'Unavailable: zero return volatility'
+                return result
+            valid_frequency = (
+                self._ann_factor is None and risk_free == 0
+            ) or (
+                not isinstance(self._ann_factor, bool)
+                and isinstance(self._ann_factor, Real)
+                and math.isfinite(self._ann_factor) and self._ann_factor > 0
             )
-        else:
-            e_max_sr = 0.0
+            if (isinstance(risk_free, bool) or not isinstance(risk_free, Real)
+                    or not math.isfinite(risk_free) or not valid_frequency):
+                result['deflatedSharpeStatus'] = 'Unavailable: invalid risk-free rate or periods per year'
+                return result
 
-        # DSR = P(SR > E[max(SR)])
-        z = (sr - e_max_sr) / np.sqrt(sr_var)
-        # CDF approximation
-        dsr = 0.5 * (1 + _erf(z / np.sqrt(2)))
-        return float(dsr)
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                excess = values - (risk_free / self._ann_factor if risk_free != 0 else 0.0)
+                mean = float(np.mean(excess))
+                std = float(np.std(excess, ddof=1))
+                moment_std = float(np.std(excess, ddof=0))
+                if not math.isfinite(std) or std <= 0 or moment_std <= 0:
+                    result['deflatedSharpeStatus'] = 'Unavailable: zero or invalid return volatility'
+                    return result
+                sr = mean / std
+                standardized = (excess - mean) / moment_std
+                skew = float(np.mean(standardized ** 3))
+                kurt = float(np.mean(standardized ** 4))  # Pearson, not excess
+            result['probabilisticSharpe'] = _sharpe_probability(sr, n, skew, kurt)
+
+            if n_trials is None:
+                result['deflatedSharpeStatus'] = 'Unavailable: independent trial count not supplied'
+                return result
+            if isinstance(n_trials, bool) or not isinstance(n_trials, Integral) or n_trials < 1:
+                result['deflatedSharpeStatus'] = 'Unavailable: trial count must be a positive integer'
+                return result
+            result['deflatedSharpeTrials'] = int(n_trials)
+
+            if trial_sharpe_variance is not None:
+                if (isinstance(trial_sharpe_variance, bool)
+                        or not isinstance(trial_sharpe_variance, Real)
+                        or not math.isfinite(trial_sharpe_variance)
+                        or trial_sharpe_variance < 0):
+                    result['deflatedSharpeStatus'] = 'Unavailable: invalid per-observation trial Sharpe variance'
+                    return result
+                result['deflatedSharpeTrialVariance'] = float(trial_sharpe_variance)
+
+            benchmark = 0.0
+            if n_trials > 1:
+                if trial_sharpe_variance is None:
+                    result['deflatedSharpeStatus'] = 'Unavailable: per-observation trial Sharpe variance not supplied'
+                    return result
+                # Use lower-tail symmetry to avoid rounding 1 - 1/N to 1.
+                inverse_trials = 1.0 / int(n_trials)
+                normal = NormalDist()
+                gamma = 0.5772156649015329
+                expected_max = ((1 - gamma) * -normal.inv_cdf(inverse_trials)
+                                + gamma * -normal.inv_cdf(inverse_trials / math.e))
+                benchmark = math.sqrt(trial_sharpe_variance) * expected_max
+
+            result['deflatedSharpe'] = _sharpe_probability(sr, n, skew, kurt, benchmark)
+            result['deflatedSharpeStatus'] = (
+                'Single declared trial; no multiple-testing adjustment'
+                if n_trials == 1 else f'Adjusted for {n_trials} independent trials'
+            )
+        except (TypeError, ValueError, OverflowError, FloatingPointError) as exc:
+            result['deflatedSharpeStatus'] = f'Unavailable: {exc}'
+        return result
+
+    def deflated_sharpe_ratio(
+        self,
+        n_trials: Optional[int] = None,
+        trial_sharpe_variance: Optional[float] = None,
+        risk_free: float = 0.0,
+    ) -> Optional[float]:
+        """Return DSR or None; see ``sharpe_inference`` for units and availability."""
+        return self.sharpe_inference(
+            n_trials=n_trials, trial_sharpe_variance=trial_sharpe_variance,
+            risk_free=risk_free,
+        )['deflatedSharpe']
 
     # ------------------------------------------------------------------
     # Max Drawdown
@@ -363,8 +448,14 @@ class ReturnsAccessor:
     # Summary
     # ------------------------------------------------------------------
 
-    def stats(self) -> dict:
+    def stats(
+        self,
+        n_trials: Optional[int] = None,
+        trial_sharpe_variance: Optional[float] = None,
+        risk_free: float = 0.0,
+    ) -> dict:
         """Return a summary dict of all key metrics."""
+        inference = self.sharpe_inference(n_trials, trial_sharpe_variance, risk_free)
         return {
             'Total Return': self.total(),
             'Annualized Return': self.annualized(),
@@ -376,7 +467,19 @@ class ReturnsAccessor:
             'Max Drawdown': self.max_drawdown(),
             'Downside Risk': self.downside_risk(),
             'Information Ratio': self.information_ratio(),
-            'Deflated Sharpe': self.deflated_sharpe_ratio(),
+            'Probabilistic Sharpe (no multiple-testing adjustment)': inference['probabilisticSharpe'],
+            'Deflated Sharpe': inference['deflatedSharpe'],
+            'Deflated Sharpe Status': inference['deflatedSharpeStatus'],
+            # The generic metrics table formats large numbers as currency and
+            # small numbers to four decimals. Preserve these inputs verbatim.
+            'Deflated Sharpe Trials': (
+                str(inference['deflatedSharpeTrials'])
+                if inference['deflatedSharpeTrials'] is not None else None
+            ),
+            'Deflated Sharpe Trial Variance (per observation)': (
+                repr(inference['deflatedSharpeTrialVariance'])
+                if inference['deflatedSharpeTrialVariance'] is not None else None
+            ),
             'Skewness': self._skewness(),
             'Kurtosis': self._kurtosis(),
             'Up Capture': self.up_capture(),
@@ -388,12 +491,14 @@ class ReturnsAccessor:
 # Helper
 # ============================================================================
 
-def _erf(x: float) -> float:
-    """Approximate error function."""
-    sign = 1 if x >= 0 else -1
-    x = abs(x)
-    t = 1.0 / (1.0 + 0.3275911 * x)
-    y = 1.0 - (
-        (((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592
-    ) * t * np.exp(-x * x)
-    return sign * y
+def _sharpe_probability(
+    sr: float, n: int, skew: float, kurt: float, benchmark: float = 0.0,
+) -> float:
+    """Bailey-Lopez de Prado PSR using per-observation SR and Pearson kurtosis."""
+    if n < 2 or not all(math.isfinite(x) for x in (sr, skew, kurt, benchmark)):
+        raise ValueError('invalid Sharpe sampling inputs')
+    variance_factor = 1 - skew * sr + (kurt - 1) * sr ** 2 / 4
+    if not math.isfinite(variance_factor) or variance_factor <= 0:
+        raise ValueError('invalid Sharpe sampling variance')
+    z = (sr - benchmark) * math.sqrt(n - 1) / math.sqrt(variance_factor)
+    return 0.5 * math.erfc(-z / math.sqrt(2))
