@@ -579,6 +579,16 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     if (begin.is_err())
         return fail(begin.error(), false);
 
+    // The acceptance time stored with this accession, if any. The SEC can
+    // re-list a filing with another one; until MarketLab has judged it (per
+    // observation, below), the stored time stays canonical for everything that
+    // orders filings, so a re-listed time can never make an older filing's names
+    // or LEIs replace a newer filing's. The bytes were already checked unchanged.
+    auto stored_accepted = repo.stored_filing_accepted_at(ref.accession);
+    if (stored_accepted.is_err())
+        return fail(stored_accepted.error(), true);
+    int acceptance_changed = 0;
+
     etf_store::ReportingEntityFacts facts;
     facts.cik = doc.reg_cik;
     facts.series_id = doc.series_id;
@@ -587,7 +597,7 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     facts.reg_file_number = doc.reg_file_number;
     facts.registrant_lei = doc.reg_lei;
     facts.series_lei = doc.series_lei;
-    facts.source_accepted_at = ref.accepted_at;
+    facts.source_accepted_at = stored_accepted.value().value_or(ref.accepted_at);
     auto entity = repo.upsert_reporting_entity(facts, seen_at);
     if (entity.is_err())
         return fail(entity.error(), true);
@@ -597,13 +607,6 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
                                         first_retrieval_id_);
     if (start.is_err())
         return fail(start.error(), true);
-
-    // The acceptance time stored with this accession, if any: the SEC can
-    // re-list a filing with another one (kept; the discrepancy is recorded).
-    auto stored_accepted = repo.stored_filing_accepted_at(ref.accession);
-    if (stored_accepted.is_err())
-        return fail(stored_accepted.error(), true);
-    int acceptance_changed = 0;
 
     etf_store::SecFilingFacts filing;
     filing.accession = ref.accession;

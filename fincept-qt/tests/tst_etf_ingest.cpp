@@ -278,6 +278,7 @@ class TstEtfIngest : public QObject {
     void sec_older_filing_ingested_later_keeps_the_newer_attributes();
     void sec_changed_document_is_refused_as_delivered();
     void sec_acceptance_time_change_keeps_an_unchanged_filing();
+    void sec_relisted_acceptance_never_reorders_entity_attributes();
     void sec_issue_storage_failure_is_not_ok();
     void sec_unrecorded_retrieval_is_not_ok();
     void sec_unreadable_older_page_is_not_ok();
@@ -767,6 +768,55 @@ void TstEtfIngest::sec_acceptance_time_change_keeps_an_unchanged_filing() {
     QCOMPARE(scalar(june_avail), QStringLiteral("2026-08-31T13:30:00.000Z"));
     QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'filed_observation_changed'")), 10);
     QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'sec_acceptance_time_changed'")), 1);
+}
+
+void TstEtfIngest::sec_relisted_acceptance_never_reorders_entity_attributes() {
+    // The entity keeps the names and LEIs of its newest filing by acceptance time
+    // (sec_older_filing_ingested_later_keeps_the_newer_attributes). A re-listed
+    // acceptance time must not change that order, whether the re-listing is
+    // accepted as timing-equivalent or refused.
+    NportSpec march = spy_2026_03();
+    march.reg_name = QStringLiteral("Former SPDR S&amp;P 500 ETF Trust name");
+    march.reg_lei = QStringLiteral("5493000FORMERLEI0001");
+    auto serve = [&](FakeSec& sec, const char* march_acceptance) {
+        sec.ok(kSpySubs,
+               submissions_json(
+                   QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                   {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", "2026-08-28T12:25:47.000Z"},
+                    {"0001410368-26-055357", "NPORT-P", "2026-08-28", "2026-03-31", march_acceptance}}));
+        sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec.ok(kSpyDocMarch, nport_xml(march));
+    };
+    const QString attributes = QStringLiteral("SELECT registrant_name || '|' || registrant_lei FROM "
+                                              "etf_reporting_entities");
+    {
+        // Both filings accepted the same morning: March at 12:00Z, June at 12:25:47Z.
+        FakeSec first;
+        serve(first, "2026-08-28T12:00:00.000Z");
+        QCOMPARE(run_sec(first, request("884394"), "2026-09-26T10:00:00.000Z").filings_stored, 2);
+    }
+    const QString newest = scalar(attributes);
+    QVERIFY(!newest.startsWith(QLatin1String("Former")));
+
+    // (ii) The SEC re-lists March at 14:00Z, after June: the same New York date, so
+    // timed the same and kept (issue recorded). The entity keeps June's names.
+    FakeSec same_day;
+    serve(same_day, "2026-08-28T14:00:00.000Z");
+    const SecNportRunSummary kept = run_sec(same_day, request("884394"), "2026-10-03T21:20:00.000Z");
+    QCOMPARE(kept.status, RetrievalStatus::Ok);
+    QVERIFY(kept.observations_acceptance_changed > 0);
+    QCOMPARE(scalar(attributes), newest);
+    QCOMPARE(scalar("SELECT accepted_at FROM etf_sec_filings WHERE accession = '0001410368-26-055357'"),
+             QStringLiteral("2026-08-28T12:00:00.000Z"));
+
+    // (i) The SEC re-lists March on Monday 08-31, which moves its usable boundary:
+    // the observations are refused, and the entity still keeps June's names.
+    FakeSec later;
+    serve(later, "2026-08-31T15:00:00.000Z");
+    const SecNportRunSummary refused = run_sec(later, request("884394"), "2026-10-04T10:00:00.000Z");
+    QVERIFY(refused.observations_refused > 0);
+    QCOMPARE(scalar(attributes), newest);
+    QCOMPARE(count("etf_reporting_entities"), 1);
 }
 
 void TstEtfIngest::sec_issue_storage_failure_is_not_ok() {
