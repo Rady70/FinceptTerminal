@@ -3,9 +3,9 @@
 
 #include "core/logging/Logger.h"
 #include "datahub/DataHub.h"
-#include "datahub/DataHubMetaTypes.h"
 #include "python/PythonRunner.h"
 #include "services/economics/EconomicsEnvelopeParse.h"
+#include "services/economics/FedwatchAcquisitionPolicy.h"
 #include "storage/cache/CacheManager.h"
 
 #include <QJsonDocument>
@@ -34,11 +34,14 @@ void EconomicsService::invalidate(const QString& request_id) {
 
 void EconomicsService::execute(const QString& source_id, const QString& script, const QString& command,
                                const QStringList& args, const QString& request_id, bool bypass_cache) {
+    if (economics_detail::fedwatch_requires_manual_dispatch(script))
+        bypass_cache = true;
     const QString key = cache_key(script, command, args);
 
     // Remember the dispatch so hub-driven refresh() can replay it later.
     const QString topic = hub_topic(source_id, request_id);
-    dispatch_records_.insert(topic, DispatchRecord{source_id, script, command, args, request_id});
+    if (!economics_detail::fedwatch_requires_manual_dispatch(script))
+        dispatch_records_.insert(topic, DispatchRecord{source_id, script, command, args, request_id});
 
     if (!bypass_cache) {
         const QVariant cached = fincept::CacheManager::instance().get(key);
@@ -162,6 +165,8 @@ void EconomicsService::refresh(const QStringList& topics) {
             continue;
         }
         const DispatchRecord rec = it.value();
+        if (economics_detail::fedwatch_requires_manual_dispatch(rec.script))
+            continue;
         // Force re-fetch: clear CacheManager entry so execute() goes
         // through the Python path rather than returning the cached copy.
         fincept::CacheManager::instance().remove(cache_key(rec.script, rec.command, rec.args));

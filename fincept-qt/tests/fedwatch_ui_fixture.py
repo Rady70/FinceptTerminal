@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "marketlab" / "tests"))
 
 from fedwatch_test_support import FakeTransport, FixedClock, epoch, make_clob_history, make_snapshot_transport, utc
 from test_fedwatch_analytics import seed
-from fedwatch import history, snapshot
+from fedwatch import acquisition, history, snapshot
 from fedwatch.store import FedwatchHistoryStore
 from fedwatch.transport import TransportError
 
@@ -24,7 +24,7 @@ from fedwatch.transport import TransportError
 def backfill_fixture(store, case, meeting="2026-10-28"):
     now = utc(2026, 9, 28, 12)
     transport = FakeTransport()
-    if case == "failure":
+    if case in ("failure", "normal-failure"):
         transport.add_json("prices-history", TransportError("fixture HTTP 500", status_code=500))
     else:
         outcome = -25 if case.startswith("coverage-") else 25
@@ -39,17 +39,44 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
                            {"t": epoch(utc(2026, 8, 3)), "p": 2.5},
                            {"t": epoch(utc(2030, 1, 1)), "p": 0.5}])
         transport.add_json("prices-history", make_clob_history({mapping["external_token_id"]: points}))
-    return history.backfill_polymarket(store, transport, meeting_dates=[meeting], force=True,
-                                      clock=FixedClock(now), sleep=lambda _: None)
+    result = history.backfill_polymarket(store, transport, meeting_dates=[meeting],
+                                        force=(case not in ("normal", "normal-failure")),
+                                        clock=FixedClock(now), sleep=lambda _: None)
+    result["fixture_requests"] = {"json": transport.json_calls, "text": transport.text_calls}
+    return result
 
 
 def main() -> None:
     store = FedwatchHistoryStore(Path(sys.argv[1]))
     case = sys.argv[2] if len(sys.argv) > 2 else ""
+    if case == "local-snapshot":
+        meeting = sys.argv[3] if len(sys.argv) > 3 else None
+        print(json.dumps(acquisition.local_snapshot(store, meeting, clock=FixedClock(utc(2026, 9, 28, 12))), allow_nan=False))
+        return
+    if case.startswith("pending-refresh-"):
+        transport = FakeTransport()
+        if case == "pending-refresh-ok":
+            for name, value in (("DFEDTARU", 4.25), ("DFEDTARL", 4.0)):
+                transport.add_text(name, f"DATE,{name}\n2026-10-27,{value}\n2026-10-29,{value}\n")
+        result = acquisition.refresh_current(store, "2026-10-28", transport=transport,
+                                             clock=FixedClock(utc(2026, 10, 30, 12)))
+        result["data"]["fixture_requests"] = {"text": transport.text_calls, "json": transport.json_calls}
+        print(json.dumps(result, allow_nan=False))
+        return
     if case.startswith("backfill-"):
         meeting = sys.argv[3] if len(sys.argv) > 3 else "2026-10-28"
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
                          allow_nan=False))
+        return
+    if case in ("pending", "resolved"):
+        if case == "pending":
+            store.mark_pending("2026-10-28", "FRED_COVERAGE_INSUFFICIENT", now=utc(2026, 10, 29, 12))
+        else:
+            store.mark_resolved("2026-10-28", 0, "deterministic UI fixture", now=utc(2026, 10, 29, 12))
+        if len(sys.argv) > 3:
+            store.mark_mapping_revalidation("2026-10-28", history.POLY_SOURCE, history.POLY_METHOD,
+                                             sys.argv[3], now=utc(2026, 10, 29, 12))
+        print(json.dumps({"success": True}))
         return
     if case == "mapping-without-history":
         outcome = int(sys.argv[3]) if len(sys.argv) > 3 else 25
@@ -66,6 +93,7 @@ def main() -> None:
         make_snapshot_transport(now), clock=FixedClock(now), sleep=lambda _: None
     )
     history.record_snapshot(store, envelope["data"], clock=FixedClock(now))
+    store.save_current_acquisition(envelope, "2026-09-28T12:00:00Z")
     seed(store, [("2026-08-01T12:00:00Z", 30), ("2026-09-26T12:00:00Z", 35)], outcome_bp=25)
     mappings = [m for m in store.validated_mappings() if m["meeting_date"] == "2026-10-28"]
     mapping = next(m for m in mappings if m["outcome_bp"] == 25 and not m["open_ended"])

@@ -72,7 +72,7 @@ from pathlib import Path
 from fedwatch.errors import HistoryStoreError
 from fedwatch import timeutil
 
-HISTORY_SCHEMA_VERSION = 2
+HISTORY_SCHEMA_VERSION = 4
 # Version 1 was an unreleased pre-review schema (first as a compressed value
 # episode, then as an observation-instant schema without instrument identity).
 # It is refused explicitly instead of being silently reused.
@@ -90,6 +90,13 @@ MEETING_STATUSES = (
 )
 
 _SCHEMA_TABLE_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS fedwatch_current_acquisition (
+        meeting_date TEXT PRIMARY KEY,
+        acquired_at TEXT NOT NULL,
+        envelope_json TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS fedwatch_meetings (
         meeting_date TEXT PRIMARY KEY,
@@ -187,6 +194,7 @@ _SCHEMA_INDEX_STATEMENTS = (
 )
 
 _REQUIRED_COLUMNS = {
+    "fedwatch_current_acquisition": {"meeting_date", "acquired_at", "envelope_json"},
     "fedwatch_meetings": {
         "meeting_date", "status", "status_reason", "calendar_json",
         "first_seen_at", "last_updated_at", "resolved_at", "actual_outcome_bp",
@@ -294,6 +302,14 @@ class FedwatchHistoryStore:
                     "semantics; delete the file or start a new history store",
                     detail={"database_version": version, "supported_version": HISTORY_SCHEMA_VERSION},
                 )
+            legacy_current = None
+            if version == 3:
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(fedwatch_current_acquisition)")}
+                if columns == {"singleton", "acquired_at", "envelope_json"}:
+                    legacy_current = conn.execute("SELECT * FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()
+                    # Transactional DDL: invalid retained JSON must not destroy v3.
+                    conn.execute("BEGIN")
+                    conn.execute("ALTER TABLE fedwatch_current_acquisition RENAME TO fedwatch_current_acquisition_v3")
             for statement in _SCHEMA_TABLE_STATEMENTS:
                 conn.execute(statement)
             incompatible = []
@@ -326,10 +342,14 @@ class FedwatchHistoryStore:
                 )
             for statement in _SCHEMA_INDEX_STATEMENTS:
                 conn.execute(statement)
+            if version == 3 and conn.execute("SELECT 1 FROM sqlite_master WHERE name='fedwatch_current_acquisition_v3'").fetchone():
+                if legacy_current:
+                    self._write_current_attempt(conn, json.loads(legacy_current["envelope_json"]), legacy_current["acquired_at"])
+                conn.execute("DROP TABLE fedwatch_current_acquisition_v3")
             if version < HISTORY_SCHEMA_VERSION:
                 conn.execute(f"PRAGMA user_version = {HISTORY_SCHEMA_VERSION}")
                 conn.commit()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
             raise HistoryStoreError(
                 "FEDWATCH_HISTORY_UNAVAILABLE",
                 f"FedWatch history schema cannot be initialized: {exc}",
@@ -346,7 +366,95 @@ class FedwatchHistoryStore:
     def close(self) -> None:
         """Compatibility no-op; connections are opened per operation."""
 
-    # ── meetings ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _write_current_attempt(conn, envelope, acquired_at, meeting_date=None):
+        meetings = envelope["data"].get("meetings", [])
+        aggregate = envelope["data"].get("aggregate_acquisition")
+        if meeting_date is None:
+            # Compact last-unscoped acquisition diagnostics survive splitting,
+            # including rejected identities outside the official meeting set.
+            aggregate = {"acquired_at": acquired_at, "partial": envelope.get("partial", False),
+                         "failed_components": envelope.get("failed_components", []),
+                         **{key: envelope["data"].get(key, []) for key in ("errors", "warnings", "sources")}}
+        elif aggregate is None:
+            row = conn.execute("SELECT envelope_json FROM fedwatch_current_acquisition WHERE meeting_date=?",
+                               (meeting_date,)).fetchone()
+            if row:
+                aggregate = json.loads(row[0])["data"].get("aggregate_acquisition")
+        days = {meeting_date} if meeting_date else {m["meeting_date"] for m in meetings}
+        if meeting_date is None:
+            # A full refresh replaces every prior attempt, including omitted
+            # meetings after a provider failure. Empty key retains an unscoped
+            # failure diagnostic if no meeting has been acquired yet.
+            days.update(row[0] for row in conn.execute("SELECT meeting_date FROM fedwatch_current_acquisition") if row[0])
+        if days:
+            # The unscoped initial-failure diagnostic has no role once real
+            # meeting identities exist, including after a selected refresh.
+            conn.execute("DELETE FROM fedwatch_current_acquisition WHERE meeting_date=''")
+        for day in days or {""}:
+            if day:
+                timeutil.parse_date(day)
+            retained = dict(envelope)
+            retained["data"] = dict(envelope["data"], meetings=[m for m in meetings if m["meeting_date"] == day])
+            errors = [e for e in envelope["data"].get("errors", [])
+                      if (not (e.get("detail") or {}).get("meeting_date") or e["detail"]["meeting_date"] == day)
+                      and (not (e.get("detail") or {}).get("meeting_dates") or day in e["detail"]["meeting_dates"])]
+            metadata = envelope["data"].get("meeting_metadata", {}).get(day)
+            if metadata is not None:
+                retained["data"].update(metadata)
+            retained["data"].pop("meeting_metadata", None)
+            if aggregate is not None:
+                retained["data"]["aggregate_acquisition"] = aggregate
+            scoped_sources = []
+            for source in retained["data"].get("sources", []):
+                scoped = dict(source, meeting_date=day)
+                # These aggregate statuses are determined by the provider's
+                # errors, which have now been scoped to this retained meeting.
+                if source["provider"] in ("polymarket", "investing") and source["status"] == "PARTIAL":
+                    if not any(e["provider"] == source["provider"] for e in errors):
+                        scoped["status"] = "OK"
+                        scoped.pop("detail", None)
+                scoped_sources.append(scoped)
+            retained["data"]["sources"] = scoped_sources
+            retained["data"]["errors"] = errors
+            retained["partial"] = bool(errors)
+            retained["failed_components"] = sorted({e["provider"] for e in errors})
+            conn.execute(
+                "INSERT INTO fedwatch_current_acquisition VALUES (?, ?, ?) "
+                "ON CONFLICT(meeting_date) DO UPDATE SET "
+                "acquired_at=excluded.acquired_at, envelope_json=excluded.envelope_json",
+                (day, acquired_at, json.dumps(retained, allow_nan=False, sort_keys=True)),
+            )
+
+    def save_current_acquisition(self, envelope: dict, acquired_at: str, meeting_date: str | None = None) -> None:
+        """Replace the selected meeting's latest attempt, including empty failures."""
+        acquired_at = _require_iso_instant(acquired_at, "acquired_at")
+        conn = self._connect()
+        try:
+            self._prepare(conn)
+            with conn:
+                self._write_current_attempt(conn, envelope, acquired_at, meeting_date)
+        except sqlite3.Error as exc:
+            raise HistoryStoreError("FEDWATCH_HISTORY_WRITE_FAILED", str(exc)) from exc
+        finally:
+            conn.close()
+
+    def current_acquisitions(self) -> list[dict]:
+        conn = self._connect()
+        try:
+            self._prepare(conn)
+            return [{"meeting_date": row["meeting_date"], "acquired_at": row["acquired_at"],
+                     "envelope": json.loads(row["envelope_json"])}
+                    for row in conn.execute("SELECT * FROM fedwatch_current_acquisition ORDER BY acquired_at DESC, meeting_date")]
+        except (sqlite3.Error, ValueError) as exc:
+            raise HistoryStoreError("FEDWATCH_HISTORY_READ_FAILED", str(exc)) from exc
+        finally:
+            conn.close()
+
+    def current_acquisition(self, meeting_date: str | None = None) -> dict | None:
+        """One meeting's attempt; no argument returns the latest attempt for diagnostics."""
+        rows = self.current_acquisitions()
+        return next((r for r in rows if meeting_date is None or r["meeting_date"] == meeting_date), None)
 
     def upsert_meeting(
         self,
@@ -654,7 +762,7 @@ class FedwatchHistoryStore:
 
         A negative re-validation (``NOT_FOUND``/``AMBIGUOUS``) is stored on the
         previously validated rows so the backfill path can fail closed for a
-        meeting that is still current, while a resolved meeting keeps its last
+        meeting that is still current, while a pending/resolved meeting keeps its last
         validated historical mapping.
         """
         now_iso = timeutil.iso_z(now) if now is not None else _utc_now_iso()

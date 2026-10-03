@@ -1347,7 +1347,7 @@ class CliTests(unittest.TestCase):
         store = new_store(self)
         fixture = build_snapshot_at(NOW)
         original = fedwatch_snapshot.build_snapshot
-        fedwatch_snapshot.build_snapshot = lambda: fixture
+        fedwatch_snapshot.build_snapshot = lambda *args, **kwargs: fixture
         try:
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):

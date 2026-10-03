@@ -1,0 +1,657 @@
+"""Bounded acquisition tests. All providers are injected; no internet calls."""
+import contextlib
+import csv
+import json
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import unittest
+from datetime import timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+from fedwatch_test_support import (FIXTURE_PM_DECEMBER, FIXTURE_PM_OCTOBER, FIXTURE_INVESTING_LIVE,
+                                  FixedClock, FakeTransport, fixture_json, fixture_text,
+                                  make_snapshot_transport, make_clob_history, epoch, utc)
+from fedwatch import acquisition, analytics, history, monthly_csv, published_history, sources, snapshot
+from fedwatch.transport import TransportError
+from fedwatch.errors import FedwatchError
+from fedwatch.store import FedwatchHistoryStore, HISTORY_SCHEMA_VERSION
+
+NOW = utc(2026, 9, 28, 12)
+MEETING = "2026-10-28"
+CME_URL = "https://www.cmegroup.com/fedwatch"
+CLI = Path(__file__).resolve().parents[2] / "scripts" / "fedwatch_data.py"
+
+
+class AcquisitionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.store = FedwatchHistoryStore(self.root / "history.db")
+        self.clock = FixedClock(NOW)
+        self.transport = make_snapshot_transport(NOW)
+
+    def refresh(self, **kwargs):
+        return acquisition.refresh_current(self.store, MEETING, transport=self.transport,
+                                           clock=self.clock, sleep=lambda _: None, **kwargs)
+
+    def cme_file(self, rows=None):
+        path = self.root / "history.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(published_history.COLUMNS)
+            writer.writerows(rows if rows is not None else [
+                [MEETING, "2026-09-25", 375, 400, 60], [MEETING, "2026-09-25", 400, 425, 40],
+                [MEETING, "2026-09-28", 375, 400, 55], [MEETING, "2026-09-28", 400, 425, 45]])
+        return path
+
+    def import_cme(self, path):
+        return published_history.import_file(self.store, path, MEETING, CME_URL, clock=self.clock)
+
+    def monthly_files(self, missing_last=False):
+        directory = self.root / "contracts"
+        directory.mkdir(exist_ok=True)
+        for code, price in (("U", 96.5), ("V", 96.4), ("X", 96.35)):
+            with (directory / f"ZQ{code}26.csv").open("w", encoding="utf-8", newline="") as handle:
+                handle.write(f"Symbol: ZQ{code}26\nSource: https://www.investing.com/rates-bonds/cbot-30-day-federal-funds-comp-c1-futures-historical-data?cid={ord(code)}\n")
+                writer = csv.writer(handle)
+                writer.writerow(["Date", "Price", "Open", "High", "Low", "Vol.", "Change %"])
+                writer.writerow(["Sep 25, 2026", price, price, price, price, "1K", "0%"])
+                writer.writerow(["Sep 28, 2026", "-" if missing_last and code == "X" else price, price, price, price, "1K", "0%"])
+        return directory
+
+    def import_monthly(self, directory, **kwargs):
+        return history.import_zq(self.store, self.transport, directory, [NOW.date()],
+                                 clock=self.clock, input_format="investing", meeting_date=MEETING, **kwargs)
+
+    def test_open_and_navigation_never_acquire(self):
+        with patch("fedwatch.transport.HttpTransport._request", side_effect=AssertionError("network")):
+            self.assertEqual(acquisition.local_snapshot(self.store, clock=self.clock)["data"]["acquisition"]["network_requests"], 0)
+            self.import_cme(self.cme_file())
+            for meeting in (MEETING, "2026-12-09", MEETING):
+                for method, outcome in ((history.FED_METHOD_LIVE, 0), (history.FED_METHOD_ZQ, 25), (history.FED_METHOD_LIVE, -25)):
+                    history.series(self.store, meeting, method=method, outcome_bp=outcome)
+                    analytics.compute_analytics(self.store, meeting, outcome, fed_method=method, as_of=NOW)
+                sources.describe(self.store, meeting)
+                published_history.compare_reconstruction(self.store, meeting)
+                acquisition.local_snapshot(self.store, meeting, self.clock)
+        self.assertEqual(self.transport.text_calls + self.transport.json_calls, [])
+
+    def test_manual_refresh_persists_and_recent_repeat_survives_restart(self):
+        result = self.refresh()
+        self.assertEqual(result["data"]["acquisition"]["mode"], "MANUAL_REFRESH")
+        self.assertFalse(result["partial"], result["data"]["errors"])
+        self.assertGreater(len(self.transport.text_calls + self.transport.json_calls), 0)
+        count = self.store.count_observations()
+        new_store = FedwatchHistoryStore(self.store.path)
+        untouched = FakeTransport()
+        reused = acquisition.refresh_current(new_store, MEETING, transport=untouched, clock=self.clock)
+        self.assertEqual(reused["data"]["acquisition"]["reason"], "RECENT_VALID_ACQUISITION")
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        self.assertEqual(self.store.count_observations(), count)
+
+    def test_current_attempts_survive_other_meeting_refresh_and_failure(self):
+        self.refresh()
+        december = "2026-12-09"
+        acquisition.refresh_current(self.store, december, transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        restarted = FedwatchHistoryStore(self.store.path)
+        with patch("fedwatch.transport.HttpTransport._request", side_effect=AssertionError("network")):
+            for day in (MEETING, december):
+                result = acquisition.local_snapshot(restarted, day, self.clock)
+                self.assertEqual([m["meeting_date"] for m in result["data"]["meetings"]], [day])
+                self.assertIsNotNone(result["data"]["meetings"][0]["fed_side"])
+                process = subprocess.run([sys.executable, str(CLI), "local_snapshot", "--db", str(self.store.path),
+                                          "--meeting", day],
+                                         capture_output=True, text=True, timeout=10)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertEqual(json.loads(process.stdout)["data"]["meetings"][0]["meeting_date"], day)
+        december_before = acquisition.local_snapshot(restarted, december, self.clock)
+        acquisition.refresh_current(restarted, MEETING, force=True, transport=FakeTransport(),
+                                    clock=self.clock, sleep=lambda _: None)
+        october = acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), MEETING, self.clock)
+        self.assertTrue(october["partial"])
+        self.assertFalse(any(m.get("fed_side") or m.get("comparison") for m in october["data"]["meetings"]))
+        december_after = acquisition.local_snapshot(restarted, december, self.clock)
+        self.assertEqual(december_after["data"]["meetings"], december_before["data"]["meetings"])
+        self.assertFalse(december_after["partial"])
+
+    def test_default_series_excludes_absolute_target_bands(self):
+        self.refresh()  # live Investing and Polymarket local outcomes
+        self.import_monthly(self.monthly_files())
+        self.import_cme(self.cme_file())
+        default = history.series(self.store, MEETING)
+        self.assertEqual({r["method"] for r in default["observations"]},
+                         {history.FED_METHOD_LIVE, history.FED_METHOD_ZQ, history.POLY_METHOD})
+        self.assertTrue(all(r["outcome_bp"] not in (400, 425) for r in default["observations"]))
+        self.assertEqual(default["financial_object"], "LOCAL_MEETING_CHANGE_BP")
+        published = history.series(self.store, MEETING, method=published_history.METHOD)
+        self.assertEqual({r["outcome_bp"] for r in published["observations"]}, {400, 425})
+        self.assertEqual(published["financial_object"], "TARGET_RANGE_UPPER_BP")
+
+    def test_unscoped_refresh_does_not_reuse_one_meetings_incomplete_inventory(self):
+        self.refresh()
+        before = len(self.transport.text_calls + self.transport.json_calls)
+        result = acquisition.refresh_current(self.store, transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        self.assertGreater(len(self.transport.text_calls + self.transport.json_calls), before)
+        self.assertIn("2026-12-09", [m["meeting_date"] for m in result["data"]["meetings"]])
+
+    def test_expired_saved_current_is_gated_without_fetch(self):
+        self.refresh()
+        later = FixedClock(NOW + timedelta(days=4))
+        saved = acquisition.local_snapshot(self.store, MEETING, later)["data"]
+        self.assertIsNone(saved["meetings"][0]["fed_side"])
+        self.assertEqual(saved["meetings"][0]["polymarket"]["data_status"], "STALE")
+        self.assertEqual(saved["meetings"][0]["comparison"], [])
+        self.assertIsNone(saved["current_target_range"])
+
+    def test_quote_freshness_expires_before_reuse_window(self):
+        self.refresh()
+        envelope = self.store.current_acquisition()["envelope"]
+        poly = envelope["data"]["meetings"][0]["polymarket"]
+        poly["freshness"]["oldest_outcome_timestamp"] = "2026-09-25T12:01:00Z"
+        self.store.save_current_acquisition(envelope, "2026-09-28T12:00:00Z")
+        self.clock.value += timedelta(minutes=2)
+        calls = len(self.transport.json_calls)
+        self.refresh()
+        self.assertGreater(len(self.transport.json_calls), calls)
+
+    def test_resolved_and_pending_meeting_refresh_never_requests_current(self):
+        self.store.upsert_meeting(MEETING, now=NOW)
+        self.store.mark_resolved(MEETING, 0, "fixture", now=NOW)
+        self.assertEqual(self.refresh(force=True)["data"]["acquisition"]["reason"], "HISTORICAL_MEETING")
+        acquisition.refresh_current(self.store, "2026-09-16", transport=self.transport, clock=self.clock, force=True)
+        self.assertEqual(self.transport.text_calls + self.transport.json_calls, [])
+
+    def test_failure_preserves_accepted_history_and_does_not_replay_current_success(self):
+        self.refresh()
+        before = self.store.count_observations()
+        failed = acquisition.refresh_current(self.store, MEETING, force=True, transport=FakeTransport(),
+                                              clock=self.clock, sleep=lambda _: None)
+        self.assertTrue(failed["partial"])
+        self.assertEqual(self.store.count_observations(), before)
+        saved = acquisition.local_snapshot(self.store, MEETING, self.clock)
+        self.assertTrue(saved["partial"])
+        self.assertGreater(len(history.series(self.store, MEETING)["observations"]), 0)
+
+    def test_selected_refresh_only_quotes_selected_meeting(self):
+        result = self.refresh()
+        self.assertEqual([m["meeting_date"] for m in result["data"]["meetings"]], [MEETING])
+        december_tokens = {json.loads(m["clobTokenIds"])[0] for m in fixture_json(FIXTURE_PM_DECEMBER)["markets"]}
+        self.assertTrue(december_tokens)
+        self.assertFalse(any(c["params"].get("market") in december_tokens for c in self.transport.json_calls))
+
+    def test_cme_import_incremental_duplicate_revision_and_restart(self):
+        path = self.cme_file()
+        first = self.import_cme(path)
+        self.assertEqual(first["counts"], {"inserted": 4})
+        second = self.import_cme(path)
+        self.assertEqual(second["counts"], {"duplicate": 4})
+        path = self.cme_file([[MEETING, "2026-09-28", 375, 400, 57], [MEETING, "2026-09-28", 400, 425, 43]])
+        self.assertEqual(self.import_cme(path)["counts"], {"revised": 2})
+        restarted = FedwatchHistoryStore(self.store.path)
+        rows = restarted.observations(method=published_history.METHOD)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(all(r["source"] == "cme_published" and r["detail"]["financial_object"] == published_history.OBJECT for r in rows))
+        self.assertTrue(all(r["quality_status"] == "PUBLISHED_USER_IMPORT" for r in rows))
+
+    def test_invalid_or_partial_published_input_never_zero_fills_or_destroys_history(self):
+        self.import_cme(self.cme_file())
+        before = self.store.count_observations()
+        for rows in ([], [[MEETING, "2026-09-28", 375, 400, 55]],
+                     [["2026-12-09", "2026-09-28", 375, 400, 100]],
+                     [[MEETING, "2026-09-28", 375, 400, "NaN"]],
+                     [[MEETING, "2026-10-01", 375, 400, 100]],
+                     [[MEETING, "2026-09-28", 375, 400, 100]]):
+            with self.subTest(rows=rows), self.assertRaises(FedwatchError):
+                self.import_cme(self.cme_file(rows))
+        self.assertEqual(self.store.count_observations(), before)
+
+    def test_published_rounding_retains_raw_and_normalized_values(self):
+        self.import_cme(self.cme_file([[MEETING, "2026-09-28", 375, 400, 66.6], [MEETING, "2026-09-28", 400, 425, 33.3]]))
+        rows = self.store.observations(method=published_history.METHOD)
+        self.assertAlmostEqual(sum(r["probability_pct"] for r in rows), 100)
+        self.assertAlmostEqual(sum(r["raw_probability_pct"] for r in rows), 99.9)
+
+    def test_monthly_contract_reconstruction_keeps_method_and_reuses_retained_input(self):
+        directory = self.monthly_files()
+        result = self.import_monthly(directory)
+        self.assertFalse(result["errors"], result)
+        rows = self.store.observations(method=history.FED_METHOD_ZQ)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["meeting_date"] == MEETING and r["quality_status"] == "RECONSTRUCTED" for r in rows))
+        self.assertTrue(all(r["detail"]["cumulative_distribution"] for r in rows))
+        calls = len(self.transport.text_calls + self.transport.json_calls)
+        self.assertEqual(self.import_monthly(directory)["status"], "REUSED_LOCAL")
+        self.assertEqual(len(self.transport.text_calls + self.transport.json_calls), calls)
+        self.assertEqual(self.store.count_observations(), 2)
+        with (directory / "ZQV26.csv").open("a", encoding="utf-8") as f:
+            f.write("2026-09-27,96.35,96,96,96,1K,0%\n")
+        self.import_monthly(directory)
+        self.assertGreater(len(self.transport.text_calls + self.transport.json_calls), calls)
+
+    def test_monthly_missing_close_stays_missing_and_insufficient_buffer_fails_closed(self):
+        directory = self.monthly_files(missing_last=True)
+        rows, report = monthly_csv.load_contracts(directory)
+        self.assertIsNone(next(r for r in rows if r["contract_symbol"] == "ZQX26" and r["date"] == NOW.date())["close_price"])
+        self.assertTrue(all(r["open_interest"] is None for r in rows))
+        result = self.import_monthly(directory)
+        self.assertEqual(self.store.count_observations(), 0)
+        self.assertTrue(result["errors"])
+        self.assertTrue(result["watch_dates"][0]["deconvolution"]["skipped_meetings"])
+
+    def test_generic_or_wrong_month_csv_rejected(self):
+        directory = self.monthly_files()
+        path = directory / "ZQV26.csv"
+        path.write_text(path.read_text().replace("Symbol: ZQV26", "Symbol: FFc1"))
+        with self.assertRaises(FedwatchError):
+            monthly_csv.load_contracts(directory)
+
+    def test_direct_and_reconstructed_objects_are_distinct_and_comparison_is_local(self):
+        self.import_monthly(self.monthly_files())
+        self.import_cme(self.cme_file())
+        result = published_history.compare_reconstruction(self.store, MEETING)
+        self.assertEqual(result["status"], "OVERLAP")
+        self.assertTrue(any(r["difference_pp"] is not None for r in result["comparisons"]))
+        self.assertEqual({r["method"] for r in self.store.observations()}, {history.FED_METHOD_ZQ, published_history.METHOD})
+        self.assertNotIn(published_history.METHOD, analytics.FED_METHODS)
+        self.assertEqual(history.series(self.store, MEETING, method=published_history.METHOD)["financial_object"], published_history.OBJECT)
+
+    def test_polymarket_explicit_bounded_backfill_then_local_reuse(self):
+        self.refresh()
+        before = len(self.transport.json_calls)
+        result = history.backfill_polymarket(self.store, self.transport, clock=self.clock,
+                                             meeting_dates=[MEETING], sleep=lambda _: None)
+        mappings = len(self.store.validated_mappings([MEETING]))
+        self.assertEqual(len(self.transport.json_calls) - before, mappings)
+        self.assertFalse(result["errors"])
+        calls = len(self.transport.json_calls)
+        history.backfill_polymarket(FedwatchHistoryStore(self.store.path), self.transport, clock=self.clock, meeting_dates=[MEETING])
+        self.assertEqual(len(self.transport.json_calls), calls)
+        self.assertTrue(all(c["params"]["fidelity"] == 1440 for c in self.transport.json_calls if "prices-history" in c["url"]))
+
+    def test_schema_v2_upgrade_preserves_history(self):
+        self.import_cme(self.cme_file())
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            conn.execute("DROP TABLE fedwatch_current_acquisition")
+            conn.execute("PRAGMA user_version=2")
+            conn.commit()
+        reopened = FedwatchHistoryStore(self.store.path)
+        self.assertEqual(reopened.count_observations(), 4)
+        self.assertIsNone(reopened.current_acquisition())
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], HISTORY_SCHEMA_VERSION)
+
+    def test_schema_v3_upgrade_splits_retained_meetings_preserving_history(self):
+        result = acquisition.refresh_current(self.store, transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        count = self.store.count_observations()
+        days = [m["meeting_date"] for m in result["data"]["meetings"]]
+        self.assertGreater(len(days), 1)
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            conn.execute("DROP TABLE fedwatch_current_acquisition")
+            conn.execute("CREATE TABLE fedwatch_current_acquisition (singleton INTEGER PRIMARY KEY CHECK(singleton=1), acquired_at TEXT NOT NULL, envelope_json TEXT NOT NULL)")
+            conn.execute("INSERT INTO fedwatch_current_acquisition VALUES (1, ?, ?)",
+                         ("2026-09-28T12:00:00Z", json.dumps(result)))
+            conn.execute("PRAGMA user_version=3")
+            conn.commit()
+        reopened = FedwatchHistoryStore(self.store.path)
+        self.assertEqual(reopened.count_observations(), count)
+        self.assertEqual({a["meeting_date"] for a in reopened.current_acquisitions()}, set(days))
+        for day in days:
+            saved = acquisition.local_snapshot(reopened, day, self.clock)
+            self.assertEqual([m["meeting_date"] for m in saved["data"]["meetings"]], [day])
+            self.assertEqual(saved["data"]["acquisition"]["acquired_at"], "2026-09-28T12:00:00Z")
+
+    def test_schema_v3_malformed_attempt_rolls_back_migration(self):
+        self.store.ensure_schema()
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            conn.execute("DROP TABLE fedwatch_current_acquisition")
+            conn.execute("CREATE TABLE fedwatch_current_acquisition (singleton INTEGER PRIMARY KEY, acquired_at TEXT, envelope_json TEXT)")
+            conn.execute("INSERT INTO fedwatch_current_acquisition VALUES (1, '2026-09-28T12:00:00Z', 'invalid JSON')")
+            conn.execute("PRAGMA user_version=3")
+            conn.commit()
+        with self.assertRaises(FedwatchError):
+            FedwatchHistoryStore(self.store.path).ensure_schema()
+        with contextlib.closing(sqlite3.connect(self.store.path)) as conn:
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(conn.execute("SELECT envelope_json FROM fedwatch_current_acquisition WHERE singleton=1").fetchone()[0], "invalid JSON")
+
+    def test_each_retained_meeting_uses_its_own_age(self):
+        self.refresh()
+        december = "2026-12-09"
+        acquisition.refresh_current(self.store, december, transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        old = self.store.current_acquisition(MEETING)["envelope"]
+        self.store.save_current_acquisition(old, "2026-09-24T12:00:00Z", meeting_date=MEETING)
+        overview = acquisition.local_snapshot(self.store, clock=self.clock)["data"]
+        by_day = {m["meeting_date"]: m for m in overview["meetings"]}
+        self.assertIsNone(by_day[MEETING]["fed_side"])
+        self.assertIsNotNone(by_day[december]["fed_side"])
+        self.assertEqual(by_day[MEETING]["acquisition"]["age_hours"], 96)
+        self.assertEqual(by_day[december]["acquisition"]["age_hours"], 0)
+
+    def test_meeting_specific_errors_do_not_poison_other_meetings_reuse(self):
+        for stale_day in (MEETING, "2026-12-09"):
+            with self.subTest(stale_day=stale_day):
+                transport = make_snapshot_transport(NOW)
+                points = {}
+                for day, filename in ((MEETING, FIXTURE_PM_OCTOBER), ("2026-12-09", FIXTURE_PM_DECEMBER)):
+                    for market in fixture_json(filename)["markets"]:
+                        token = json.loads(market["clobTokenIds"])[0]
+                        price = float(json.loads(market["outcomePrices"])[0])
+                        points[token] = [{"t": epoch(NOW - timedelta(days=5 if day == stale_day else 1)), "p": price}]
+                transport.add_json("prices-history", make_clob_history(points))
+                result = acquisition.refresh_current(self.store, force=True, transport=transport,
+                                                     clock=self.clock, sleep=lambda _: None)
+                self.assertTrue(result["partial"])
+                valid_day = "2026-12-09" if stale_day == MEETING else MEETING
+                valid = acquisition.local_snapshot(self.store, valid_day, self.clock)
+                self.assertFalse(valid["partial"], valid["data"]["errors"])
+                self.assertEqual(valid["failed_components"], [])
+                self.assertEqual(valid["data"]["errors"], [])
+                unused = FakeTransport()
+                reused = acquisition.refresh_current(FedwatchHistoryStore(self.store.path), valid_day,
+                                                      transport=unused, clock=self.clock)
+                self.assertEqual(reused["data"]["acquisition"]["reason"], "RECENT_VALID_ACQUISITION")
+                self.assertEqual(unused.text_calls + unused.json_calls, [])
+                failed = acquisition.local_snapshot(self.store, stale_day, self.clock)
+                self.assertTrue(failed["partial"])
+                self.assertIn("POLYMARKET_MARKET_DATA_STALE", {e["code"] for e in failed["data"]["errors"]})
+
+    def test_selected_refresh_ignores_unrelated_investing_date_mismatch(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE).replace("Dec 09, 2026", "Dec 10, 2026"))
+        # Confirm the input actually exercises the mismatch before selection.
+        full = snapshot.build_snapshot(self.transport, clock=self.clock, sleep=lambda _: None)
+        self.assertIn("INVESTING_MEETING_DATE_MISMATCH", {e["code"] for e in full["data"]["errors"]})
+        selected = self.refresh(force=True)
+        self.assertFalse(selected["partial"], selected["data"]["errors"])
+
+    def test_token_failures_only_affect_their_validated_meeting(self):
+        prices, failed_tokens = {}, set()
+        for filename in (FIXTURE_PM_OCTOBER, FIXTURE_PM_DECEMBER):
+            for market in fixture_json(filename)["markets"]:
+                token = json.loads(market["clobTokenIds"])[0]
+                prices[token] = float(json.loads(market["outcomePrices"])[0])
+                if filename == FIXTURE_PM_DECEMBER:
+                    failed_tokens.add(token)
+        def quote(url, params):
+            if params["market"] in failed_tokens:
+                raise TransportError("fixture token failure", status_code=503)
+            return {"history": [{"t": epoch(NOW - timedelta(days=1)), "p": prices[params["market"]]}]}
+        self.transport.add_json("prices-history", quote)
+        acquisition.refresh_current(self.store, force=True, transport=self.transport, clock=self.clock, sleep=lambda _: None)
+        untouched = FakeTransport()
+        reused = acquisition.refresh_current(self.store, MEETING, transport=untouched, clock=self.clock)
+        self.assertEqual(reused["data"]["acquisition"]["reason"], "RECENT_VALID_ACQUISITION")
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        failed = self.store.current_acquisition("2026-12-09")["envelope"]
+        self.assertTrue(failed["partial"])
+        self.assertTrue(failed["data"]["errors"])
+        self.assertTrue(all(e.get("detail", {}).get("meeting_date") == "2026-12-09" for e in failed["data"]["errors"]))
+
+    def test_global_failures_remain_global_in_each_retained_attempt(self):
+        for route, code, is_json in (("DFEDTARU", "FRED_SOURCE_UNAVAILABLE", False),
+                                     ("fomccalendars", "FOMC_CALENDAR_UNAVAILABLE", False),
+                                     ("gamma-api.polymarket.com/events", "POLYMARKET_DISCOVERY_PARTIAL", True)):
+            with self.subTest(route=route):
+                transport = make_snapshot_transport(NOW)
+                (transport.add_json if is_json else transport.add_text)(route, TransportError("fixture failure", status_code=503))
+                # A missing local fallback makes the injected calendar outage
+                # genuinely global without changing the freshness policy.
+                if route == "fomccalendars":
+                    with patch("fedwatch.fomc.FALLBACK_PATH", self.root / "missing-calendar.csv"):
+                        result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)
+                else:
+                    result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)
+                global_codes = {e["code"] for e in result["data"]["errors"] if not e.get("detail", {}).get("meeting_date")}
+                self.assertIn(code, global_codes)
+                for saved in self.store.current_acquisitions():
+                    self.assertTrue(saved["envelope"]["partial"])
+                    self.assertTrue(global_codes <= {e["code"] for e in saved["envelope"]["data"]["errors"]})
+                before = len(transport.text_calls + transport.json_calls)
+                acquisition.refresh_current(self.store, MEETING, force=False, transport=transport,
+                                            clock=self.clock, sleep=lambda _: None)
+                self.assertGreater(len(transport.text_calls + transport.json_calls), before)
+
+    def test_empty_failure_sentinel_is_removed_after_real_meetings_exist(self):
+        with patch("fedwatch.snapshot.build_snapshot", return_value={"success": True, "partial": True,
+                   "failed_components": ["fred"], "data": {"retrieved_at": "2026-09-28T12:00:00Z", "meetings": [], "errors": [{"provider": "fred", "code": "FIXTURE_NO_INVENTORY", "error": "unavailable"}]}}):
+            acquisition.refresh_current(self.store, force=True, transport=FakeTransport(), clock=self.clock)
+        self.assertEqual([r["meeting_date"] for r in self.store.current_acquisitions()], [""])
+        acquisition.refresh_current(self.store, force=True, transport=self.transport, clock=self.clock, sleep=lambda _: None)
+        keys = {r["meeting_date"] for r in FedwatchHistoryStore(self.store.path).current_acquisitions()}
+        self.assertNotIn("", keys)
+        self.assertIn(MEETING, keys)
+        self.assertNotIn("", acquisition.local_snapshot(self.store, clock=self.clock)["data"]["acquisition"]["attempts"])
+
+    def test_past_upcoming_refresh_advances_lifecycle_without_current_requests(self):
+        for outcome in ("RESOLVED", "PENDING", "UNAVAILABLE"):
+            with self.subTest(outcome=outcome):
+                store = FedwatchHistoryStore(self.root / (outcome + ".db"))
+                acquisition.refresh_current(store, MEETING, transport=make_snapshot_transport(NOW),
+                                            clock=self.clock, sleep=lambda _: None)
+                self.assertEqual(store.get_meeting(MEETING)["status"], "UPCOMING")
+                store.upsert_meeting("2026-09-16", now=NOW)
+                original_age = store.current_acquisition(MEETING)["acquired_at"]
+                later = FixedClock(utc(2026, 10, 30, 12))
+                transport = FakeTransport()
+                for name, value in (("DFEDTARU", 4.25), ("DFEDTARL", 4.0)):
+                    rows = f"DATE,{name}\n2026-10-27,{value}\n"
+                    if outcome == "RESOLVED":
+                        rows += f"2026-10-29,{value}\n"
+                    transport.add_text(name, TransportError("lifecycle outage", status_code=503)
+                                       if outcome == "UNAVAILABLE" else rows)
+                result = acquisition.refresh_current(store, MEETING, transport=transport, clock=later)
+                self.assertEqual(store.get_meeting(MEETING)["status"],
+                                 "RESOLVED" if outcome == "RESOLVED" else "PENDING")
+                self.assertEqual(store.get_meeting("2026-09-16")["status"], "UPCOMING")
+                self.assertEqual(store.current_acquisition(MEETING)["acquired_at"], original_age)
+                if outcome == "RESOLVED":
+                    self.assertEqual(store.get_meeting(MEETING)["actual_outcome_bp"], 0)
+                self.assertEqual(transport.json_calls, [])
+                self.assertTrue(transport.text_calls)
+                self.assertLessEqual(len(transport.text_calls), 2)
+                self.assertTrue(all("fred.stlouisfed.org" in c["url"] for c in transport.text_calls))
+                self.assertIsNone(result["data"]["meetings"][0]["fed_side"])
+                self.assertIsNone(result["data"]["meetings"][0]["polymarket"])
+                self.assertIn("history_collection", result["data"])
+                restarted = acquisition.local_snapshot(FedwatchHistoryStore(store.path), MEETING, later)
+                self.assertEqual(restarted["data"]["meetings"][0]["status"], store.get_meeting(MEETING)["status"])
+                self.assertIn("history_collection", restarted["data"])
+
+    def test_full_investing_mismatch_does_not_poison_valid_retained_meeting(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE)
+                                .replace("Dec 09, 2026", "Dec 10, 2026"))
+        full = acquisition.refresh_current(self.store, force=True, transport=self.transport,
+                                           clock=self.clock, sleep=lambda _: None)
+        self.assertIn("INVESTING_MEETING_DATE_MISMATCH", {e["code"] for e in full["data"]["errors"]})
+        untouched = FakeTransport()
+        result = acquisition.refresh_current(FedwatchHistoryStore(self.store.path), MEETING,
+                                             transport=untouched, clock=self.clock)
+        self.assertFalse(result["partial"], result["data"]["errors"])
+        self.assertEqual(result["data"]["acquisition"]["reason"], "RECENT_VALID_ACQUISITION")
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        investing_source = next(s for s in result["data"]["sources"] if s["provider"] == "investing")
+        self.assertEqual(investing_source["status"], "OK")
+        self.assertFalse(any("2026-12-10" in w for w in result["data"]["warnings"]))
+
+    def test_pending_meeting_explicit_backfill_uses_historical_tokens_only(self):
+        self.refresh()
+        self.store.mark_pending(MEETING, "FRED_COVERAGE_INSUFFICIENT", now=NOW)
+        transport = FakeTransport().add_json("prices-history", {"history": [{"t": epoch(NOW - timedelta(days=2)), "p": 0.42}]})
+        result = history.backfill_polymarket(self.store, transport, meeting_dates=[MEETING],
+                                            clock=self.clock, sleep=lambda _: None)
+        self.assertFalse(result["errors"], result)
+        self.assertTrue(transport.json_calls)
+        self.assertEqual(transport.text_calls, [])
+        self.assertTrue(all(c["params"]["interval"] == "max" for c in transport.json_calls))
+        self.assertEqual(self.store.get_meeting(MEETING)["status"], "PENDING")
+        untouched = FakeTransport()
+        acquisition.refresh_current(self.store, MEETING, transport=untouched, clock=self.clock)
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+
+    def test_demoted_mapping_is_historical_for_pending_and_resolved_only(self):
+        for state in ("UPCOMING", "PENDING", "RESOLVED"):
+            for demotion in ("NOT_FOUND", "AMBIGUOUS"):
+                with self.subTest(state=state, demotion=demotion):
+                    store = FedwatchHistoryStore(self.root / (state + demotion + ".db"))
+                    acquisition.refresh_current(store, MEETING, transport=make_snapshot_transport(NOW),
+                                                clock=self.clock, sleep=lambda _: None)
+                    if state == "PENDING":
+                        store.mark_pending(MEETING, "FRED_COVERAGE_INSUFFICIENT", now=NOW)
+                    elif state == "RESOLVED":
+                        store.mark_resolved(MEETING, 0, "fixture", now=NOW)
+                    store.mark_mapping_revalidation(MEETING, history.POLY_SOURCE, history.POLY_METHOD, demotion, now=NOW)
+                    tokens = {m["external_token_id"] for m in store.validated_mappings([MEETING])}
+                    transport = FakeTransport().add_json("prices-history", {"history": [{"t": epoch(NOW - timedelta(days=2)), "p": 0.42}]})
+                    result = history.backfill_polymarket(store, transport, meeting_dates=[MEETING],
+                                                        clock=self.clock, sleep=lambda _: None)
+                    self.assertFalse(result["errors"])
+                    self.assertEqual(transport.text_calls, [])
+                    if state == "UPCOMING":
+                        self.assertEqual(transport.json_calls, [])
+                        self.assertEqual({r["status"] for r in result["backfills"]}, {"MAPPING_NOT_CURRENT"})
+                    else:
+                        self.assertEqual({c["params"]["market"] for c in transport.json_calls}, tokens)
+                        self.assertTrue(all(c["params"]["interval"] == "max" for c in transport.json_calls))
+                        self.assertNotIn("MAPPING_NOT_CURRENT", {r["status"] for r in result["backfills"]})
+
+    def test_lifecycle_only_failure_reports_partial_without_poisoning_quote_quality(self):
+        self.refresh()
+        later = FixedClock(utc(2026, 10, 30, 12))
+        result = acquisition.refresh_current(self.store, MEETING, transport=FakeTransport(), clock=later)
+        self.assertTrue(result["partial"])
+        self.assertIn("fred", result["failed_components"])
+        self.assertTrue(result["data"]["errors"])
+        self.assertTrue(result["data"]["history_collection"]["errors"])
+        retained = acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), MEETING, later)
+        self.assertFalse(retained["partial"])
+        self.assertEqual(retained["data"]["errors"], [])
+        self.assertTrue(retained["data"]["history_collection"]["errors"])
+
+    def test_selected_pending_refresh_retries_only_fred_history_and_recovers(self):
+        self.refresh()
+        original = self.store.current_acquisition(MEETING)["acquired_at"]
+        self.store.upsert_meeting("2026-09-16", now=NOW)
+        self.store.mark_pending(MEETING, "FRED_SOURCE_UNAVAILABLE", now=NOW)
+        later = FixedClock(utc(2026, 10, 30, 12))
+        transport = FakeTransport()
+        for name, value in (("DFEDTARU", 4.25), ("DFEDTARL", 4.0)):
+            transport.add_text(name, f"DATE,{name}\n2026-10-27,{value}\n2026-10-29,{value}\n")
+        result = acquisition.refresh_current(self.store, MEETING, transport=transport, clock=later)
+        self.assertEqual(self.store.get_meeting(MEETING)["status"], "RESOLVED")
+        self.assertFalse(result.get("partial"))
+        self.assertEqual(self.store.get_meeting(MEETING)["actual_outcome_bp"], 0)
+        self.assertEqual(self.store.get_meeting("2026-09-16")["status"], "UPCOMING")
+        self.assertEqual(self.store.current_acquisition(MEETING)["acquired_at"], original)
+        self.assertEqual(len(transport.text_calls), 2)
+        self.assertEqual(transport.json_calls, [])
+        self.assertTrue(all("fred.stlouisfed.org" in c["url"] for c in transport.text_calls))
+        untouched = FakeTransport()
+        acquisition.refresh_current(self.store, MEETING, transport=untouched, clock=later)
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+
+    def test_aggregate_mismatch_diagnostic_survives_restart_and_selected_refresh(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE)
+                                .replace("Dec 09, 2026", "Dec 10, 2026"))
+        acquisition.refresh_current(self.store, transport=self.transport, clock=self.clock, sleep=lambda _: None)
+        restarted = FedwatchHistoryStore(self.store.path)
+        overview = acquisition.local_snapshot(restarted, clock=self.clock)
+        report = overview["data"]["aggregate_acquisition"]
+        self.assertTrue(report["partial"])
+        self.assertIn("INVESTING_MEETING_DATE_MISMATCH", {e["code"] for e in report["errors"]})
+        self.assertEqual(report["acquired_at"], "2026-09-28T12:00:00Z")
+        untouched = FakeTransport()
+        selected = acquisition.refresh_current(restarted, MEETING, transport=untouched, clock=self.clock)
+        self.assertFalse(selected["partial"])
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        # Even a fresh selected write must preserve the latest aggregate report.
+        acquisition.refresh_current(restarted, MEETING, force=True, transport=make_snapshot_transport(NOW),
+                                    clock=self.clock, sleep=lambda _: None)
+        self.assertEqual(acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), clock=self.clock)
+                         ["data"]["aggregate_acquisition"], report)
+
+    def test_selected_official_meeting_missing_investing_is_explicit_partial(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE)
+                                .replace("Dec 09, 2026", "Dec 10, 2026"))
+        result = acquisition.refresh_current(self.store, "2026-12-09", transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        self.assertTrue(result["partial"])
+        errors = [e for e in result["data"]["errors"] if e["provider"] == "investing"]
+        self.assertTrue(errors)
+        self.assertEqual({e["detail"]["meeting_date"] for e in errors}, {"2026-12-09"})
+        self.assertIsNone(result["data"]["meetings"][0]["fed_side"])
+
+    def test_old_lifecycle_failure_does_not_invalidate_current_acquisition(self):
+        self.store.upsert_meeting("2026-09-16", now=NOW)
+        upper_calls = []
+        def upper(url, params):
+            upper_calls.append(url)
+            if len(upper_calls) > 1:
+                raise TransportError("historical FRED outage", status_code=503)
+            return fixture_text("fred_DFEDTARU_recent.csv")
+        self.transport.add_text("DFEDTARU", upper)
+        result = self.refresh(force=True)
+        self.assertEqual(len(upper_calls), 2)
+        self.assertEqual(self.store.get_meeting("2026-09-16")["status"], "PENDING")
+        self.assertFalse(result["partial"], result["data"]["errors"])
+        self.assertTrue(result["data"]["history_collection"]["errors"])
+        untouched = FakeTransport()
+        reused = acquisition.refresh_current(FedwatchHistoryStore(self.store.path), MEETING,
+                                             transport=untouched, clock=self.clock)
+        self.assertEqual(reused["data"]["acquisition"]["reason"], "RECENT_VALID_ACQUISITION")
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        self.assertTrue(reused["data"]["history_collection"]["errors"])
+
+    def test_retained_metadata_matches_its_meeting_quality(self):
+        prices, december = {}, set()
+        for filename in (FIXTURE_PM_OCTOBER, FIXTURE_PM_DECEMBER):
+            for market in fixture_json(filename)["markets"]:
+                token = json.loads(market["clobTokenIds"])[0]
+                prices[token] = float(json.loads(market["outcomePrices"])[0])
+                if filename == FIXTURE_PM_DECEMBER:
+                    december.add(token)
+        def quote(url, params):
+            age = 5 if params["market"] in december else 1
+            return {"history": [{"t": epoch(NOW - timedelta(days=age)), "p": prices[params["market"]]}]}
+        self.transport.add_json("prices-history", quote)
+        acquisition.refresh_current(self.store, force=True, transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        for day, expected in ((MEETING, "OK"), ("2026-12-09", "PARTIAL")):
+            retained = acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), day, self.clock)["data"]
+            source = next(s for s in retained["sources"] if s["provider"] == "polymarket")
+            self.assertEqual(source["status"], expected)
+            self.assertEqual(source["meeting_date"], day)
+            self.assertEqual(any("older" in w for w in retained["warnings"]), day == "2026-12-09")
+            if day == MEETING:
+                self.assertFalse(any("2026-12-09" in w for w in retained["warnings"]))
+            self.assertEqual(retained["method_notes"], snapshot.METHOD_NOTES)
+
+    def test_failed_full_refresh_replaces_all_previous_current_attempts(self):
+        self.refresh()
+        acquisition.refresh_current(self.store, "2026-12-09", transport=self.transport,
+                                    clock=self.clock, sleep=lambda _: None)
+        count = self.store.count_observations()
+        acquisition.refresh_current(self.store, force=True, transport=FakeTransport(),
+                                    clock=self.clock, sleep=lambda _: None)
+        for day in (MEETING, "2026-12-09"):
+            saved = acquisition.local_snapshot(self.store, day, self.clock)
+            self.assertTrue(saved["partial"])
+            self.assertFalse(any(m.get("fed_side") for m in saved["data"]["meetings"]))
+        self.assertEqual(self.store.count_observations(), count)
+
+    def test_local_cli_survives_fresh_process(self):
+        self.import_cme(self.cme_file())
+        for command in ("local_snapshot", "history_sources", "history_compare_cme", "history_series"):
+            result = subprocess.run([sys.executable, str(CLI), command, "--db", str(self.store.path), "--meeting", MEETING], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(json.loads(result.stdout)["success"])
+
+
+if __name__ == "__main__":
+    unittest.main()
