@@ -614,12 +614,28 @@ QWidget* EtfResearchScreen::build_flow_view() {
     flow_mode_->setObjectName(QStringLiteral("etfrFlowMode"));
     flow_mode_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     flow_mode_->setMinimumContentsLength(46);
-    flow_mode_->addItem(tr("BEST AVAILABLE flow evidence: MEASURED > ESTIMATED > PROXY"), QStringLiteral("best"));
-    flow_mode_->addItem(tr("MEASURED: SEC N-PORT, latest month, $"), QStringLiteral("measured"));
-    flow_mode_->addItem(tr("ESTIMATED: latest capture interval (E1, else E2), $"), QStringLiteral("est_latest"));
-    flow_mode_->addItem(tr("ESTIMATED: 20 sessions, % of AUM"), QStringLiteral("est_pct20"));
-    flow_mode_->addItem(tr("PROXY: 1M return vs benchmark, pp (market behaviour, not flow)"),
-                        QStringLiteral("proxy_m1"));
+    // Labels fit the minimum contents length (46); the full wording is the item tooltip.
+    const struct {
+        const char* label;
+        const char* tip;
+        const char* key;
+    } flow_modes[] = {
+        {QT_TR_NOOP("BEST AVAILABLE: MEASURED > ESTIMATED > PROXY"),
+         QT_TR_NOOP("Best available flow evidence per fund: SEC N-PORT measured month, else the best estimate (E1, "
+                    "else E2), else the 1M return vs benchmark proxy"),
+         "best"},
+        {QT_TR_NOOP("MEASURED: SEC N-PORT latest month, $"), QT_TR_NOOP("MEASURED: SEC N-PORT, latest month, $"),
+         "measured"},
+        {QT_TR_NOOP("ESTIMATED: latest interval (E1/E2), $"),
+         QT_TR_NOOP("ESTIMATED: latest capture interval (E1, else E2), $"), "est_latest"},
+        {QT_TR_NOOP("ESTIMATED: 20 sessions, % of AUM"), QT_TR_NOOP("ESTIMATED: 20 sessions, % of AUM"), "est_pct20"},
+        {QT_TR_NOOP("PROXY: 1M vs benchmark, pp (not flow)"),
+         QT_TR_NOOP("PROXY: 1M return vs benchmark, pp (market behaviour, not flow)"), "proxy_m1"},
+    };
+    for (const auto& m : flow_modes) {
+        flow_mode_->addItem(tr(m.label), QLatin1String(m.key));
+        flow_mode_->setItemData(flow_mode_->count() - 1, tr(m.tip), Qt::ToolTipRole);
+    }
     bl->addWidget(flow_mode_);
     flow_note_ = new QLabel;
     flow_note_->setObjectName(QStringLiteral("etfrHint"));
