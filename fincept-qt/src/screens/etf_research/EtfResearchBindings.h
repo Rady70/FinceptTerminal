@@ -17,6 +17,10 @@ namespace fincept::screens::etfr {
 Result<services::etf::research::ResearchSnapshot> load_research_snapshot(const QDateTime& as_of,
                                                                          const QDateTime& known_at);
 
+/// The Batch D measured group flows, read when the FLOW view first opens (worker thread).
+Result<QVector<services::etf::research::GroupFlowRow>> load_group_flows(const QDateTime& as_of,
+                                                                        const QDateTime& known_at);
+
 /// Start the user-initiated manual refresh (main thread).
 void start_manual_refresh(services::etf::research::RefreshProgress progress,
                           std::function<void(const services::etf::research::RefreshResult&)> done);

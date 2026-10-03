@@ -207,17 +207,22 @@ int run_etf_research_cli(int argc, char* argv[]) {
     }
     if (command == QLatin1String("snapshot")) {
         if (const QString bad = allowed({QStringLiteral("out"), QStringLiteral("as-of"), QStringLiteral("known-at"),
-                                         QStringLiteral("compact")});
+                                         QStringLiteral("compact"), QStringLiteral("groups")});
             !bad.isEmpty() || !options.contains(QStringLiteral("out")))
-            return usage(QStringLiteral("snapshot needs --out [--as-of] [--known-at] [--compact]"));
+            return usage(QStringLiteral("snapshot needs --out [--as-of] [--known-at] [--compact] [--groups yes|no]"));
+        // --groups no reproduces the workspace's own read (Batch D groups deferred).
+        const bool with_groups = options.value(QStringLiteral("groups"), QStringLiteral("yes")) != QLatin1String("no");
         QElapsedTimer timer;
         timer.start();
-        auto in = service.load(as_of, known_at);
+        auto in = service.load(as_of, known_at, with_groups);
         if (in.is_err()) {
             print(QJsonObject{{"ok", false}, {"error", QString::fromStdString(in.error())}});
             return 1;
         }
         const qint64 load_ms = timer.restart();
+        QJsonObject load_phases;
+        for (const auto& ph : in.value().load_profile)
+            load_phases.insert(ph.first, ph.second);
         const ResearchSnapshot snap = compute_snapshot(in.value());
         const qint64 compute_ms = timer.elapsed();
         const QJsonObject doc = snapshot_to_json(snap, !options.contains(QStringLiteral("compact")));
@@ -236,6 +241,7 @@ int run_etf_research_cli(int argc, char* argv[]) {
             {"known_at", snap.known_at.toString(Qt::ISODateWithMs)},
             {"counts", counts},
             {"load_ms", load_ms},
+            {"load_phases_ms", load_phases},
             {"compute_ms", compute_ms},
             {"sha256", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}});
         return 0;

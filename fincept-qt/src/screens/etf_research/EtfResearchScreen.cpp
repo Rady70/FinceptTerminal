@@ -960,6 +960,35 @@ void EtfResearchScreen::start_load() {
     }));
 }
 
+void EtfResearchScreen::start_group_load() {
+    if (groups_watcher_ || !snap_)
+        return;
+    const QDateTime as_of = snap_->as_of;
+    const QDateTime known_at = snap_->known_at;
+    auto rows = std::make_shared<QVector<GroupFlowRow>>();
+    auto ok = std::make_shared<bool>(false);
+    auto snap = snap_;
+    groups_watcher_ = new QFutureWatcher<void>(this);
+    connect(groups_watcher_, &QFutureWatcher<void>::finished, this, [this, rows, ok, snap]() {
+        groups_watcher_->deleteLater();
+        groups_watcher_ = nullptr;
+        if (snap != snap_ || !*ok)
+            return; // a newer snapshot replaced this one, or the read failed
+        snap_->group_flows = *rows;
+        snap_->group_flows_loaded = true;
+        populated_.remove(QStringLiteral("flow"));
+        if (current_view_ == QLatin1String("flow"))
+            populate_view(QStringLiteral("flow"));
+    });
+    groups_watcher_->setFuture(QtConcurrent::run([rows, ok, as_of, known_at]() {
+        auto g = etfr::load_group_flows(as_of, known_at);
+        if (g.is_ok()) {
+            *rows = g.value();
+            *ok = true;
+        }
+    }));
+}
+
 void EtfResearchScreen::on_refresh() {
     if (etfr::manual_refresh_running())
         return;
@@ -1560,6 +1589,8 @@ void EtfResearchScreen::populate_flow() {
                                    {tr("Quality"), QString(), 70, true},
                                    {tr("Ids obs/unique"), QString(), 80, true},
                                    {tr("Unresolved"), QString(), 70}};
+    if (!snap_->group_flows_loaded)
+        start_group_load(); // filled in when the read finishes
     QHash<QString, const GroupFlowRow*> latest;
     for (const auto& g : snap_->group_flows) {
         const QString k = g.level + QLatin1Char('|') + g.group_id;

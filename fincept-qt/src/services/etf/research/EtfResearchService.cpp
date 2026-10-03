@@ -12,6 +12,7 @@
 #include "storage/repositories/EtfResearchRepository.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFutureWatcher>
 #include <QJsonArray>
@@ -116,15 +117,18 @@ QDate EtfResearchService::expected_us_session(const QDateTime& as_of) {
     return completed_us_session(as_of);
 }
 
-Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QDateTime& known_at) {
+Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QDateTime& known_at, bool with_groups) {
     QString err;
     const ResearchUniverse* u = universe(&err);
     if (!u)
         return Result<ResearchInputs>::err(err.toStdString());
+    QElapsedTimer phase;
+    phase.start();
     auto r = EtfResearchRepository::instance().load_inputs(*u, as_of, known_at);
     if (r.is_err())
         return r;
     ResearchInputs in = r.value();
+    in.load_profile.append({QStringLiteral("research_store"), phase.restart()});
     in.expected_us_session = expected_us_session(as_of);
     auto& etf = EtfDataRepository::instance();
     // Measured: SEC N-PORT regulatory flow of the declared reporting identity
@@ -151,6 +155,7 @@ Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QD
                   [](const MeasuredMonth& a, const MeasuredMonth& b) { return a.month < b.month; });
         in.measured.insert(i.symbol, months);
     }
+    in.load_profile.append({QStringLiteral("sec_measured_batch_c"), phase.restart()});
     // IBKR completed-session closes for rows with a reviewed conId (cross-check only).
     for (const UniverseInstrument& i : u->instruments) {
         if (!i.taxonomy_con_id)
@@ -164,7 +169,8 @@ Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QD
         QMap<QDate, QPair<int, double>> latest;
         for (const StoredObservation& o : obs.value()) {
             if (o.measure != QLatin1String("bar_close") || !o.value.reported() || !o.first_seen_at.isValid() ||
-                o.first_seen_at > in.known_at || o.effective_date > in.as_of.date())
+                o.first_seen_at > in.known_at || !in.expected_us_session.isValid() ||
+                o.effective_date > in.expected_us_session) // the session must have closed by as_of
                 continue;
             auto it = latest.find(o.effective_date);
             if (it == latest.end() || o.source_revision > it->first)
@@ -175,20 +181,36 @@ Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QD
             closes.append({it.key(), it.value().second});
         in.ibkr_close.insert(i.symbol, closes);
     }
+    in.load_profile.append({QStringLiteral("ibkr_closes"), phase.restart()});
+    if (with_groups) {
+        auto g = group_flows(in.as_of, in.known_at, &in.load_warnings);
+        if (g.is_ok())
+            in.group_flows = g.value();
+    } else {
+        in.group_flows_loaded = false;
+    }
+    in.load_profile.append({QStringLiteral("batch_d_groups"), phase.restart()});
+    return Result<ResearchInputs>::ok(in);
+}
+
+Result<QVector<GroupFlowRow>> EtfResearchService::group_flows(const QDateTime& as_of, const QDateTime& known_at,
+                                                              QStringList* warnings) {
+    QVector<GroupFlowRow> out;
     // Measured regulatory flow by Batch D category and asset class: the latest
     // 12 complete calendar months at as_of (finalized etf_group_analytics_v2).
-    const QDate last_month_end = QDate(in.as_of.date().year(), in.as_of.date().month(), 1).addDays(-1);
+    const QDate last_month_end = QDate(as_of.date().year(), as_of.date().month(), 1).addDays(-1);
     for (const QString& level : {QStringLiteral("asset_class"), QStringLiteral("category")}) {
         GroupRunRequest g;
-        g.frame.as_of = in.as_of;
-        g.frame.known_at = in.known_at;
+        g.frame.as_of = as_of;
+        g.frame.known_at = known_at;
         g.group_level = level;
         g.output_to = last_month_end;
         g.output_from = QDate(last_month_end.year(), last_month_end.month(), 1).addMonths(-11);
         auto gr = run_group_research(g);
         if (gr.is_err()) {
-            in.load_warnings.append(
-                QStringLiteral("Batch D %1 groups: %2").arg(level, QString::fromStdString(gr.error())));
+            if (warnings)
+                warnings->append(
+                    QStringLiteral("Batch D %1 groups: %2").arg(level, QString::fromStdString(gr.error())));
             continue;
         }
         const QString tax = gr.value().value(QStringLiteral("taxonomy_version")).toString();
@@ -212,11 +234,11 @@ Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QD
                 row.unresolved_subjects = cov.value(QStringLiteral("unresolved_subjects")).toInt();
                 row.excluded_subjects = cov.value(QStringLiteral("excluded_subjects")).toInt();
                 row.taxonomy_version = tax;
-                in.group_flows.append(row);
+                out.append(row);
             }
         }
     }
-    return Result<ResearchInputs>::ok(in);
+    return Result<QVector<GroupFlowRow>>::ok(out);
 }
 
 QJsonObject EtfResearchService::build_request(bool full) const {

@@ -34,6 +34,7 @@ using namespace etfr_fixture;
 namespace {
 int g_loads = 0;
 int g_refreshes = 0;
+int g_group_loads = 0;
 ResearchSnapshot g_snapshot;
 
 ResearchSnapshot build_snapshot() {
@@ -117,6 +118,16 @@ void start_manual_refresh(RefreshProgress, std::function<void(const RefreshResul
 bool manual_refresh_running() {
     return false;
 }
+Result<QVector<GroupFlowRow>> load_group_flows(const QDateTime&, const QDateTime&) {
+    ++g_group_loads;
+    GroupFlowRow g;
+    g.level = QStringLiteral("asset_class");
+    g.group_id = QStringLiteral("equity");
+    g.month = QDate(2026, 8, 1);
+    g.observed_net_flow_usd = 1.0e9;
+    g.quality = QStringLiteral("PARTIAL");
+    return Result<QVector<GroupFlowRow>>::ok({g});
+}
 } // namespace fincept::screens::etfr
 
 class TstEtfResearchUi : public QObject {
@@ -131,6 +142,7 @@ class TstEtfResearchUi : public QObject {
     void detail_opens_on_selection_only();
     void views_populate_lazily_with_heatmaps_and_rrg();
     void flow_heatmap_keeps_evidence_modes_apart();
+    void group_flows_load_when_the_flow_view_opens();
     void regime_models_intl_sources_render();
     void refresh_is_the_only_acquisition_path();
     void narrow_window_stacks_detail();
@@ -325,6 +337,28 @@ void TstEtfResearchUi::flow_heatmap_keeps_evidence_modes_apart() {
     for (auto* l : s.view_widget(QStringLiteral("flow"))->findChildren<QLabel*>())
         found = found || l->text().startsWith(QStringLiteral("1 of "));
     QVERIFY(found);
+}
+
+void TstEtfResearchUi::group_flows_load_when_the_flow_view_opens() {
+    // The workspace snapshot defers the Batch D groups (most of the read time);
+    // they are read once, off the UI thread, when the FLOW view first opens.
+    ResearchSnapshot deferred = g_snapshot;
+    deferred.group_flows.clear();
+    deferred.group_flows_loaded = false;
+    EtfResearchScreen s;
+    s.set_autoload(false);
+    s.resize(1500, 900);
+    s.show();
+    s.set_snapshot(deferred);
+    g_group_loads = 0;
+    s.show_view(QStringLiteral("universe"));
+    QCOMPARE(g_group_loads, 0); // not read until needed
+    s.show_view(QStringLiteral("flow"));
+    QTRY_COMPARE(g_group_loads, 1);
+    QTRY_COMPARE(s.table(QStringLiteral("groups"))->model()->rowCount(), 1);
+    s.show_view(QStringLiteral("universe"));
+    s.show_view(QStringLiteral("flow"));
+    QCOMPARE(g_group_loads, 1); // read once
 }
 
 void TstEtfResearchUi::regime_models_intl_sources_render() {

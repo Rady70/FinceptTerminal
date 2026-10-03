@@ -45,7 +45,13 @@ class EtfResearchService : public QObject {
     static QDate expected_us_session(const QDateTime& as_of);
 
     /// Read-only. Safe on a worker thread (per-thread database connection).
-    Result<ResearchInputs> load(const QDateTime& as_of, const QDateTime& known_at);
+    /// Stored inputs at (as_of, known_at). `with_groups` false defers the Batch D
+    /// group research (most of the read time) to group_flows().
+    Result<ResearchInputs> load(const QDateTime& as_of, const QDateTime& known_at, bool with_groups = true);
+    /// Batch D measured group flows (asset class, category) for the latest 12
+    /// complete months at as_of.
+    Result<QVector<GroupFlowRow>> group_flows(const QDateTime& as_of, const QDateTime& known_at,
+                                              QStringList* warnings = nullptr);
 
     /// The acquisition request the manual refresh sends to the fetch script.
     /// The fetch request. Incremental by default: a symbol whose stored history

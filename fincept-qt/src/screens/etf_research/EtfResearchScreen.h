@@ -133,6 +133,8 @@ class EtfResearchScreen : public QWidget, public IStatefulScreen {
     bool loaded_once_ = false;
     int load_requests_ = 0;
     QFutureWatcher<void>* watcher_ = nullptr;
+    QFutureWatcher<void>* groups_watcher_ = nullptr;
+    void start_group_load();
 
     QWidget* header_ = nullptr;
     QLabel* title_ = nullptr;

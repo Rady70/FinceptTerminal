@@ -276,6 +276,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
     s.expected_us_session = in.expected_us_session;
     s.sources = in.last_refresh;
     s.group_flows = in.group_flows;
+    s.group_flows_loaded = in.group_flows_loaded;
     s.last_refresh_run_id = in.last_refresh_run_id;
     s.last_refresh_finished = in.last_refresh_finished;
     s.warnings = in.load_warnings;

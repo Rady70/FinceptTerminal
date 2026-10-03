@@ -187,10 +187,12 @@ struct ResearchInputs {
     QHash<QString, QVector<MeasuredMonth>> measured;           ///< universe symbol -> months
     QHash<QString, QVector<QPair<QDate, double>>> ibkr_close;  ///< universe symbol -> stored IBKR closes
     QVector<GroupFlowRow> group_flows;
+    bool group_flows_loaded = true; ///< false when the caller deferred the Batch D groups
     QVector<SourceStageStatus> last_refresh;
     QString last_refresh_run_id;
     QDateTime last_refresh_finished;
     QStringList load_warnings;
+    QVector<QPair<QString, qint64>> load_profile; ///< phase -> milliseconds (diagnostics only)
 };
 
 } // namespace fincept::services::etf::research

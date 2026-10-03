@@ -290,6 +290,7 @@ struct ResearchSnapshot {
     QVector<ConstituentAggregate> constituent_aggregates;
     QVector<IntlSector> intl;
     QVector<GroupFlowRow> group_flows;
+    bool group_flows_loaded = true; ///< false: the workspace loads them when the FLOW view opens
     QVector<SourceStageStatus> sources;
     QString last_refresh_run_id;
     QDateTime last_refresh_finished;
