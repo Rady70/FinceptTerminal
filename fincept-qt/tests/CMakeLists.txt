@@ -515,4 +515,18 @@ fincept_add_test(tst_qt_message_routing
     "${PROJECT_SOURCE_DIR}/src/core/logging/QtMessageRouting.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_fedwatch_view_model, tst_fedwatch_panel, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_news_dedupe, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")
+# Real service and hub replay boundary with test-only process/cache recorders.
+# DataHub's existing owner-visibility predicate needs Widgets; this headless
+# suite does not instantiate widgets.
+fincept_add_test(tst_fedwatch_dispatch
+    tst_fedwatch_dispatch.cpp
+    "${PROJECT_SOURCE_DIR}/src/services/economics/EconomicsService.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/economics/EconomicsService.h"
+    "${PROJECT_SOURCE_DIR}/src/datahub/DataHub.cpp"
+    "${PROJECT_SOURCE_DIR}/src/datahub/DataHub.h"
+    "${PROJECT_SOURCE_DIR}/src/python/PythonRunner.h"
+    "${PROJECT_SOURCE_DIR}/src/storage/cache/CacheManager.h"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_fedwatch_dispatch PRIVATE Qt6::Widgets)
+
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_fedwatch_view_model, tst_fedwatch_panel, tst_fedwatch_dispatch, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_news_dedupe, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")

@@ -15,6 +15,7 @@ per-provider data remains available for truthful display.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import date
 
@@ -77,6 +78,7 @@ def build_snapshot(
     clock=timeutil.utc_now,
     fallback_path=None,
     sleep=time.sleep,
+    selected_meeting_dates: list[date] | None = None,
 ) -> dict:
     """Build the full current snapshot envelope (``data`` + partial markers)."""
     transport = transport or HttpTransport()
@@ -208,13 +210,25 @@ def build_snapshot(
     investing_dates = {
         timeutil.parse_date(section["meeting_date"]) for section in fed_sections.values()
     }
+    if selected_meeting_dates is not None:
+        investing_dates &= set(selected_meeting_dates)
     investing_only_dates = (
         sorted(investing_dates - official_upcoming_dates)
         if fomc_result is not None and not calendar_uncertain
         else []
     )
 
+    selected_missing_dates = sorted(
+        (set(selected_meeting_dates or []) & official_upcoming_dates) -
+        {timeutil.parse_date(day) for day in fed_sections}
+    ) if distributions is not None and fred_target is not None else []
     if distributions is not None:
+        for day in selected_missing_dates:
+            errors.append(FedwatchError(
+                PROVIDER_INVESTING, "INVESTING_SELECTED_MEETING_UNAVAILABLE",
+                f"Investing.com has no usable Fed-side distribution for selected official meeting {day.isoformat()}",
+                detail={"meeting_date": day.isoformat(), "reported_meeting_dates": sorted(fed_sections)},
+            ).to_dict())
         if investing_only_dates:
             errors.append(
                 FedwatchError(
@@ -240,7 +254,7 @@ def build_snapshot(
             _source_entry(
                 PROVIDER_INVESTING,
                 distributions["source"],
-                "PARTIAL" if investing_only_dates else "OK",
+                "PARTIAL" if investing_only_dates or selected_missing_dates else "OK",
                 distributions["retrieved_at"],
                 method=distributions["method"],
                 detail=(
@@ -256,6 +270,8 @@ def build_snapshot(
         # Official upcoming dates only: an Investing-only date must never be a
         # candidate for Polymarket mapping validation.
         meeting_dates = set(official_upcoming_dates)
+        if selected_meeting_dates is not None:
+            meeting_dates &= set(selected_meeting_dates)
         try:
             polymarket_section = polymarket.build_section(
                 transport, sorted(meeting_dates), clock=clock, sleep=sleep
@@ -337,6 +353,8 @@ def build_snapshot(
 
     meetings = []
     for meeting_date in sorted(meeting_dates_all):
+        if selected_meeting_dates is not None and meeting_date not in selected_meeting_dates:
+            continue
         calendar_row = fomc_by_end.get(meeting_date)
         fed_section = fed_sections.get(meeting_date.isoformat())
         polymarket_entry = polymarket_by_date.get(meeting_date)
@@ -377,6 +395,28 @@ def build_snapshot(
             "source": fred_target["source"],
         }
 
+    # Aggregate diagnostics remain in the full response. Retained meetings
+    # receive their own warnings and the shared methodology/provider context.
+    warning_dates = {}
+    for warning in warnings:
+        match = re.search(r"\bmeeting (\d{4}-\d{2}-\d{2})", warning)
+        if match:
+            warning_dates[warning] = {match.group(1)}
+    if investing_only_dates:
+        for warning in warnings:
+            if warning.startswith("Investing.com meeting date(s) outside"):
+                warning_dates[warning] = {d.isoformat() for d in investing_only_dates}
+    if polymarket_section is not None:
+        for entry in polymarket_section["meetings"]:
+            for warning in entry.get("warnings", []):
+                warning_dates.setdefault(warning, set()).add(entry["meeting_date"])
+    meeting_metadata = {
+        meeting["meeting_date"]: {
+            "sources": sources,
+            "warnings": [w for w in warnings if w not in warning_dates or meeting["meeting_date"] in warning_dates[w]],
+            "method_notes": list(METHOD_NOTES),  # Shared methodology, no meeting-specific claims.
+        } for meeting in meetings
+    }
     failed_components = sorted({entry["provider"] for entry in errors})
     data = {
         "retrieved_at": timeutil.iso_z(snapshot_retrieved_at),
@@ -386,6 +426,7 @@ def build_snapshot(
         "errors": errors,
         "warnings": warnings,
         "method_notes": list(METHOD_NOTES),
+        "meeting_metadata": meeting_metadata,
     }
     return {
         "success": True,

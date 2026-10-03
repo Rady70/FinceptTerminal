@@ -22,9 +22,11 @@ observation.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from fedwatch import fomc, fred, polymarket, timeutil
 from fedwatch import zq as fedwatch_zq
@@ -665,6 +667,7 @@ def evaluate_lifecycle(
     store: FedwatchHistoryStore,
     fred_history: dict | None,
     clock=timeutil.utc_now,
+    meeting_date: str | None = None,
 ) -> dict:
     """Advance unresolved past meetings using the official FRED series.
 
@@ -675,7 +678,8 @@ def evaluate_lifecycle(
     """
     now = clock()
     result = {"evaluated": 0, "resolved": [], "pending": [], "errors": []}
-    pending = store.meetings_awaiting_resolution(now.date())
+    pending = [m for m in store.meetings_awaiting_resolution(now.date())
+               if meeting_date is None or m["meeting_date"] == meeting_date]
     if not pending:
         return result
     if fred_history is None:
@@ -743,6 +747,7 @@ def collect(
     data: dict,
     transport: Transport | None = None,
     clock=timeutil.utc_now,
+    meeting_date: str | None = None,
 ) -> dict:
     """Record an accepted snapshot and advance the meeting lifecycle.
 
@@ -754,14 +759,15 @@ def collect(
     now = clock()
     lifecycle = None
     errors: list[dict] = []
-    pending = store.meetings_awaiting_resolution(now.date())
+    pending = [m for m in store.meetings_awaiting_resolution(now.date())
+               if meeting_date is None or m["meeting_date"] == meeting_date]
     if pending:
         fred_history = None
         try:
             fred_history = fred.fetch_target_history(transport, clock=clock)
         except FedwatchError as exc:
             errors.append(exc.to_dict())
-        lifecycle = evaluate_lifecycle(store, fred_history, clock=clock)
+        lifecycle = evaluate_lifecycle(store, fred_history, clock=clock, meeting_date=meeting_date)
         errors.extend(lifecycle.get("errors", []))
     report = record_snapshot(store, data, clock=clock)
     return {
@@ -897,7 +903,7 @@ def backfill_polymarket(
         )
         if (
             not force
-            and resolution != MEETING_STATUS_RESOLVED
+            and resolution not in (MEETING_STATUS_RESOLVED, MEETING_STATUS_PENDING)
             and mapping.get("last_revalidation_status") in ("NOT_FOUND", "AMBIGUOUS")
         ):
             result["backfills"].append({**entry_base, "status": "MAPPING_NOT_CURRENT"})
@@ -1082,6 +1088,7 @@ def record_zq_observations(
                 "meeting_ordinal": row.get("meeting_ordinal"),
                 "multi_meeting_month": row.get("multi_meeting_month"),
                 "approximated_month_split": row.get("approximated_month_split"),
+                "import_identity": (detail_base or {}).get("import_identity"),
             }
         )
         detail = {
@@ -1094,6 +1101,9 @@ def record_zq_observations(
         }
         if detail_base:
             detail.update(detail_base)
+            distributions = detail.pop("cumulative_distribution_by_meeting", {})
+            if meeting_date in distributions:
+                detail["cumulative_distribution"] = distributions[meeting_date]
         result = store.record_observation(
             meeting_date=meeting_date,
             source=ZQ_SOURCE,
@@ -1127,6 +1137,9 @@ def import_zq(
     data_dir,
     watch_dates: list[date],
     clock=timeutil.utc_now,
+    input_format="qualified",
+    meeting_date=None,
+    force=False,
 ) -> dict:
     """Reconstruct ZQ observations for the watch dates and persist them.
 
@@ -1136,7 +1149,29 @@ def import_zq(
     watch date is independent: one insufficient date is reported without
     blocking the others.
     """
-    contracts, contract_report = fedwatch_zq.load_contracts(data_dir)
+    if input_format == "investing":
+        from fedwatch import monthly_csv
+        contracts, contract_report = monthly_csv.load_contracts(data_dir)
+    elif input_format == "qualified":
+        contracts, contract_report = fedwatch_zq.load_contracts(data_dir)
+        for file_report in contract_report.get("files", []):
+            file_report["input_sha256"] = hashlib.sha256((Path(data_dir) / file_report["file"]).read_bytes()).hexdigest()
+    else:
+        raise ValueError("unsupported monthly-contract input format")
+    import_identity = content_digest(contract_report)
+    if any(day > clock().date() for day in watch_dates):
+        raise FedwatchError(PROVIDER_ZQ, "FEDWATCH_ZQ_DATA_INVALID", "future watch dates are not historical inputs")
+    if meeting_date and not force:
+        retained = store.observations(meeting_date=meeting_date, method=FED_METHOD_ZQ, source=ZQ_SOURCE)
+        retained_days = {
+            (row.get("detail") or {}).get("watch_date") for row in retained
+            if (row.get("detail") or {}).get("import_identity") == import_identity
+            and (row.get("detail") or {}).get("reconstruction_complete")
+        }
+        if all(day.isoformat() in retained_days for day in watch_dates):
+            return {"db_path": str(store.path), "contract_report": contract_report,
+                    "status": "REUSED_LOCAL", "network_requests": 0, "errors": [],
+                    "watch_dates": [{"watch_date": day.isoformat(), "status": "REUSED_LOCAL"} for day in sorted(set(watch_dates))]}
     fomc_result = fomc.fetch_calendar(transport, clock=clock)
     if fomc_result.get("fallback_stale"):
         raise FedwatchError(
@@ -1152,6 +1187,10 @@ def import_zq(
             },
         )
     meeting_end_dates = sorted(row["end_date"] for row in fomc_result["meetings"])
+    if meeting_date:
+        selected = timeutil.parse_date(meeting_date)
+        if selected not in meeting_end_dates:
+            raise FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_MEETING_NOT_FOUND", "selected meeting is absent from the official calendar")
     warnings: list[str] = list(fomc_result.get("warnings") or [])
     fred_history = fred.fetch_target_history(transport, clock=clock)
     upper_rows = fred_history["upper"]
@@ -1159,7 +1198,7 @@ def import_zq(
 
     errors: list[dict] = []
     watch_results = []
-    for watch_date in sorted(watch_dates):
+    for watch_date in sorted(set(watch_dates)):
         # The target range must be a genuine paired observation: the latest
         # date on which BOTH bounds have an observation, never a mix of dates.
         upper_by_day = {
@@ -1222,11 +1261,21 @@ def import_zq(
                 contracts,
                 current_rate_upper=current_range["upper"],
                 current_rate_lower=current_range["lower"],
+                selected_meeting=timeutil.parse_date(meeting_date) if meeting_date else None,
             )
         except FedwatchError as exc:
             errors.append(exc.to_dict())
             continue
         local_rows = [row for row in deconvolution["rows"] if row["row_type"] == "local"]
+        if meeting_date:
+            local_rows = [row for row in local_rows if row["meeting_date"] == meeting_date]
+            if not local_rows:
+                errors.append(FedwatchError(
+                    PROVIDER_ZQ, "FEDWATCH_ZQ_RECONSTRUCTION_INCOMPLETE",
+                    "selected meeting has no accepted reconstructed observations; required monthly coverage remains missing",
+                    detail={"meeting_date": meeting_date, "watch_date": watch_date.isoformat(),
+                            "deconvolution": deconvolution["report"]},
+                ).to_dict())
         try:
             recorded = record_zq_observations(
                 store,
@@ -1235,6 +1284,13 @@ def import_zq(
                 detail_base={
                     "current_target_range": current_range,
                     "contract_count": len(contracts),
+                    "contract_inputs": contract_report,
+                    "import_identity": import_identity,
+                    "reconstruction_complete": bool(local_rows) and not deconvolution["report"].get("skipped_meetings"),
+                    "cumulative_distribution_by_meeting": {
+                        day: [r for r in deconvolution["rows"] if r["row_type"] == "cumulative" and r["meeting_date"] == day]
+                        for day in {r["meeting_date"] for r in local_rows}
+                    },
                 },
                 clock=clock,
             )
@@ -1280,6 +1336,10 @@ def series(
     rows = store.observations(
         meeting_date=meeting_date, method=method, outcome_bp=outcome_bp, open_ended=open_ended
     )
+    if method is None:
+        # Legacy consumers interpret outcome_bp as a local meeting change.
+        # Published absolute target bands require an explicit method request.
+        rows = [r for r in rows if r["method"] in (FED_METHOD_LIVE, FED_METHOD_ZQ, POLY_METHOD)]
     errors: list[dict] = []
     valid: list[dict] = []
     for row in rows:
@@ -1297,6 +1357,7 @@ def series(
     return {
         "meeting_date": meeting_date,
         "method": method,
+        "financial_object": ("TARGET_RANGE_UPPER_BP" if method == "HISTORICAL_CME_PUBLISHED_TARGET_RANGE" else "LOCAL_MEETING_CHANGE_BP"),
         "outcome_bp": outcome_bp,
         "open_ended": open_ended,
         "observation_count": len(valid),
