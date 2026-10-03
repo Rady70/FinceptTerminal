@@ -80,6 +80,7 @@ class TstEtfResearchStore : public QObject {
     void bars_confirm_revise_and_keep_vintages();
     void failed_item_never_erases_and_is_not_this_runs_result();
     void history_window_is_one_fetch();
+    void incremental_history_joins_only_a_consistent_overlap();
     void fund_snapshot_session_rule_holdings_and_fundamentals();
     void macro_null_is_missing_and_revisions_replay();
     void stage_status_stale_and_partial();
@@ -223,6 +224,62 @@ void TstEtfResearchStore::history_window_is_one_fetch() {
     QCOMPARE(bars.size(), 2);
     QCOMPARE(bars.first().date, QDate(2026, 9, 30));
     QCOMPARE(bars.first().close, 51.5);
+}
+
+void TstEtfResearchStore::incremental_history_joins_only_a_consistent_overlap() {
+    auto& repo = EtfResearchRepository::instance();
+    auto persist = [&](const char* run, const char* at, const QJsonArray& rows, bool incremental, QDate session) {
+        QJsonObject item = history_item(at, rows);
+        if (incremental)
+            item.insert(QStringLiteral("incremental"), true);
+        QVERIFY(repo.begin_run(QLatin1String(run), QStringLiteral("manual_cli"), utc(at), universe_.version).is_ok());
+        auto p =
+            repo.persist_payload(QLatin1String(run), payload({{"yahoo_history", stage(at, {{"XLV", item}})}}), session);
+        QVERIFY2(p.is_ok(), p.is_err() ? p.error().c_str() : "");
+    };
+    auto window = [&](const char* as_of) {
+        return repo.load_inputs(universe_, utc(as_of), utc(as_of)).value().bars.value(QStringLiteral("XLV")).bars;
+    };
+    auto last_detail = [&]() {
+        auto q = Database::instance().execute(QStringLiteral(
+            "SELECT detail FROM etf_research_retrievals WHERE subject = 'XLV' ORDER BY retrieval_id DESC LIMIT 1"));
+        return q.is_ok() && q.value().next() ? q.value().value(0).toString() : QString();
+    };
+    // A full history, then an incremental delivery whose three overlapping
+    // closes agree: the window is joined back to the stored start.
+    persist("st1", "2026-09-25T22:00:00.000Z",
+            {bar("2026-09-21", 100, 1e6), bar("2026-09-22", 101, 1e6), bar("2026-09-23", 102, 1e6),
+             bar("2026-09-24", 103, 1e6), bar("2026-09-25", 104, 1e6)},
+            false, QDate(2026, 9, 25));
+    persist("st2", "2026-09-29T22:00:00.000Z",
+            {bar("2026-09-23", 102, 1e6), bar("2026-09-24", 103, 1e6), bar("2026-09-25", 104, 1e6),
+             bar("2026-09-28", 105, 1e6), bar("2026-09-29", 106, 1e6)},
+            true, QDate(2026, 9, 29));
+    QVERIFY(last_detail().contains(QStringLiteral("joined to the stored history from 2026-09-21")));
+    auto joined = window("2026-09-30T12:00:00.000Z");
+    QCOMPARE(joined.size(), 7);
+    QCOMPARE(joined.first().date, QDate(2026, 9, 21));
+    QCOMPARE(joined.last().close, 106.0);
+    // Every overlapping close moved by one common factor: the provider restated
+    // the history. The window is this delivery's range only; no restated close
+    // is joined to unrestated ones.
+    persist("st3", "2026-09-30T22:00:00.000Z",
+            {bar("2026-09-24", 51.5, 1e6), bar("2026-09-25", 52, 1e6), bar("2026-09-28", 52.5, 1e6),
+             bar("2026-09-29", 53, 1e6), bar("2026-09-30", 53.5, 1e6)},
+            true, QDate(2026, 9, 30));
+    QVERIFY(last_detail().contains(QStringLiteral("NOT joined (history restated)")));
+    auto restated = window("2026-10-01T12:00:00.000Z");
+    QCOMPARE(restated.size(), 5);
+    QCOMPARE(restated.first().date, QDate(2026, 9, 24));
+    QCOMPARE(restated.first().close, 51.5);
+    // Two overlapping sessions are not enough evidence to join.
+    persist("st4", "2026-10-01T22:00:00.000Z",
+            {bar("2026-09-29", 53, 1e6), bar("2026-09-30", 53.5, 1e6), bar("2026-10-01", 54, 1e6)}, true,
+            QDate(2026, 10, 1));
+    QVERIFY(last_detail().contains(QStringLiteral("NOT joined (overlap too short)")));
+    auto short_overlap = window("2026-10-02T12:00:00.000Z");
+    QCOMPARE(short_overlap.size(), 3);
+    QCOMPARE(short_overlap.first().date, QDate(2026, 9, 29));
 }
 
 void TstEtfResearchStore::fund_snapshot_session_rule_holdings_and_fundamentals() {
