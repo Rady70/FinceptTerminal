@@ -22,8 +22,10 @@
 //    checked against that session's close and a > 0.5 % gap lowers credibility.
 //  * Captures several sessions apart give ONE interval estimate, never a value
 //    smeared over the missing days; a missed capture stays a gap.
-//  * An interval containing a split, or where AUM did not change while NAV did
-//    (a stale AUM field), has no E1.
+//  * An interval containing a split has no E1 or E2. Where AUM did not change
+//    while NAV did (Yahoo re-served a stale snapshot) no estimator is computed,
+//    and that capture never anchors the next interval: the next fresh capture
+//    spans the whole gap from the last fresh one.
 //
 // Header-only over Qt Core.
 #pragma once
