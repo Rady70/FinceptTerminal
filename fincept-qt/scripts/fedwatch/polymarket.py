@@ -919,7 +919,12 @@ def build_section(
             transport, mapping, clock=clock, sleep=sleep
         )
         warnings.extend(outcome_warnings)
-        provider_errors.extend(outcome_errors)
+        # These failures came from this validated meeting's token requests.
+        # Discovery failures above remain global; a failed December token must
+        # not invalidate an otherwise complete October retained acquisition.
+        provider_errors.extend(FedwatchError(exc.provider, exc.code, exc.message,
+                                             detail={**(exc.detail or {}), "meeting_date": meeting_date.isoformat()})
+                               for exc in outcome_errors)
         entry["outcomes"] = outcomes
 
         latest_instants = []

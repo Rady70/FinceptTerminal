@@ -1,8 +1,11 @@
 # FedWatch bounded acquisition
 
 This backend change starts from `main` at
-`dcaf3bec15e5ff0fa25080f773cba8a7bffcbaca`. It is separate from the still-open
-Batch C UI PR #39. No Batch C panel/chart files are changed here.
+`dcaf3bec15e5ff0fa25080f773cba8a7bffcbaca`. It now integrates finalized
+Batch C application main
+`971a8b86c8dfc6910bc77ee92524d9b575f73ff1` (PR #39 merged). The acquisition
+branch preserves both histories through a local integration merge. The
+finalized panel is wired below; layout/charts/primary controls are preserved.
 
 The workflow is **explicit acquisition → validation → durable storage → local
 reuse**. There is no scheduler, browser automation, paid API, or background
@@ -47,7 +50,13 @@ Schema **v4** stores the latest current attempt independently for each meeting.
 A selected refresh replaces that meeting's attempt even when it returns no
 meetings; other meetings keep their original values, errors and timestamps.
 A full refresh replaces all prior attempts, including omitted meetings after a
-failure. Accepted observation history is never used to manufacture current
+failure. Errors with another explicit `detail.meeting_date` are excluded from
+each meeting's envelope; `partial` and `failed_components` are recomputed.
+FRED/calendar/discovery failures without a meeting identity remain global.
+Token-request failures inherit their validated meeting identity. Selected
+Investing date validation ignores unrelated dates without narrowing the
+cumulative chain needed for the local probability transformation.
+The initial empty-key failure diagnostic is removed when real attempts exist. Accepted observation history is never used to manufacture current
 state. Local overview reads qualify each meeting separately and expose its
 acquisition age; overview `retrieved_at` is null because there is no single
 retrieval instant. Source entries carry their meeting scope. The top-level
@@ -176,17 +185,23 @@ not evidence of equivalence. Timing is date matched, not necessarily simultaneou
 The existing current Fed-side/Polymarket difference remains Polymarket minus
 Fed-side. No history is interpolated or created by polling current quotes.
 
-## Batch C follow-on wiring
+## Finalized Batch C consumer wiring
 
-The concurrent UI corrections remain in their own PR/worktree. This branch
-does not claim full UI navigation qualification. Once that UI is finalized,
-its opening/meeting-change path must use `local_snapshot` and local history
-commands, its manual Refresh must use `collect --meeting`, and history buttons
-must invoke explicit import/backfill commands. Display actual observation
-counts and source/method labels; put exact errors/rights/timing limitations in
-Research details. A published absolute-target series needs target-band labels;
-never feed its `outcome_bp` into a local-change selector. Keep imported coverage
-actionable rather than calling a public but unintegrated route nonexistent.
+Activation uses `history_meetings`, `local_snapshot`, `history_series`, and
+`history_analytics` only. Meeting changes reload retained current/history;
+outcome/method changes reload local analytics; range/details controls use
+local state. No activation/navigation dispatches `collect` or history imports.
+The existing horizontal current bars, compact navigation, default upcoming
+0 bp outcome, adaptive charts and source-specific outside-range labels remain.
+Validated mapping outcomes remain available before the first stored quote.
+
+Primary Refresh dispatches `collect --meeting <selected upcoming date>` once.
+Resolved/PENDING Refresh remains local-only. Empty inventory stays empty on
+activation and offers deliberate acquisition via the existing Refresh or
+Update upcoming meetings buttons. Update upcoming meetings explicitly performs
+unscoped `collect`. Load/Retry history remains explicit bounded Polymarket
+backfill; provisional CME/monthly imports are never automatic or new primary
+controls. Their `PROVISIONAL_FIXTURE_ONLY` status is retained in Research details.
 
 ## Review correction validation
 
@@ -197,7 +212,14 @@ v2 preservation, transactional v3 migration/rollback, and default financial
 object separation. The C++ dispatch test links the real EconomicsService and
 DataHub with small test-only process/cache recorders. Explicit `collect
 --meeting` dispatches once; producer/hub replay cannot dispatch FedWatch, while
-the same hub successfully replays a non-FedWatch control request. This is
-service integration evidence, not finalized Batch C panel or desktop evidence.
+the same hub successfully replays a non-FedWatch control request. The combined
+panel regression uses the existing injected dispatch seam and
+real Python CLI history/analytics, with captured current responses. A dedicated
+activation/navigation case reads the actual SQLite retained current through
+`acquisition.local_snapshot` with a deterministic clock; it records zero
+network commands. Manual Refresh records exactly one selected collect.
+Pending/resolved refresh and empty-inventory activation are explicitly tested.
+These are hidden-widget fixtures and service checks, not owner native acceptance.
 Exact-head full application build receipts are retained in the paired control
-record; panel wiring still requires finalized PR #39 and combined validation.
+record. Existing Batch C owner acceptance is historical; this new combined
+executable needs later owner manual inspection. No desktop automation is run.

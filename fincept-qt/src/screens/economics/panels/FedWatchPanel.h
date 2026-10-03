@@ -67,6 +67,7 @@ class FedWatchPanel : public EconPanelBase {
     void request(const QString& command, const QStringList& args = {});
     void rebuild_meetings();
     void load_meeting();
+    void load_local();
     void rebuild_outcomes();
     QList<QJsonObject> current_outcome_rows() const;
     void load_analytics();
@@ -79,6 +80,7 @@ class FedWatchPanel : public EconPanelBase {
     QWidget* make_chip_row(const QString& kind, Selection* model, int height);
     void sync_chips();
     bool resolved() const;
+    bool local_only() const;
     QJsonObject meeting() const;
     QJsonObject current_meeting() const;
     Dispatch dispatch_;
@@ -116,7 +118,6 @@ class FedWatchPanel : public EconPanelBase {
     QString selected_outcome_;
     bool activated_ = false;
     bool current_ok_ = false;
-    bool collect_after_overview_ = false;
     bool collect_in_flight_ = false;
     bool backfill_in_flight_ = false;
     bool meeting_explicitly_selected_ = false;

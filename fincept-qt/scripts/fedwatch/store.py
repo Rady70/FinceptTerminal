@@ -374,12 +374,21 @@ class FedwatchHistoryStore:
             # A full refresh replaces every prior attempt, including omitted
             # meetings after a provider failure. Empty key retains an unscoped
             # failure diagnostic if no meeting has been acquired yet.
-            days.update(row[0] for row in conn.execute("SELECT meeting_date FROM fedwatch_current_acquisition"))
+            days.update(row[0] for row in conn.execute("SELECT meeting_date FROM fedwatch_current_acquisition") if row[0])
+        if days:
+            # The unscoped initial-failure diagnostic has no role once real
+            # meeting identities exist, including after a selected refresh.
+            conn.execute("DELETE FROM fedwatch_current_acquisition WHERE meeting_date=''")
         for day in days or {""}:
             if day:
                 timeutil.parse_date(day)
             retained = dict(envelope)
             retained["data"] = dict(envelope["data"], meetings=[m for m in meetings if m["meeting_date"] == day])
+            errors = [e for e in envelope["data"].get("errors", [])
+                      if not e.get("detail", {}).get("meeting_date") or e["detail"]["meeting_date"] == day]
+            retained["data"]["errors"] = errors
+            retained["partial"] = bool(errors)
+            retained["failed_components"] = sorted({e["provider"] for e in errors})
             conn.execute(
                 "INSERT INTO fedwatch_current_acquisition VALUES (?, ?, ?) "
                 "ON CONFLICT(meeting_date) DO UPDATE SET "

@@ -340,7 +340,6 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
             return;
         current_ok_ = false;
         current_error_.clear();
-        collect_after_overview_ = false;
         render();
         diagnostic_status_->setText(tr("Updating upcoming meetings from current providers…"));
         request("collect");
@@ -351,9 +350,8 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     load_history_->setToolTip(tr("Download available Polymarket observations for the selected upcoming meeting. "
                                  "Fed-side history remains the locally retained archive."));
     connect(load_history_, &QPushButton::clicked, this, [this] {
-        if (collect_in_flight_ || backfill_in_flight_ || resolved() || selected_meeting_.isEmpty())
+        if (collect_in_flight_ || backfill_in_flight_ || local_only() || selected_meeting_.isEmpty())
             return;
-        collect_after_overview_ = false;
         backfill_results_.remove(selected_meeting_);
         request("history_backfill", {"--meeting", selected_meeting_});
         render();
@@ -608,20 +606,32 @@ void FedWatchPanel::request(const QString& command, const QStringList& args) {
 void FedWatchPanel::activate() {
     if (!activated_) {
         activated_ = true;
-        on_fetch();
+        load_local();
     }
 }
-void FedWatchPanel::on_fetch() {
+void FedWatchPanel::load_local() {
     if (collect_in_flight_ || backfill_in_flight_)
         return;
     ++generation_;
     current_error_.clear();
     current_ok_ = false;
     analytics_ = {};
-    collect_after_overview_ = true;
     render();
     status_->setText(tr("Loading meeting inventory from local history…"));
     request("history_meetings");
+}
+void FedWatchPanel::on_fetch() {
+    if (collect_in_flight_ || backfill_in_flight_)
+        return;
+    if (!selected_meeting_.isEmpty() && local_only()) {
+        load_local();
+        return;
+    }
+    current_ok_ = false;
+    current_error_.clear();
+    render();
+    diagnostic_status_->setText(tr("Refreshing selected current observations…"));
+    request("collect", selected_meeting_.isEmpty() ? QStringList{} : QStringList{"--meeting", selected_meeting_});
 }
 QJsonObject FedWatchPanel::meeting() const {
     for (const auto& item : overview_["meetings"].toArray())
@@ -637,6 +647,10 @@ QJsonObject FedWatchPanel::current_meeting() const {
 }
 bool FedWatchPanel::resolved() const {
     return meeting()["status"].toString() == "RESOLVED";
+}
+bool FedWatchPanel::local_only() const {
+    const auto status = meeting()["status"].toString();
+    return status == "RESOLVED" || status == "PENDING";
 }
 void FedWatchPanel::rebuild_meetings() {
     const QString previous = selected_meeting_;
@@ -671,12 +685,9 @@ void FedWatchPanel::load_meeting() {
     series_ = {};
     rebuild_outcomes();
     render();
-    if (selected_meeting_.isEmpty()) {
-        status_->setText(status_->text() + tr("\nNo meetings available. Refresh collects upcoming observations."));
-        return;
-    }
-    status_->setText(tr("Loading stored meeting history…"));
-    request("history_series", {"--meeting", selected_meeting_});
+    status_->setText(tr("Loading retained current observations from local storage…"));
+    request("local_snapshot",
+            selected_meeting_.isEmpty() ? QStringList{} : QStringList{"--meeting", selected_meeting_});
 }
 void FedWatchPanel::rebuild_outcomes() {
     const QString previous = !restored_outcome_.isEmpty()   ? restored_outcome_
@@ -732,7 +743,7 @@ QList<QJsonObject> FedWatchPanel::current_outcome_rows() const {
     const auto current = current_meeting();
     const auto fed = current["fed_side"].toObject();
     const auto poly = current["polymarket"].toObject();
-    const bool show_current = current_ok_ && !resolved();
+    const bool show_current = current_ok_ && !local_only();
     QMap<QString, QJsonObject> rows;
     const auto fed_freshness = fed["freshness"].toObject()["status"].toString();
     const bool fed_current =
@@ -798,21 +809,29 @@ void FedWatchPanel::on_result(const QString& id, const services::EconomicsResult
         backfill_in_flight_ = false;
         analytics_ = {};
         backfill_results_[pending.meeting] = {data, history_issue(result, usable, tr("History update"), false)};
-        collect_after_overview_ = false;
         request("history_meetings");
         render();
         return;
     }
-    if (pending.command == "collect") {
-        collect_in_flight_ = false;
-        fetch_btn_->setEnabled(true);
-        update_upcoming_->setEnabled(true);
+    if (pending.command == "collect" || pending.command == "local_snapshot") {
+        if (pending.command == "collect")
+            collect_in_flight_ = false;
         current_ok_ = usable;
         current_error_ = errors(data);
         if (!result.success && current_error_.isEmpty())
             current_error_ = result.error;
         snapshot_ = usable ? data : QJsonObject{};
-        request("history_meetings");
+        if (pending.command == "collect") {
+            request("history_meetings");
+        } else {
+            rebuild_meetings();
+            rebuild_outcomes();
+            if (!selected_meeting_.isEmpty())
+                request("history_series", {"--meeting", selected_meeting_});
+            else
+                status_->setText(tr("No retained meetings. Press Refresh or Update upcoming meetings to acquire "
+                                    "upcoming observations."));
+        }
         render();
         return;
     }
@@ -822,20 +841,6 @@ void FedWatchPanel::on_result(const QString& id, const services::EconomicsResult
             overview_ = data;
             rebuild_meetings();
             sync_chips(); // Stored meetings remain selectable while current providers are being collected.
-        }
-        if (collect_after_overview_) {
-            collect_after_overview_ = false;
-            if (result.success && resolved() && meeting_explicitly_selected_) {
-                load_meeting();
-                return;
-            }
-            if (!result.success && !selected_meeting_.isEmpty()) {
-                load_meeting();
-                return;
-            }
-            status_->setText(tr("Refreshing current providers and retaining accepted observations…"));
-            request("collect");
-            return;
         }
         load_meeting();
         return;
@@ -865,7 +870,7 @@ void FedWatchPanel::render() {
     const auto current = current_meeting();
     const auto fed = current["fed_side"].toObject();
     const auto poly = current["polymarket"].toObject();
-    const bool show_current = current_ok_ && !resolved();
+    const bool show_current = current_ok_ && !local_only();
     if (resolved())
         summary_->setText(tr("%1 · RESOLVED%2\nStored history only · no live refresh")
                               .arg(selected_meeting_,
@@ -883,6 +888,8 @@ void FedWatchPanel::render() {
     next_meeting_->setEnabled(meetings_->currentIndex() >= 0 && meetings_->currentIndex() + 1 < meetings_->count());
     QStringList state;
     state << tr("Snapshot retrieved: %1").arg(snapshot_["retrieved_at"].toString(tr("Not refreshed")));
+    if (meeting()["status"].toString() == "PENDING")
+        state << tr("PENDING · stored local history only");
     if (resolved())
         state << tr("RESOLVED · stored local history; no live collection");
     else if (!current_ok_)
@@ -1040,6 +1047,8 @@ void FedWatchPanel::render() {
     details_->setPlainText(QString::fromUtf8(
         QJsonDocument(
             QJsonObject{{"current_snapshot", snapshot_},
+                        {"provisional_imports", QJsonObject{{"cme_interchange", "PROVISIONAL_FIXTURE_ONLY"},
+                                                            {"investing_monthly", "PROVISIONAL_FIXTURE_ONLY"}}},
                         {"stored_meeting", stored},
                         {"stored_observations", series_},
                         {"analytics", analytics_},
@@ -1052,7 +1061,7 @@ void FedWatchPanel::render() {
     const bool idle = !collect_in_flight_ && !backfill_in_flight_;
     fetch_btn_->setEnabled(idle);
     update_upcoming_->setEnabled(idle);
-    load_history_->setEnabled(idle && !resolved() && !selected_meeting_.isEmpty());
+    load_history_->setEnabled(idle && !local_only() && !selected_meeting_.isEmpty());
 }
 QString FedWatchPanel::backfill_status() const {
     const auto stored = meeting()["polymarket_backfill"].toObject();
@@ -1173,7 +1182,7 @@ void FedWatchPanel::render_history() {
     contextual_load_history_->setText(retry_history ? tr("Retry history") : tr("Load Polymarket history"));
     contextual_load_history_->setAccessibleName(retry_history ? tr("Retry Polymarket history")
                                                               : tr("Load Polymarket history"));
-    contextual_load_history_->setVisible(diagnostics_->isHidden() && !resolved() && selected_token &&
+    contextual_load_history_->setVisible(diagnostics_->isHidden() && !local_only() && selected_token &&
                                          mapping["mapping_status"].toString() == "VALIDATED" &&
                                          revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS" &&
                                          (history_not_loaded || retry_history));

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "marketlab" / "tests"))
 
 from fedwatch_test_support import FakeTransport, FixedClock, epoch, make_clob_history, make_snapshot_transport, utc
 from test_fedwatch_analytics import seed
-from fedwatch import history, snapshot
+from fedwatch import acquisition, history, snapshot
 from fedwatch.store import FedwatchHistoryStore
 from fedwatch.transport import TransportError
 
@@ -46,6 +46,10 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
 def main() -> None:
     store = FedwatchHistoryStore(Path(sys.argv[1]))
     case = sys.argv[2] if len(sys.argv) > 2 else ""
+    if case == "local-snapshot":
+        meeting = sys.argv[3] if len(sys.argv) > 3 else None
+        print(json.dumps(acquisition.local_snapshot(store, meeting, clock=FixedClock(utc(2026, 9, 28, 12))), allow_nan=False))
+        return
     if case.startswith("backfill-"):
         meeting = sys.argv[3] if len(sys.argv) > 3 else "2026-10-28"
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
@@ -66,6 +70,7 @@ def main() -> None:
         make_snapshot_transport(now), clock=FixedClock(now), sleep=lambda _: None
     )
     history.record_snapshot(store, envelope["data"], clock=FixedClock(now))
+    store.save_current_acquisition(envelope, "2026-09-28T12:00:00Z")
     seed(store, [("2026-08-01T12:00:00Z", 30), ("2026-09-26T12:00:00Z", 35)], outcome_bp=25)
     mappings = [m for m in store.validated_mappings() if m["meeting_date"] == "2026-10-28"]
     mapping = next(m for m in mappings if m["outcome_bp"] == 25 and not m["open_ended"])

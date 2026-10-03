@@ -209,6 +209,8 @@ def build_snapshot(
     investing_dates = {
         timeutil.parse_date(section["meeting_date"]) for section in fed_sections.values()
     }
+    if selected_meeting_dates is not None:
+        investing_dates &= set(selected_meeting_dates)
     investing_only_dates = (
         sorted(investing_dates - official_upcoming_dates)
         if fomc_result is not None and not calendar_uncertain
