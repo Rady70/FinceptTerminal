@@ -241,6 +241,7 @@ struct BasketRow {
 };
 
 struct ConstituentRow {
+    QString research_symbol; ///< the Yahoo symbol used for its data (mapped when reviewed)
     QString parent;
     QString symbol;
     QString name;

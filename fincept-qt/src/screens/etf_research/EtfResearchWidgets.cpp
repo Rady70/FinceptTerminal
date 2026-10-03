@@ -2,10 +2,12 @@
 
 #include "screens/etf_research/EtfResearchFormat.h"
 
+#include <QFontMetricsF>
 #include <QHelpEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <QToolTip>
 
 #include <algorithm>
@@ -125,6 +127,7 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
             // No observation: a hatched neutral tile, never a zero colour.
             p.fillRect(r, token(&ui::ThemeTokens::bg_surface));
             p.save();
+            p.setClipRect(r); // the hatch lines start left of the tile: keep them inside it
             p.setPen(QPen(token(&ui::ThemeTokens::border_dim), 1));
             for (int x = r.left() - r.height(); x < r.right(); x += 7)
                 p.drawLine(QPoint(x, r.bottom()), QPoint(x + r.height(), r.top()));
@@ -267,36 +270,85 @@ void RrgWidget::paintEvent(QPaintEvent*) {
     p.setFont(etfr_font(this, 10, true));
     p.setPen(token(&ui::ThemeTokens::text_primary));
     p.drawText(QRectF(r.left(), 2, r.width(), 18), Qt::AlignLeft | Qt::AlignVCenter, title_);
-    for (const auto& s : series_) {
-        if (s.points.isEmpty())
-            continue;
-        const bool sel = s.key == selected_;
-        QColor col = s.color;
-        if (!selected_.isEmpty() && !sel)
-            col.setAlphaF(0.35f);
-        QPainterPath path;
-        for (int i = 0; i < s.points.size(); ++i) {
-            const QPointF pt = map(s.points[i].ratio, s.points[i].mom);
-            if (i == 0)
-                path.moveTo(pt);
-            else
-                path.lineTo(pt);
-        }
-        p.setPen(QPen(col, sel ? 2.2 : 1.2));
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(path);
-        for (int i = 0; i + 1 < s.points.size(); ++i) {
-            const QPointF pt = map(s.points[i].ratio, s.points[i].mom);
+    // Tails fade from the oldest week (thin, faint) to the latest (full), the
+    // last segment ends in an arrowhead, and the hovered or selected series is
+    // drawn on top while the others are dimmed.
+    const QString focus = !hovered_.isEmpty() ? hovered_ : selected_;
+    QVector<const RrgSeries*> order;
+    for (const auto& s : series_)
+        if (!s.points.isEmpty() && s.key != focus)
+            order.append(&s);
+    for (const auto& s : series_)
+        if (!s.points.isEmpty() && s.key == focus)
+            order.append(&s);
+    QVector<QRectF> labels;
+    const QFontMetricsF fm(etfr_font(this, 10, true));
+    for (const RrgSeries* sp : order) {
+        const RrgSeries& s = *sp;
+        const bool hot = s.key == focus;
+        const double dim = focus.isEmpty() || hot ? 1.0 : 0.22;
+        const int n = s.points.size();
+        for (int i = 1; i < n; ++i) {
+            const double age = n > 1 ? static_cast<double>(i) / (n - 1) : 1.0; // 0 oldest .. 1 latest
+            QColor col = s.color;
+            col.setAlphaF(static_cast<float>(dim * (0.18 + 0.82 * age)));
+            p.setPen(QPen(col, (hot ? 1.4 : 0.7) + (hot ? 1.4 : 1.1) * age, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(map(s.points[i - 1].ratio, s.points[i - 1].mom), map(s.points[i].ratio, s.points[i].mom));
+            p.setPen(Qt::NoPen);
             p.setBrush(col);
-            p.drawEllipse(pt, 1.6, 1.6);
+            if (i < n - 1)
+                p.drawEllipse(map(s.points[i].ratio, s.points[i].mom), 1.6, 1.6);
         }
+        QColor head = s.color;
+        head.setAlphaF(static_cast<float>(dim));
         const QPointF last = map(s.points.last().ratio, s.points.last().mom);
-        p.setBrush(col);
-        p.drawEllipse(last, sel ? 5.0 : 4.0, sel ? 5.0 : 4.0);
+        if (n > 1) {
+            const QPointF prev = map(s.points[n - 2].ratio, s.points[n - 2].mom);
+            const double ang = std::atan2(last.y() - prev.y(), last.x() - prev.x());
+            const double len = hot ? 9.0 : 7.0;
+            QPolygonF arrow;
+            arrow << last << last - QPointF(len * std::cos(ang - 0.45), len * std::sin(ang - 0.45))
+                  << last - QPointF(len * std::cos(ang + 0.45), len * std::sin(ang + 0.45));
+            p.setPen(Qt::NoPen);
+            p.setBrush(head);
+            p.drawPolygon(arrow);
+        } else {
+            p.setPen(Qt::NoPen);
+            p.setBrush(head);
+            p.drawEllipse(last, 4.0, 4.0);
+        }
+        // Label beside the head, nudged down until it no longer overlaps one already placed.
+        QRectF box(last + QPointF(7, -fm.height() + 2), QSizeF(fm.horizontalAdvance(s.label) + 2, fm.height()));
+        for (int tries = 0; tries < 6; ++tries) {
+            bool clash = false;
+            for (const QRectF& b : labels)
+                clash = clash || b.intersects(box);
+            if (!clash)
+                break;
+            box.translate(0, fm.height() * 0.9);
+        }
+        labels.append(box);
         p.setFont(etfr_font(this, 10, true));
-        p.setPen(col);
-        p.drawText(last + QPointF(6, -4), s.label);
+        p.setPen(head);
+        p.drawText(box, Qt::AlignLeft | Qt::AlignVCenter, s.label);
     }
+}
+
+void RrgWidget::mouseMoveEvent(QMouseEvent* e) {
+    const QString k = hit(e->pos());
+    if (k != hovered_) {
+        hovered_ = k;
+        update();
+    }
+    QWidget::mouseMoveEvent(e);
+}
+
+void RrgWidget::leaveEvent(QEvent* e) {
+    if (!hovered_.isEmpty()) {
+        hovered_.clear();
+        update();
+    }
+    QWidget::leaveEvent(e);
 }
 
 QString RrgWidget::hit(const QPoint& pos) const {

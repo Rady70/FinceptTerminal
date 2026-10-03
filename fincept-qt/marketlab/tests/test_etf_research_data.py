@@ -305,7 +305,8 @@ class RunFetchTests(unittest.TestCase):
         "funds": ["XLB", "GLD"],
         "constituents": {"holding_parents": ["XLB"], "max_per_parent": 2, "extra_symbols": ["PTT.BK"],
                          "exclude": ["SPY"], "history_period": "1y", "fundamentals": True,
-                         "fundamental_extra": ["ASML.AS"]},
+                         "fundamental_extra": ["ASML.AS"], "symbol_map": {"LIN": "LIN.TEST"},
+                         "exclude_holdings": ["CASHFUND"]},
         "fred": ["VIXCLS", "BAD"],
         "world_bank": {"countries": ["TH"], "indicators": ["NY.GDP.MKTP.KD.ZG"]},
     }
@@ -317,7 +318,7 @@ class RunFetchTests(unittest.TestCase):
                     for s in symbols}
 
         def snapshot(sym):
-            holdings = [[1, "LIN", "Linde", 0.13], [2, "CASH", "Cash", 0.01], [3, "NEM", "Newmont", 0.07]]
+            holdings = [[1, "LIN", "Linde", 0.13], [2, "CASHFUND", "Cash fund", 0.01], [3, "NEM", "Newmont", 0.07]]
             return {"status": "OK", "fields": {"totalAssets": 1.0}, "holdings": holdings if sym == "XLB" else []}
 
         def fred(sid):
@@ -353,8 +354,9 @@ class RunFetchTests(unittest.TestCase):
         self.assertEqual(st["fred"]["status"], "PARTIAL")
         self.assertEqual(st["world_bank"]["status"], "OK")
         # Top-2 holdings of XLB without CASH, plus extras, minus the excluded long-history symbols.
-        self.assertEqual(payload["constituents"], ["LIN", "PTT.BK"])
-        self.assertEqual(sorted(st["yahoo_fundamentals"]["items"]), ["ASML.AS", "LIN", "PTT.BK"])
+        # The reviewed symbol map renames a holding before it is fetched.
+        self.assertEqual(payload["constituents"], ["LIN.TEST", "PTT.BK"])
+        self.assertEqual(sorted(st["yahoo_fundamentals"]["items"]), ["ASML.AS", "LIN.TEST", "PTT.BK"])
         # The response body is reduced to its digest; the text itself is not carried.
         self.assertNotIn("text", st["fred"]["items"]["VIXCLS"])
         self.assertEqual(len(st["fred"]["items"]["VIXCLS"]["response_sha256"]), 64)

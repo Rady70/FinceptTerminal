@@ -287,6 +287,12 @@ QJsonObject EtfResearchService::build_request(bool full) const {
                     it.value().secsTo(QDateTime::currentDateTimeUtc()) < qint64{kFundamentalsFreshDays} * 86400)
                     fresh.append(it.key());
     }
+    QJsonObject holding_map;
+    for (auto it = u->holding_symbol_map.constBegin(); it != u->holding_symbol_map.constEnd(); ++it)
+        holding_map.insert(it.key(), it.value());
+    QJsonArray excluded_holdings;
+    for (auto it = u->holding_symbol_excluded.constBegin(); it != u->holding_symbol_excluded.constEnd(); ++it)
+        excluded_holdings.append(it.key());
     QJsonArray wb_codes;
     for (const UniverseInstrument& i : u->instruments)
         if (!i.wb_code.isEmpty() && i.country_type == QLatin1String("single"))
@@ -312,6 +318,8 @@ QJsonObject EtfResearchService::build_request(bool full) const {
                       QJsonObject{{QStringLiteral("start"), cons_last.addDays(-14).toString(Qt::ISODate)},
                                   {QStringLiteral("symbols"), inc_cons}}},
                      {QStringLiteral("fundamentals_fresh"), fresh},
+                     {QStringLiteral("symbol_map"), holding_map},
+                     {QStringLiteral("exclude_holdings"), excluded_holdings},
                      {QStringLiteral("fundamentals_fresh_days"), kFundamentalsFreshDays},
                      {QStringLiteral("fundamentals"), true}}},
         {QStringLiteral("fred"),

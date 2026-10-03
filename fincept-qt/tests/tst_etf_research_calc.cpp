@@ -799,6 +799,14 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
     QString err;
     const auto u = load_universe(QLatin1String(kUniverseResourcePath), &err);
     QVERIFY(u);
+    // Reviewed holding-symbol map: a missing suffix is added for the same
+    // security; an ambiguous code stays as listed; a cash fund is excluded.
+    QCOMPARE(u->holding_research_symbol(QStringLiteral("00939")), QStringLiteral("0939.HK"));
+    QCOMPARE(u->holding_research_symbol(QStringLiteral("ADVANC-R")), QStringLiteral("ADVANC-R.BK"));
+    QCOMPARE(u->holding_research_symbol(QStringLiteral("ING.AS")), QStringLiteral("INGA.AS"));
+    QCOMPARE(u->holding_research_symbol(QStringLiteral("KAP")), QStringLiteral("KAP")); // ambiguous venue: unmapped
+    QCOMPARE(u->holding_research_symbol(QStringLiteral("NVDA")), QStringLiteral("NVDA"));
+    QVERIFY(u->holding_symbol_excluded.contains(QStringLiteral("XTSLA")));
     ResearchInputs in;
     in.universe = *u;
     in.as_of = QDateTime(QDate(2026, 10, 1), QTime(12, 0), QTimeZone::UTC);

@@ -108,6 +108,13 @@ struct ResearchUniverse {
     QVector<Basket> baskets;
     QHash<QString, QVector<IntlStock>> intl; ///< market -> stocks
     QStringList intl_markets;                ///< resource order
+    /// Reviewed map from a fund-holding symbol as Yahoo lists it to the Yahoo
+    /// symbol of the same security (missing exchange suffix, provider typo).
+    QHash<QString, QString> holding_symbol_map;
+    QHash<QString, QString> holding_symbol_excluded; ///< non-equity holdings -> why
+
+    /// The research (Yahoo) symbol of a fund holding: mapped when reviewed, else as listed.
+    QString holding_research_symbol(const QString& raw) const { return holding_symbol_map.value(raw, raw); }
 
     const UniverseInstrument* find(const QString& symbol) const {
         for (const auto& i : instruments)
@@ -303,6 +310,18 @@ inline std::optional<ResearchUniverse> parse_universe(const QJsonObject& doc, QS
         u.intl.insert(it.key(), stocks);
         u.intl_markets.append(it.key());
     }
+    const QJsonObject hm = doc.value(QStringLiteral("holding_symbol_map")).toObject();
+    for (auto it = hm.begin(); it != hm.end(); ++it) {
+        const QString y = it.value().toObject().value(QStringLiteral("yahoo")).toString();
+        const QString basis = it.value().toObject().value(QStringLiteral("basis")).toString();
+        if (y.isEmpty() ||
+            (basis != QLatin1String("exchange_suffix") && basis != QLatin1String("provider_symbol_correction")))
+            return fail(QStringLiteral("holding_symbol_map %1 needs a yahoo symbol and a known basis").arg(it.key()));
+        u.holding_symbol_map.insert(it.key(), y);
+    }
+    const QJsonObject hx = doc.value(QStringLiteral("holding_symbol_excluded")).toObject();
+    for (auto it = hx.begin(); it != hx.end(); ++it)
+        u.holding_symbol_excluded.insert(it.key(), it.value().toString());
     return u;
 }
 

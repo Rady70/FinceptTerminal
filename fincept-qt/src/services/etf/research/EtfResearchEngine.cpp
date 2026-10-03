@@ -958,15 +958,23 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                 c.symbol = h.symbol;
                 c.name = h.name;
                 c.weight = h.weight;
-                const auto fit = in.fundamentals.constFind(h.symbol);
+                // The holding as Yahoo lists it may lack its exchange suffix: a
+                // reviewed map gives the research symbol of the same security.
+                const QString ys = in.universe.holding_research_symbol(h.symbol);
+                c.research_symbol = ys;
+                const auto fit = in.fundamentals.constFind(ys);
                 const QJsonObject fo = fit == in.fundamentals.constEnd() ? QJsonObject() : fit->fields;
                 c.currency = fo.value(QStringLiteral("currency")).toString();
-                const TrIndex* t = tr(h.symbol);
+                const TrIndex* t = in.universe.holding_symbol_excluded.contains(h.symbol) ? nullptr : tr(ys);
                 const bool usd =
-                    c.currency.isEmpty() ? !h.symbol.contains(QLatin1Char('.')) : c.currency == QLatin1String("USD");
-                if (t) {
+                    c.currency.isEmpty() ? !ys.contains(QLatin1Char('.')) : c.currency == QLatin1String("USD");
+                if (in.universe.holding_symbol_excluded.contains(h.symbol)) {
+                    c.ret = compute_returns(TrIndex{}, nullptr, QString(), {});
+                    c.ret.m1 = ResearchValue::unavailable(QStringLiteral("non_equity_holding"));
+                    c.ret.rel_m1 = c.ret.m1;
+                } else if (t) {
                     c.ret = compute_returns(*t, usd ? spy : nullptr, usd ? in.universe.bench_us : QString(),
-                                            base_conditions(stale_of(h.symbol), t->revised));
+                                            base_conditions(stale_of(ys), t->revised));
                     if (!usd)
                         c.ret.rel_m1 = ResearchValue::unavailable(QStringLiteral("currency_differs_from_benchmark"));
                     if (usd && spy) {

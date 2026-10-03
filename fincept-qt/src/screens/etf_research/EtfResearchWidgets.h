@@ -37,6 +37,7 @@ class HeatmapWidget : public QWidget {
     void set_tiles(const QVector<HeatTile>& tiles, double range, const QString& legend);
     void set_selected(const QString& key);
     int tile_count() const { return tiles_.size(); }
+    const QVector<HeatTile>& tiles() const { return tiles_; }
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
     bool hasHeightForWidth() const override { return true; }
@@ -85,6 +86,8 @@ class RrgWidget : public QWidget {
   protected:
     void paintEvent(QPaintEvent*) override;
     void mousePressEvent(QMouseEvent* e) override;
+    void mouseMoveEvent(QMouseEvent* e) override;
+    void leaveEvent(QEvent* e) override;
     bool event(QEvent* e) override;
 
   private:
@@ -94,6 +97,7 @@ class RrgWidget : public QWidget {
     QVector<RrgSeries> series_;
     QString title_;
     QString selected_;
+    QString hovered_;
     double xmin_ = 98, xmax_ = 102, ymin_ = 98, ymax_ = 102;
 };
 

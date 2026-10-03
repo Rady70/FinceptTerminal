@@ -2963,5 +2963,115 @@
     "sector": "Staples"
    }
   ]
+ },
+ "holding_symbol_map": {
+  "005935": {
+   "yahoo": "005935.KS",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "00939": {
+   "yahoo": "0939.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "01211": {
+   "yahoo": "1211.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "01398": {
+   "yahoo": "1398.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "02318": {
+   "yahoo": "2318.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "03988": {
+   "yahoo": "3988.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "BBDC4": {
+   "yahoo": "BBDC4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "ITUB4": {
+   "yahoo": "ITUB4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "PETR4": {
+   "yahoo": "PETR4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "ADVANC-R": {
+   "yahoo": "ADVANC-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "AOT-R": {
+   "yahoo": "AOT-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "BDMS-R": {
+   "yahoo": "BDMS-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "CPALL-R": {
+   "yahoo": "CPALL-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "DELTA-R": {
+   "yahoo": "DELTA-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "GULF-R": {
+   "yahoo": "GULF-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "KTB-R": {
+   "yahoo": "KTB-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "PTT-R": {
+   "yahoo": "PTT-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "PTTEP-R": {
+   "yahoo": "PTTEP-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "SCC-R": {
+   "yahoo": "SCC-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "ING.AS": {
+   "yahoo": "INGA.AS",
+   "basis": "provider_symbol_correction",
+   "note": "ING Groep N.V. trades on Euronext Amsterdam as INGA; Yahoo's holdings list gives ING.AS, which does not resolve (verified 2026-10-03)."
+  }
+ },
+ "holding_symbol_unresolved": {
+  "KAP": "Kazatomprom is listed on several venues (London GDR, Astana, Kazakhstan); the holding does not say which.",
+  "500034": "BSE scrip code; Yahoo returns no data for 500034.BO, and substituting the NSE listing is a venue choice not made here.",
+  "ROG.SW": "Yahoo returns no data; RO.SW is the bearer share, a different Roche instrument."
+ },
+ "holding_symbol_excluded": {
+  "XTSLA": "BlackRock cash fund, not an equity constituent."
  }
 }

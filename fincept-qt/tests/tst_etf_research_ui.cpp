@@ -294,6 +294,28 @@ void TstEtfResearchUi::flow_heatmap_keeps_evidence_modes_apart() {
     auto* mode = s.findChild<QComboBox*>(QStringLiteral("etfrFlowMode"));
     auto* heat = s.view_widget(QStringLiteral("flow"))->findChildren<etfr::HeatmapWidget*>().value(0);
     QVERIFY(heat->tile_count() > 60);
+    // Default: best available evidence. Every fund with any evidence has a tile
+    // value; classes keep their own tags and units, and a proxy is never dollars.
+    QCOMPARE(mode->currentData().toString(), QStringLiteral("best"));
+    int meas = 0, est = 0, prxy = 0, missing = 0;
+    for (const auto& t : heat->tiles()) {
+        if (t.tag == QLatin1String("MEAS"))
+            ++meas;
+        else if (t.tag == QLatin1String("EST"))
+            ++est;
+        else if (t.tag == QLatin1String("PRXY")) {
+            ++prxy;
+            QVERIFY2(!t.value_text.contains(QLatin1Char('$')), qPrintable(t.key));
+            QVERIFY2(t.value_text.endsWith(QLatin1String("pp")), qPrintable(t.value_text));
+        } else
+            ++missing;
+        if (t.value)
+            QVERIFY(std::abs(*t.value) <= 1.0 + 1e-12); // scaled within its class
+    }
+    QVERIFY(meas >= 1); // SPY: SEC measured
+    QVERIFY(est >= 1);  // XLK: two captures
+    QVERIFY(prxy > 50); // everything else falls back to the labelled proxy
+    QVERIFY(missing <= 3);
     mode->setCurrentIndex(mode->findData(QStringLiteral("measured")));
     QCOMPARE(s.table(QStringLiteral("flow"))->model()->rowCount(), heat->tile_count());
     auto* label = s.findChild<QLabel*>(QStringLiteral("etfrHint"));

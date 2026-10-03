@@ -115,10 +115,14 @@ def run_fetch(request: dict) -> dict:
     cons = request.get("constituents", {})
     max_per = int(cons.get("max_per_parent", 10))
     constituent_set = set(cons.get("extra_symbols", []))
+    # Holdings are fetched under their research symbol: the reviewed map adds a
+    # missing exchange suffix (e.g. 00939 -> 0939.HK); non-equity holdings are skipped.
+    symbol_map = cons.get("symbol_map", {})
+    excluded = set(cons.get("exclude_holdings", []))
     for parent in cons.get("holding_parents", []):
         for rank, hsym, _name, _w in fund_items.get(parent, {}).get("holdings", [])[:max_per]:
-            if hsym and hsym.upper() not in ("CASH", "USD"):
-                constituent_set.add(hsym)
+            if hsym and hsym.upper() not in ("CASH", "USD") and hsym not in excluded:
+                constituent_set.add(symbol_map.get(hsym, hsym))
     # Symbols whose history the request already fetched at a longer depth are
     # not fetched again at the constituent depth (one consistent window each).
     constituent_set -= set(cons.get("exclude", []))
