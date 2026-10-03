@@ -29,9 +29,10 @@
 //  * An interval containing a split has no E1 or E2. Where AUM did not change
 //    while NAV did (Yahoo re-served a stale snapshot) the AUM-based E1 and E3
 //    are refused, and that capture never anchors the next interval: the next
-//    fresh capture spans the whole gap from the last fresh one. E2 can still
-//    stand on the separately reported share count, graded down, when the count
-//    moved and passes the consistency rule below.
+//    fresh capture spans the whole gap from the last fresh one. E2 is refused
+//    there too: the current share count cannot be reconciled with a re-served
+//    AUM (rule below), and a consistent anchor says nothing about a count
+//    observed later.
 //  * E2 is trusted only when the reported share count is consistent with the
 //    fund's own AUM and NAV: reported shares × NAV is by definition the fund's
 //    net assets, so the two fields describing the same fund at the same time
@@ -39,7 +40,11 @@
 //    capture with a fresh AUM means they describe different share counts or
 //    different dates (live Yahoo data: median gap 35 %, none within 1 %), and a
 //    change in the count can then not be told apart from a correction of the
-//    field: E2 is refused, never promoted to the best estimate.
+//    field: E2 is refused, never promoted to the best estimate. Both counts of
+//    the interval must pass at their own capture; a current capture whose AUM
+//    was re-served has nothing to pass against, so its count is unverified.
+//    Every case that refuses E1 (stale AUM, missing AUM or NAV, split) thus
+//    leaves E2 without support too: E2 corroborates E1, it never replaces it.
 //
 // Header-only over Qt Core.
 #pragma once
@@ -223,8 +228,9 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
     if (split)
         f.flags.append(QStringLiteral("SPLIT_IN_INTERVAL"));
     const bool have_an = f.aum_prev && f.aum_cur && f.nav_prev && f.nav_cur && *f.nav_prev > 0 && *f.nav_cur > 0;
-    // The reported share count must match AUM/NAV at every capture whose AUM is
-    // fresh: the anchor, and the current capture unless its AUM was re-served.
+    // The reported share count must match AUM/NAV at both captures. A current
+    // capture whose AUM was re-served cannot be checked; its gap is not measured
+    // and E2 is refused below (unverified), whatever the anchor showed.
     const bool stale_aum_cur = have_an && *f.aum_cur == *f.aum_prev && *f.nav_cur != *f.nav_prev;
     bool shares_consistent = p.shares_outstanding && c.shares_outstanding;
     for (const FundCapture* x : {&p, &c}) {
@@ -251,18 +257,16 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
         f.reason = QStringLiteral("aum_or_nav_missing");
     } else if (*f.aum_cur == *f.aum_prev && *f.nav_cur != *f.nav_prev) {
         // The provider re-served the previous AUM: the AUM-based estimators
-        // cannot use this capture (E3 would book -AUM x return as flow). The
-        // reported share count is a separate field: when it moved, E2 stands
-        // (graded down); when it did not, the snapshot cannot tell a real zero
-        // from a stale field, so there is no E2 either.
+        // cannot use this capture (E3 would book -AUM x return as flow), and the
+        // current share count has no AUM to be reconciled with, so it cannot
+        // support E2 either. A moved count is recorded as unverified; an
+        // unchanged one cannot tell a real zero from a stale field.
         f.reason = QStringLiteral("aum_not_updated");
         f.flags.append(QStringLiteral("AUM_UNCHANGED_NAV_CHANGED"));
-        if (!split && shares_consistent && f.nav_cur) {
-            if (*c.shares_outstanding != *p.shares_outstanding)
-                f.e2_reported_shares = (*c.shares_outstanding - *p.shares_outstanding) * *f.nav_cur;
-            else
-                f.flags.append(QStringLiteral("REPORTED_SHARES_UNCHANGED"));
-        }
+        if (p.shares_outstanding && c.shares_outstanding)
+            f.flags.append(*c.shares_outstanding != *p.shares_outstanding
+                               ? QStringLiteral("REPORTED_SHARES_UNVERIFIED")
+                               : QStringLiteral("REPORTED_SHARES_UNCHANGED"));
         return f;
     } else {
         f.e1_implied_shares = (*f.implied_shares_cur - *f.implied_shares_prev) * *f.nav_cur;
@@ -393,27 +397,26 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
     auto side = [&](const std::optional<double>& v, const QString& tag, const QString& why) {
         if (!v)
             return ResearchValue::unavailable(why, method + tag);
-        QVector<CredCondition> sc{CredCondition::SourceTimingAmbiguous};
-        if (stale_aum)
-            sc.append(CredCondition::Partial); // the rest of the snapshot was stale
-        ResearchValue r = graded(*v, EvidenceClass::Estimated, Credibility::Low, sc, QStringLiteral("usd"),
-                                 method + tag, QLatin1String(kSourceYahooFund), last.to);
+        // E2 and E3 exist only for intervals with a fresh AUM at both ends.
+        ResearchValue r = graded(*v, EvidenceClass::Estimated, Credibility::Low, {CredCondition::SourceTimingAmbiguous},
+                                 QStringLiteral("usd"), method + tag, QLatin1String(kSourceYahooFund), last.to);
         r.add_flag(flag::kAssumedDate);
-        if (stale_aum)
-            r.add_flag(flag::kLowConfidence);
         return r;
     };
     e.latest_e2 = side(last.e2_reported_shares, QStringLiteral(":E2_reported_shares"),
                        last.reason == QLatin1String("split_in_interval") ? QStringLiteral("split_in_interval")
                        : last.flags.contains(QLatin1String("REPORTED_SHARES_INCONSISTENT"))
                            ? QStringLiteral("reported_shares_inconsistent_with_aum_nav")
+                       : last.flags.contains(QLatin1String("REPORTED_SHARES_UNVERIFIED"))
+                           ? QStringLiteral("reported_shares_unverified_stale_aum")
                        : stale_aum && last.flags.contains(QLatin1String("REPORTED_SHARES_UNCHANGED"))
                            ? QStringLiteral("reported_shares_unchanged_in_stale_snapshot")
                        : stale_aum ? QStringLiteral("aum_not_updated_and_reported_shares_missing")
                                    : QStringLiteral("reported_shares_missing"));
     e.latest_e3 =
         side(last.e3_price_adjusted, QStringLiteral(":E3_close_adjusted_aum"), QStringLiteral("close_or_aum_missing"));
-    // Best available estimate: E1, else E2 (an independent field) when E1 is refused.
+    // Best available estimate: E1, else E2. E2 stands only where both share counts
+    // were reconciled at their own captures, so in practice it corroborates E1.
     e.best = e.latest.usable() ? e.latest : e.latest_e2.usable() ? e.latest_e2 : e.latest;
 
     // Windows over the last N NYSE sessions ending at the expected session.

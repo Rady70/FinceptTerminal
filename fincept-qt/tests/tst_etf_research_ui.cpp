@@ -149,6 +149,7 @@ class TstEtfResearchUi : public QObject {
     void refresh_is_the_only_acquisition_path();
     void narrow_window_stacks_detail();
     void sources_headline_and_rrg_defaults();
+    void scan_tables_use_the_common_flow_evidence_rule();
     void large_universe_stays_responsive();
     void capture_writes_every_view_without_acquisition();
 };
@@ -389,7 +390,8 @@ void TstEtfResearchUi::sources_headline_and_rrg_defaults() {
     // with the readable 4-week trails.
     ResearchSnapshot snap = g_snapshot;
     snap.sources.clear();
-    for (const char* st : {"UPDATED", "PARTIAL", "FAILED", "UNAVAILABLE", "NOT_CONFIGURED", "UNCHANGED"}) {
+    for (const char* st :
+         {"UPDATED", "PARTIAL", "FAILED", "STALE", "PARTIAL", "UNAVAILABLE", "NOT_CONFIGURED", "UNCHANGED"}) {
         SourceStageStatus x;
         x.stage = QString::fromLatin1(st).toLower();
         x.status = QLatin1String(st);
@@ -404,11 +406,57 @@ void TstEtfResearchUi::sources_headline_and_rrg_defaults() {
     for (auto* l : s.findChildren<QLabel*>(QStringLiteral("etfrTileValue")))
         if (l->text().contains(QStringLiteral("configured")))
             text = QTextDocumentFragment::fromHtml(l->text()).toPlainText();
-    QCOMPARE(text, QStringLiteral("2 partial/failed · 1 unavailable · 1 not configured"));
+    // Each state is named for what it is: a STALE stage is neither partial nor failed.
+    QCOMPARE(text, QStringLiteral("1 failed · 2 partial · 1 stale · 1 unavailable · 1 not configured"));
     s.show_view(QStringLiteral("rrg"));
     auto* tail = s.findChild<QComboBox*>(QStringLiteral("etfrRrgTail"));
     QVERIFY(tail);
     QCOMPARE(tail->currentData().toInt(), 4);
+}
+
+void TstEtfResearchUi::scan_tables_use_the_common_flow_evidence_rule() {
+    // A fund with an absolute 1M return but no benchmark-relative 1M return has no
+    // flow evidence under best_flow_evidence(); the UNIVERSE and THEMES scan
+    // columns must say so too, not PRXY from the absolute return.
+    ResearchSnapshot snap = g_snapshot;
+    QString victim;
+    for (UniverseRow& r : snap.rows)
+        if (r.inst.is_fund() && r.inst.has_role("theme") && !r.measured.latest.usable() && !r.est.best.usable() &&
+            r.ret.m1.usable() && r.ret.rel_m1.usable()) {
+            r.ret.rel_m1 = ResearchValue::unavailable(QStringLiteral("benchmark_history_missing"));
+            victim = r.inst.symbol;
+            break;
+        }
+    QVERIFY(!victim.isEmpty());
+    QVERIFY(snap.row(victim)->ret.m1.usable());
+    QVERIFY(!best_flow_evidence(*snap.row(victim)).usable());
+    EtfResearchScreen s;
+    s.set_autoload(false);
+    s.resize(1500, 900);
+    s.show();
+    s.set_snapshot(snap);
+    for (const QString view : {QStringLiteral("universe"), QStringLiteral("themes")}) {
+        s.show_view(view);
+        const QAbstractItemModel* m = s.table(view)->model();
+        int ev = -1;
+        for (int c = 0; c < m->columnCount(); ++c)
+            if (m->headerData(c, Qt::Horizontal).toString() == QLatin1String("Ev"))
+                ev = c;
+        QVERIFY2(ev >= 0, qPrintable(view));
+        int checked = 0;
+        for (int i = 0; i < m->rowCount(); ++i) {
+            const UniverseRow* row = snap.row(m->index(i, 0).data().toString());
+            if (!row || !row->inst.is_fund())
+                continue;
+            const ResearchValue& bv = best_flow_evidence(*row);
+            const QString want = bv.usable() ? QLatin1String(evidence_tag(bv.evidence)) : QStringLiteral("N/A");
+            QVERIFY2(m->index(i, ev).data().toString() == want,
+                     qPrintable(view + QLatin1Char(' ') + row->inst.symbol + QLatin1Char(' ') +
+                                m->index(i, ev).data().toString()));
+            checked += row->inst.symbol == victim ? 1 : 0;
+        }
+        QCOMPARE(checked, 1);
+    }
 }
 
 void TstEtfResearchUi::group_flows_load_when_the_flow_view_opens() {

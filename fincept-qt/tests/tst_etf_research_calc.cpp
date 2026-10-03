@@ -469,15 +469,32 @@ void TstEtfResearchCalc::reported_shares_must_match_aum_over_nav() {
         QVERIFY(!e.best.value);
     }
     {
-        // Stale AUM, but the anchor's count matched AUM/NAV and then moved: E2 stays
-        // possible, EXPERIMENTAL and low-confidence (the current AUM cannot be checked).
+        // Third review (adversarial): a good anchor (1 M shares x 100 = AUM), then a
+        // re-served AUM with a moved NAV and a pathological current count of 50 M.
+        // The anchor cannot vouch for a count observed later; the current count has
+        // no AUM to be reconciled with. E2 must not stand, nor become best.
         bars = closes(QStringLiteral("F"), d, {100.0, 101.0});
-        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1.02e6)};
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 50e6)};
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QCOMPARE(e.latest.reason, QStringLiteral("aum_not_updated"));
+        QVERIFY(!e.latest_e2.value);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_unverified_stale_aum"));
+        QVERIFY(!e.intervals.last().e2_reported_shares);
+        QVERIFY(!e.best.value);
+        QVERIFY(!e.best.reason.isEmpty());
+        // ... and the same holds for a plausible-looking current count.
+        const QVector<FundCapture> plausible{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1.02e6)};
+        QVERIFY(!estimate_flow(plausible, bars, {}, d[1]).best.value);
+    }
+    {
+        // Once the AUM is fresh again, the same moved count is reconciled at its own
+        // capture and E2 stands (here it agrees with E1).
+        bars = closes(QStringLiteral("F"), d, {100.0, 101.0});
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 1.02e6 * 101.0, 101.0, 1.02e6)};
         const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
         QVERIFY(e.latest_e2.value);
-        QCOMPARE(e.latest_e2.credibility, Credibility::Experimental);
-        QVERIFY(e.latest_e2.has_flag(flag::kLowConfidence));
-        QVERIFY(e.best.value && *e.best.value == *e.latest_e2.value);
+        QVERIFY(std::abs(*e.latest_e2.value - 0.02e6 * 101.0) < 1e-3);
+        QCOMPARE(e.agreement, QStringLiteral("agree"));
     }
     {
         // No reported count at all: E2 is missing, not inconsistent.
@@ -509,8 +526,8 @@ void TstEtfResearchCalc::stale_aum_and_split_are_unavailable() {
     }
     {
         // The same stale AUM, but the separately reported share count moved: the
-        // AUM-based E1/E3 stay refused, E2 stands, graded down, and becomes the
-        // best estimate.
+        // current count has no AUM to be reconciled with, so E1, E2 and E3 are
+        // all refused and there is no best estimate.
         BarSeries moved = bars;
         moved.bars[1].close = 101.0;
         const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1.02e6)};
@@ -518,11 +535,10 @@ void TstEtfResearchCalc::stale_aum_and_split_are_unavailable() {
         QVERIFY(!e.latest.value);
         QCOMPARE(e.latest.reason, QStringLiteral("aum_not_updated"));
         QVERIFY(!e.latest_e3.value);
-        QVERIFY(e.latest_e2.value);
-        QVERIFY(std::abs(*e.latest_e2.value - 0.02e6 * 101.0) < 1e-3);
-        QCOMPARE(e.latest_e2.credibility, Credibility::Experimental);
-        QVERIFY(e.latest_e2.has_flag(flag::kLowConfidence));
-        QVERIFY(e.best.value && *e.best.value == *e.latest_e2.value);
+        QVERIFY(!e.latest_e2.value);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_unverified_stale_aum"));
+        QVERIFY(e.intervals.last().flags.contains(QStringLiteral("REPORTED_SHARES_UNVERIFIED")));
+        QVERIFY(!e.best.value);
     }
     {
         // Shares unchanged too: no E2, and the reason says why.

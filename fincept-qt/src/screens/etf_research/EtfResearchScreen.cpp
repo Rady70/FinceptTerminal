@@ -224,7 +224,10 @@ std::pair<Cell, Cell> etfr_flow_cells(const UniverseRow& r) {
     c.align = Qt::AlignCenter;
     c.tooltip = tr_("No measured or estimated flow (%1; %2). Market-behaviour proxies remain in the rotation columns.")
                     .arg(r.measured.latest.reason, r.est.latest.reason);
-    const EvidenceClass e = r.ret.m1.usable() ? EvidenceClass::Proxy : EvidenceClass::Unavailable;
+    // The same rule as the FLOW view and the headline (best_flow_evidence): the
+    // proxy is the 1M return vs the fund's benchmark, not the absolute return.
+    const ResearchValue& bv = best_flow_evidence(r);
+    const EvidenceClass e = r.inst.is_fund() && bv.usable() ? bv.evidence : EvidenceClass::Unavailable;
     return {c, etfr_evidence(e, e == EvidenceClass::Proxy ? tr_("PROXY only: returns, RRG and turnover describe market "
                                                                 "behaviour, not ETF creation/redemption")
                                                           : tr_("UNAVAILABLE: no stored observation"))};
@@ -1138,27 +1141,25 @@ void EtfResearchScreen::populate_summary() {
                                                ? QString::number(*cyc.vix.value, 'f', 1) + QStringLiteral(" ") +
                                                      cyc.vix.effective.toString(QStringLiteral("MM-dd"))
                                                : span(tr("n/a"), t.text_tertiary));
-    // Unlike states are counted apart: a failed or partial source, a source that
-    // could not be reached, and one that is not configured (SEC N-PORT without a
-    // User-Agent is the strongest flow evidence missing).
-    int degraded = 0, unreachable = 0, unconfigured = 0, total = 0;
+    // Each unhealthy state is named and counted on its own: failed, partial,
+    // stale (an earlier observation past its freshness rule), unavailable (not
+    // reached) and not configured (SEC N-PORT without a User-Agent is the
+    // strongest flow evidence missing). UPDATED and UNCHANGED are healthy.
+    const QList<QPair<QLatin1String, QString>> unhealthy = {{QLatin1String("FAILED"), tr("failed")},
+                                                            {QLatin1String("PARTIAL"), tr("partial")},
+                                                            {QLatin1String("STALE"), tr("stale")},
+                                                            {QLatin1String("UNAVAILABLE"), tr("unavailable")},
+                                                            {QLatin1String("NOT_CONFIGURED"), tr("not configured")}};
+    QHash<QString, int> by_status;
+    int total = 0;
     for (const auto& s : snap_->sources) {
         ++total;
-        if (s.status == QLatin1String("FAILED") || s.status == QLatin1String("PARTIAL") ||
-            s.status == QLatin1String("STALE"))
-            ++degraded;
-        else if (s.status == QLatin1String("UNAVAILABLE"))
-            ++unreachable;
-        else if (s.status == QLatin1String("NOT_CONFIGURED"))
-            ++unconfigured;
+        ++by_status[s.status];
     }
     QStringList source_parts;
-    if (degraded)
-        source_parts << tr("%1 partial/failed").arg(degraded);
-    if (unreachable)
-        source_parts << tr("%1 unavailable").arg(unreachable);
-    if (unconfigured)
-        source_parts << tr("%1 not configured").arg(unconfigured);
+    for (const auto& u : unhealthy)
+        if (const int n = by_status.value(u.first))
+            source_parts << QStringLiteral("%1 %2").arg(n).arg(u.second);
     tiles_[QStringLiteral("sources")]->setText(total == 0 ? span(tr("no refresh yet"), t.warning)
                                                : source_parts.isEmpty()
                                                    ? span(tr("%1 ok").arg(total), t.positive)
