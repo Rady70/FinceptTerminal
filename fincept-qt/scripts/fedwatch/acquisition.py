@@ -103,7 +103,19 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
         day = timeutil.parse_date(meeting_date)
         meeting = store.get_meeting(meeting_date)
         if day < now.date() or (meeting and meeting["status"] in ("RESOLVED", "PENDING")):
+            recorded = None
+            if day < now.date() and meeting and meeting["status"] == "UPCOMING":
+                # Explicit Refresh repairs the selected stale lifecycle using
+                # official target history only, never obsolete current quotes.
+                recorded = history.collect(store, {"retrieved_at": timeutil.iso_z(now), "meetings": []},
+                                           transport=transport, clock=clock, meeting_date=meeting_date)
             result = local_snapshot(store, meeting_date, clock)
+            if recorded is not None:
+                result["data"]["history_collection"] = recorded
+                saved = store.current_acquisition(meeting_date)
+                # Lifecycle work must not freshen a retained probability quote.
+                store.save_current_acquisition(result, saved["acquired_at"] if saved else timeutil.iso_z(now),
+                                               meeting_date=meeting_date)
             result["data"]["acquisition"]["reason"] = "HISTORICAL_MEETING"
             return result
     saved = store.current_acquisition(meeting_date)
@@ -129,7 +141,9 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
     data = result["data"]
     recorded = history.collect(store, data, transport=transport, clock=clock)
     data["history"] = recorded
-    data["errors"] = list(data.get("errors") or []) + list(recorded.get("errors") or [])
+    # Historical lifecycle failures remain visible and durable, separately
+    # from quality errors needed to establish this current distribution.
+    data["history_collection"] = recorded
     result["partial"] = bool(data["errors"])
     result["failed_components"] = sorted({e["provider"] for e in data["errors"]})
     store.save_current_acquisition(result, timeutil.iso_z(now), meeting_date=meeting_date)

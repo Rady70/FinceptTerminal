@@ -385,7 +385,23 @@ class FedwatchHistoryStore:
             retained = dict(envelope)
             retained["data"] = dict(envelope["data"], meetings=[m for m in meetings if m["meeting_date"] == day])
             errors = [e for e in envelope["data"].get("errors", [])
-                      if not e.get("detail", {}).get("meeting_date") or e["detail"]["meeting_date"] == day]
+                      if (not (e.get("detail") or {}).get("meeting_date") or e["detail"]["meeting_date"] == day)
+                      and (not (e.get("detail") or {}).get("meeting_dates") or day in e["detail"]["meeting_dates"])]
+            metadata = envelope["data"].get("meeting_metadata", {}).get(day)
+            if metadata is not None:
+                retained["data"].update(metadata)
+            retained["data"].pop("meeting_metadata", None)
+            scoped_sources = []
+            for source in retained["data"].get("sources", []):
+                scoped = dict(source, meeting_date=day)
+                # These aggregate statuses are determined by the provider's
+                # errors, which have now been scoped to this retained meeting.
+                if source["provider"] in ("polymarket", "investing") and source["status"] == "PARTIAL":
+                    if not any(e["provider"] == source["provider"] for e in errors):
+                        scoped["status"] = "OK"
+                        scoped.pop("detail", None)
+                scoped_sources.append(scoped)
+            retained["data"]["sources"] = scoped_sources
             retained["data"]["errors"] = errors
             retained["partial"] = bool(errors)
             retained["failed_components"] = sorted({e["provider"] for e in errors})

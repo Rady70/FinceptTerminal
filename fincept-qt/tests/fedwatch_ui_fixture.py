@@ -55,6 +55,10 @@ def main() -> None:
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
                          allow_nan=False))
         return
+    if case == "pending":
+        store.mark_pending("2026-10-28", "FRED_COVERAGE_INSUFFICIENT", now=utc(2026, 10, 29, 12))
+        print(json.dumps({"success": True}))
+        return
     if case == "mapping-without-history":
         outcome = int(sys.argv[3]) if len(sys.argv) > 3 else 25
         mapping = next(m for m in store.validated_mappings(["2026-10-28"])

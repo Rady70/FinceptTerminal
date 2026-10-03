@@ -341,33 +341,44 @@ class TestFedWatchPanel : public QObject {
         flush();
         QVERIFY(control("fedwatchMeeting")->findData("2026-10-28") >= 0);
     }
-    void pendingMeetingRefreshAndHistoryRemainLocal() {
-        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 0}});
+    void pendingMeetingRefreshStaysLocalAndHistoryIsExplicit() {
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                {database_, "mapping-without-history", "25"});
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"), {database_, "pending"});
+        durable_current_reads_ = true;
+        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 25}});
         panel_->activate();
-        const auto inventory = pending_.takeFirst();
-        auto response = backend(inventory);
-        auto data = response["data"].toObject();
-        auto meetings = data["meetings"].toArray();
-        for (int i = 0; i < meetings.size(); ++i) {
-            auto meeting = meetings[i].toObject();
-            if (meeting["meeting_date"].toString() == "2026-10-28")
-                meeting["status"] = "PENDING";
-            meetings[i] = meeting;
-        }
-        data["meetings"] = meetings;
-        response["data"] = data;
-        deliver(inventory, response);
         flush();
         QVERIFY(currentChart()->bars().isEmpty());
-        QVERIFY(!panel_->findChild<QPushButton*>("fedwatchLoadHistory")->isEnabled());
+        auto* load = panel_->findChild<QPushButton*>("fedwatchLoadHistory");
+        auto* contextual = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
+        QVERIFY(load->isEnabled());
+        QVERIFY(!contextual->isHidden());
         panel_->findChild<QPushButton*>("econFetchBtn")->click();
-        while (!pending_.isEmpty()) {
-            const auto request = pending_.takeFirst();
-            deliver(request, request.command == "history_meetings" ? response : backend(request));
-        }
+        flush();
         for (const auto& request : sent_)
             QVERIFY(request.command != "collect" && request.command != "history_backfill");
         QVERIFY(text("fedwatchSourceStatus").contains("PENDING"));
+        contextual->click();
+        QCOMPARE(pending_.size(), 1);
+        auto request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("history_backfill"));
+        QVERIFY(request.args.contains("--meeting"));
+        QVERIFY(request.args.contains("2026-10-28"));
+        load->click(); // Busy guard coalesces both history controls.
+        QVERIFY(pending_.isEmpty());
+        deliver(request, process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                                 {database_, "backfill-ok"}));
+        flush();
+        QVERIFY(currentChart()->bars().isEmpty());
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points.size(), 1);
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points[0].value, 42.0);
+        QVERIFY(load->isEnabled());
+        load->click();
+        request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("history_backfill"));
+        for (const auto& sent : sent_)
+            QVERIFY(sent.command != "collect");
     }
     void freshUpcomingPrefersExactNoChangeAndPreservesUserChoice() {
         // No restoration and no openUpcoming() helper: exercise a genuinely fresh panel.

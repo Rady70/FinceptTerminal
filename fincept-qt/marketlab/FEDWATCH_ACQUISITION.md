@@ -45,17 +45,29 @@ Loading old saved data re-evaluates quote age and meeting lifecycle:
 stale Fed-side values cannot populate current distributions, stale Polymarket
 values retain `STALE`, and current comparisons are cleared. Resolved/past/pending
 selected meetings return retained history without a current provider call.
+An explicit Refresh of a stored UPCOMING meeting whose day has passed first
+advances only that meeting using at most the two existing FRED target-history
+requests. It resolves from official paired observations or becomes PENDING
+with the exact refusal reason. No Investing/current Polymarket/calendar query
+is made and the old probability acquisition timestamp is not refreshed.
 
 Schema **v4** stores the latest current attempt independently for each meeting.
 A selected refresh replaces that meeting's attempt even when it returns no
 meetings; other meetings keep their original values, errors and timestamps.
 A full refresh replaces all prior attempts, including omitted meetings after a
-failure. Errors with another explicit `detail.meeting_date` are excluded from
+failure. Errors with another explicit `detail.meeting_date` or `detail.meeting_dates` are excluded from
 each meeting's envelope; `partial` and `failed_components` are recomputed.
 FRED/calendar/discovery failures without a meeting identity remain global.
 Token-request failures inherit their validated meeting identity. Selected
 Investing date validation ignores unrelated dates without narrowing the
 cumulative chain needed for the local probability transformation.
+Historical lifecycle collection is separately retained in `history_collection`.
+Its errors stay inspectable after restart but do not determine current-acquisition
+partial/reuse state. Current-context FRED, calendar and discovery failures still
+fail closed. Per-meeting retained source statuses/warnings are scoped to that
+meeting; shared method notes remain global methodology. The full acquisition
+response keeps aggregate diagnostics.
+
 The initial empty-key failure diagnostic is removed when real attempts exist. Accepted observation history is never used to manufacture current
 state. Local overview reads qualify each meeting separately and expose its
 acquisition age; overview `retrieved_at` is null because there is no single
@@ -199,7 +211,9 @@ Primary Refresh dispatches `collect --meeting <selected upcoming date>` once.
 Resolved/PENDING Refresh remains local-only. Empty inventory stays empty on
 activation and offers deliberate acquisition via the existing Refresh or
 Update upcoming meetings buttons. Update upcoming meetings explicitly performs
-unscoped `collect`. Load/Retry history remains explicit bounded Polymarket
+unscoped `collect`. PENDING meetings permit explicit history backfill, while
+RESOLVED meetings keep the existing local-only UI history boundary.
+Load/Retry history remains explicit bounded Polymarket
 backfill; provisional CME/monthly imports are never automatic or new primary
 controls. Their `PROVISIONAL_FIXTURE_ONLY` status is retained in Research details.
 

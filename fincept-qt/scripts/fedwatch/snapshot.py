@@ -15,6 +15,7 @@ per-provider data remains available for truthful display.
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import date
 
@@ -384,6 +385,28 @@ def build_snapshot(
             "source": fred_target["source"],
         }
 
+    # Aggregate diagnostics remain in the full response. Retained meetings
+    # receive their own warnings and the shared methodology/provider context.
+    warning_dates = {}
+    for warning in warnings:
+        match = re.search(r"\bmeeting (\d{4}-\d{2}-\d{2})", warning)
+        if match:
+            warning_dates[warning] = {match.group(1)}
+    if investing_only_dates:
+        for warning in warnings:
+            if warning.startswith("Investing.com meeting date(s) outside"):
+                warning_dates[warning] = {d.isoformat() for d in investing_only_dates}
+    if polymarket_section is not None:
+        for entry in polymarket_section["meetings"]:
+            for warning in entry.get("warnings", []):
+                warning_dates.setdefault(warning, set()).add(entry["meeting_date"])
+    meeting_metadata = {
+        meeting["meeting_date"]: {
+            "sources": sources,
+            "warnings": [w for w in warnings if w not in warning_dates or meeting["meeting_date"] in warning_dates[w]],
+            "method_notes": list(METHOD_NOTES),  # Shared methodology, no meeting-specific claims.
+        } for meeting in meetings
+    }
     failed_components = sorted({entry["provider"] for entry in errors})
     data = {
         "retrieved_at": timeutil.iso_z(snapshot_retrieved_at),
@@ -393,6 +416,7 @@ def build_snapshot(
         "errors": errors,
         "warnings": warnings,
         "method_notes": list(METHOD_NOTES),
+        "meeting_metadata": meeting_metadata,
     }
     return {
         "success": True,

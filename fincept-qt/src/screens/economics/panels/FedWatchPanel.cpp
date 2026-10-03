@@ -347,10 +347,10 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     load_history_ = new QPushButton(tr("Load history"), this);
     load_history_->setObjectName("fedwatchLoadHistory");
     load_history_->setAccessibleName(tr("Load Polymarket history"));
-    load_history_->setToolTip(tr("Download available Polymarket observations for the selected upcoming meeting. "
+    load_history_->setToolTip(tr("Download available Polymarket observations for the selected unresolved meeting. "
                                  "Fed-side history remains the locally retained archive."));
     connect(load_history_, &QPushButton::clicked, this, [this] {
-        if (collect_in_flight_ || backfill_in_flight_ || local_only() || selected_meeting_.isEmpty())
+        if (collect_in_flight_ || backfill_in_flight_ || resolved() || selected_meeting_.isEmpty())
             return;
         backfill_results_.remove(selected_meeting_);
         request("history_backfill", {"--meeting", selected_meeting_});
@@ -1061,7 +1061,7 @@ void FedWatchPanel::render() {
     const bool idle = !collect_in_flight_ && !backfill_in_flight_;
     fetch_btn_->setEnabled(idle);
     update_upcoming_->setEnabled(idle);
-    load_history_->setEnabled(idle && !local_only() && !selected_meeting_.isEmpty());
+    load_history_->setEnabled(idle && !resolved() && !selected_meeting_.isEmpty());
 }
 QString FedWatchPanel::backfill_status() const {
     const auto stored = meeting()["polymarket_backfill"].toObject();
@@ -1182,7 +1182,7 @@ void FedWatchPanel::render_history() {
     contextual_load_history_->setText(retry_history ? tr("Retry history") : tr("Load Polymarket history"));
     contextual_load_history_->setAccessibleName(retry_history ? tr("Retry Polymarket history")
                                                               : tr("Load Polymarket history"));
-    contextual_load_history_->setVisible(diagnostics_->isHidden() && !local_only() && selected_token &&
+    contextual_load_history_->setVisible(diagnostics_->isHidden() && !resolved() && selected_token &&
                                          mapping["mapping_status"].toString() == "VALIDATED" &&
                                          revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS" &&
                                          (history_not_loaded || retry_history));

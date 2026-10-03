@@ -918,6 +918,7 @@ def build_section(
         outcomes, outcome_warnings, outcome_errors = fetch_current_outcomes(
             transport, mapping, clock=clock, sleep=sleep
         )
+        entry["warnings"] = list(outcome_warnings)
         warnings.extend(outcome_warnings)
         # These failures came from this validated meeting's token requests.
         # Discovery failures above remain global; a failed December token must
@@ -951,6 +952,8 @@ def build_section(
                     f"than the {FRESHNESS_MAX_AGE_DAYS}-day freshness window "
                     f"(oldest {entry['freshness_days']:.2f} days)"
                 )
+        if entry["data_status"] == "STALE":
+            entry["warnings"].append(warnings[-1])
         # A validated mapping whose data quality is not CURRENT is a provider
         # quality failure for a current-observation snapshot: it must not leave
         # the provider reported as an ordinary OK with no partial marker.

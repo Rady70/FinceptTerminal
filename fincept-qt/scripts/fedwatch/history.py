@@ -667,6 +667,7 @@ def evaluate_lifecycle(
     store: FedwatchHistoryStore,
     fred_history: dict | None,
     clock=timeutil.utc_now,
+    meeting_date: str | None = None,
 ) -> dict:
     """Advance unresolved past meetings using the official FRED series.
 
@@ -677,7 +678,8 @@ def evaluate_lifecycle(
     """
     now = clock()
     result = {"evaluated": 0, "resolved": [], "pending": [], "errors": []}
-    pending = store.meetings_awaiting_resolution(now.date())
+    pending = [m for m in store.meetings_awaiting_resolution(now.date())
+               if meeting_date is None or m["meeting_date"] == meeting_date]
     if not pending:
         return result
     if fred_history is None:
@@ -745,6 +747,7 @@ def collect(
     data: dict,
     transport: Transport | None = None,
     clock=timeutil.utc_now,
+    meeting_date: str | None = None,
 ) -> dict:
     """Record an accepted snapshot and advance the meeting lifecycle.
 
@@ -756,14 +759,15 @@ def collect(
     now = clock()
     lifecycle = None
     errors: list[dict] = []
-    pending = store.meetings_awaiting_resolution(now.date())
+    pending = [m for m in store.meetings_awaiting_resolution(now.date())
+               if meeting_date is None or m["meeting_date"] == meeting_date]
     if pending:
         fred_history = None
         try:
             fred_history = fred.fetch_target_history(transport, clock=clock)
         except FedwatchError as exc:
             errors.append(exc.to_dict())
-        lifecycle = evaluate_lifecycle(store, fred_history, clock=clock)
+        lifecycle = evaluate_lifecycle(store, fred_history, clock=clock, meeting_date=meeting_date)
         errors.extend(lifecycle.get("errors", []))
     report = record_snapshot(store, data, clock=clock)
     return {
