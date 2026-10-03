@@ -234,8 +234,12 @@ Update upcoming meetings buttons. Update upcoming meetings explicitly performs
 unscoped `collect`. PENDING meetings permit explicit history backfill using
 their previously VALIDATED tokens even after negative current revalidation;
 UPCOMING demoted mappings remain blocked and no current quote is rehabilitated.
-Resolved terminal backfill reuse remains unchanged. Meanwhile
-RESOLVED meetings keep the existing local-only UI history boundary.
+RESOLVED Refresh remains fully local, without current probability acquisition.
+Both explicit history actions permit qualified resolved Load/Retry when history
+is absent or retryable, using retained previously VALIDATED identity even after
+NOT_FOUND/AMBIGUOUS current revalidation. Completed terminal resolved backfills
+are reused locally and do not issue repeated provider requests. Historical
+mapping provenance does not rehabilitate invalid current quotes.
 Load/Retry history remains explicit bounded Polymarket
 backfill; provisional CME/monthly imports are never automatic or new primary
 controls. Their `PROVISIONAL_FIXTURE_ONLY` status is retained in Research details.
