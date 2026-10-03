@@ -1,7 +1,7 @@
 name: Lint
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Runs after changes land on main (push), plus on demand (full tree).
+# Runs after changes land on main (push), plus on demand for a selected PR.
 #
 # MarketLab CI policy: hosted CI is Windows-only. There is no automatic hosted
 # CI on pull requests and pre-merge validation is local/review-branch only. The
@@ -9,7 +9,8 @@ name: Lint
 # (diff-scoped to the pushed change), clang-tidy (changed files, gating, exact
 # check set and warnings-as-errors), cppcheck (whole tree,
 # --error-exitcode=1), datahub-discipline and the scope-decision contract. The
-# full-tree sweeps stay available via "Run workflow".
+# manual path uses the same strict changed-line/changed-file gates for the
+# selected PR. It never defaults to an expensive whole-tree clang sweep.
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   push:
@@ -24,7 +25,14 @@ on:
       - '.github/workflows/lint.yml'
       - '.github/scripts/enforce_scope_decision.sh'
       - '.github/scripts/test_scope_decision.sh'
+      - '.github/scripts/resolve_lint_scope.py'
+      - '.github/scripts/test_lint_scope.py'
   workflow_dispatch:
+    inputs:
+      pull_request:
+        description: 'PR number whose changes should be checked (open or merged)'
+        required: true
+        type: string
 
 concurrency:
   group: lint-${{ github.ref }}
@@ -32,6 +40,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -47,15 +56,39 @@ env:
   CPPCHECK_VERSION: "2.16.0"
 
 jobs:
+  lint-scope:
+    name: Resolve exact lint source and base
+    runs-on: windows-latest
+    outputs:
+      base_sha: ${{ steps.scope.outputs.base_sha }}
+      head_sha: ${{ steps.scope.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test lint scope contract
+        run: python .github/scripts/test_lint_scope.py
+      - name: Resolve push range or selected PR merge-base/head
+        id: scope
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/resolve_lint_scope.py
+
   # ── scope-decision-contract ─────────────────────────────────────────────────
   # Post-merge contract test: the scope-enforcement scripts stay covered even
   # though the automatic PR scope gate (pr-gate.yml) is disabled for this
   # fork. It runs the fail-closed contract that PR-gate logic depends on.
   scope-decision-contract:
     name: scope-decision-contract
+    needs: lint-scope
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.lint-scope.outputs.head_sha }}
 
       - name: Test fail-closed scope decision contract
         shell: bash
@@ -64,11 +97,15 @@ jobs:
   # ── clang-format ─────────────────────────────────────────────────────────────
   clang-format:
     name: clang-format
+    needs: lint-scope
     runs-on: windows-latest
+    env:
+      LINT_BASE_SHA: ${{ needs.lint-scope.outputs.base_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.lint-scope.outputs.head_sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -78,13 +115,12 @@ jobs:
         shell: bash
         run: clang-format --version
 
-      # Main-push path: only the lines the pushed change touched. A whole-file
+      # Both push and manual PR paths check only the changed lines. A whole-file
       # --dry-run would flag pre-existing formatting in untouched lines and
       # fail a merge for code its author never wrote. The LLVM-shipped
       # git-clang-format Python script is invoked with the setup-python
       # interpreter instead of relying on its shebang / the Windows Store alias.
       - name: Check formatting of changed lines
-        if: github.event_name == 'push'
         shell: bash
         working-directory: fincept-qt
         run: |
@@ -95,13 +131,10 @@ jobs:
             echo "::error::git-clang-format was not found in the installed LLVM; refusing to skip the diff-scoped format gate."
             exit 1
           fi
-          BASE="${{ github.event.before }}"
-          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
-            BASE="$(git rev-parse HEAD^ 2>/dev/null || true)"
-          fi
+          BASE="${LINT_BASE_SHA}"
           if [ -z "${BASE}" ]; then
-            echo "::warning::no base commit for this push — skipping the diff-scoped format check"
-            exit 0
+            echo "::error::Missing resolved lint base; refusing to skip the format gate."
+            exit 1
           fi
           DIFF="$(python "$(cygpath -w "${GCF}")" --binary clang-format --diff --commit "${BASE}" -- 'src/*.cpp' 'src/*.h' 2>&1 || true)"
           case "${DIFF}" in
@@ -111,26 +144,18 @@ jobs:
           echo "::error::Formatting differs from .clang-format on lines this change touched. Run: git-clang-format --commit ${BASE}"
           exit 1
 
-      # Full-tree sweep — manual runs only.
-      - name: Check formatting (full tree)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        working-directory: fincept-qt
-        run: |
-          # Parentheses required: without them -o has lower precedence than the
-          # implicit -print, so only .h files get piped to xargs.
-          find src \( -name "*.cpp" -o -name "*.h" \) | sort | \
-            xargs clang-format --style=file --dry-run --Werror
-          echo "All files are correctly formatted."
-
   # ── clang-tidy ───────────────────────────────────────────────────────────────
   clang-tidy:
     name: clang-tidy
+    needs: lint-scope
     runs-on: windows-latest
+    env:
+      LINT_BASE_SHA: ${{ needs.lint-scope.outputs.base_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ needs.lint-scope.outputs.head_sha }}
 
       - name: Set up MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
@@ -200,24 +225,20 @@ jobs:
         run: |
           cmake --build build --target FinceptTerminal_autogen --parallel || echo "::warning::autogen target unavailable — clang-tidy may report missing generated headers"
 
-      # ── Main-push path: incremental + GATING ────────────────────────────────
+      # ── Push and selected-PR paths: incremental + GATING ───────────────────
       # Narrow, high-signal checks only. bugprone-easily-swappable-parameters,
       # -narrowing-conversions and -branch-clone are excluded: thousands of
       # pre-existing hits, near-zero defect yield. The check set and
       # warnings-as-errors behaviour are unchanged from the pre-merge gate.
       - name: clang-tidy (changed files, gating)
-        if: github.event_name == 'push'
         shell: bash
         working-directory: fincept-qt
         run: |
           set -euo pipefail
-          BASE="${{ github.event.before }}"
-          if [ -z "${BASE}" ] || [ "${BASE}" = "0000000000000000000000000000000000000000" ]; then
-            BASE="$(git rev-parse HEAD^ 2>/dev/null || true)"
-          fi
+          BASE="${LINT_BASE_SHA}"
           if [ -z "${BASE}" ]; then
-            echo "::warning::no base commit for this push — skipping the changed-file clang-tidy gate"
-            exit 0
+            echo "::error::Missing resolved lint base; refusing to skip the clang-tidy gate."
+            exit 1
           fi
           CHECKS='-*,bugprone-*,concurrency-*,performance-move-const-arg,-bugprone-easily-swappable-parameters,-bugprone-narrowing-conversions,-bugprone-branch-clone'
           if ! git -C .. diff --name-only --diff-filter=ACMR "${BASE}" HEAD -- 'fincept-qt/src/**/*.cpp' \
@@ -227,7 +248,7 @@ jobs:
           fi
           CHANGED_COUNT=$(wc -l < /tmp/changed.txt | tr -d ' ')
           if [ "${CHANGED_COUNT}" = "0" ]; then
-            echo "No changed existing .cpp files; clang-tidy is not applicable to this main push."
+            echo "No changed existing .cpp files; clang-tidy is not applicable to this selected change."
             exit 0
           fi
           # Keep only files the compile database actually knows about (a brand
@@ -263,21 +284,6 @@ jobs:
               --extra-arg=--driver-mode=cl
           echo "clang-tidy clean on changed files."
 
-      # ── Manual path: full tree, advisory ────────────────────────────────────
-      - name: clang-tidy (full tree, advisory)
-        if: github.event_name == 'workflow_dispatch'
-        shell: bash
-        working-directory: fincept-qt
-        run: |
-          find src -name "*.cpp" | grep -v "/moc_" | grep -v "/qrc_" | sort | \
-            xargs -P "${NUMBER_OF_PROCESSORS:-4}" -n 1 clang-tidy \
-              --config-file=.clang-tidy \
-              -p build \
-              --quiet \
-              --extra-arg=--driver-mode=cl \
-              2>&1 || true
-          echo "clang-tidy sweep complete (advisory — .clang-tidy sets WarningsAsErrors: '')."
-
   # ── datahub-discipline ───────────────────────────────────────────────────────
   # Enforces DataHub rules D1 and D4 (see fincept-qt/CLAUDE.md §D):
   #   D1 — screens must not spawn Python directly.
@@ -287,9 +293,12 @@ jobs:
   # producer + topic you should be using instead.
   datahub-discipline:
     name: datahub-discipline
+    needs: lint-scope
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.lint-scope.outputs.head_sha }}
 
       - name: Check screens/ does not call PythonRunner directly
         shell: bash
@@ -346,9 +355,12 @@ jobs:
   # available version and was validated locally against the whole tree.
   cppcheck:
     name: cppcheck
+    needs: lint-scope
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.lint-scope.outputs.head_sha }}
 
       - name: Install cppcheck ${{ env.CPPCHECK_VERSION }}
         shell: pwsh
