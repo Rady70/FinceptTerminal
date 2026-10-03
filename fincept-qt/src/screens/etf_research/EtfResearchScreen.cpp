@@ -1232,6 +1232,10 @@ void EtfResearchScreen::populate_universe() {
         {tr("Est 20D"), tr("Estimated flow over the last 20 sessions (ESTIMATED), with coverage in the tooltip"), 82},
         {tr("AUM"), tr("Provider-reported total assets from the latest capture (undated by Yahoo)"), 72},
         {tr("TurnΔ"), tr("Turnover-share change vs the previous 20 sessions, U.S. sectors only (PROXY)"), 56},
+        {tr("COT %ile"),
+         tr("CFTC non-commercial net position as % of open interest: percentile among the last 156 weekly reports of "
+            "the futures market the fund tracks (PROXY context, not flow)"),
+         58},
         {tr("Fresh"), tr("Freshness of the stored daily history"), 58, true},
         {tr("Last"), tr("Last stored completed session"), 74, true}};
     QVector<QVector<Cell>> rows;
@@ -1252,6 +1256,9 @@ void EtfResearchScreen::populate_universe() {
         e20.tooltip += QStringLiteral("<br/>") + value_tooltip(r.est.coverage_20, tr("Coverage of the 20 sessions"));
         c << e20 << etfr_value(r.fund.aum, 2, tr("AUM")) << etfr_value(r.turnover_delta_bp) << etfr_fresh(r)
           << etfr_text(r.last_bar.toString(Qt::ISODate));
+        // COT percentile sits before Fresh/Last: insert it after TurnΔ.
+        c.insert(18, r.cftc.market.isEmpty() ? etfr_text(QString())
+                                             : etfr_value(r.cftc.percentile_3y, 0, tr("COT percentile")));
         c[16].text = r.fund.aum.value ? fmt_usd(*r.fund.aum.value, false) : na();
         rows << c;
         keys << r.inst.symbol;

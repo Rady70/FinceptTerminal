@@ -56,6 +56,7 @@ class TstEtfResearchCalc : public QObject {
     void business_cycle_probabilities_and_missing_input();
     void ols_recovers_coefficients();
     void confluence_needs_three_layers();
+    void cftc_positioning_context();
     // ── regime ──
     void correlation_geometry();
     void weekly_regime_uses_completed_weeks();
@@ -692,6 +693,45 @@ void TstEtfResearchCalc::confluence_needs_three_layers() {
     QCOMPARE(model_band(0.7), QStringLiteral("STRONG"));
     QCOMPARE(model_band(-0.7), QStringLiteral("WEAK"));
     QCOMPARE(model_band(-0.3), QStringLiteral("BELOW"));
+}
+
+void TstEtfResearchCalc::cftc_positioning_context() {
+    // 160 weekly reports: OI 1000, non-commercial long rises 300 -> 459, short 200.
+    QHash<QString, MacroSeries> f;
+    MacroSeries oi, lo, sh;
+    QDate d(2023, 9, 5); // a Tuesday
+    for (int i = 0; i < 160; ++i, d = d.addDays(7)) {
+        oi.points.append({d, 1000.0});
+        lo.points.append({d, 300.0 + i});
+        sh.points.append({d, 200.0});
+    }
+    f.insert(QStringLiteral("open_interest"), oi);
+    f.insert(QStringLiteral("non_commercial_long"), lo);
+    f.insert(QStringLiteral("non_commercial_short"), sh);
+    const QDate last = oi.points.last().date;
+    const CftcContext c = cftc_positioning(QStringLiteral("gold"), f, last.addDays(4));
+    QCOMPARE(c.report_date, last);
+    QCOMPARE(c.reports, 160);
+    QVERIFY(std::abs(*c.net_pct_oi.value - (459.0 - 200.0) / 1000.0 * 100.0) < 1e-12);
+    QCOMPARE(c.net_pct_oi.evidence, EvidenceClass::Proxy); // context, never MEASURED flow
+    QCOMPARE(*c.percentile_3y.value, 100.0);               // the highest of the last 156
+    QVERIFY(std::abs(*c.change_4w_pp.value - 0.4) < 1e-12);
+    QCOMPARE(c.net_pct_oi.credibility, Credibility::High);
+    // Three weeks later the report is stale: graded down.
+    const CftcContext stale = cftc_positioning(QStringLiteral("gold"), f, last.addDays(21));
+    QCOMPARE(stale.net_pct_oi.credibility, Credibility::Low);
+    QVERIFY(stale.net_pct_oi.has_flag(flag::kStale));
+    // Short history: < 52 reports graded down, < 26 unavailable, nothing stored unavailable.
+    QHash<QString, MacroSeries> few = f;
+    for (auto& s : few)
+        s.points = s.points.mid(s.points.size() - 30);
+    QCOMPARE(cftc_positioning(QStringLiteral("gold"), few, last).percentile_3y.credibility, Credibility::Medium);
+    for (auto& s : few)
+        s.points = s.points.mid(s.points.size() - 20);
+    QVERIFY(!cftc_positioning(QStringLiteral("gold"), few, last).percentile_3y.value);
+    const CftcContext none = cftc_positioning(QStringLiteral("gold"), {}, last);
+    QVERIFY(!none.net_pct_oi.value);
+    QCOMPARE(none.net_pct_oi.reason, QStringLiteral("no_cftc_observation"));
 }
 
 void TstEtfResearchCalc::correlation_geometry() {

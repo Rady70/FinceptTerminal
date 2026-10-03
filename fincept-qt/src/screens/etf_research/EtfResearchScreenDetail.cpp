@@ -3,6 +3,7 @@
 #include "screens/etf_research/EtfResearchFormat.h"
 #include "screens/etf_research/EtfResearchScreen.h"
 #include "screens/etf_research/EtfResearchWidgets.h"
+#include "services/economics/CftcMarketCatalog.h"
 #include "ui/theme/ThemeManager.h"
 
 #include <QApplication>
@@ -109,6 +110,16 @@ void EtfResearchScreen::populate_detail() {
     o += etfr_row_html(tr("Above 200-day"), r->above_200dma, 0);
     o += etfr_row_html(tr("Trailing 12M distribution yield"), r->carry_12m);
     o += etfr_row_html(tr("IBKR vs Yahoo 1M price-return gap"), r->cross_check);
+    if (!r->cftc.market.isEmpty()) {
+        o += QStringLiteral("<tr><td colspan='3' style='color:%1'><b>%2</b></td></tr>")
+                 .arg(QLatin1String(t.accent),
+                      tr("CFTC positioning: %1 futures, non-commercial (legacy, futures only); market context, "
+                         "not ETF flow")
+                          .arg(services::cftc_market_definition(r->cftc.market).label.toHtmlEscaped()));
+        o += etfr_row_html(tr("Net position, % of open interest"), r->cftc.net_pct_oi, 1) +
+             etfr_row_html(tr("Percentile, last 156 reports"), r->cftc.percentile_3y, 0) +
+             etfr_row_html(tr("Change over 4 reports"), r->cftc.change_4w_pp, 1);
+    }
     o += QStringLiteral("<tr><td colspan='3' style='color:%1'><b>%2</b></td></tr>")
              .arg(QLatin1String(t.accent),
                   tr("Fund facts (Yahoo quote summary, capture %1, session %2 by %3)")

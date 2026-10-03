@@ -68,6 +68,7 @@ class TstEtfResearchStore : public QObject {
         QVERIFY(dir_.isValid());
         register_migration_v052();
         register_migration_v053();
+        register_migration_v054();
         QVERIFY(Database::instance().open(dir_.filePath(QStringLiteral("research.db"))).is_ok());
         QString err;
         const auto u = load_universe(QLatin1String(kUniverseResourcePath), &err);
@@ -83,6 +84,7 @@ class TstEtfResearchStore : public QObject {
     void macro_null_is_missing_and_revisions_replay();
     void stage_status_stale_and_partial();
     void sec_refresh_catches_up_missed_months();
+    void cftc_positioning_is_stored_per_field();
     void pipeline_records_every_stage_and_survives_fetch_failure();
     void snapshot_replay_is_byte_identical_after_growth();
 };
@@ -344,6 +346,38 @@ void TstEtfResearchStore::macro_null_is_missing_and_revisions_replay() {
     QCOMPARE(jp.points.size(), 1);
     QCOMPARE(jp.points.first().date, QDate(2024, 12, 31));
     QVERIFY(!after.value().world_bank.value(QStringLiteral("NY.GDP.MKTP.KD.ZG")).contains(QStringLiteral("TW")));
+}
+
+void TstEtfResearchStore::cftc_positioning_is_stored_per_field() {
+    // v054 widened the stage and source lists: a 'cftc' retrieval and series store.
+    auto& repo = EtfResearchRepository::instance();
+    QVERIFY(repo.begin_run(QStringLiteral("rc"), QStringLiteral("manual_cli"), utc("2026-10-03T12:00:00.000Z"),
+                           universe_.version)
+                .is_ok());
+    QJsonArray rows;
+    rows << QJsonArray{"2026-09-15", 500000.0, 250000.0, 90000.0}
+         << QJsonArray{"2026-09-22", 510000.0, 255000.0, QJsonValue()} // a missing cell: no observation
+         << QJsonArray{"2026-09-29", 520000.0, 260000.0, 95000.0};
+    const QJsonObject gold{
+        {"status", "OK"}, {"retrieved_at", "2026-10-03T12:00:05.000Z"}, {"source_status", "current"}, {"rows", rows}};
+    auto p = repo.persist_payload(QStringLiteral("rc"),
+                                  payload({{"cftc", stage("2026-10-03T12:00:00.000Z", {{"gold", gold}})}}),
+                                  QDate(2026, 10, 2));
+    QVERIFY2(p.is_ok(), p.is_err() ? p.error().c_str() : "");
+    QCOMPARE(p.value().first().stage, QStringLiteral("cftc"));
+    QCOMPARE(p.value().first().status, QStringLiteral("UPDATED"));
+    QCOMPARE(p.value().first().rows_inserted, 8); // 3 + 3 + 2
+    // Published the Friday after its Tuesday: at Thursday 10-02 the 09-29 report is not yet usable.
+    auto thu = repo.load_inputs(universe_, utc("2026-10-02T12:00:00.000Z"), utc("2026-10-04T00:00:00.000Z"));
+    QCOMPARE(thu.value().cftc.value(QStringLiteral("gold")).value(QStringLiteral("open_interest")).points.size(), 2);
+    auto sat = repo.load_inputs(universe_, utc("2026-10-04T00:00:00.000Z"), utc("2026-10-04T00:00:00.000Z"));
+    const auto f = sat.value().cftc.value(QStringLiteral("gold"));
+    QCOMPARE(f.value(QStringLiteral("open_interest")).points.size(), 3);
+    QCOMPARE(f.value(QStringLiteral("non_commercial_short")).points.size(), 2);
+    // v054 kept every foreign key resolvable.
+    auto fk = Database::instance().execute(QStringLiteral("PRAGMA foreign_key_check"));
+    QVERIFY(fk.is_ok());
+    QVERIFY(!fk.value().next());
 }
 
 void TstEtfResearchStore::sec_refresh_catches_up_missed_months() {

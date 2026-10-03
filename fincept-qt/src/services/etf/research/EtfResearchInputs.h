@@ -57,6 +57,8 @@ inline bool bar_finished_by(const QString& symbol, const QDate& session, const Q
 /// the month ends) two months after its date; a World Bank annual value (dated
 /// 31 December) 200 days later (the 2025 values appeared in the 2026-07-13 release).
 inline QDate macro_available_from(const QString& source, const QString& series, const QDate& obs) {
+    if (source == QLatin1String("cftc"))
+        return obs.addDays(4); // positions as of Tuesday, published Friday afternoon
     if (source == QLatin1String("world_bank"))
         return obs.addDays(200);
     if (series == QLatin1String("CFNAI"))
@@ -183,6 +185,7 @@ struct ResearchInputs {
     QHash<QString, QVector<HoldingsCapture>> holdings_history; ///< every capture, ascending
     QHash<QString, Fundamentals> fundamentals;                 ///< latest capture per constituent
     QHash<QString, MacroSeries> fred;                          ///< series id ->
+    QHash<QString, QHash<QString, MacroSeries>> cftc;          ///< CFTC market -> field -> weekly series
     QHash<QString, QHash<QString, MacroSeries>> world_bank;    ///< indicator -> iso2 ->
     QHash<QString, QVector<MeasuredMonth>> measured;           ///< universe symbol -> months
     QHash<QString, QVector<QPair<QDate, double>>> ibkr_close;  ///< universe symbol -> stored IBKR closes

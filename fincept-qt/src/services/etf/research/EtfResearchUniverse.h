@@ -12,6 +12,8 @@
 //
 // Header-only over Qt Core.
 #pragma once
+#include "services/economics/CftcMarketCatalog.h"
+
 #include <QFile>
 #include <QHash>
 #include <QJsonArray>
@@ -112,6 +114,10 @@ struct ResearchUniverse {
     /// symbol of the same security (missing exchange suffix, provider typo).
     QHash<QString, QString> holding_symbol_map;
     QHash<QString, QString> holding_symbol_excluded; ///< non-equity holdings -> why
+    /// Reviewed ETF -> CFTC market key (futures positioning context only).
+    QHash<QString, QString> cftc_market;
+    QString cftc_report = QStringLiteral("legacy");
+    bool cftc_futures_only = true;
 
     /// The research (Yahoo) symbol of a fund holding: mapped when reviewed, else as listed.
     QString holding_research_symbol(const QString& raw) const { return holding_symbol_map.value(raw, raw); }
@@ -318,6 +324,20 @@ inline std::optional<ResearchUniverse> parse_universe(const QJsonObject& doc, QS
             (basis != QLatin1String("exchange_suffix") && basis != QLatin1String("provider_symbol_correction")))
             return fail(QStringLiteral("holding_symbol_map %1 needs a yahoo symbol and a known basis").arg(it.key()));
         u.holding_symbol_map.insert(it.key(), y);
+    }
+    const QJsonObject cc = doc.value(QStringLiteral("cftc_context")).toObject();
+    if (!cc.isEmpty()) {
+        u.cftc_report = cc.value(QStringLiteral("report")).toString(QStringLiteral("legacy"));
+        u.cftc_futures_only = cc.value(QStringLiteral("basis")).toString() == QLatin1String("futures_only");
+        const QJsonObject ci = cc.value(QStringLiteral("instruments")).toObject();
+        for (auto it = ci.begin(); it != ci.end(); ++it) {
+            const QString market = it.value().toObject().value(QStringLiteral("market")).toString();
+            if (!u.find(it.key()))
+                return fail(QStringLiteral("cftc_context names %1, which is not in the universe").arg(it.key()));
+            if (!services::cftc_market_is_known(market))
+                return fail(QStringLiteral("cftc_context %1: %2 is not a MarketLab CFTC market").arg(it.key(), market));
+            u.cftc_market.insert(it.key(), market);
+        }
     }
     const QJsonObject hx = doc.value(QStringLiteral("holding_symbol_excluded")).toObject();
     for (auto it = hx.begin(); it != hx.end(); ++it)

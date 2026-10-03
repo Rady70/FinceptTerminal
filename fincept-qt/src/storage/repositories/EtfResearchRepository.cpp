@@ -84,6 +84,8 @@ QStringList etfr_dependents(const QString& stage) {
                 QStringLiteral("regime_hmm"), QStringLiteral("confluence")};
     if (stage == QLatin1String("world_bank"))
         return {QStringLiteral("country_quality"), QStringLiteral("country_composite")};
+    if (stage == QLatin1String("cftc"))
+        return {QStringLiteral("cftc_positioning_context")};
     if (stage == QLatin1String("ibkr_daily"))
         return {QStringLiteral("ibkr_cross_check"), QStringLiteral("batch_c_rotation_proxies")};
     if (stage == QLatin1String("sec_nport"))
@@ -363,9 +365,9 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         db().rollback();
         return R::err(e);
     };
-    for (const QString& stage :
-         {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"), QStringLiteral("yahoo_funds"),
-          QStringLiteral("yahoo_fundamentals"), QStringLiteral("fred"), QStringLiteral("world_bank")}) {
+    for (const QString& stage : {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"),
+                                 QStringLiteral("yahoo_funds"), QStringLiteral("yahoo_fundamentals"),
+                                 QStringLiteral("fred"), QStringLiteral("world_bank"), QStringLiteral("cftc")}) {
         if (!stages.contains(stage))
             continue;
         const QJsonObject so = stages.value(stage).toObject();
@@ -632,6 +634,54 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     return fail(cov.error());
                 if (pts.last().first > latest_eff)
                     latest_eff = pts.last().first;
+            } else if (stage == QLatin1String("cftc")) {
+                // One weekly series per field of the market: open interest and the
+                // non-commercial long/short positions (a missing cell is no observation).
+                const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
+                const char* fields[] = {"open_interest", "non_commercial_long", "non_commercial_short"};
+                QVector<QPair<QString, QVariant>> pts[3];
+                for (const auto& rv : rows) {
+                    const QJsonArray r = rv.toArray();
+                    if (r.size() < 4 || !QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid())
+                        continue;
+                    for (int f = 0; f < 3; ++f)
+                        if (r.at(f + 1).isDouble())
+                            pts[f].append({r.at(0).toString(), QVariant(r.at(f + 1).toDouble())});
+                }
+                if (pts[0].isEmpty()) {
+                    st.failed_subjects.append(subject);
+                    --st.items_ok;
+                    continue;
+                }
+                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
+                                                 QStringLiteral("cftc_tool_status=%1 %2")
+                                                     .arg(it.value(QStringLiteral("source_status")).toString(), detail)
+                                                     .trimmed(),
+                                                 QString(), static_cast<int>(rows.size()), pts[0].first().first,
+                                                 pts[0].last().first);
+                if (rid.is_err())
+                    return fail(rid.error());
+                for (int f = 0; f < 3; ++f) {
+                    if (pts[f].isEmpty())
+                        continue;
+                    const QString area = QLatin1String(fields[f]);
+                    auto w = etfr_write_macro(QStringLiteral("cftc"), subject, area, pts[f], rid.value(), ret_at);
+                    if (w.is_err())
+                        return fail(w.error());
+                    st.rows_inserted += w.value().inserted;
+                    st.rows_revised += w.value().revised;
+                    st.rows_confirmed += w.value().confirmed;
+                    auto cov = db().execute(
+                        QStringLiteral(
+                            "INSERT INTO etf_research_macro_coverage (retrieval_id, source, series_id, "
+                            "area, first_date, last_date, points, retrieved_at) VALUES (?,'cftc',?,?,?,?,?,?)"),
+                        {rid.value(), subject, area, pts[f].first().first, pts[f].last().first,
+                         static_cast<int>(pts[f].size()), ret_at});
+                    if (cov.is_err())
+                        return fail(cov.error());
+                }
+                if (pts[0].last().first > latest_eff)
+                    latest_eff = pts[0].last().first;
             } else if (stage == QLatin1String("world_bank")) {
                 const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
                 QHash<QString, QVector<QPair<QString, QVariant>>> by_area;
@@ -932,6 +982,8 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
         for (auto it = all.begin(); it != all.end(); ++it) {
             if (it->source == QLatin1String("fred"))
                 in.fred.insert(it->id, it.value());
+            else if (it->source == QLatin1String("cftc"))
+                in.cftc[it->id].insert(it->area, it.value());
             else
                 in.world_bank[it->id].insert(it->area, it.value());
         }

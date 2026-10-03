@@ -94,10 +94,21 @@ struct FundFacts {
     int captures = 0;
 };
 
+/// CFTC futures positioning of the market an ETF tracks (context, never flow).
+struct CftcContext {
+    QString market;              ///< MarketLab CFTC market key ('' when the ETF has none)
+    QDate report_date;           ///< positions as of this Tuesday
+    ResearchValue net_pct_oi;    ///< PROXY: (non-commercial long - short) / open interest, %
+    ResearchValue percentile_3y; ///< PROXY: rank of that share among the last 156 reports, %
+    ResearchValue change_4w_pp;  ///< PROXY: change over four reports, percentage points
+    int reports = 0;
+};
+
 struct UniverseRow {
     UniverseInstrument inst;
     ReturnSet ret;
     RrgResult rrg;
+    CftcContext cftc;
     ResearchValue momentum_z;   ///< MODEL, cross-sectional within the row's peer group
     ResearchValue momentum_raw; ///< MODEL, composite return
     QString peer_group;         ///< us_sector | theme | country | cross_asset

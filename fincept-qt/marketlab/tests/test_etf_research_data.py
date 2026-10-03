@@ -299,6 +299,42 @@ class MacroTests(unittest.TestCase):
             macro.parse_world_bank({"not": "a list"})
 
 
+class _FakeCftc:
+    def __init__(self, answer=None, error=None):
+        self.answer, self.error, self.calls = answer, error, []
+
+    def get_cot_monitor(self, report, futures_only, markets, max_rows):
+        self.calls.append((report, futures_only, list(markets)))
+        if self.error:
+            raise self.error
+        return self.answer
+
+
+class CftcStageTests(unittest.TestCase):
+    def test_rows_fields_and_missing_cells(self):
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "gold", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": 500000,
+                 "non_commercial_long": 250000, "non_commercial_short": None},
+                {"report_date_as_yyyy_mm_dd": "2026-09-29T00:00:00", "open_interest_all": 510000,
+                 "non_commercial_long": 255000, "non_commercial_short": 90000}]},
+            {"market_key": "bitcoin", "status": "unavailable", "refresh_error": "HTTP 503", "rows": []}]}}
+        fake = _FakeCftc(answer)
+        items = etf_research_data.fetch_cftc(["gold", "bitcoin", "ether"], "legacy", True, wrapper=fake)
+        self.assertEqual(fake.calls, [("legacy", True, ["gold", "bitcoin", "ether"])])
+        self.assertEqual(items["gold"]["status"], "OK")
+        self.assertEqual(items["gold"]["rows"], [["2026-09-22", 500000.0, 250000.0, None],
+                                                 ["2026-09-29", 510000.0, 255000.0, 90000.0]])
+        self.assertEqual(items["bitcoin"]["status"], "FAILED")
+        self.assertIn("503", items["bitcoin"]["detail"])
+        self.assertEqual(items["ether"]["status"], "FAILED")  # never silently dropped
+
+    def test_tool_failure_fails_every_market(self):
+        items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(error=RuntimeError("boom")))
+        self.assertEqual(items["gold"]["status"], "FAILED")
+        self.assertIn("boom", items["gold"]["detail"])
+
+
 class RunFetchTests(unittest.TestCase):
     REQUEST = {
         "history": {"long": ["SPY", "XLB"], "standard": ["THD"]},

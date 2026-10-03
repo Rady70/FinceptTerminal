@@ -68,6 +68,55 @@ def _stage(name: str, requested_at: _dt.datetime, items: dict) -> dict:
             "items_requested": len(statuses), "items_ok": ok, "sha256": _digest(items), "items": items}
 
 
+def _num(value):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if v == v else None
+
+
+def fetch_cftc(markets, report: str, futures_only: bool, wrapper=None) -> dict:
+    """Weekly open interest and non-commercial long/short per market.
+
+    The CFTC tool's own monitor read is reused: it refreshes MarketLab's CFTC
+    archive incrementally (as the CFTC workspace does) and returns its
+    canonical rows. A missing cell stays None, never 0.
+    """
+    if wrapper is None:
+        import cftc_data  # MarketLab's CFTC tool (scripts/cftc_data.py)
+
+        wrapper = cftc_data.CFTCDataWrapper()
+    try:
+        res = wrapper.get_cot_monitor(report, futures_only, list(markets), 25000)
+    except Exception as exc:  # the tool failed as a whole
+        res = {"error": {"message": str(exc)}}
+    if not res.get("success"):
+        why = (res.get("error") or {}).get("message", "CFTC monitor failed")
+        return {m: {"status": "FAILED", "detail": str(why), "rows": [], "retrieved_at": _iso(_now())} for m in markets}
+    items = {}
+    for mk in res.get("data", {}).get("markets", []):
+        rows = []
+        for r in mk.get("rows", []):
+            day = str(r.get("report_date_as_yyyy_mm_dd") or "")[:10]
+            if not day:
+                continue
+            rows.append([day, _num(r.get("open_interest_all")), _num(r.get("non_commercial_long")),
+                         _num(r.get("non_commercial_short"))])
+        ok = any(row[1] is not None for row in rows)
+        items[mk.get("market_key")] = {
+            "status": "OK" if ok else "FAILED",
+            "detail": mk.get("refresh_error") or ("" if ok else "no CFTC rows for this market"),
+            "source_status": mk.get("status", ""),
+            "rows": rows,
+            "retrieved_at": _iso(_now()),
+        }
+    for m in markets:
+        items.setdefault(m, {"status": "FAILED", "detail": "market missing from the CFTC tool's answer", "rows": [],
+                             "retrieved_at": _iso(_now())})
+    return items
+
+
 def run_fetch(request: dict) -> dict:
     started = _now()
     stages = {}
@@ -188,6 +237,17 @@ def run_fetch(request: dict) -> dict:
         wb_items[ind] = res
         _progress("world_bank", i, len(wb.get("indicators", [])), ind)
     stages["world_bank"] = _stage("world_bank", t_wb, wb_items)
+
+    # ── CFTC positioning (through MarketLab's CFTC tool and its archive) ───────
+    t_cftc = _now()
+    cftc_items = {}
+    cftc_req = request.get("cftc", {})
+    markets = cftc_req.get("markets", [])
+    if markets:
+        _progress("cftc", 0, len(markets))
+        cftc_items = fetch_cftc(markets, cftc_req.get("report", "legacy"), bool(cftc_req.get("futures_only", True)))
+        _progress("cftc", len(markets), len(markets))
+    stages["cftc"] = _stage("cftc", t_cftc, cftc_items)
 
     return {
         "script_version": SCRIPT_VERSION,

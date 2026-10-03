@@ -315,6 +315,11 @@ QJsonObject EtfResearchService::build_request(bool full) const {
     QJsonArray excluded_holdings;
     for (auto it = u->holding_symbol_excluded.constBegin(); it != u->holding_symbol_excluded.constEnd(); ++it)
         excluded_holdings.append(it.key());
+    QStringList cftc_markets;
+    for (auto it = u->cftc_market.constBegin(); it != u->cftc_market.constEnd(); ++it)
+        if (!cftc_markets.contains(it.value()))
+            cftc_markets.append(it.value());
+    std::sort(cftc_markets.begin(), cftc_markets.end());
     QJsonArray wb_codes;
     for (const UniverseInstrument& i : u->instruments)
         if (!i.wb_code.isEmpty() && i.country_type == QLatin1String("single"))
@@ -322,6 +327,9 @@ QJsonObject EtfResearchService::build_request(bool full) const {
     return QJsonObject{
         {QStringLiteral("universe_version"), u->version},
         {QStringLiteral("mode"), full ? QStringLiteral("full") : QStringLiteral("incremental")},
+        {QStringLiteral("cftc"), QJsonObject{{QStringLiteral("report"), u->cftc_report},
+                                             {QStringLiteral("futures_only"), u->cftc_futures_only},
+                                             {QStringLiteral("markets"), QJsonArray::fromStringList(cftc_markets)}}},
         {QStringLiteral("history"),
          QJsonObject{{QStringLiteral("long"), QJsonArray::fromStringList(long_full)},
                      {QStringLiteral("standard"), QJsonArray::fromStringList(std_full)},

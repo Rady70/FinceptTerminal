@@ -374,6 +374,8 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                     grade_credibility(v->credibility, {CredCondition::CrossSourceDisagree}, &v->credibility_reasons);
             }
         }
+        if (const auto cm = in.universe.cftc_market.constFind(inst.symbol); cm != in.universe.cftc_market.constEnd())
+            row.cftc = cftc_positioning(*cm, in.cftc.value(*cm), in.as_of.toUTC().date());
         if (row.measured.latest.usable())
             row.flow_evidence = EvidenceClass::Measured;
         else if (row.est.best.usable())
@@ -1250,6 +1252,14 @@ QJsonObject snapshot_to_json(const ResearchSnapshot& s, bool include_series) {
         o.insert(QStringLiteral("rrg"), rrg);
         o.insert(QStringLiteral("momentum_z"), r.momentum_z.to_json());
         o.insert(QStringLiteral("momentum_raw"), r.momentum_raw.to_json());
+        if (!r.cftc.market.isEmpty())
+            o.insert(QStringLiteral("cftc_positioning"),
+                     QJsonObject{{QStringLiteral("market"), r.cftc.market},
+                                 {QStringLiteral("report_date"), r.cftc.report_date.toString(Qt::ISODate)},
+                                 {QStringLiteral("reports"), r.cftc.reports},
+                                 {QStringLiteral("net_pct_oi"), r.cftc.net_pct_oi.to_json()},
+                                 {QStringLiteral("percentile_3y"), r.cftc.percentile_3y.to_json()},
+                                 {QStringLiteral("change_4w_pp"), r.cftc.change_4w_pp.to_json()}});
         o.insert(QStringLiteral("model_score"), r.model_score.to_json());
         o.insert(QStringLiteral("model_band"), r.model_band);
         o.insert(QStringLiteral("turnover_share"), r.turnover_share.to_json());

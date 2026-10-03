@@ -3073,5 +3073,87 @@
  },
  "holding_symbol_excluded": {
   "XTSLA": "BlackRock cash fund, not an equity constituent."
+ },
+ "cftc_context": {
+  "report": "legacy",
+  "basis": "futures_only",
+  "note": "CFTC Commitments of Traders positioning of the futures market an ETF tracks directly: market context (PROXY), never ETF creation/redemption. Read through MarketLab's CFTC tool and its archive.",
+  "instruments": {
+   "GLD": {
+    "market": "gold",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "SLV": {
+    "market": "silver",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "USO": {
+    "market": "crude_oil",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "UUP": {
+    "market": "us_dollar_index",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "TLT": {
+    "market": "treasury_bonds",
+    "basis": "underlying",
+    "note": "Long Treasuries vs the 30Y bond future."
+   },
+   "IEF": {
+    "market": "treasury_notes_10y",
+    "basis": "underlying",
+    "note": "7-10Y Treasuries vs the 10Y note future."
+   },
+   "SHY": {
+    "market": "treasury_notes_2y",
+    "basis": "underlying",
+    "note": "1-3Y Treasuries vs the 2Y note future."
+   },
+   "SPY": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "IVV": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "SSO": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on. (2x leveraged fund)"
+   },
+   "SH": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on. (inverse fund: the fund's exposure is opposite)"
+   },
+   "QQQ": {
+    "market": "nasdaq_100",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "DIA": {
+    "market": "dow_jones",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "IBIT": {
+    "market": "bitcoin",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "ETHA": {
+    "market": "ether",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   }
+  }
  }
 }

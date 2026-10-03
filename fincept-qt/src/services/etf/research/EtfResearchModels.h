@@ -370,6 +370,69 @@ inline FactorModelResult compute_factor_model(const QHash<QString, MacroSeries>&
     return r;
 }
 
+inline constexpr const char* kCftcMethod = "etfr_cftc_positioning_v1";
+
+/// CFTC positioning context from the stored weekly series of one market:
+/// non-commercial (speculative) net position as a share of open interest, its
+/// percentile among the last 156 reports (three years) and its change over four
+/// reports. A report older than ten days at as_of is STALE; fewer than 52
+/// reports grade the percentile down; fewer than 26 leave it unavailable.
+inline CftcContext cftc_positioning(const QString& market, const QHash<QString, MacroSeries>& fields,
+                                    const QDate& as_of) {
+    CftcContext c;
+    c.market = market;
+    const QString src = QStringLiteral("cftc_cot_legacy");
+    const QString method = QLatin1String(kCftcMethod);
+    auto none = [&](const QString& why) {
+        c.net_pct_oi = ResearchValue::unavailable(why, method);
+        c.percentile_3y = c.net_pct_oi;
+        c.change_4w_pp = c.net_pct_oi;
+        return c;
+    };
+    const auto oi = fields.constFind(QStringLiteral("open_interest"));
+    const auto lo = fields.constFind(QStringLiteral("non_commercial_long"));
+    const auto sh = fields.constFind(QStringLiteral("non_commercial_short"));
+    if (oi == fields.constEnd() || lo == fields.constEnd() || sh == fields.constEnd())
+        return none(QStringLiteral("no_cftc_observation"));
+    QHash<QDate, double> l, s;
+    for (const auto& p : lo->points)
+        l.insert(p.date, p.value);
+    for (const auto& p : sh->points)
+        s.insert(p.date, p.value);
+    QVector<QPair<QDate, double>> net; // ascending
+    for (const auto& p : oi->points)
+        if (p.value > 0 && l.contains(p.date) && s.contains(p.date))
+            net.append({p.date, (l.value(p.date) - s.value(p.date)) / p.value * 100.0});
+    if (net.isEmpty())
+        return none(QStringLiteral("no_complete_cftc_report"));
+    c.reports = net.size();
+    c.report_date = net.last().first;
+    QVector<CredCondition> conds;
+    if (c.report_date.daysTo(as_of) > 10)
+        conds.append(CredCondition::Stale);
+    c.net_pct_oi = graded(net.last().second, EvidenceClass::Proxy, Credibility::High, conds, QStringLiteral("pct"),
+                          method, src, c.report_date);
+    const int window = std::min(156, static_cast<int>(net.size()));
+    if (window < 26) {
+        c.percentile_3y = ResearchValue::unavailable(QStringLiteral("fewer_than_26_reports"), method);
+    } else {
+        int below = 0;
+        for (int i = net.size() - window; i < net.size(); ++i)
+            below += net[i].second <= net.last().second ? 1 : 0;
+        QVector<CredCondition> pc = conds;
+        if (window < 52)
+            pc.append(CredCondition::ShortHistory);
+        c.percentile_3y = graded(100.0 * below / window, EvidenceClass::Proxy, Credibility::High, pc,
+                                 QStringLiteral("pct"), method + QStringLiteral(":percentile_156"), src, c.report_date);
+    }
+    if (net.size() > 4)
+        c.change_4w_pp = graded(net.last().second - net[net.size() - 5].second, EvidenceClass::Proxy, Credibility::High,
+                                conds, QStringLiteral("pp"), method + QStringLiteral(":change_4"), src, c.report_date);
+    else
+        c.change_4w_pp = ResearchValue::unavailable(QStringLiteral("fewer_than_5_reports"), method);
+    return c;
+}
+
 /// Neutral research bands. STRONG/WEAK, not HIGH/LOW, so a model state is never
 /// read as a credibility grade.
 inline QString model_band(double score) {
