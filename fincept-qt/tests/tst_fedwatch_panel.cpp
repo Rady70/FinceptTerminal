@@ -364,6 +364,7 @@ class TestFedWatchPanel : public QObject {
         for (const auto& request : sent_)
             QVERIFY(request.command != "collect" && request.command != "history_backfill");
         panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        QVERIFY(text("fedwatchDiagnosticStatus").contains("Retrying FRED meeting resolution"));
         auto lifecycle = pending_.takeFirst();
         QCOMPARE(lifecycle.command, QString("collect"));
         QVERIFY(lifecycle.args.contains("2026-10-28"));
@@ -394,6 +395,83 @@ class TestFedWatchPanel : public QObject {
         for (const auto& sent : sent_)
             collects += sent.command == "collect";
         QCOMPARE(collects, 1);
+    }
+    void resolvedHistoryLoadAndRetryAreExplicit_data() {
+        QTest::addColumn<QString>("demotion");
+        QTest::newRow("not-found") << QString("NOT_FOUND");
+        QTest::newRow("ambiguous") << QString("AMBIGUOUS");
+    }
+    void resolvedHistoryLoadAndRetryAreExplicit() {
+        QFETCH(QString, demotion);
+        const auto helper = QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py");
+        process(helper, {database_, "mapping-without-history", "25"});
+        process(helper, {database_, "resolved", demotion});
+        durable_current_reads_ = true;
+        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 25}});
+        panel_->activate();
+        flush();
+        QVERIFY(currentChart()->bars().isEmpty());
+        auto* load = panel_->findChild<QPushButton*>("fedwatchLoadHistory");
+        auto* contextual = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
+        QVERIFY(load->isEnabled());
+        QVERIFY(!contextual->isHidden());
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        flush();
+        for (const auto& request : sent_)
+            QVERIFY(request.command != "collect" && request.command != "history_backfill");
+        // The primary action can explicitly load missing resolved history.
+        load->click();
+        QCOMPARE(pending_.size(), 1);
+        auto request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("history_backfill"));
+        QCOMPARE(request.args.mid(0, 2), (QStringList{"--meeting", "2026-10-28"}));
+        QVERIFY(!request.args.contains("--force"));
+        contextual->click();
+        QVERIFY(pending_.isEmpty());
+        const auto failure = process(helper, {database_, "backfill-normal-failure"});
+        QVERIFY(!failure["data"].toObject()["fixture_requests"].toObject()["json"].toArray().isEmpty());
+        deliver(request, failure);
+        flush();
+        QVERIFY(!contextual->isHidden());
+        QCOMPARE(contextual->text(), QString("Retry history"));
+        QVERIFY(text("fedwatchSourceStatus").contains("PROVIDER_ERROR"));
+        // Retained failure and the contextual retry survive reopening.
+        panel_.reset();
+        makePanel();
+        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 25}});
+        panel_->activate();
+        flush();
+        load = panel_->findChild<QPushButton*>("fedwatchLoadHistory");
+        contextual = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
+        QVERIFY(load->isEnabled());
+        QVERIFY(!contextual->isHidden());
+        QCOMPARE(contextual->text(), QString("Retry history"));
+        contextual->click();
+        request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("history_backfill"));
+        QCOMPARE(request.args.mid(0, 2), (QStringList{"--meeting", "2026-10-28"}));
+        QVERIFY(!request.args.contains("--force"));
+        const auto recovered = process(helper, {database_, "backfill-normal"});
+        QVERIFY(!recovered["data"].toObject()["fixture_requests"].toObject()["json"].toArray().isEmpty());
+        deliver(request, recovered);
+        flush();
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points.size(), 1);
+        QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points[0].value, 42.0);
+        QVERIFY(currentChart()->bars().isEmpty());
+        QVERIFY(contextual->isHidden());
+        QVERIFY(!load->isEnabled());
+        load->click();
+        QVERIFY(pending_.isEmpty());
+        const auto terminal = process(helper, {database_, "backfill-normal"})["data"].toObject();
+        QVERIFY(terminal["fixture_requests"].toObject()["json"].toArray().isEmpty());
+        QVERIFY(!terminal["backfills"].toArray().isEmpty());
+        for (const auto& value : terminal["backfills"].toArray())
+            QCOMPARE(value.toObject()["status"].toString(), QString("SKIPPED_RESOLVED"));
+        const auto before = sent_.size();
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        flush();
+        for (int i = before; i < sent_.size(); ++i)
+            QVERIFY(sent_[i].command != "collect" && sent_[i].command != "history_backfill");
     }
     void selectedPendingLifecycleFailureIsVisibleAndRetryRecovers() {
         process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"), {database_, "pending"});
@@ -2263,7 +2341,7 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(header.contains("2026-09-16"));
         QVERIFY(header.contains("RESOLVED"));
         QVERIFY(header.contains("25 bp"));
-        QVERIFY(header.contains("Stored history only · no live refresh"));
+        QVERIFY(header.contains("Stored history · Refresh reads local data"));
         QVERIFY(!header.contains("Snapshot retrieved"));
         QVERIFY(!header.contains("Target"));
         QVERIFY(!header.contains("Unavailable"));

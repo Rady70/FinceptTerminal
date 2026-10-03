@@ -347,10 +347,11 @@ void FedWatchPanel::build_controls(QHBoxLayout* toolbar) {
     load_history_ = new QPushButton(tr("Load history"), this);
     load_history_->setObjectName("fedwatchLoadHistory");
     load_history_->setAccessibleName(tr("Load Polymarket history"));
-    load_history_->setToolTip(tr("Download available Polymarket observations for the selected unresolved meeting. "
+    load_history_->setToolTip(tr("Download available Polymarket history for the selected meeting. "
+                                 "Resolved Refresh reads local data. "
                                  "Fed-side history remains the locally retained archive."));
     connect(load_history_, &QPushButton::clicked, this, [this] {
-        if (collect_in_flight_ || backfill_in_flight_ || resolved() || selected_meeting_.isEmpty())
+        if (collect_in_flight_ || backfill_in_flight_ || selected_meeting_.isEmpty() || !load_history_->isEnabled())
             return;
         backfill_results_.remove(selected_meeting_);
         request("history_backfill", {"--meeting", selected_meeting_});
@@ -630,7 +631,9 @@ void FedWatchPanel::on_fetch() {
     current_ok_ = false;
     current_error_.clear();
     render();
-    diagnostic_status_->setText(tr("Refreshing selected current observations…"));
+    diagnostic_status_->setText(meeting()["status"].toString() == "PENDING"
+                                    ? tr("Retrying FRED meeting resolution…")
+                                    : tr("Refreshing selected current observations…"));
     request("collect", selected_meeting_.isEmpty() ? QStringList{} : QStringList{"--meeting", selected_meeting_});
 }
 QJsonObject FedWatchPanel::meeting() const {
@@ -872,7 +875,7 @@ void FedWatchPanel::render() {
     const auto poly = current["polymarket"].toObject();
     const bool show_current = current_ok_ && !local_only();
     if (resolved())
-        summary_->setText(tr("%1 · RESOLVED%2\nStored history only · no live refresh")
+        summary_->setText(tr("%1 · RESOLVED%2\nStored history · Refresh reads local data")
                               .arg(selected_meeting_,
                                    stored["actual_outcome_bp"].isDouble()
                                        ? tr(" · Actual policy outcome: %1 bp").arg(stored["actual_outcome_bp"].toInt())
@@ -891,7 +894,7 @@ void FedWatchPanel::render() {
     if (meeting()["status"].toString() == "PENDING")
         state << tr("PENDING · no current probabilities; Refresh retries FRED resolution; history loading is explicit");
     if (resolved())
-        state << tr("RESOLVED · stored local history; no live collection");
+        state << tr("RESOLVED · Refresh reads local data; Polymarket history loading is explicit");
     else if (!current_ok_)
         state << tr("Current providers unavailable or not refreshed. Stored observations are historical, not current.");
     if (!current_error_.isEmpty())
@@ -1075,7 +1078,6 @@ void FedWatchPanel::render() {
     const bool idle = !collect_in_flight_ && !backfill_in_flight_;
     fetch_btn_->setEnabled(idle);
     update_upcoming_->setEnabled(idle);
-    load_history_->setEnabled(idle && !resolved() && !selected_meeting_.isEmpty());
 }
 QString FedWatchPanel::backfill_status() const {
     const auto stored = meeting()["polymarket_backfill"].toObject();
@@ -1196,11 +1198,12 @@ void FedWatchPanel::render_history() {
     contextual_load_history_->setText(retry_history ? tr("Retry history") : tr("Load Polymarket history"));
     contextual_load_history_->setAccessibleName(retry_history ? tr("Retry Polymarket history")
                                                               : tr("Load Polymarket history"));
-    contextual_load_history_->setVisible(
-        diagnostics_->isHidden() && !resolved() && selected_token &&
-        mapping["mapping_status"].toString() == "VALIDATED" &&
-        (meeting()["status"].toString() == "PENDING" || (revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS")) &&
-        (history_not_loaded || retry_history));
+    const bool history_available = selected_token && mapping["mapping_status"].toString() == "VALIDATED" &&
+                                   (local_only() || (revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS")) &&
+                                   (history_not_loaded || retry_history);
+    contextual_load_history_->setVisible(diagnostics_->isHidden() && history_available);
+    load_history_->setEnabled(!collect_in_flight_ && !backfill_in_flight_ && !selected_meeting_.isEmpty() &&
+                              (!resolved() || history_available));
     contextual_load_history_->setEnabled(!collect_in_flight_ && !backfill_in_flight_);
     int fed_count = 0, poly_count = 0;
     for (const auto& bar : current_chart_->bars())

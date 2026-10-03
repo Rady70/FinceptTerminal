@@ -24,7 +24,7 @@ from fedwatch.transport import TransportError
 def backfill_fixture(store, case, meeting="2026-10-28"):
     now = utc(2026, 9, 28, 12)
     transport = FakeTransport()
-    if case == "failure":
+    if case in ("failure", "normal-failure"):
         transport.add_json("prices-history", TransportError("fixture HTTP 500", status_code=500))
     else:
         outcome = -25 if case.startswith("coverage-") else 25
@@ -39,8 +39,11 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
                            {"t": epoch(utc(2026, 8, 3)), "p": 2.5},
                            {"t": epoch(utc(2030, 1, 1)), "p": 0.5}])
         transport.add_json("prices-history", make_clob_history({mapping["external_token_id"]: points}))
-    return history.backfill_polymarket(store, transport, meeting_dates=[meeting], force=(case != "normal"),
-                                      clock=FixedClock(now), sleep=lambda _: None)
+    result = history.backfill_polymarket(store, transport, meeting_dates=[meeting],
+                                        force=(case not in ("normal", "normal-failure")),
+                                        clock=FixedClock(now), sleep=lambda _: None)
+    result["fixture_requests"] = {"json": transport.json_calls, "text": transport.text_calls}
+    return result
 
 
 def main() -> None:
@@ -65,8 +68,11 @@ def main() -> None:
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
                          allow_nan=False))
         return
-    if case == "pending":
-        store.mark_pending("2026-10-28", "FRED_COVERAGE_INSUFFICIENT", now=utc(2026, 10, 29, 12))
+    if case in ("pending", "resolved"):
+        if case == "pending":
+            store.mark_pending("2026-10-28", "FRED_COVERAGE_INSUFFICIENT", now=utc(2026, 10, 29, 12))
+        else:
+            store.mark_resolved("2026-10-28", 0, "deterministic UI fixture", now=utc(2026, 10, 29, 12))
         if len(sys.argv) > 3:
             store.mark_mapping_revalidation("2026-10-28", history.POLY_SOURCE, history.POLY_METHOD,
                                              sys.argv[3], now=utc(2026, 10, 29, 12))

@@ -24,7 +24,7 @@ Economics service, script `fedwatch_data.py`, source tag `fedwatch`.
 | Change meeting/outcome/range/method; view details | `local_snapshot`, `history_meetings`, `history_series`, `history_analytics`, `history_sources`, `history_compare_cme` | None |
 | Manual current Refresh | `collect --meeting YYYY-MM-DD` | Existing bounded current requests; complete valid recent attempts reused |
 | Explicit refresh even when recently retained | `collect --meeting YYYY-MM-DD --force` | Existing current requests |
-| Load Polymarket history | `history_backfill --meeting YYYY-MM-DD` | Existing validated-token CLOB backfill; stored refresh state reused |
+| Explicit Load/Retry Polymarket history (including resolved meetings) | `history_backfill --meeting YYYY-MM-DD` | Existing validated-token CLOB backfill; stored refresh state reused |
 | Import permitted published history | `history_cme_import --meeting YYYY-MM-DD --file PATH --source-url CME-URL` | None |
 | Reconstruct from permitted monthly exports | `history_zq_import --input-format investing --data-dir PATH --watch-date YYYY-MM-DD --meeting YYYY-MM-DD` | Official calendar and two FRED target histories, once per import batch; unchanged input/complete retained selected dates reused locally |
 
@@ -51,6 +51,14 @@ requests. It resolves from official paired observations or becomes PENDING
 with the exact refusal reason. PENDING retries are selected and FRED-only,
 as authorized by the owner after the latest review. No Investing/current Polymarket/calendar query
 is made and the old probability acquisition timestamp is not refreshed.
+
+Resolved Refresh remains fully local. Explicit Load/Retry history is available
+for a retained validated selected token with absent or retryable Polymarket
+history, including after current mapping revalidation returns NOT_FOUND or
+AMBIGUOUS. These actions use the normal bounded backfill without `--force`.
+A successful resolved backfill reuses its terminal state without further provider
+requests; it does not enable current probabilities. PENDING Refresh reports
+"Retrying FRED meeting resolution" while its selected FRED-only request runs.
 
 Schema **v4** stores the latest current attempt independently for each meeting.
 A selected refresh replaces that meeting's attempt even when it returns no
