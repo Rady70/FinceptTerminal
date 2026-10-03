@@ -538,8 +538,28 @@ def compute_analytics(
         "open_ended": open_ended,
         "as_of": timeutil.iso_z(as_of),
         "time_basis": "UTC",
-        "fed_side": {"method": fed_method, **fed_summary},
-        "polymarket": {"method": POLY_METHOD, **poly_summary},
+        # Expose the same authoritative points used by the summaries. Consumers
+        # must not reconstruct tails or mix CLOB token generations from raw
+        # rows. The as-of boundary matches summarize_points, with no filling,
+        # interpolation or persistence of derived values.
+        "fed_side": {
+            "method": fed_method,
+            **fed_summary,
+            "history": [
+                dict(point) for point in fed_points
+                if _parse_instant(point.get("observed_at")) is not None
+                and _parse_instant(point["observed_at"]) <= as_of
+            ],
+        },
+        "polymarket": {
+            "method": POLY_METHOD,
+            **poly_summary,
+            "history": [
+                dict(point) for point in poly_points
+                if _parse_instant(point.get("observed_at")) is not None
+                and _parse_instant(point["observed_at"]) <= as_of
+            ],
+        },
         "difference": difference,
         "errors": fed_errors + poly_errors,
         "method_notes": list(METHOD_NOTES),

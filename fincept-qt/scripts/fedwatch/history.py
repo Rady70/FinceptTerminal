@@ -1385,12 +1385,23 @@ def meetings_overview(store: FedwatchHistoryStore) -> dict:
                 "event_id": mapping.get("external_event_id"),
                 "event_title": mapping.get("external_event_title"),
                 "outcome_count": 0,
+                "outcomes": [],
                 "last_seen_at": mapping.get("last_seen_at"),
                 "last_revalidation_status": mapping.get("last_revalidation_status"),
                 "last_revalidated_at": mapping.get("last_revalidated_at"),
             },
         )
         entry["outcome_count"] += 1
+        # Mapping identity remains available even before the first accepted
+        # observation, so a research caller can select a validated empty bucket
+        # and show its missing-history state without inventing a distribution.
+        entry["outcomes"].append({
+            "outcome_bp": mapping["outcome_bp"],
+            "open_ended": bool(mapping["open_ended"]),
+            "external_market_id": mapping.get("external_market_id"),
+            "external_token_id": mapping.get("external_token_id"),
+            "question": mapping.get("question"),
+        })
     backfills = store.backfill_states()
     backfill_by_meeting: dict[str, dict] = {}
     for state in backfills:

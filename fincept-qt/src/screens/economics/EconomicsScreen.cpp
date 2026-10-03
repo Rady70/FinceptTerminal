@@ -19,6 +19,7 @@
 #include "screens/economics/panels/EconPanelBase.h"
 #include "screens/economics/panels/EiaPanel.h"
 #include "screens/economics/panels/EurostatPanel.h"
+#include "screens/economics/panels/FedWatchPanel.h"
 #include "screens/economics/panels/FederalReservePanel.h"
 #include "screens/economics/panels/FiscalDataPanel.h"
 #include "screens/economics/panels/FredAnalyticsPanel.h"
@@ -73,6 +74,7 @@ static const struct {
     {"ons", "ONS UK", "#0277BD"},
     {"global_cb", "Central Banks", "#4A148C"},
     {"federal_reserve", "Federal Reserve", "#1A237E"},
+    {"fedwatch", "FedWatch", nullptr},
     {"fiscal_data", "Fiscal Data", "#006064"},
     {"nber", "NBER Cycles", "#7C3AED"},
     {"owid", "Our World In Data", "#6D28D9"},
@@ -123,6 +125,8 @@ static EconPanelBase* make_panel(const QString& id, QWidget* parent) {
         return new GlobalCentralBanksPanel(parent);
     if (id == "federal_reserve")
         return new FederalReservePanel(parent);
+    if (id == "fedwatch")
+        return new FedWatchPanel(parent);
     if (id == "fiscal_data")
         return new FiscalDataPanel(parent);
     if (id == "nber")
@@ -208,7 +212,7 @@ void EconomicsScreen::build_ui() {
         SourceEntry entry;
         entry.id = src.id;
         entry.label = src.label;
-        entry.color = src.color;
+        entry.color = src.color ? src.color : ui::colors::AMBER();
 
         auto* btn = new QPushButton(src.label);
         btn->setCheckable(true);
@@ -261,7 +265,8 @@ void EconomicsScreen::refresh_theme() {
     for (const auto& entry : sources_) {
         if (!entry.badge)
             continue;
-        QColor c(entry.color);
+        const QString color = entry.id == "fedwatch" ? QString(ui::colors::AMBER()) : entry.color;
+        QColor c(color);
         QString rgba = QString("%1,%2,%3").arg(c.red()).arg(c.green()).arg(c.blue());
         static_cast<QPushButton*>(entry.badge)
             ->setStyleSheet(QString("QPushButton { background:%1; color:%2; border:1px solid %3;"
@@ -270,7 +275,7 @@ void EconomicsScreen::refresh_theme() {
                                     "QPushButton:checked { background:rgba(%6,0.12); color:%7;"
                                     "  border-color:%7; }")
                                 .arg(BG_SURFACE(), TEXT_TERTIARY(), BORDER_DIM(), TEXT_PRIMARY(), BORDER_BRIGHT())
-                                .arg(rgba, entry.color));
+                                .arg(rgba, color));
     }
 
     stack_->setStyleSheet(QString("background:%1;").arg(BG_BASE()));
@@ -288,8 +293,7 @@ void EconomicsScreen::retranslateUi() {
     if (title_)
         title_->setText(tr("ECONOMICS DATA EXPLORER"));
     if (subtitle_)
-        subtitle_->setText(
-            tr("%1 global data sources · 1000+ indicators").arg(static_cast<int>(std::size(kSources))));
+        subtitle_->setText(tr("%1 global data sources · 1000+ indicators").arg(static_cast<int>(std::size(kSources))));
     // Source badge labels are brand/source names (data) and are not translated.
 }
 
@@ -307,6 +311,10 @@ EconPanelBase* EconomicsScreen::get_or_create_panel(SourceEntry& entry) {
 
     entry.panel = panel;
     stack_->addWidget(panel);
+    const QString state_key = entry.id + "_panel";
+    if (pending_panel_states_.contains(state_key)) {
+        panel->restore_panel_state(pending_panel_states_.take(state_key).toMap());
+    }
     LOG_INFO("EconomicsScreen", "Created panel for: " + entry.id);
     return panel;
 }
@@ -334,7 +342,8 @@ void EconomicsScreen::switch_to(const QString& source_id) {
 // ── IStatefulScreen ───────────────────────────────────────────────────────────
 
 QVariantMap EconomicsScreen::save_state() const {
-    QVariantMap state{{"source_id", active_id_}};
+    QVariantMap state = pending_panel_states_;
+    state["source_id"] = active_id_;
     for (const auto& entry : sources_) {
         if (entry.panel) {
             auto ps = entry.panel->save_panel_state();
@@ -346,14 +355,18 @@ QVariantMap EconomicsScreen::save_state() const {
 }
 
 void EconomicsScreen::restore_state(const QVariantMap& state) {
+    for (auto& entry : sources_) {
+        const QString key = entry.id + "_panel";
+        if (state.contains(key)) {
+            if (entry.panel)
+                entry.panel->restore_panel_state(state.value(key).toMap());
+            else
+                pending_panel_states_[key] = state.value(key);
+        }
+    }
     const QString id = state.value("source_id").toString();
     if (!id.isEmpty())
         switch_to(id);
-    for (auto& entry : sources_) {
-        const QString key = entry.id + "_panel";
-        if (entry.panel && state.contains(key))
-            entry.panel->restore_panel_state(state.value(key).toMap());
-    }
 }
 
 } // namespace fincept::screens
