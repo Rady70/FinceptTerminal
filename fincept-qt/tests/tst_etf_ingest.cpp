@@ -284,6 +284,7 @@ class TstEtfIngest : public QObject {
     void sec_unreadable_older_page_is_not_ok();
 
     void ibkr_backfill_is_stored_with_sessions_and_identity();
+    void ibkr_partial_response_keeps_its_valid_rows();
     void ibkr_replay_confirms_and_revision_is_kept();
     void ibkr_forward_observation_uses_the_next_session();
     void ibkr_in_progress_session_is_rejected_and_recorded();
@@ -924,6 +925,38 @@ void TstEtfIngest::ibkr_backfill_is_stored_with_sessions_and_identity() {
     QCOMPARE(count("etf_market_sessions"), 19);
     QVERIFY(scalar("SELECT runtime_identity FROM etf_retrievals").contains(QLatin1String("\"commit\":\"4a3c606e\"")));
     QVERIFY(scalar("SELECT interpretation FROM etf_retrievals").contains(QLatin1String(kIbkrRequestEndRule)));
+}
+
+void TstEtfIngest::ibkr_partial_response_keeps_its_valid_rows() {
+    // One bar without a close and one without a volume among 18 sessions: 17
+    // bars are stored; the bar without a volume keeps its prices and stores its
+    // volume as missing (never zero); each problem is an issue of its session.
+    FakeIbkr ibkr;
+    const QString end = QStringLiteral("20260925 23:59:59 US/Eastern");
+    QJsonObject p = ibkr_history_envelope("SPY", 756733, bars_for_sessions(QDate(2026, 9, 1), QDate(2026, 9, 25)), end);
+    QJsonArray rows = p.value("bars").toArray();
+    QJsonObject no_close = rows[3].toObject();
+    no_close.remove("close");
+    rows[3] = no_close;
+    QJsonObject no_volume = rows[5].toObject();
+    no_volume.remove("volume");
+    rows[5] = no_volume;
+    p.insert("bars", rows);
+    ibkr.payload = p;
+    const IbkrDailyRunSummary s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.bars_accepted, 17);
+    QCOMPARE(s.observations_inserted, 85);
+    QCOMPARE(scalar("SELECT detail_code FROM etf_retrievals"), QStringLiteral("bars_partially_kept"));
+    const QString d5 = rows[5].toObject().value("date").toString();
+    const QString iso5 = QDate::fromString(d5, QStringLiteral("yyyyMMdd")).toString(Qt::ISODate);
+    QCOMPARE(scalar(QStringLiteral("SELECT value_state || '|' || IFNULL(value, 'null') FROM etf_observations WHERE "
+                                   "measure = 'bar_volume' AND effective_date = '%1'")
+                        .arg(iso5)),
+             QStringLiteral("missing|null"));
+    QCOMPARE(count("etf_observations", QStringLiteral("measure = 'bar_close' AND effective_date = '%1'").arg(iso5)), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'bar_row_excluded'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'bar_field_unusable'"), 1);
 }
 
 void TstEtfIngest::ibkr_replay_confirms_and_revision_is_kept() {

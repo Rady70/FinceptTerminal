@@ -633,6 +633,10 @@ class IbkrWrapperTest(unittest.TestCase):
         self.assertEqual(payload["classification"]["validation_reason"], "HISTORY_STALE")
         self.assertTrue(payload["classification"]["value_present"])
         self.assertEqual(payload["bars"], [])
+        # The valid rows are returned apart, so a consumer can keep them.
+        self.assertEqual(len(payload["retained_bars"]), 2)
+        self.assertEqual(payload["row_problems"], [])
+        self.assertEqual(payload["retained_bars"][-1]["date"], last.strftime("%Y%m%d"))
 
     def test_history_empty_is_classified_not_a_success(self) -> None:
         code, payload = self._run(self._write_config(), "history", "AAPL", scenario="history_empty")
@@ -660,6 +664,36 @@ class IbkrWrapperTest(unittest.TestCase):
                 self.assertEqual(payload["classification"]["status"], "VALUES_INVALID")
                 self.assertEqual(payload["bars"], [])
                 self.assertTrue(payload["classification"]["validation_reason"])
+                self.assertIn("retained_bars", payload)
+
+    def test_withheld_series_returns_its_valid_rows_apart(self) -> None:
+        # One bad row no longer hides the good ones: the series stays unusable
+        # (bars empty, the envelope contract), the valid rows are retained.
+        expected = {
+            "history_zero_close": (1, [("BAR_CLOSE_INVALID", "row")]),
+            "history_crossed_ohlc": (1, [("BAR_OHLC_RELATION_INVALID", "row")]),
+            "history_negative_volume": (2, [("BAR_VOLUME_MISSING_OR_UNSET", "volume")]),  # -1 is IBKR's unset
+            "history_duplicate_dates": (2, []),
+        }
+        for scenario, (kept, problems) in expected.items():
+            with self.subTest(scenario=scenario):
+                code, payload = self._run(self._write_config(), "history", "AAPL", scenario=scenario)
+                self.assertEqual(code, 0, payload)
+                self.assertFalse(payload["classification"]["usable"])
+                self.assertEqual(payload["bars"], [])
+                self.assertEqual(len(payload["retained_bars"]), kept)
+                self.assertEqual([(p["reason"], p["scope"]) for p in payload["row_problems"]], problems)
+                self.assertEqual(payload["retained_bars"][0]["close"], 226.0)
+        # A volume-scope problem keeps the row's prices but not its volume.
+        _, payload = self._run(self._write_config(), "history", "AAPL", scenario="history_negative_volume")
+        self.assertNotIn("volume", payload["retained_bars"][1])
+        self.assertEqual(payload["retained_bars"][1]["close"], 227.3)
+
+    def test_usable_and_failed_series_carry_no_retained_rows(self) -> None:
+        _, ok = self._run(self._write_config(), "history", "AAPL")
+        self.assertNotIn("retained_bars", ok)
+        _, empty = self._run(self._write_config(), "history", "AAPL", scenario="history_empty")
+        self.assertNotIn("retained_bars", empty)
 
     def test_pin_mismatch_fails_closed(self) -> None:
         config = self._write_config(adapter_commit="0" * 40)

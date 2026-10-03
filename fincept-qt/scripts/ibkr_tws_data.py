@@ -1053,6 +1053,83 @@ def _history_value_problem(rows: list[dict[str, Any]]) -> tuple[str | None, int 
     return None, None
 
 
+def _history_row_problem(row: Any) -> tuple[str | None, str | None]:
+    """The first problem of ONE returned row and its scope.
+
+    ``("...", "row")``: the row cannot be used (no date, a missing or invalid
+    price, an impossible OHLC relation). ``("...", "volume")``: only the volume
+    is unusable; the row's prices stand. ``(None, None)``: the row is valid.
+    The checks are those of ``_history_value_problem``, row by row.
+    """
+
+    if not isinstance(row, dict):
+        return "BAR_ROW_INVALID", "row"
+    if _bar_date(row.get("date")) is None:
+        return "BAR_DATE_INVALID", "row"
+    values: dict[str, float] = {}
+    for name in ("open", "high", "low", "close"):
+        raw = row.get(name)
+        if raw is None or _is_unset(raw):
+            return f"BAR_{name.upper()}_MISSING_OR_UNSET", "row"
+        if not _finite_number(raw) or float(raw) <= 0:
+            return f"BAR_{name.upper()}_INVALID", "row"
+        values[name] = float(raw)
+    if not (
+        values["high"] >= values["open"]
+        and values["high"] >= values["close"]
+        and values["high"] >= values["low"]
+        and values["low"] <= values["open"]
+        and values["low"] <= values["close"]
+    ):
+        return "BAR_OHLC_RELATION_INVALID", "row"
+    volume = row.get("volume")
+    if volume is None or _is_unset(volume):
+        return "BAR_VOLUME_MISSING_OR_UNSET", "volume"
+    if not _finite_number(volume):
+        return "BAR_VOLUME_INVALID", "volume"
+    if float(volume) < 0:
+        return "BAR_VOLUME_NEGATIVE", "volume"
+    return None, None
+
+
+def _bar_payload(row: dict[str, Any], *, with_volume: bool = True) -> dict[str, Any]:
+    bar: dict[str, Any] = {"date": str(row.get("date") or "")}
+    timestamp = _bar_timestamp(row.get("date"))
+    if timestamp is not None:
+        bar["timestamp"] = timestamp
+    for field in ("open", "high", "low", "close", "volume", "wap"):
+        if field == "volume" and not with_volume:
+            continue
+        value = row.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            bar[field] = float(value)
+    return bar
+
+
+def _retained_history(rows: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The individually valid rows of a series withheld as a whole, and each problem.
+
+    A series that fails ``_history_value_problem`` stays unusable and its
+    ``bars`` stay empty (the envelope contract). Its rows are still judged one
+    by one, so a consumer can keep what is valid instead of losing all of it: a
+    row-scope problem leaves the row out, a volume-scope problem keeps the row
+    without its volume. Series-level reasons (dates out of order or repeated, a
+    future date, staleness) are left to the consumer, which knows the calendar.
+    """
+
+    retained: list[dict[str, Any]] = []
+    problems: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        reason, scope = _history_row_problem(row)
+        date_text = str(row.get("date") or "") if isinstance(row, dict) else ""
+        if reason is not None:
+            problems.append({"index": index, "date": date_text, "reason": reason, "scope": scope})
+        if scope == "row":
+            continue
+        retained.append(_bar_payload(row, with_volume=scope != "volume"))
+    return retained, problems
+
+
 def _history_classification(
     error: Exception | None,
     bar_count: int,
@@ -1135,16 +1212,7 @@ def command_history(
         value_problem = _history_value_problem(rows) if error is None else (None, None)
         bars: list[dict[str, Any]] = []
         if error is None and value_problem[0] is None:
-            for row in rows:
-                bar: dict[str, Any] = {"date": str(row.get("date") or "")}
-                timestamp = _bar_timestamp(row.get("date"))
-                if timestamp is not None:
-                    bar["timestamp"] = timestamp
-                for field in ("open", "high", "low", "close", "volume", "wap"):
-                    value = row.get(field)
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        bar[field] = float(value)
-                bars.append(bar)
+            bars = [_bar_payload(row) for row in rows]
 
         envelope = _envelope("history", ok=True, identity=identity)
         envelope["symbol"] = symbol
@@ -1155,6 +1223,10 @@ def command_history(
             "date text is preserved verbatim in the bar's date field"
         )
         envelope["bars"] = bars
+        if error is None and value_problem[0] is not None:
+            # The series is withheld (``bars`` stays empty), but its individually
+            # valid rows are returned apart, with every row-level problem.
+            envelope["retained_bars"], envelope["row_problems"] = _retained_history(rows)
         envelope["classification"] = _history_classification(error, len(rows), value_problem)
         return envelope
 
