@@ -94,7 +94,11 @@ Cell etfr_cred(Credibility k, const QStringList& reasons) {
 Cell etfr_grade(const ResearchValue& v) {
     if (v.usable() && v.evidence == EvidenceClass::Measured) {
         Cell c;
-        c.text = v.source_quality.isEmpty() ? na() : QStringLiteral("Q:") + v.source_quality.left(4);
+        const QString q = v.source_quality == QLatin1String(quality::kProviderUndated) ? QStringLiteral("PROV")
+                          : v.source_quality == QLatin1String(quality::kPublished)     ? QStringLiteral("PUB")
+                          : v.source_quality == QLatin1String(quality::kRevised)       ? QStringLiteral("REV")
+                                                                                       : v.source_quality.left(4);
+        c.text = v.source_quality.isEmpty() ? na() : QStringLiteral("Q:") + q;
         c.sort_text = c.text;
         c.fg = token(&ui::ThemeTokens::text_secondary);
         c.align = Qt::AlignCenter;
@@ -169,20 +173,32 @@ QStringList etfr_row_tags(const UniverseRow& r) {
     return t;
 }
 
+const ResearchValue& etfr_best_flow_evidence(const UniverseRow& r) {
+    return best_flow_evidence(r);
+}
+
+/// The period a flow-evidence value describes, shown beside it so that an old
+/// SEC month never reads as current: the SEC month (JUN26), the estimate's
+/// interval end (02OCT), the proxy's horizon (1M) or window (20D).
+QString etfr_flow_period(const ResearchValue& v, const QString& mode) {
+    if (!v.usable())
+        return QString();
+    if (mode == QLatin1String("est_pct20"))
+        return QStringLiteral("20D");
+    switch (v.evidence) {
+        case EvidenceClass::Measured:
+            return v.effective.toString(QStringLiteral("MMMyy")).toUpper();
+        case EvidenceClass::Estimated:
+            return v.effective.toString(QStringLiteral("ddMMM")).toUpper();
+        case EvidenceClass::Proxy:
+            return QStringLiteral("1M");
+        default:
+            return QString();
+    }
+}
+
 /// The flow cell and evidence cell of a universe row: measured beats
 /// estimated; a proxy-only row shows a compact dash, never a zero.
-/// The best available flow evidence of a fund: SEC N-PORT measured flow, else
-/// the best estimate (E1, else E2), else the market-behaviour proxy (1M return
-/// vs the fund's benchmark, pp), else the measured value's unavailability.
-const ResearchValue& etfr_best_flow_evidence(const UniverseRow& r) {
-    if (r.measured.latest.usable())
-        return r.measured.latest;
-    if (r.est.best.usable())
-        return r.est.best;
-    if (r.ret.rel_m1.usable())
-        return r.ret.rel_m1;
-    return r.measured.latest;
-}
 
 std::pair<Cell, Cell> etfr_flow_cells(const UniverseRow& r) {
     if (r.measured.latest.usable()) {
@@ -686,7 +702,7 @@ QWidget* EtfResearchScreen::build_rrg_view() {
     rrg_tail_->setObjectName(QStringLiteral("etfrRrgTail"));
     for (int t : {4, 6, 8})
         rrg_tail_->addItem(tr("%1-week trail").arg(t), t);
-    rrg_tail_->setCurrentIndex(2);
+    rrg_tail_->setCurrentIndex(0); // 4-week trails; 6/8 weeks on request
     bl->addWidget(rrg_set_);
     bl->addWidget(rrg_tail_);
     auto* hint = new QLabel(tr("RS-Ratio = 100·RS/SMA8(RS), RS-Momentum = 100·Ratio/SMA4(Ratio), weekly, completed "
@@ -1073,7 +1089,8 @@ void EtfResearchScreen::populate_summary() {
             .arg(c.value(QStringLiteral("stale")) > 0
                      ? span(tr("%1 stale").arg(c.value(QStringLiteral("stale"))), t.warning)
                      : span(tr("fresh"), t.positive)));
-    tiles_[QStringLiteral("flow")]->setText(QStringLiteral("%1 %2 · %3 %4 · %5 %6 · %7 %8")
+    tiles_[QStringLiteral("flow")]->setText(tr("%1 funds: ").arg(c.value(QStringLiteral("funds"))) +
+                                            QStringLiteral("%1 %2 · %3 %4 · %5 %6 · %7 %8")
                                                 .arg(span(QStringLiteral("MEAS"), t.info))
                                                 .arg(c.value(QStringLiteral("flow_measured")))
                                                 .arg(span(QStringLiteral("EST"), t.warning))
@@ -1121,17 +1138,31 @@ void EtfResearchScreen::populate_summary() {
                                                ? QString::number(*cyc.vix.value, 'f', 1) + QStringLiteral(" ") +
                                                      cyc.vix.effective.toString(QStringLiteral("MM-dd"))
                                                : span(tr("n/a"), t.text_tertiary));
-    int bad = 0, total = 0;
+    // Unlike states are counted apart: a failed or partial source, a source that
+    // could not be reached, and one that is not configured (SEC N-PORT without a
+    // User-Agent is the strongest flow evidence missing).
+    int degraded = 0, unreachable = 0, unconfigured = 0, total = 0;
     for (const auto& s : snap_->sources) {
         ++total;
         if (s.status == QLatin1String("FAILED") || s.status == QLatin1String("PARTIAL") ||
             s.status == QLatin1String("STALE"))
-            ++bad;
+            ++degraded;
+        else if (s.status == QLatin1String("UNAVAILABLE"))
+            ++unreachable;
+        else if (s.status == QLatin1String("NOT_CONFIGURED"))
+            ++unconfigured;
     }
-    tiles_[QStringLiteral("sources")]->setText(
-        total == 0 ? span(tr("no refresh yet"), t.warning)
-                   : (bad ? span(tr("%1/%2 need attention").arg(bad).arg(total), t.warning)
-                          : span(tr("%1 ok").arg(total), t.positive)));
+    QStringList source_parts;
+    if (degraded)
+        source_parts << tr("%1 partial/failed").arg(degraded);
+    if (unreachable)
+        source_parts << tr("%1 unavailable").arg(unreachable);
+    if (unconfigured)
+        source_parts << tr("%1 not configured").arg(unconfigured);
+    tiles_[QStringLiteral("sources")]->setText(total == 0 ? span(tr("no refresh yet"), t.warning)
+                                               : source_parts.isEmpty()
+                                                   ? span(tr("%1 ok").arg(total), t.positive)
+                                                   : span(source_parts.join(QStringLiteral(" · ")), t.warning));
     status_->setText(
         snap_->last_refresh_finished.isValid()
             ? tr("Refreshed %1 UTC").arg(snap_->last_refresh_finished.toString(QStringLiteral("MM-dd HH:mm")))
@@ -1497,7 +1528,9 @@ void EtfResearchScreen::populate_flow() {
         t.value_text = v->units == QLatin1String("usd") && v->value
                            ? fmt_usd(*v->value)
                            : fmt_value(*v, v->units == QLatin1String("pp") ? 1 : 2);
-        t.tag = v->usable() ? QLatin1String(evidence_tag(v->evidence)) : QStringLiteral("N/A");
+        t.tag = v->usable()
+                    ? QLatin1String(evidence_tag(v->evidence)) + QStringLiteral("·") + etfr_flow_period(*v, mode)
+                    : QStringLiteral("N/A");
         t.tag_color = evidence_color(v->usable() ? v->evidence : EvidenceClass::Unavailable);
         t.tooltip = value_tooltip(*v, r.inst.symbol);
         tiles << t;
@@ -1510,13 +1543,14 @@ void EtfResearchScreen::populate_flow() {
         // Each evidence class has its own units: colour is scaled within a class
         // (largest magnitude = full colour), never across dollars and returns.
         QHash<QString, double> peak;
+        auto cls = [](const HeatTile& t) { return t.tag.section(QStringLiteral("·"), 0, 0); };
         for (const auto& t : tiles)
             if (t.value)
-                peak[t.tag] = std::max(peak.value(t.tag), std::abs(*t.value));
+                peak[cls(t)] = std::max(peak.value(cls(t)), std::abs(*t.value));
         for (auto& t : tiles) {
-            ++by_class[t.tag];
-            if (t.value && peak.value(t.tag) > 0)
-                t.value = *t.value / peak.value(t.tag);
+            ++by_class[cls(t)];
+            if (t.value && peak.value(cls(t)) > 0)
+                t.value = *t.value / peak.value(cls(t));
         }
     }
     flow_heat_->set_tiles(tiles, mode == QLatin1String("best") ? 1.0 : etfr_range(tiles), flow_mode_->currentText());
@@ -1530,9 +1564,9 @@ void EtfResearchScreen::populate_flow() {
         why_text << QStringLiteral("%1 %2").arg(it.value()).arg(it.key());
     if (mode == QLatin1String("best"))
         flow_note_->setText(
-            tr("Best available per fund: MEAS %1 · EST %2 · PRXY %3 · N/A %4. Colour compares funds within "
-               "one evidence class only; PRXY tiles are 1M return vs benchmark (market behaviour), "
-               "never dollar flow. Estimate refused: %5.")
+            tr("Best available per fund: MEAS %1 · EST %2 · PRXY %3 · N/A %4. Each tile names its period "
+               "(SEC month, estimate interval end, 1M). Colour compares funds within one evidence class only; "
+               "PRXY tiles are 1M return vs benchmark (market behaviour), never dollar flow. Estimate refused: %5.")
                 .arg(by_class.value(QStringLiteral("MEAS")))
                 .arg(by_class.value(QStringLiteral("EST")))
                 .arg(by_class.value(QStringLiteral("PRXY")))
@@ -1548,19 +1582,26 @@ void EtfResearchScreen::populate_flow() {
     const QVector<Column> cols = {
         {tr("Ticker"), QString(), 52, true},
         {tr("Ev"), tr("Class of the best available flow evidence"), 42, true},
-        {tr("Best available"), tr("SEC measured, else estimated (E1, else E2), else 1M vs benchmark (PROXY, not flow)"),
-         110},
+        {tr("Best available"),
+         tr("SEC measured, else estimated (E1, else E2), else 1M vs benchmark (PROXY, not flow); with its period"),
+         130},
         {tr("Measured"), tr("SEC N-PORT latest available month (MEASURED)"), 104},
         {tr("3M meas"), QString(), 80},
         {tr("E1 latest"), tr("Δ(AUM/NAV) × NAV over the latest captured interval"), 84},
         {tr("E2"), tr("Δ(reported shares) × NAV"), 80},
         {tr("E3"), tr("AUM − AUM_prev × close ratio"), 80},
-        {tr("Agree"), tr("E1 vs E2 within 0.2% of prior AUM"), 110, true},
+        {tr("Agree"),
+         tr("E1 vs E2 within 0.2% of prior AUM; SHARES_INCONSISTENT = reported shares × NAV is more than 0.2% "
+            "from AUM, so E2 is refused"),
+         110, true},
         {tr("Why not"),
          tr("Reason the latest E1 interval has no value (aum_not_updated = Yahoo re-served the "
             "previous AUM while NAV moved; record_too_young = one capture session)"),
          150, true},
-        {tr("Cred"), QString(), 42},
+        {tr("Cred"),
+         tr("Credibility of the best available value; MEASURED values are not graded and show their source "
+            "quality (Q:)"),
+         48},
         {tr("Est 5D"), QString(), 80},
         {tr("Est 20D"), QString(), 80},
         {tr("%AUM 20D"), QString(), 66},
@@ -1584,13 +1625,13 @@ void EtfResearchScreen::populate_flow() {
         Cell best = etfr_value(bv, bv.units == QLatin1String("pp") ? 1 : 2, tr("Best available flow evidence"));
         if (bv.units == QLatin1String("usd") && bv.value)
             best.text = fmt_usd(*bv.value);
+        if (bv.usable())
+            best.text += QLatin1Char(' ') + etfr_flow_period(bv, QStringLiteral("best"));
         c << etfr_text(r.inst.symbol, QString(), true)
           << etfr_evidence(bv.usable() ? bv.evidence : EvidenceClass::Unavailable, value_tooltip(bv, r.inst.symbol))
           << best << meas << etfr_value(r.measured.sum_3m) << etfr_value(r.est.latest) << etfr_value(r.est.latest_e2)
           << etfr_value(r.est.latest_e3) << etfr_text(r.est.agreement.isEmpty() ? na() : r.est.agreement.toUpper())
-          << etfr_text(r.est.latest.usable() ? QString() : r.est.latest.reason)
-          << etfr_cred(r.est.latest.usable() ? r.est.latest.credibility : Credibility::NotGraded,
-                       r.est.latest.credibility_reasons)
+          << etfr_text(r.est.latest.usable() ? QString() : r.est.latest.reason) << etfr_grade(bv)
           << etfr_value(r.est.sum_5) << etfr_value(r.est.sum_20) << etfr_value(r.est.pct_aum_20)
           << etfr_value(r.est.coverage_20, 0)
           << etfr_text(QStringLiteral("%1/%2").arg(r.est.capture_sessions).arg(r.est.captures))

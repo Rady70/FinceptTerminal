@@ -179,6 +179,12 @@ inline BusinessCycle compute_business_cycle(const QHash<QString, MacroSeries>& f
                         QStringLiteral("fred_VIXCLS"), fred_src, d_vix);
         bc.vix.credibility = Credibility::NotGraded;
         bc.vix.credibility_reasons.clear();
+        bool vix_revised = false;
+        if (const MacroSeries* vs = series_ptr(fred, "VIXCLS"))
+            for (const auto& p : vs->points)
+                if (p.date == d_vix)
+                    vix_revised = p.revised;
+        bc.vix.source_quality = QLatin1String(vix_revised ? quality::kRevised : quality::kPublished);
         if (macro_input_stale(d_vix, as_of, 7))
             bc.vix.add_flag(flag::kStale);
     } else {

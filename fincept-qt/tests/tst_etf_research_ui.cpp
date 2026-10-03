@@ -5,6 +5,7 @@
 // acquisition path is the explicit Refresh button. Runs on the offscreen QPA.
 #include "etf_research_fixtures.h"
 #include "screens/etf_research/EtfResearchBindings.h"
+#include "screens/etf_research/EtfResearchFormat.h"
 #include "screens/etf_research/EtfResearchScreen.h"
 #include "screens/etf_research/EtfResearchTableModel.h"
 #include "screens/etf_research/EtfResearchWidgets.h"
@@ -24,6 +25,7 @@
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextDocumentFragment>
 #include <QToolButton>
 
 using namespace fincept;
@@ -146,6 +148,7 @@ class TstEtfResearchUi : public QObject {
     void regime_models_intl_sources_render();
     void refresh_is_the_only_acquisition_path();
     void narrow_window_stacks_detail();
+    void sources_headline_and_rrg_defaults();
     void large_universe_stays_responsive();
     void capture_writes_every_view_without_acquisition();
 };
@@ -309,18 +312,28 @@ void TstEtfResearchUi::flow_heatmap_keeps_evidence_modes_apart() {
     // Default: best available evidence. Every fund with any evidence has a tile
     // value; classes keep their own tags and units, and a proxy is never dollars.
     QCOMPARE(mode->currentData().toString(), QStringLiteral("best"));
+    // Every tile names the period its value describes, so an old SEC month never
+    // reads as current: MEAS·<month>, EST·<interval end>, PRXY·1M.
     int meas = 0, est = 0, prxy = 0, missing = 0;
     for (const auto& t : heat->tiles()) {
-        if (t.tag == QLatin1String("MEAS"))
+        const UniverseRow* row = g_snapshot.row(t.key);
+        QVERIFY(row);
+        if (t.tag.startsWith(QStringLiteral("MEAS·"))) {
             ++meas;
-        else if (t.tag == QLatin1String("EST"))
+            QCOMPARE(t.tag, QStringLiteral("MEAS·") +
+                                row->measured.latest.effective.toString(QStringLiteral("MMMyy")).toUpper());
+        } else if (t.tag.startsWith(QStringLiteral("EST·"))) {
             ++est;
-        else if (t.tag == QLatin1String("PRXY")) {
+            QCOMPARE(t.tag,
+                     QStringLiteral("EST·") + row->est.best.effective.toString(QStringLiteral("ddMMM")).toUpper());
+        } else if (t.tag == QStringLiteral("PRXY·1M")) {
             ++prxy;
             QVERIFY2(!t.value_text.contains(QLatin1Char('$')), qPrintable(t.key));
             QVERIFY2(t.value_text.endsWith(QLatin1String("pp")), qPrintable(t.value_text));
-        } else
+        } else {
+            QCOMPARE(t.tag, QStringLiteral("N/A"));
             ++missing;
+        }
         if (t.value)
             QVERIFY(std::abs(*t.value) <= 1.0 + 1e-12); // scaled within its class
     }
@@ -328,6 +341,38 @@ void TstEtfResearchUi::flow_heatmap_keeps_evidence_modes_apart() {
     QVERIFY(est >= 1);  // XLK: two captures
     QVERIFY(prxy > 50); // everything else falls back to the labelled proxy
     QVERIFY(missing <= 3);
+    // The summary headline counts the same funds with the same rule.
+    QString headline;
+    for (auto* l : s.findChildren<QLabel*>(QStringLiteral("etfrTileValue")))
+        if (l->text().contains(QStringLiteral("funds:")))
+            headline = QTextDocumentFragment::fromHtml(l->text()).toPlainText();
+    QCOMPARE(headline, QStringLiteral("%1 funds: MEAS %2 · EST %3 · PRXY %4 · N/A %5")
+                           .arg(heat->tile_count())
+                           .arg(meas)
+                           .arg(est)
+                           .arg(prxy)
+                           .arg(missing));
+    // The table's Cred column grades the value it shows as best available: a
+    // MEASURED value shows its source quality, a calculated one its grade.
+    const QAbstractItemModel* fm = s.table(QStringLiteral("flow"))->model();
+    for (int i = 0; i < fm->rowCount(); ++i) {
+        const UniverseRow* row = g_snapshot.row(fm->index(i, 0).data().toString());
+        QVERIFY(row);
+        const ResearchValue& bv = best_flow_evidence(*row);
+        const QString cred = fm->index(i, 10).data().toString();
+        const QString best = fm->index(i, 2).data().toString();
+        if (!bv.usable())
+            continue;
+        if (bv.evidence == EvidenceClass::Measured) {
+            QVERIFY2(cred.startsWith(QLatin1String("Q:")), qPrintable(row->inst.symbol + QLatin1Char(' ') + cred));
+            QVERIFY2(best.endsWith(bv.effective.toString(QStringLiteral("MMMyy")).toUpper()), qPrintable(best));
+        } else {
+            QVERIFY2(!cred.isEmpty() && cred != etfr::na() && !cred.startsWith(QLatin1String("Q:")),
+                     qPrintable(row->inst.symbol + QLatin1Char(' ') + cred));
+            if (bv.evidence == EvidenceClass::Proxy)
+                QVERIFY2(best.endsWith(QLatin1String(" 1M")), qPrintable(best));
+        }
+    }
     mode->setCurrentIndex(mode->findData(QStringLiteral("measured")));
     QCOMPARE(s.table(QStringLiteral("flow"))->model()->rowCount(), heat->tile_count());
     auto* label = s.findChild<QLabel*>(QStringLiteral("etfrHint"));
@@ -337,6 +382,33 @@ void TstEtfResearchUi::flow_heatmap_keeps_evidence_modes_apart() {
     for (auto* l : s.view_widget(QStringLiteral("flow"))->findChildren<QLabel*>())
         found = found || l->text().startsWith(QStringLiteral("1 of "));
     QVERIFY(found);
+}
+
+void TstEtfResearchUi::sources_headline_and_rrg_defaults() {
+    // Unlike source states are counted apart, and the dedicated RRG view opens
+    // with the readable 4-week trails.
+    ResearchSnapshot snap = g_snapshot;
+    snap.sources.clear();
+    for (const char* st : {"UPDATED", "PARTIAL", "FAILED", "UNAVAILABLE", "NOT_CONFIGURED", "UNCHANGED"}) {
+        SourceStageStatus x;
+        x.stage = QString::fromLatin1(st).toLower();
+        x.status = QLatin1String(st);
+        snap.sources.append(x);
+    }
+    EtfResearchScreen s;
+    s.set_autoload(false);
+    s.resize(1500, 900);
+    s.show();
+    s.set_snapshot(snap);
+    QString text;
+    for (auto* l : s.findChildren<QLabel*>(QStringLiteral("etfrTileValue")))
+        if (l->text().contains(QStringLiteral("configured")))
+            text = QTextDocumentFragment::fromHtml(l->text()).toPlainText();
+    QCOMPARE(text, QStringLiteral("2 partial/failed · 1 unavailable · 1 not configured"));
+    s.show_view(QStringLiteral("rrg"));
+    auto* tail = s.findChild<QComboBox*>(QStringLiteral("etfrRrgTail"));
+    QVERIFY(tail);
+    QCOMPARE(tail->currentData().toInt(), 4);
 }
 
 void TstEtfResearchUi::group_flows_load_when_the_flow_view_opens() {

@@ -38,6 +38,7 @@ ResearchValue observed(std::optional<double> v, const QString& units, const QStr
     r.units = units;
     r.method = method;
     r.source = kFundSource;
+    r.source_quality = QLatin1String(quality::kProviderUndated);
     r.effective = eff;
     r.add_flag(flag::kAssumedDate);
     if (stale)
@@ -199,7 +200,7 @@ void etfr_measured(UniverseRow& row, const QVector<MeasuredMonth>& months) {
         ResearchValue r;
         r.value = v;
         r.evidence = EvidenceClass::Measured;
-        r.source_quality = revised ? QStringLiteral("REVISED") : QStringLiteral("CONFIRMED");
+        r.source_quality = QLatin1String(revised ? quality::kRevised : quality::kConfirmed);
         r.units = QStringLiteral("usd");
         r.method = method;
         r.source = QStringLiteral("sec_nport");
@@ -376,12 +377,11 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
         }
         if (const auto cm = in.universe.cftc_market.constFind(inst.symbol); cm != in.universe.cftc_market.constEnd())
             row.cftc = cftc_positioning(*cm, in.cftc.value(*cm), in.as_of.toUTC().date());
-        if (row.measured.latest.usable())
-            row.flow_evidence = EvidenceClass::Measured;
-        else if (row.est.best.usable())
-            row.flow_evidence = EvidenceClass::Estimated;
-        else if (row.ret.m1.usable())
-            row.flow_evidence = EvidenceClass::Proxy;
+        // The same rule the FLOW view shows (best_flow_evidence); funds only.
+        if (row.inst.is_fund()) {
+            const ResearchValue& best = best_flow_evidence(row);
+            row.flow_evidence = best.usable() ? best.evidence : EvidenceClass::Unavailable;
+        }
         s.rows.append(row);
     }
 
@@ -584,6 +584,8 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                                         kFundSource, QDate())
                                : ResearchValue::unavailable(QStringLiteral("pe_missing_or_outside_5_200"));
             m.pe.credibility_reasons.clear();
+            if (m.pe.usable())
+                m.pe.source_quality = QLatin1String(quality::kProviderUndated);
             if (ey_spread[static_cast<size_t>(k)]) {
                 QVector<CredCondition> c;
                 if (macro_input_stale(d10, as_of_date, 7))
@@ -675,6 +677,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
         const QDate as_of_d = as_of_date;
         std::vector<std::optional<double>> gdp(rows.size()), ca(rows.size()), carry(rows.size()), mom(rows.size());
         QVector<int> gdp_year(rows.size(), 0), ca_year(rows.size(), 0);
+        QVector<bool> ca_revised(rows.size(), false);
         QVector<bool> macro_stale(rows.size(), false);
         auto wb_series = [&](const char* ind, const QString& iso2) -> const MacroSeries* {
             const auto it = in.world_bank.constFind(QLatin1String(ind));
@@ -702,6 +705,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
             if (const MacroSeries* c = wb_series("BN.CAB.XOKA.GD.ZS", r.inst.wb_code); c && !c->points.isEmpty()) {
                 ca[static_cast<size_t>(k)] = c->points.last().value;
                 ca_year[k] = c->points.last().date.year();
+                ca_revised[k] = c->points.last().revised;
             }
             macro_stale[k] =
                 (gdp_year[k] && gdp_year[k] < as_of_d.year() - 2) || (ca_year[k] && ca_year[k] < as_of_d.year() - 2);
@@ -754,6 +758,9 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                                              QStringLiteral("pct_gdp"), QStringLiteral("world_bank:BN.CAB.XOKA.GD.ZS"),
                                              QLatin1String(kSourceWorldBank), QDate(ca_year[k], 12, 31))
                                     : ResearchValue::unavailable(q_missing);
+            if (c.current_account.usable())
+                c.current_account.source_quality =
+                    QLatin1String(ca_revised[k] ? quality::kRevised : quality::kPublished);
             c.carry = carry[u] ? graded(*carry[u], EvidenceClass::Proxy, Credibility::Medium, base,
                                         QStringLiteral("pct"), QStringLiteral("etfr_trailing_distribution_yield_v1"),
                                         QLatin1String(kSourceYahoo), r.last_bar)
@@ -992,10 +999,13 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                 const auto mc = json_num(fo, "marketCap");
                 const auto de = json_num(fo, "debtToEquity");
                 auto meas = [&](std::optional<double> v, const QString& units, const char* key) {
-                    return v ? graded(*v, EvidenceClass::Measured, Credibility::NotGraded, {}, units,
-                                      QStringLiteral("yahoo_quote_summary:") + QLatin1String(key),
-                                      QStringLiteral("yahoo_quote_summary"), QDate())
-                             : ResearchValue::unavailable(QStringLiteral("field_not_supplied"));
+                    if (!v)
+                        return ResearchValue::unavailable(QStringLiteral("field_not_supplied"));
+                    ResearchValue r = graded(*v, EvidenceClass::Measured, Credibility::NotGraded, {}, units,
+                                             QStringLiteral("yahoo_quote_summary:") + QLatin1String(key),
+                                             QStringLiteral("yahoo_quote_summary"), QDate());
+                    r.source_quality = QLatin1String(quality::kProviderUndated);
+                    return r;
                 };
                 c.pe = meas(pe, QStringLiteral("ratio"), "trailingPE");
                 c.forward_pe = meas(fpe, QStringLiteral("ratio"), "forwardPE");
@@ -1094,6 +1104,8 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                                     QStringLiteral("ratio"), QStringLiteral("yahoo_quote_summary:trailingPE"),
                                     QStringLiteral("yahoo_quote_summary"), QDate())
                            : ResearchValue::unavailable(QStringLiteral("field_not_supplied"));
+                if (c.pe.usable())
+                    c.pe.source_quality = QLatin1String(quality::kProviderUndated);
                 is.stocks.append(c);
             }
             auto ew = [&](const math::Vec& v, const QString& eff_method) {
@@ -1134,8 +1146,13 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
     }
 
     // ── Counts ───────────────────────────────────────────────────────────────
-    int measured = 0, estimated = 0, proxy = 0, unavailable = 0, stale = 0;
+    int measured = 0, estimated = 0, proxy = 0, unavailable = 0, stale = 0, funds = 0;
     for (const auto& r : s.rows) {
+        if (r.stale && r.last_bar.isValid())
+            ++stale;
+        if (!r.inst.is_fund())
+            continue; // flow evidence describes funds; the index rows have none
+        ++funds;
         switch (r.flow_evidence) {
             case EvidenceClass::Measured:
                 ++measured;
@@ -1149,10 +1166,9 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
             default:
                 ++unavailable;
         }
-        if (r.stale && r.last_bar.isValid())
-            ++stale;
     }
     s.counts = {{QStringLiteral("rows"), static_cast<int>(s.rows.size())},
+                {QStringLiteral("funds"), funds},
                 {QStringLiteral("flow_measured"), measured},
                 {QStringLiteral("flow_estimated"), estimated},
                 {QStringLiteral("proxy_only"), proxy},
@@ -1211,6 +1227,7 @@ QJsonObject etfr_flow_json(const EstimatedFlow& e, bool series) {
                                   {QStringLiteral("e1"), opt(f.e1_implied_shares)},
                                   {QStringLiteral("e2"), opt(f.e2_reported_shares)},
                                   {QStringLiteral("e3"), opt(f.e3_price_adjusted)},
+                                  {QStringLiteral("shares_level_gap"), opt(f.shares_level_gap)},
                                   {QStringLiteral("flags"), QJsonArray::fromStringList(f.flags)},
                                   {QStringLiteral("reason"), f.reason}});
         o.insert(QStringLiteral("intervals"), iv);

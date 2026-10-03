@@ -476,6 +476,18 @@ void TstEtfResearchStore::stage_status_stale_and_partial() {
     QCOMPARE(p.value().first().status, QStringLiteral("STALE"));
     QCOMPARE(p.value().first().stale_items, 1);
     QVERIFY(p.value().first().dependent_calculations.contains(QStringLiteral("rrg")));
+    // Fundamentals: 443 reused because they are fresh, the only two fetched failed.
+    // The stage is PARTIAL (its data is current except those two), not FAILED.
+    QJsonObject fund = stage("2026-10-05T22:00:00.000Z",
+                             {{"KAP", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}},
+                              {"500034", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}}});
+    fund.insert(QStringLiteral("skipped_fresh"), 443);
+    fund.insert(QStringLiteral("fresh_days"), 3);
+    auto f = repo.persist_payload(QStringLiteral("r8"), payload({{"yahoo_fundamentals", fund}}), QDate(2026, 10, 5));
+    QVERIFY2(f.is_ok(), f.is_err() ? f.error().c_str() : "");
+    QCOMPARE(f.value().first().status, QStringLiteral("PARTIAL"));
+    QCOMPARE(f.value().first().items_ok, 0);
+    QVERIFY(f.value().first().detail.contains(QStringLiteral("443")));
 }
 
 void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failure() {

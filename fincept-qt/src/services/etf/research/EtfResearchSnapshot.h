@@ -45,6 +45,9 @@ struct FlowInterval {
     std::optional<double> e1_implied_shares;  ///< Δ(AUM/NAV) × NAV_cur
     std::optional<double> e2_reported_shares; ///< Δ(reported shares) × NAV_cur
     std::optional<double> e3_price_adjusted;  ///< AUM_cur - AUM_prev × close_cur/close_prev
+    /// Largest |reported shares × NAV / AUM − 1| over the captures whose AUM is
+    /// fresh (the anchor; the current capture too unless its AUM was re-served).
+    std::optional<double> shares_level_gap;
     QStringList flags;
     QString reason; ///< why E1 is unavailable
 };
@@ -58,7 +61,7 @@ struct EstimatedFlow {
     ResearchValue sum_20;
     ResearchValue pct_aum_20;  ///< sum_20 / AUM at the start of the window, percent
     ResearchValue coverage_20; ///< share of the last 20 sessions covered by captured intervals
-    QString agreement;         ///< agree | disagree | uncorroborated | ''
+    QString agreement;         ///< agree | disagree | uncorroborated | shares_inconsistent | ''
     int captures = 0;
     int capture_sessions = 0; ///< distinct NAV-dated sessions
     int undated_captures = 0; ///< captures whose NAV matched no session unambiguously
@@ -125,7 +128,7 @@ struct UniverseRow {
     bool stale = false;
     QString freshness; ///< fresh | stale | no_history
     QString history_status;
-    /// The strongest flow evidence available for the row (for the scan column).
+    /// Class of best_flow_evidence() for a fund; UNAVAILABLE for non-funds.
     EvidenceClass flow_evidence = EvidenceClass::Unavailable;
     /// Total-return index of the row and of its benchmark on common sessions
     /// (last 260), rebased to 100 at the first point, for the detail chart.
@@ -133,6 +136,20 @@ struct UniverseRow {
     QVector<double> chart_tr;
     QVector<double> chart_bench;
 };
+
+/// The best available flow evidence of a fund, one rule for the FLOW view, the
+/// universe scan column and the summary counts: SEC N-PORT measured flow, else
+/// the best estimate (E1, else E2), else the market-behaviour proxy (1M total
+/// return vs the fund's benchmark, pp), else the measured value's unavailability.
+inline const ResearchValue& best_flow_evidence(const UniverseRow& r) {
+    if (r.measured.latest.usable())
+        return r.measured.latest;
+    if (r.est.best.usable())
+        return r.est.best;
+    if (r.ret.rel_m1.usable())
+        return r.ret.rel_m1;
+    return r.measured.latest;
+}
 
 struct SectorModelRow {
     QString symbol;

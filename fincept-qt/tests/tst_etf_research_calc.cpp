@@ -46,6 +46,7 @@ class TstEtfResearchCalc : public QObject {
     void reference_estimators_are_algebraically_identical();
     void distribution_is_not_a_flow();
     void reported_shares_disagreement_is_experimental();
+    void reported_shares_must_match_aum_over_nav();
     void stale_aum_and_split_are_unavailable();
     void capture_gap_is_one_interval();
     void stale_aum_capture_is_not_an_anchor();
@@ -409,17 +410,83 @@ void TstEtfResearchCalc::distribution_is_not_a_flow() {
 void TstEtfResearchCalc::reported_shares_disagreement_is_experimental() {
     const auto d = nyse_sessions(QDate(2026, 9, 30), 2);
     const BarSeries bars = closes(QStringLiteral("F"), d, {100.0, 100.5});
-    // Implied shares grow by 1%, reported shares unchanged (a stale field).
-    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 1.01e6 * 100.5, 100.5, 1e6)};
+    // Both share counts are consistent with AUM/NAV (gaps 0.19 % each, within
+    // the 0.2 % level tolerance), yet their changes differ by 0.38 % of AUM:
+    // implied shares +0.4 %, reported shares +0.02 %.
+    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1.0019e6),
+                                    capture(d[1], 1.004e6 * 100.5, 100.5, 1.0021e6)};
     const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
     QVERIFY(e.latest.value);
-    QVERIFY(std::abs(*e.latest.value - 0.01e6 * 100.5) < 1e-3);
+    QVERIFY(std::abs(*e.latest.value - 0.004e6 * 100.5) < 1e-3);
+    QVERIFY(e.latest_e2.value);
     QCOMPARE(e.agreement, QStringLiteral("disagree"));
     QCOMPARE(e.latest.credibility, Credibility::Experimental);
     QVERIFY(e.latest.has_flag(flag::kDisagreement));
     QVERIFY(e.latest.has_flag(flag::kLowConfidence));
-    QVERIFY(e.latest_e2.value && *e.latest_e2.value == 0.0);
-    QVERIFY(e.intervals.last().flags.contains(QStringLiteral("REPORTED_SHARES_UNCHANGED")));
+}
+
+void TstEtfResearchCalc::reported_shares_must_match_aum_over_nav() {
+    const auto d = nyse_sessions(QDate(2026, 9, 30), 2);
+    BarSeries bars = closes(QStringLiteral("F"), d, {100.0, 100.5});
+    {
+        // Consistent: reported shares × NAV reproduces AUM at both captures, and the
+        // count moved. E2 stands and corroborates E1.
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6),
+                                        capture(d[1], 1.01e6 * 100.5, 100.5, 1.0105e6)};
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QVERIFY(e.latest_e2.value);
+        QVERIFY(std::abs(*e.latest_e2.value - 0.0105e6 * 100.5) < 1e-3);
+        QCOMPARE(e.agreement, QStringLiteral("agree"));
+        QVERIFY(e.intervals.last().shares_level_gap && *e.intervals.last().shares_level_gap < 1e-3);
+    }
+    {
+        // Live shape (XLB, 2026-10-03): AUM 8.75 B at NAV 48.55 implies 180.2 M
+        // shares; Yahoo reports 71.92 M (+150 %). Even when the count moves, E2 is
+        // refused and E1 is graded for the contradiction, never corroborated.
+        const QVector<FundCapture> caps{capture(d[0], 8.75e9, 48.55, 71.92e6), capture(d[1], 8.80e9, 48.80, 72.50e6)};
+        bars = closes(QStringLiteral("F"), d, {48.55, 48.80});
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QVERIFY(!e.latest_e2.value);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_inconsistent_with_aum_nav"));
+        QVERIFY(e.intervals.last().flags.contains(QStringLiteral("REPORTED_SHARES_INCONSISTENT")));
+        QVERIFY(e.intervals.last().shares_level_gap && *e.intervals.last().shares_level_gap > 0.6);
+        QCOMPARE(e.agreement, QStringLiteral("shares_inconsistent"));
+        QVERIFY(e.latest.value); // E1 does not rest on the share count ...
+        QCOMPARE(e.latest.credibility, Credibility::Experimental);
+        QVERIFY(
+            e.latest.credibility_reasons.join(QLatin1Char(' ')).contains(QStringLiteral("cross_source_disagreement")));
+        QVERIFY(e.best.value && *e.best.value == *e.latest.value); // ... and stays the best estimate
+    }
+    {
+        // Stale AUM plus an inconsistent count that moved: nothing may stand in for
+        // the refused E1, so there is no best estimate at all.
+        bars = closes(QStringLiteral("F"), d, {48.55, 48.80});
+        const QVector<FundCapture> caps{capture(d[0], 8.75e9, 48.55, 71.92e6), capture(d[1], 8.75e9, 48.80, 72.50e6)};
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QCOMPARE(e.latest.reason, QStringLiteral("aum_not_updated"));
+        QVERIFY(!e.latest_e2.value);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_inconsistent_with_aum_nav"));
+        QVERIFY(!e.best.value);
+    }
+    {
+        // Stale AUM, but the anchor's count matched AUM/NAV and then moved: E2 stays
+        // possible, EXPERIMENTAL and low-confidence (the current AUM cannot be checked).
+        bars = closes(QStringLiteral("F"), d, {100.0, 101.0});
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1.02e6)};
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QVERIFY(e.latest_e2.value);
+        QCOMPARE(e.latest_e2.credibility, Credibility::Experimental);
+        QVERIFY(e.latest_e2.has_flag(flag::kLowConfidence));
+        QVERIFY(e.best.value && *e.best.value == *e.latest_e2.value);
+    }
+    {
+        // No reported count at all: E2 is missing, not inconsistent.
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0), capture(d[1], 1.01e6 * 100.5, 100.5)};
+        bars = closes(QStringLiteral("F"), d, {100.0, 100.5});
+        const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_missing"));
+        QCOMPARE(e.agreement, QStringLiteral("uncorroborated"));
+    }
 }
 
 void TstEtfResearchCalc::stale_aum_and_split_are_unavailable() {
@@ -923,7 +990,7 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
     QCOMPARE(a, b);
     // Whole document: every UNAVAILABLE value says why and carries no number;
     // every calculated (ESTIMATED / PROXY / MODEL) value carries a grade.
-    int unavailable = 0, graded_values = 0;
+    int unavailable = 0, graded_values = 0, measured_values = 0;
     std::function<void(const QJsonValue&, const QString&)> walk = [&](const QJsonValue& v, const QString& path) {
         if (v.isArray()) {
             for (const QJsonValue& x : v.toArray())
@@ -939,8 +1006,20 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
             QVERIFY2(!o.value(QStringLiteral("reason")).toString().isEmpty(), qPrintable(path));
             QVERIFY2(o.value(QStringLiteral("value")).isNull(), qPrintable(path));
         } else if (ev == QLatin1String("MEASURED")) {
-            // Observations carry the source's quality, never a credibility grade.
+            // Observations carry the source's quality, never a credibility grade, and
+            // only the quality that source can support: regulatory confirmation for
+            // SEC, publication for FRED / World Bank, none for a Yahoo snapshot.
             QVERIFY2(o.value(QStringLiteral("credibility")).toString().isEmpty(), qPrintable(path));
+            ++measured_values;
+            const QString src = o.value(QStringLiteral("source")).toString();
+            const QString q = o.value(QStringLiteral("source_quality")).toString();
+            const QStringList allowed =
+                src.startsWith(QLatin1String("sec_nport")) ? QStringList{"CONFIRMED", "REVISED"}
+                : src.startsWith(QLatin1String("yahoo"))   ? QStringList{"PROVIDER_UNDATED"}
+                : src.startsWith(QLatin1String("fred")) || src.startsWith(QLatin1String("world_bank"))
+                    ? QStringList{"PUBLISHED", "REVISED"}
+                    : QStringList{};
+            QVERIFY2(allowed.contains(q), qPrintable(path + QLatin1Char(' ') + src + QLatin1Char(' ') + q));
         } else if (ev == QLatin1String("ESTIMATED") || ev == QLatin1String("PROXY") || ev == QLatin1String("MODEL")) {
             ++graded_values;
             QVERIFY2(!o.value(QStringLiteral("credibility")).toString().isEmpty(), qPrintable(path));
@@ -949,7 +1028,7 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
             walk(it.value(), path + QLatin1Char('.') + it.key());
     };
     walk(QJsonDocument::fromJson(a).object(), QString());
-    QVERIFY(unavailable > 0 && graded_values > 0);
+    QVERIFY(unavailable > 0 && graded_values > 0 && measured_values > 0);
 }
 
 QTEST_GUILESS_MAIN(TstEtfResearchCalc)

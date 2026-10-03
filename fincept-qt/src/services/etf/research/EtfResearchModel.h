@@ -218,6 +218,22 @@ inline Credibility grade_credibility(Credibility base, const QVector<CredConditi
     return c;
 }
 
+// ── Source quality of MEASURED values ───────────────────────────────────────
+// MEASURED values are never credibility-graded. Each carries the quality its
+// source can actually support, and no more:
+namespace quality {
+/// SEC N-PORT: a regulatory filing that has not been amended.
+inline constexpr const char* kConfirmed = "CONFIRMED";
+/// A later amendment (SEC) or a later vintage (FRED, World Bank) changed the value.
+inline constexpr const char* kRevised = "REVISED";
+/// FRED / World Bank: an official statistical publication, latest vintage known
+/// at `known_at`. No claim beyond the publisher's own.
+inline constexpr const char* kPublished = "PUBLISHED";
+/// Yahoo provider snapshot: no publication date and no regulatory confirmation;
+/// the session is assumed (ASSUMED_EFFECTIVE_DATE).
+inline constexpr const char* kProviderUndated = "PROVIDER_UNDATED";
+} // namespace quality
+
 // ── Value flags ──────────────────────────────────────────────────────────────
 // Flags are stable ids (provenance, never translated). The UI maps them to
 // labels and tooltips.

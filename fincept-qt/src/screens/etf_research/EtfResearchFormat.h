@@ -181,6 +181,8 @@ inline QString value_tooltip(const ResearchValue& v, const QString& title = QStr
     lines << tr_("Evidence: %1").arg(QLatin1String(services::etf::research::evidence_id(v.evidence)));
     if (v.credibility != Credibility::NotGraded)
         lines << tr_("Credibility: %1").arg(QLatin1String(services::etf::research::credibility_id(v.credibility)));
+    if (!v.source_quality.isEmpty())
+        lines << tr_("Source quality: %1 (MEASURED values are not credibility-graded)").arg(v.source_quality);
     if (!v.usable())
         lines << tr_("Unavailable: %1").arg(v.reason.isEmpty() ? QStringLiteral("no value") : v.reason);
     if (!v.flags.isEmpty())

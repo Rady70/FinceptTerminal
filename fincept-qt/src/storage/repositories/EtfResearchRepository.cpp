@@ -728,8 +728,12 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         }
         st.latest_effective = latest_eff;
         SourceStageStatus done = etfr_finish_status(st);
-        if (done.items_requested == 0 && so.value(QStringLiteral("skipped_fresh")).toInt() > 0)
-            done.status = QStringLiteral("UNCHANGED"); // everything reused, nothing was due
+        if (so.value(QStringLiteral("skipped_fresh")).toInt() > 0) {
+            if (done.items_requested == 0)
+                done.status = QStringLiteral("UNCHANGED"); // everything reused, nothing was due
+            else if (done.status == QLatin1String("FAILED"))
+                done.status = QStringLiteral("PARTIAL"); // the reused items are current; only the fetched failed
+        }
         out.append(done);
     }
     auto c = db().commit();

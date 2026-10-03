@@ -27,9 +27,19 @@
 //  * Captures several sessions apart give ONE interval estimate, never a value
 //    smeared over the missing days; a missed capture stays a gap.
 //  * An interval containing a split has no E1 or E2. Where AUM did not change
-//    while NAV did (Yahoo re-served a stale snapshot) no estimator is computed,
-//    and that capture never anchors the next interval: the next fresh capture
-//    spans the whole gap from the last fresh one.
+//    while NAV did (Yahoo re-served a stale snapshot) the AUM-based E1 and E3
+//    are refused, and that capture never anchors the next interval: the next
+//    fresh capture spans the whole gap from the last fresh one. E2 can still
+//    stand on the separately reported share count, graded down, when the count
+//    moved and passes the consistency rule below.
+//  * E2 is trusted only when the reported share count is consistent with the
+//    fund's own AUM and NAV: reported shares × NAV is by definition the fund's
+//    net assets, so the two fields describing the same fund at the same time
+//    differ only by rounding. A level gap beyond kSharesLevelTolerance at a
+//    capture with a fresh AUM means they describe different share counts or
+//    different dates (live Yahoo data: median gap 35 %, none within 1 %), and a
+//    change in the count can then not be told apart from a correction of the
+//    field: E2 is refused, never promoted to the best estimate.
 //
 // Header-only over Qt Core.
 #pragma once
@@ -48,7 +58,12 @@ namespace fincept::services::etf::research {
 inline constexpr const char* kFlowMethod = "etfr_estimated_flow_v1";
 inline constexpr const char* kSourceYahooFund = "yahoo_fund_snapshot";
 inline constexpr double kFlowAgreementTolerance = 0.002; ///< of prior AUM
-inline constexpr double kNavDateTolerance = 0.005;       ///< NAV vs the matched session's close
+/// |reported shares × NAV / AUM − 1| beyond which the reported share count is
+/// inconsistent with the fund's AUM and NAV. It is the agreement tolerance
+/// above: the bound within which two share-based measures of one fund are
+/// called consistent, applied to their levels instead of their changes.
+inline constexpr double kSharesLevelTolerance = kFlowAgreementTolerance;
+inline constexpr double kNavDateTolerance = 0.005; ///< NAV vs the matched session's close
 inline constexpr const char* kNavDatingRule = "yahoo_nav_prev_session_v1";
 inline constexpr double kNavFarFromClose = 0.02;      ///< NAV beyond 2 % of its session's close: not that session
 inline constexpr double kNavContradictionRatio = 3.0; ///< a neighbour's close at least 3x nearer ...
@@ -184,6 +199,13 @@ inline FundCapture nav_dated(const FundCapture& c, const BarSeries& bars, QStrin
     return out;
 }
 
+/// |reported shares × NAV / AUM − 1| of one capture, when all three fields exist.
+inline std::optional<double> shares_level_gap(const FundCapture& c) {
+    if (!c.total_assets || !c.nav || !c.shares_outstanding || !(*c.total_assets > 0.0) || !(*c.nav > 0.0))
+        return std::nullopt;
+    return std::abs(*c.shares_outstanding * *c.nav / *c.total_assets - 1.0);
+}
+
 inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, const BarSeries& bars) {
     FlowInterval f;
     f.from = p.effective_session;
@@ -201,6 +223,24 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
     if (split)
         f.flags.append(QStringLiteral("SPLIT_IN_INTERVAL"));
     const bool have_an = f.aum_prev && f.aum_cur && f.nav_prev && f.nav_cur && *f.nav_prev > 0 && *f.nav_cur > 0;
+    // The reported share count must match AUM/NAV at every capture whose AUM is
+    // fresh: the anchor, and the current capture unless its AUM was re-served.
+    const bool stale_aum_cur = have_an && *f.aum_cur == *f.aum_prev && *f.nav_cur != *f.nav_prev;
+    bool shares_consistent = p.shares_outstanding && c.shares_outstanding;
+    for (const FundCapture* x : {&p, &c}) {
+        if (x == &c && stale_aum_cur)
+            continue;
+        const auto g = shares_level_gap(*x);
+        if (!g) {
+            shares_consistent = false;
+            continue;
+        }
+        f.shares_level_gap = std::max(f.shares_level_gap.value_or(0.0), *g);
+        if (*g > kSharesLevelTolerance)
+            shares_consistent = false;
+    }
+    if (p.shares_outstanding && c.shares_outstanding && !shares_consistent)
+        f.flags.append(QStringLiteral("REPORTED_SHARES_INCONSISTENT"));
     if (have_an) {
         f.implied_shares_prev = *f.aum_prev / *f.nav_prev;
         f.implied_shares_cur = *f.aum_cur / *f.nav_cur;
@@ -217,7 +257,7 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
         // from a stale field, so there is no E2 either.
         f.reason = QStringLiteral("aum_not_updated");
         f.flags.append(QStringLiteral("AUM_UNCHANGED_NAV_CHANGED"));
-        if (!split && p.shares_outstanding && c.shares_outstanding && f.nav_cur) {
+        if (!split && shares_consistent && f.nav_cur) {
             if (*c.shares_outstanding != *p.shares_outstanding)
                 f.e2_reported_shares = (*c.shares_outstanding - *p.shares_outstanding) * *f.nav_cur;
             else
@@ -229,7 +269,7 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
         if (*f.nav_cur == *f.nav_prev)
             f.flags.append(QStringLiteral("NAV_UNCHANGED"));
     }
-    if (!split && p.shares_outstanding && c.shares_outstanding && f.nav_cur) {
+    if (!split && shares_consistent && f.nav_cur) {
         f.e2_reported_shares = (*c.shares_outstanding - *p.shares_outstanding) * *f.nav_cur;
         if (*c.shares_outstanding == *p.shares_outstanding)
             f.flags.append(QStringLiteral("REPORTED_SHARES_UNCHANGED"));
@@ -322,6 +362,11 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
             e.agreement = QStringLiteral("disagree");
             conds.append(CredCondition::EstimatorDisagreement);
         }
+    } else if (last.flags.contains(QLatin1String("REPORTED_SHARES_INCONSISTENT"))) {
+        // The share count contradicts AUM/NAV: one of the two Yahoo fields does not
+        // describe this fund's shares, and E1 rests on the AUM.
+        e.agreement = QStringLiteral("shares_inconsistent");
+        conds.append(CredCondition::CrossSourceDisagree);
     } else {
         e.agreement = QStringLiteral("uncorroborated");
     }
@@ -359,10 +404,13 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
         return r;
     };
     e.latest_e2 = side(last.e2_reported_shares, QStringLiteral(":E2_reported_shares"),
-                       stale_aum && last.flags.contains(QLatin1String("REPORTED_SHARES_UNCHANGED"))
+                       last.reason == QLatin1String("split_in_interval") ? QStringLiteral("split_in_interval")
+                       : last.flags.contains(QLatin1String("REPORTED_SHARES_INCONSISTENT"))
+                           ? QStringLiteral("reported_shares_inconsistent_with_aum_nav")
+                       : stale_aum && last.flags.contains(QLatin1String("REPORTED_SHARES_UNCHANGED"))
                            ? QStringLiteral("reported_shares_unchanged_in_stale_snapshot")
                        : stale_aum ? QStringLiteral("aum_not_updated_and_reported_shares_missing")
-                                   : QStringLiteral("reported_shares_missing_or_split"));
+                                   : QStringLiteral("reported_shares_missing"));
     e.latest_e3 =
         side(last.e3_price_adjusted, QStringLiteral(":E3_close_adjusted_aum"), QStringLiteral("close_or_aum_missing"));
     // Best available estimate: E1, else E2 (an independent field) when E1 is refused.
