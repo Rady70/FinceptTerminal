@@ -146,9 +146,17 @@ void HeatmapWidget::paintEvent(QPaintEvent*) {
         p.drawText(r.adjusted(4, 15, -4, 0), Qt::AlignLeft | Qt::AlignTop,
                    QFontMetrics(etfr_font(this, 9)).elidedText(t.sub, Qt::ElideRight, r.width() - 8));
         if (!t.tag.isEmpty()) {
-            p.setFont(etfr_font(this, 8, true));
+            // The tag (class·period) sits on a dark chip so it stays legible on any tile colour.
+            const QFont tf = etfr_font(this, 8, true);
+            p.setFont(tf);
+            const QFontMetrics tm(tf);
+            const QRect tb = tm.boundingRect(t.tag).adjusted(-2, 0, 2, 0);
+            const QRect chip(r.right() - 3 - tb.width(), r.top() + 2, tb.width(), tm.height());
+            QColor bg = token(&ui::ThemeTokens::bg_base);
+            bg.setAlpha(200);
+            p.fillRect(chip, bg);
             p.setPen(t.tag_color.isValid() ? t.tag_color : token(&ui::ThemeTokens::text_secondary));
-            p.drawText(r.adjusted(0, 2, -4, 0), Qt::AlignRight | Qt::AlignTop, t.tag);
+            p.drawText(chip, Qt::AlignCenter, t.tag);
         }
         if (t.stale) {
             p.setFont(etfr_font(this, 8, true));
