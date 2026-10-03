@@ -85,6 +85,15 @@ def run_fetch(request: dict) -> dict:
             v["retrieved_at"] = _iso(_now())
             history_items[s] = v
         _progress("yahoo_history", len(syms), len(syms), depth)
+    inc = request.get("history", {}).get("incremental", {})
+    if inc.get("symbols"):
+        syms = inc["symbols"]
+        t0 = _now()
+        _progress("yahoo_history", 0, len(syms), "incremental")
+        for s, v in yahoo.download_history(syms, None, t0, start=inc["start"]).items():
+            v["retrieved_at"] = _iso(_now())
+            history_items[s] = v
+        _progress("yahoo_history", len(syms), len(syms), "incremental")
     stages["yahoo_history"] = _stage("yahoo_history", started, history_items)
 
     # ── Fund snapshots, holdings and sector weights ─────────────────────────────
@@ -116,9 +125,16 @@ def run_fetch(request: dict) -> dict:
     constituent_list = sorted(constituent_set)
     t_cons = _now()
     cons_hist = {}
+    cons_inc = cons.get("incremental", {})
+    inc_set = set(cons_inc.get("symbols", []))
+    full_list = [x for x in constituent_list if x not in inc_set]
+    inc_list = [x for x in constituent_list if x in inc_set]
     if constituent_list and cons.get("history_period"):
         _progress("yahoo_constituent_history", 0, len(constituent_list))
-        cons_hist = yahoo.download_history(constituent_list, cons["history_period"], t_cons)
+        if full_list:
+            cons_hist.update(yahoo.download_history(full_list, cons["history_period"], t_cons))
+        if inc_list:
+            cons_hist.update(yahoo.download_history(inc_list, None, t_cons, start=cons_inc["start"]))
         for v in cons_hist.values():
             v["retrieved_at"] = _iso(_now())
         _progress("yahoo_constituent_history", len(constituent_list), len(constituent_list))
@@ -126,7 +142,11 @@ def run_fetch(request: dict) -> dict:
 
     t_fund = _now()
     fundamentals = {}
-    fundamental_list = sorted(constituent_set | set(cons.get("fundamental_extra", [])))
+    # Fundamentals captured within the last few days are reused, not re-fetched.
+    fresh = set(cons.get("fundamentals_fresh", []))
+    wanted = constituent_set | set(cons.get("fundamental_extra", []))
+    fundamental_list = sorted(wanted - fresh)
+    skipped_fresh = len(wanted & fresh)
     if fundamental_list and cons.get("fundamentals", False):
         done = 0
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -137,6 +157,8 @@ def run_fetch(request: dict) -> dict:
                 if done % 20 == 0 or done == len(fundamental_list):
                     _progress("yahoo_fundamentals", done, len(fundamental_list))
     stages["yahoo_fundamentals"] = _stage("yahoo_fundamentals", t_fund, fundamentals)
+    stages["yahoo_fundamentals"]["skipped_fresh"] = skipped_fresh
+    stages["yahoo_fundamentals"]["fresh_days"] = int(cons.get("fundamentals_fresh_days", 0))
 
     # ── FRED ─────────────────────────────────────────────────────────────────
     t_fred = _now()

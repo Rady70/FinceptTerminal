@@ -35,6 +35,9 @@ QString etfr_row_html(const QString& label, const ResearchValue& v, int digits =
     if (v.credibility != Credibility::NotGraded)
         tags += QStringLiteral(" <span style='color:%1'>%2</span>")
                     .arg(credibility_color(v.credibility).name(), QLatin1String(credibility_tag(v.credibility)));
+    else if (!v.source_quality.isEmpty())
+        tags += QStringLiteral(" <span style='color:%1'>Q:%2</span>")
+                    .arg(QLatin1String(t.text_secondary), v.source_quality.toHtmlEscaped());
     QString extra;
     if (!v.usable())
         extra = QStringLiteral(" <span style='color:%1'>(%2)</span>").arg(QLatin1String(t.text_tertiary), v.reason);

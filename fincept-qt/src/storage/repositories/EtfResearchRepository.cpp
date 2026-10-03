@@ -372,6 +372,10 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         const QJsonObject items = so.value(QStringLiteral("items")).toObject();
         SourceStageStatus st;
         st.stage = stage;
+        if (so.value(QStringLiteral("skipped_fresh")).toInt() > 0)
+            st.detail = QStringLiteral("%1 constituent(s) captured within %2 days were not re-fetched.")
+                            .arg(so.value(QStringLiteral("skipped_fresh")).toInt())
+                            .arg(so.value(QStringLiteral("fresh_days")).toInt());
         st.requested_at = etfr_parse_time(so.value(QStringLiteral("requested_at")).toString());
         st.retrieved_at = etfr_parse_time(so.value(QStringLiteral("retrieved_at")).toString());
         st.items_requested = items.size();
@@ -417,9 +421,88 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 }
                 const QString first = rows.first().toArray().at(0).toString();
                 const QString last = rows.last().toArray().at(0).toString();
-                auto rid =
-                    etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status, detail,
-                                          so.value(QStringLiteral("sha256")).toString(), rows.size(), first, last);
+                // An incremental delivery (recent sessions only) extends the
+                // symbol's latest coverage window back to its start when its
+                // overlap with the stored closes is consistent. A split, or most
+                // overlapping closes moved by one common factor, is a restatement
+                // of the whole history: the window stays this delivery's range,
+                // so no restated close is ever joined to unrestated ones, and the
+                // next refresh fetches the full history again.
+                QString window_first = first;
+                QString stitch_note;
+                if (it.value(QStringLiteral("incremental")).toBool()) {
+                    auto pw = db().execute(QStringLiteral("SELECT first_session, last_session FROM "
+                                                          "etf_research_bar_coverage WHERE symbol = ? ORDER BY "
+                                                          "retrieved_at DESC, retrieval_id DESC LIMIT 1"),
+                                           {subject});
+                    if (pw.is_err())
+                        return fail(pw.error());
+                    QString prev_first, prev_last;
+                    if (pw.value().next()) {
+                        prev_first = pw.value().value(0).toString();
+                        prev_last = pw.value().value(1).toString();
+                    }
+                    bool split = false;
+                    QHash<QString, double> fetched;
+                    for (const QJsonValue& rv : rows) {
+                        const QJsonArray r = rv.toArray();
+                        fetched.insert(r.at(0).toString(), r.at(1).toDouble());
+                        split = split || r.at(5).toDouble() > 0.0;
+                    }
+                    int overlap = 0, moved = 0;
+                    QVector<double> ratios;
+                    if (!prev_last.isEmpty()) {
+                        auto ov = db().execute(
+                            QStringLiteral("SELECT b.session_date, b.close FROM etf_research_bars b WHERE b.symbol = ? "
+                                           "AND b.session_date >= ? AND b.session_date <= ? AND b.revision = (SELECT "
+                                           "MAX(x.revision) FROM etf_research_bars x WHERE x.symbol = b.symbol AND "
+                                           "x.session_date = b.session_date)"),
+                            {subject, first, prev_last});
+                        if (ov.is_err())
+                            return fail(ov.error());
+                        while (ov.value().next()) {
+                            const auto f = fetched.constFind(ov.value().value(0).toString());
+                            if (f == fetched.constEnd())
+                                continue;
+                            ++overlap;
+                            const double ratio = *f / ov.value().value(1).toDouble();
+                            if (std::abs(ratio - 1.0) > 1e-6) {
+                                ++moved;
+                                ratios.append(ratio);
+                            }
+                        }
+                    }
+                    bool common_factor = false;
+                    if (moved >= 2 && moved * 2 >= overlap) {
+                        std::sort(ratios.begin(), ratios.end());
+                        const double median = ratios[ratios.size() / 2];
+                        int near = 0;
+                        for (double r : ratios)
+                            near += std::abs(r / median - 1.0) < 1e-3 ? 1 : 0;
+                        common_factor = near * 2 >= moved;
+                    }
+                    if (!prev_first.isEmpty() && overlap >= 3 && !split && !common_factor) {
+                        window_first = prev_first;
+                        stitch_note = QStringLiteral("incremental; joined to the stored history from %1 (%2 of %3 "
+                                                     "overlapping closes revised)")
+                                          .arg(prev_first)
+                                          .arg(moved)
+                                          .arg(overlap);
+                    } else {
+                        stitch_note = QStringLiteral("incremental; NOT joined (%1): this delivery's range only, full "
+                                                     "history on the next refresh")
+                                          .arg(split                 ? QStringLiteral("split in the delivery")
+                                               : common_factor       ? QStringLiteral("history restated")
+                                               : prev_last.isEmpty() ? QStringLiteral("no stored window")
+                                                                     : QStringLiteral("overlap too short"));
+                    }
+                }
+                auto rid = etfr_insert_retrieval(
+                    run_id, stage, subject, req_at, ret_at, status,
+                    stitch_note.isEmpty()
+                        ? detail
+                        : (detail.isEmpty() ? stitch_note : detail + QStringLiteral("; ") + stitch_note),
+                    so.value(QStringLiteral("sha256")).toString(), rows.size(), first, last);
                 if (rid.is_err())
                     return fail(rid.error());
                 auto w = etfr_write_bars(subject, rows, rid.value(), ret_at);
@@ -431,7 +514,7 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 auto cov = db().execute(
                     QStringLiteral("INSERT INTO etf_research_bar_coverage (retrieval_id, symbol, first_session, "
                                    "last_session, bars, retrieved_at, in_progress_excluded) VALUES (?,?,?,?,?,?,?)"),
-                    {rid.value(), subject, first, last, static_cast<int>(rows.size()), ret_at,
+                    {rid.value(), subject, window_first, last, static_cast<int>(rows.size()), ret_at,
                      it.value(QStringLiteral("in_progress_excluded")).toInt()});
                 if (cov.is_err())
                     return fail(cov.error());
@@ -594,7 +677,10 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
             }
         }
         st.latest_effective = latest_eff;
-        out.append(etfr_finish_status(st));
+        SourceStageStatus done = etfr_finish_status(st);
+        if (done.items_requested == 0 && so.value(QStringLiteral("skipped_fresh")).toInt() > 0)
+            done.status = QStringLiteral("UNCHANGED"); // everything reused, nothing was due
+        out.append(done);
     }
     auto c = db().commit();
     if (c.is_err())
@@ -631,6 +717,7 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
     in.known_at = known_at.toUTC();
     const QString k = etfr_iso(in.known_at);
     const QString as_of_date = in.as_of.date().toString(Qt::ISODate);
+    const QDate completed_us = completed_us_session(in.as_of);
 
     // ── Bars: the latest coverage window per symbol at known_at ─────────────
     struct Window {
@@ -665,6 +752,8 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
             const QString date = s.value(1).toString();
             if (date < w->first || date > w->last || s.value(8).toString() > w->retrieved_at)
                 continue;
+            if (!bar_finished_by(sym, QDate::fromString(date, Qt::ISODate), in.as_of, completed_us))
+                continue; // the session had not closed at as_of, whatever known_at holds
             BarSeries& b = in.bars[sym];
             b.symbol = sym;
             DailyBar bar;
@@ -722,8 +811,9 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
             db().execute(QStringLiteral("SELECT h.retrieval_id, h.symbol, h.rank, h.holding_symbol, h.holding_name, "
                                         "h.weight, f.captured_at FROM etf_research_holdings h JOIN "
                                         "etf_research_fund_snapshots f ON f.retrieval_id = h.retrieval_id WHERE "
-                                        "f.captured_at <= ? ORDER BY h.symbol, f.captured_at, h.retrieval_id, h.rank"),
-                         {k});
+                                        "f.captured_at <= ? AND f.captured_at <= ? "
+                                        "ORDER BY h.symbol, f.captured_at, h.retrieval_id, h.rank"),
+                         {k, etfr_iso(in.as_of)});
         if (q.is_err())
             return R::err(q.error());
         auto& s = q.value();
@@ -749,8 +839,8 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
         auto w = db().execute(QStringLiteral("SELECT w.symbol, w.sector_key, w.weight, f.captured_at FROM "
                                              "etf_research_sector_weights w JOIN etf_research_fund_snapshots f ON "
                                              "f.retrieval_id = w.retrieval_id WHERE f.captured_at <= ? "
-                                             "ORDER BY w.symbol, f.captured_at"),
-                              {k});
+                                             "AND f.captured_at <= ? ORDER BY w.symbol, f.captured_at"),
+                              {k, etfr_iso(in.as_of)});
         if (w.is_err())
             return R::err(w.error());
         QHash<QString, QPair<QString, QHash<QString, double>>> latest_w;
@@ -775,9 +865,12 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
     }
     // ── Fundamentals (latest per constituent) ────────────────────────────────
     {
-        auto q = db().execute(QStringLiteral("SELECT symbol, captured_at, fields_json FROM etf_research_fundamentals "
-                                             "WHERE captured_at <= ? ORDER BY symbol, captured_at"),
-                              {k});
+        // A capture is a snapshot of its own moment: it must be known by known_at
+        // AND taken by as_of (a later capture never describes an earlier frame).
+        auto q =
+            db().execute(QStringLiteral("SELECT symbol, captured_at, fields_json FROM etf_research_fundamentals "
+                                        "WHERE captured_at <= ? AND captured_at <= ? ORDER BY symbol, captured_at"),
+                         {k, etfr_iso(in.as_of)});
         if (q.is_err())
             return R::err(q.error());
         while (q.value().next()) {
@@ -822,6 +915,8 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
             const QString date = p.value().value(3).toString();
             if (date < w->first || date > w->last || p.value().value(6).toString() > w->retrieved_at)
                 continue;
+            if (macro_available_from(source, series, QDate::fromString(date, Qt::ISODate)) > in.as_of.toUTC().date())
+                continue; // not yet published at as_of (assumed lag)
             MacroSeries& m = all[key];
             m.source = source;
             m.id = series;
@@ -842,7 +937,7 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
         }
     }
     // ── Last completed manual refresh ────────────────────────────────────────
-    auto lr = last_run(in.known_at);
+    auto lr = last_run(std::min(in.known_at, in.as_of)); // a later run is not part of an earlier frame
     if (lr.is_ok() && !lr.value().isEmpty()) {
         in.last_refresh_run_id = lr.value().value(QStringLiteral("run_id")).toString();
         in.last_refresh_finished = etfr_parse_time(lr.value().value(QStringLiteral("finished_at")).toString());
@@ -851,6 +946,51 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
             in.last_refresh.append(etfr_status_from_json(v.toObject()));
     }
     return R::ok(in);
+}
+
+Result<QHash<QString, etf_research_store::HistoryCoverage>> EtfResearchRepository::history_coverage() {
+    using R = Result<QHash<QString, etf_research_store::HistoryCoverage>>;
+    QHash<QString, etf_research_store::HistoryCoverage> out;
+    auto w = db().execute(QStringLiteral("SELECT symbol, first_session, last_session FROM etf_research_bar_coverage "
+                                         "ORDER BY symbol, retrieved_at, retrieval_id"));
+    if (w.is_err())
+        return R::err(w.error());
+    while (w.value().next()) {
+        auto& c = out[w.value().value(0).toString()];
+        c.window_first = QDate::fromString(w.value().value(1).toString(), Qt::ISODate);
+        c.window_last = QDate::fromString(w.value().value(2).toString(), Qt::ISODate);
+    }
+    auto e = db().execute(QStringLiteral("SELECT symbol, MIN(session_date) FROM etf_research_bars GROUP BY symbol"));
+    if (e.is_err())
+        return R::err(e.error());
+    while (e.value().next()) {
+        const auto it = out.find(e.value().value(0).toString());
+        if (it != out.end())
+            it->earliest_stored = QDate::fromString(e.value().value(1).toString(), Qt::ISODate);
+    }
+    return R::ok(out);
+}
+
+Result<QHash<QString, QDateTime>> EtfResearchRepository::latest_fundamentals_capture() {
+    QHash<QString, QDateTime> out;
+    auto q =
+        db().execute(QStringLiteral("SELECT symbol, MAX(captured_at) FROM etf_research_fundamentals GROUP BY symbol"));
+    if (q.is_err())
+        return Result<QHash<QString, QDateTime>>::err(q.error());
+    while (q.value().next())
+        out.insert(q.value().value(0).toString(), etfr_parse_time(q.value().value(1).toString()));
+    return Result<QHash<QString, QDateTime>>::ok(out);
+}
+
+Result<QDate> EtfResearchRepository::latest_sec_report_period(qint64 entity_id) {
+    auto q =
+        db().execute(QStringLiteral("SELECT MAX(rep_pd_date) FROM etf_sec_filings WHERE entity_id = ?"), {entity_id});
+    if (q.is_err())
+        return Result<QDate>::err(q.error());
+    QDate d;
+    if (q.value().next() && !q.value().value(0).isNull())
+        d = QDate::fromString(q.value().value(0).toString().left(10), Qt::ISODate);
+    return Result<QDate>::ok(d);
 }
 
 Result<QJsonObject> EtfResearchRepository::table_counts() {

@@ -91,8 +91,13 @@ def frame_to_bars(symbol: str, frame, retrieved_at_utc: _dt.datetime) -> dict:
     return {"rows": rows, "dropped_no_close": dropped_no_close, "in_progress_excluded": in_progress}
 
 
-def download_history(symbols, period: str, retrieved_at_utc: _dt.datetime, chunk: int = 40, yf_module=None):
-    """Daily history for ``symbols``; one result entry per requested symbol."""
+def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int = 40, yf_module=None,
+                     start=None):
+    """Daily history for ``symbols``; one result entry per requested symbol.
+
+    ``start`` (an ISO date) requests only the sessions from that date: an
+    incremental delivery, marked so the store can join it to stored history.
+    """
     import pandas as pd  # noqa: F401  (yfinance returns pandas frames)
 
     if yf_module is None:
@@ -103,8 +108,9 @@ def download_history(symbols, period: str, retrieved_at_utc: _dt.datetime, chunk
     for start in range(0, len(syms), chunk):
         batch = syms[start:start + chunk]
         try:
-            raw = yf_module.download(batch, period=period, interval="1d", auto_adjust=False, actions=True,
-                                     progress=False, threads=4, group_by="column")
+            span = {"start": start} if start else {"period": period}
+            raw = yf_module.download(batch, interval="1d", auto_adjust=False, actions=True, progress=False,
+                                     threads=4, group_by="column", **span)
         except Exception as exc:  # the whole request failed
             for s in batch:
                 out[s] = {"status": "FAILED", "detail": f"download failed: {exc}", "rows": []}
@@ -133,6 +139,9 @@ def download_history(symbols, period: str, retrieved_at_utc: _dt.datetime, chunk
                           "in_progress_excluded": conv["in_progress_excluded"]}
                 continue
             out[s] = {"status": "OK", "detail": "", "period": period, **conv}
+            if start:
+                out[s]["incremental"] = True
+                out[s]["requested_start"] = start
     return out
 
 

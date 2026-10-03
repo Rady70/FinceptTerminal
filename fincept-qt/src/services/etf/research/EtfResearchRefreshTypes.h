@@ -27,5 +27,8 @@ using RefreshProgress = std::function<void(const QString& stage, int done, int t
 using RefreshFetcher = std::function<void(const QJsonObject& request, RefreshProgress progress,
                                           std::function<void(Result<QJsonObject>)> done)>;
 using RefreshStage = std::function<void(std::function<void(SourceStageStatus)> done)>;
+/// Runs `work` (the heavy store write) and then `then` on the caller's thread.
+/// The application runs `work` on a worker thread; tests may run both inline.
+using RefreshExecutor = std::function<void(std::function<void()> work, std::function<void()> then)>;
 
 } // namespace fincept::services::etf::research

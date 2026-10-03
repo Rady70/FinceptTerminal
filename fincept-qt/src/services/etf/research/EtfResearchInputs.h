@@ -9,6 +9,7 @@
 // source did not send is nullopt; a distribution of 0 means the source reported
 // no distribution event that session.
 #pragma once
+#include "services/etf/EtfSessionCalendar.h"
 #include "services/etf/research/EtfResearchUniverse.h"
 
 #include <QDate>
@@ -21,6 +22,47 @@
 #include <optional>
 
 namespace fincept::services::etf::research {
+
+// ── Point-in-time availability ─────────────────────────────────────────────
+// An observation enters a frame (as_of, known_at) only when it was first seen
+// by known_at AND describes something finished by as_of. A capture describes
+// its own moment; a daily bar describes its session's close; a macro value is
+// usable from an assumed publication date (FRED and the World Bank expose no
+// vintages here, so the lags below are deliberately conservative).
+
+/// The latest NYSE session whose close plus a 30-minute settle is at or before `t`.
+inline QDate completed_us_session(const QDateTime& t) {
+    QDate d = UsEquityCalendar::exchange_date(t);
+    for (int i = 0; i < 15 && d.isValid(); ++i, d = d.addDays(-1)) {
+        const MarketSessionDay s = UsEquityCalendar::day(d);
+        if (s.is_session() && s.close_utc.addSecs(qint64{30} * 60) <= t.toUTC())
+            return d;
+    }
+    return {};
+}
+
+/// Whether the daily bar of `symbol` for `session` was finished by `as_of`. U.S.
+/// listings use the NYSE close; other markets (closing earlier in UTC, with
+/// holidays not modelled) only sessions dated before as_of's UTC date.
+inline bool bar_finished_by(const QString& symbol, const QDate& session, const QDateTime& as_of,
+                            const QDate& completed_us) {
+    const bool us = !symbol.contains(QLatin1Char('.')) && !symbol.startsWith(QLatin1Char('^'));
+    if (us)
+        return completed_us.isValid() && session <= completed_us;
+    return session < as_of.toUTC().date();
+}
+
+/// Assumed first publication date of a macro observation: a daily FRED value
+/// the next day; CFNAI (dated the first of its month, released 3-4 weeks after
+/// the month ends) two months after its date; a World Bank annual value (dated
+/// 31 December) 200 days later (the 2025 values appeared in the 2026-07-13 release).
+inline QDate macro_available_from(const QString& source, const QString& series, const QDate& obs) {
+    if (source == QLatin1String("world_bank"))
+        return obs.addDays(200);
+    if (series == QLatin1String("CFNAI"))
+        return obs.addMonths(2);
+    return obs.addDays(1);
+}
 
 struct DailyBar {
     QDate date;

@@ -3,12 +3,15 @@
 // The manual-refresh pipeline, separated from its transports so it can be
 // exercised with injected stages:
 //
-//   begin_run → fetch (Yahoo/FRED/World Bank payload) → persist append-only →
-//   IBKR stage → SEC stage → finish_run (one status per stage, summary stored)
+//   begin_run → fetch (Yahoo/FRED/World Bank payload) → persist, one
+//   transaction per source stage, off the UI thread → IBKR stage → SEC stage →
+//   finish_run (one status per stage, summary stored)
 //
-// A failed fetch marks every network stage FAILED for this run and still runs
-// the IBKR and SEC stages; earlier observations stay stored and are never
-// reported as this run's result. Nothing here schedules anything.
+// Source stages are independent: a failed fetch marks every network stage
+// FAILED, and a stage whose persistence fails is recorded FAILED while the
+// other stages are still persisted; in both cases the IBKR and SEC stages still
+// run. Earlier observations stay stored and are never reported as this run's
+// result. Nothing here schedules anything.
 #pragma once
 #include "core/result/Result.h"
 #include "services/etf/research/EtfResearchInputs.h"
@@ -19,10 +22,23 @@
 #include <QJsonObject>
 #include <QRandomGenerator>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 
 namespace fincept::services::etf::research {
+
+/// Filings to request for one reporting entity so a manual refresh catches up
+/// on every month missed since the latest stored report period: N-PORT is a
+/// monthly report, so the months behind plus three (amendments, the quarter
+/// in flight), at least four, at most the route's per-run maximum (40). With
+/// nothing stored, the maximum.
+inline int sec_filings_to_request(const QDate& latest_report_period, const QDate& today, int route_max = 40) {
+    if (!latest_report_period.isValid())
+        return route_max;
+    const int behind = (today.year() - latest_report_period.year()) * 12 + today.month() - latest_report_period.month();
+    return std::clamp(behind + 3, 4, route_max);
+}
 
 inline QString refresh_retrieval_status(const QString& stage_status) {
     if (stage_status == QLatin1String("NOT_CONFIGURED") || stage_status == QLatin1String("UNAVAILABLE") ||
@@ -36,7 +52,7 @@ inline QString refresh_retrieval_status(const QString& stage_status) {
 inline void run_refresh_pipeline(const QString& trigger, const QString& universe_version, const QJsonObject& request,
                                  RefreshFetcher fetch, RefreshStage ibkr, RefreshStage sec,
                                  std::function<QDate()> expected_session, RefreshProgress progress,
-                                 std::function<void(const RefreshResult&)> done) {
+                                 std::function<void(const RefreshResult&)> done, RefreshExecutor executor = {}) {
     auto result = std::make_shared<RefreshResult>();
     result->started = QDateTime::currentDateTimeUtc();
     result->run_id = QStringLiteral("etfr-%1-%2")
@@ -80,7 +96,7 @@ inline void run_refresh_pipeline(const QString& trigger, const QString& universe
         });
     };
     report(QStringLiteral("yahoo_history"), 0, 1);
-    fetch(request, report, [result, finish, run_extra, expected_session](Result<QJsonObject> payload) {
+    fetch(request, report, [result, finish, run_extra, expected_session, executor](Result<QJsonObject> payload) {
         if (payload.is_err()) {
             for (const QString& st : {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"),
                                       QStringLiteral("yahoo_funds"), QStringLiteral("yahoo_fundamentals"),
@@ -99,15 +115,52 @@ inline void run_refresh_pipeline(const QString& trigger, const QString& universe
             return;
         }
         result->script_version = payload.value().value(QStringLiteral("script_version")).toString();
-        auto persisted =
-            EtfResearchRepository::instance().persist_payload(result->run_id, payload.value(), expected_session());
-        if (persisted.is_err()) {
-            result->error = QString::fromStdString(persisted.error());
-            finish(QStringLiteral("FAILED"));
-            return;
+        const QDate expected = expected_session();
+        const QJsonObject pl = payload.value();
+        auto persisted = std::make_shared<QVector<SourceStageStatus>>();
+        auto errors = std::make_shared<QStringList>();
+        const QString run_id = result->run_id;
+        const QDateTime started = result->started;
+        // One transaction per source stage: a stage that cannot be stored is
+        // recorded FAILED and the others are still persisted.
+        auto work = [pl, expected, persisted, errors, run_id, started]() {
+            auto& repo = EtfResearchRepository::instance();
+            const QJsonObject stages = pl.value(QStringLiteral("stages")).toObject();
+            for (const QString& st : {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"),
+                                      QStringLiteral("yahoo_funds"), QStringLiteral("yahoo_fundamentals"),
+                                      QStringLiteral("fred"), QStringLiteral("world_bank")}) {
+                if (!stages.contains(st))
+                    continue;
+                QJsonObject one = pl;
+                one.insert(QStringLiteral("stages"), QJsonObject{{st, stages.value(st)}});
+                auto p = repo.persist_payload(run_id, one, expected);
+                if (p.is_ok()) {
+                    *persisted += p.value();
+                    continue;
+                }
+                SourceStageStatus s;
+                s.stage = st;
+                s.status = QStringLiteral("FAILED");
+                s.detail = QStringLiteral("persistence failed: ") + QString::fromStdString(p.error());
+                s.requested_at = started;
+                repo.record_stage_retrieval(run_id, st, QStringLiteral("*"), started, QDateTime(),
+                                            QStringLiteral("FAILED"), s.detail, 0);
+                persisted->append(s);
+                errors->append(st);
+            }
+        };
+        auto then = [result, persisted, errors, run_extra]() {
+            result->stages = *persisted;
+            if (!errors->isEmpty())
+                result->error = QStringLiteral("persistence failed for: ") + errors->join(QStringLiteral(", "));
+            run_extra();
+        };
+        if (executor) {
+            executor(std::move(work), std::move(then));
+        } else {
+            work();
+            then();
         }
-        result->stages = persisted.value();
-        run_extra();
     });
 }
 

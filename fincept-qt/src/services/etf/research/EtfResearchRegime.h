@@ -39,8 +39,9 @@ inline constexpr const char* kRegimeMethod = "etfr_sector_regime_geometry_v1";
 inline constexpr const char* kMrsMethod = "etfr_mrs_hmm4_avgabsrho63_v1";
 inline constexpr const char* kRegimeV2Method = "etfr_regime_hmm6_v1";
 
-/// Daily total returns of `series` on their common sessions; the last `n`
-/// returns (all when n <= 0). `dates_out` receives the return dates.
+/// Daily (or, with `weekly`, completed-week) total returns of `series` on their
+/// common sessions; the last `n` returns (all when n <= 0). `dates_out`
+/// receives the return dates.
 inline std::vector<math::Vec> common_returns(const QVector<const TrIndex*>& series, int n, QVector<QDate>* dates_out,
                                              bool weekly = false) {
     std::vector<math::Vec> cols(static_cast<size_t>(series.size()));
@@ -61,6 +62,10 @@ inline std::vector<math::Vec> common_returns(const QVector<const TrIndex*>& seri
             else
                 w.append(d);
         }
+        // Completed weeks only, as in the RRG: a week whose last stored session
+        // is not its last NYSE session (a Wednesday refresh) is still running.
+        if (!w.isEmpty() && week_in_progress(w.last(), true))
+            w.removeLast();
         common = w;
     }
     const int total = static_cast<int>(common.size()) - 1;

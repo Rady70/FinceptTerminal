@@ -48,7 +48,10 @@ class EtfResearchService : public QObject {
     Result<ResearchInputs> load(const QDateTime& as_of, const QDateTime& known_at);
 
     /// The acquisition request the manual refresh sends to the fetch script.
-    QJsonObject build_request() const;
+    /// The fetch request. Incremental by default: a symbol whose stored history
+    /// is continuous and recent fetches only its last weeks (the store joins
+    /// them when consistent); `full` re-fetches every history at full depth.
+    QJsonObject build_request(bool full = false) const;
 
     // ── Manual refresh ───────────────────────────────────────────────────────
     using Progress = RefreshProgress;
@@ -60,7 +63,7 @@ class EtfResearchService : public QObject {
     /// Optional extra stages (IBKR, SEC). Each reports its own status.
     using StageRunner = RefreshStage;
 
-    void refresh(const QString& trigger, Progress progress, Done done);
+    void refresh(const QString& trigger, Progress progress, Done done, bool full = false);
     bool refresh_running() const { return running_; }
 
     /// How many acquisitions this process has started (tests assert that

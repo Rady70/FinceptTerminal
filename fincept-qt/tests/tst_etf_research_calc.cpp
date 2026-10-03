@@ -58,6 +58,7 @@ class TstEtfResearchCalc : public QObject {
     void confluence_needs_three_layers();
     // ── regime ──
     void correlation_geometry();
+    void weekly_regime_uses_completed_weeks();
     void hmm_recovers_two_regimes();
     void mrs_thresholds_ordered();
     // ── engine ──
@@ -439,6 +440,32 @@ void TstEtfResearchCalc::stale_aum_and_split_are_unavailable() {
         QVERIFY(e.intervals.last().flags.contains(QStringLiteral("AUM_UNCHANGED_NAV_CHANGED")));
     }
     {
+        // The same stale AUM, but the separately reported share count moved: the
+        // AUM-based E1/E3 stay refused, E2 stands, graded down, and becomes the
+        // best estimate.
+        BarSeries moved = bars;
+        moved.bars[1].close = 101.0;
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1.02e6)};
+        const EstimatedFlow e = estimate_flow(caps, moved, {}, d[1]);
+        QVERIFY(!e.latest.value);
+        QCOMPARE(e.latest.reason, QStringLiteral("aum_not_updated"));
+        QVERIFY(!e.latest_e3.value);
+        QVERIFY(e.latest_e2.value);
+        QVERIFY(std::abs(*e.latest_e2.value - 0.02e6 * 101.0) < 1e-3);
+        QCOMPARE(e.latest_e2.credibility, Credibility::Experimental);
+        QVERIFY(e.latest_e2.has_flag(flag::kLowConfidence));
+        QVERIFY(e.best.value && *e.best.value == *e.latest_e2.value);
+    }
+    {
+        // Shares unchanged too: no E2, and the reason says why.
+        BarSeries moved = bars;
+        moved.bars[1].close = 101.0;
+        const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 101.0, 1e6)};
+        const EstimatedFlow e = estimate_flow(caps, moved, {}, d[1]);
+        QCOMPARE(e.latest_e2.reason, QStringLiteral("reported_shares_unchanged_in_stale_snapshot"));
+        QVERIFY(!e.best.value);
+    }
+    {
         BarSeries split = closes(QStringLiteral("F"), d, {50.0, 50.0, 50.0}); // d0 restated from 100 by the 2:1 split
         split.bars[1].split = 2.0;
         const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 50.0, 2e6)};
@@ -662,7 +689,8 @@ void TstEtfResearchCalc::confluence_needs_three_layers() {
     QVERIFY(std::abs(*three.value - (0.3 - 0.35 + 0.4) / 0.85) < 1e-12);
     QVERIFY(three.has_flag(flag::kPartial));
     QCOMPARE(three.credibility, Credibility::Experimental);
-    QCOMPARE(model_band(0.7), QStringLiteral("HIGH"));
+    QCOMPARE(model_band(0.7), QStringLiteral("STRONG"));
+    QCOMPARE(model_band(-0.7), QStringLiteral("WEAK"));
     QCOMPARE(model_band(-0.3), QStringLiteral("BELOW"));
 }
 
@@ -709,6 +737,26 @@ void TstEtfResearchCalc::correlation_geometry() {
     // PCA positions fit in [-1, 1].
     for (const auto& p : v.pca)
         QVERIFY(std::abs(p.first) <= 1 + 1e-12 && std::abs(p.second) <= 1 + 1e-12);
+}
+
+void TstEtfResearchCalc::weekly_regime_uses_completed_weeks() {
+    // Data through Wednesday 2026-09-30: that week is still running and must
+    // not enter the weekly (2Y) correlation view; its last return ends on the
+    // previous Friday, 09-25.
+    const auto d = nyse_sessions(QDate(2026, 9, 30), 120);
+    const TrIndex a = make_tr_index(series(QStringLiteral("A"), d, 50, 0.001, 0.03, 9));
+    const TrIndex b = make_tr_index(series(QStringLiteral("B"), d, 70, -0.0005, 0.02, 13));
+    QVector<QDate> dates;
+    const auto cols = common_returns({&a, &b}, 0, &dates, true);
+    QVERIFY(!dates.isEmpty());
+    QCOMPARE(dates.last(), QDate(2026, 9, 25));
+    QCOMPARE(dates.last().dayOfWeek(), 5);
+    // Through Friday 10-02 the week is complete and is used.
+    const auto f = nyse_sessions(QDate(2026, 10, 2), 120);
+    const TrIndex fa = make_tr_index(series(QStringLiteral("A"), f, 50, 0.001, 0.03, 9));
+    const TrIndex fb = make_tr_index(series(QStringLiteral("B"), f, 70, -0.0005, 0.02, 13));
+    common_returns({&fa, &fb}, 0, &dates, true);
+    QCOMPARE(dates.last(), QDate(2026, 10, 2));
 }
 
 void TstEtfResearchCalc::hmm_recovers_two_regimes() {
@@ -795,6 +843,8 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
     const UniverseRow* spy = s.row(QStringLiteral("SPY"));
     QCOMPARE(spy->flow_evidence, EvidenceClass::Measured);
     QVERIFY(spy->measured.latest.has_flag(flag::kActualZero));
+    QCOMPARE(spy->measured.latest.credibility, Credibility::NotGraded);
+    QCOMPARE(spy->measured.latest.source_quality, QStringLiteral("CONFIRMED"));
     QVERIFY(spy->est.latest.value); // estimated flow stays separately visible beside measured
     QCOMPARE(spy->est.latest.evidence, EvidenceClass::Estimated);
     const UniverseRow* xlk = s.row(QStringLiteral("XLK"));
@@ -840,6 +890,9 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
             ++unavailable;
             QVERIFY2(!o.value(QStringLiteral("reason")).toString().isEmpty(), qPrintable(path));
             QVERIFY2(o.value(QStringLiteral("value")).isNull(), qPrintable(path));
+        } else if (ev == QLatin1String("MEASURED")) {
+            // Observations carry the source's quality, never a credibility grade.
+            QVERIFY2(o.value(QStringLiteral("credibility")).toString().isEmpty(), qPrintable(path));
         } else if (ev == QLatin1String("ESTIMATED") || ev == QLatin1String("PROXY") || ev == QLatin1String("MODEL")) {
             ++graded_values;
             QVERIFY2(!o.value(QStringLiteral("credibility")).toString().isEmpty(), qPrintable(path));

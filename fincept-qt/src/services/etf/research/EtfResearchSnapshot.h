@@ -51,6 +51,7 @@ struct FlowInterval {
 
 struct EstimatedFlow {
     ResearchValue latest; ///< ESTIMATED, primary E1 over the latest interval, USD
+    ResearchValue best;   ///< the best available estimate: E1, else E2 when E1 is refused
     ResearchValue latest_e2;
     ResearchValue latest_e3;
     ResearchValue sum_5; ///< ESTIMATED, E1 over intervals ending in the last 5 sessions

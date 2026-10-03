@@ -82,6 +82,7 @@ class TstEtfResearchStore : public QObject {
     void fund_snapshot_session_rule_holdings_and_fundamentals();
     void macro_null_is_missing_and_revisions_replay();
     void stage_status_stale_and_partial();
+    void sec_refresh_catches_up_missed_months();
     void pipeline_records_every_stage_and_survives_fetch_failure();
     void snapshot_replay_is_byte_identical_after_growth();
 };
@@ -166,6 +167,13 @@ void TstEtfResearchStore::bars_confirm_revise_and_keep_vintages() {
     QCOMPARE(now.value().bars.value(QStringLiteral("SPY")).bars[1].close, 101.5);
     QVERIFY(now.value().bars.value(QStringLiteral("SPY")).bars[1].revised);
     QVERIFY(now.value().bars.value(QStringLiteral("SPY")).any_revised);
+    // Point in time with a later knowledge cutoff: at 11:00 New York on 09-30 the
+    // 09-30 session had not closed, so its bar (known by known_at) is excluded,
+    // while the later-known revision of the finished 09-28 session is used.
+    auto intraday = repo.load_inputs(universe_, utc("2026-09-30T15:00:00.000Z"), utc("2026-10-01T12:00:00.000Z"));
+    QCOMPARE(intraday.value().bars.value(QStringLiteral("SPY")).bars.size(), 3);
+    QCOMPARE(intraday.value().bars.value(QStringLiteral("SPY")).bars.last().date, QDate(2026, 9, 29));
+    QCOMPARE(intraday.value().bars.value(QStringLiteral("SPY")).bars[1].close, 101.5);
 }
 
 void TstEtfResearchStore::failed_item_never_erases_and_is_not_this_runs_result() {
@@ -259,6 +267,20 @@ void TstEtfResearchStore::fund_snapshot_session_rule_holdings_and_fundamentals()
     QCOMPARE(
         in.value().fundamentals.value(QStringLiteral("NVDA")).fields.value(QStringLiteral("trailingPE")).toDouble(),
         50.0);
+    // Point in time: a frame whose decision time precedes the capture must not
+    // see it, even when the knowledge cutoff is later (as_of < capture <= known_at).
+    auto early = repo.load_inputs(universe_, utc("2026-10-02T12:00:00.000Z"), utc("2026-10-03T00:00:00.000Z"));
+    QVERIFY(early.is_ok());
+    QVERIFY(!early.value().funds.contains(QStringLiteral("XLK")));
+    QVERIFY(!early.value().holdings.contains(QStringLiteral("XLK")));
+    QVERIFY(!early.value().holdings_history.contains(QStringLiteral("XLK")));
+    QVERIFY(!early.value().fundamentals.contains(QStringLiteral("NVDA")));
+    // Between the two captures: the fund capture (14:30) is visible, the
+    // constituent fundamentals capture (14:31) is not.
+    auto mid = repo.load_inputs(universe_, utc("2026-10-02T14:30:30.000Z"), utc("2026-10-03T00:00:00.000Z"));
+    QVERIFY(mid.value().funds.contains(QStringLiteral("XLK")));
+    QCOMPARE(mid.value().holdings.value(QStringLiteral("XLK")).holdings.size(), 2);
+    QVERIFY(!mid.value().fundamentals.contains(QStringLiteral("NVDA")));
     // Units: netExpenseRatio is already percent; yield is a fraction.
     const FundFacts f = fund_facts_from_captures(caps, nullptr, nullptr, QDate(2026, 10, 1));
     QCOMPARE(*f.expense_pct.value, 0.08);
@@ -306,11 +328,37 @@ void TstEtfResearchStore::macro_null_is_missing_and_revisions_replay() {
     QCOMPARE(after.value().fred.value(QStringLiteral("CFNAI")).points.size(), 3);
     QCOMPARE(after.value().fred.value(QStringLiteral("CFNAI")).points.first().value, -0.12);
     QVERIFY(after.value().fred.value(QStringLiteral("CFNAI")).points.first().revised);
+    // A value known by known_at but not yet published at as_of is excluded:
+    // CFNAI for September (dated 09-01) is assumed available from 11-01.
+    auto early = repo.load_inputs(universe_, utc("2026-10-03T00:00:00.000Z"), utc("2026-11-03T00:00:00.000Z"));
+    QCOMPARE(early.value().fred.value(QStringLiteral("CFNAI")).points.size(), 2);
+    QCOMPARE(early.value().fred.value(QStringLiteral("CFNAI")).points.first().value, -0.12); // later-known revision
+    // World Bank 2024 (dated 2024-12-31) is usable from 2025-07-19, not before.
+    auto wb_early = repo.load_inputs(universe_, utc("2025-07-01T00:00:00.000Z"), utc("2026-11-03T00:00:00.000Z"));
+    QVERIFY(wb_early.value()
+                .world_bank.value(QStringLiteral("NY.GDP.MKTP.KD.ZG"))
+                .value(QStringLiteral("JP"))
+                .points.isEmpty());
     // World Bank null: stored (the source said "no value") but never read as a number.
     const auto jp = after.value().world_bank.value(QStringLiteral("NY.GDP.MKTP.KD.ZG")).value(QStringLiteral("JP"));
     QCOMPARE(jp.points.size(), 1);
     QCOMPARE(jp.points.first().date, QDate(2024, 12, 31));
     QVERIFY(!after.value().world_bank.value(QStringLiteral("NY.GDP.MKTP.KD.ZG")).contains(QStringLiteral("TW")));
+}
+
+void TstEtfResearchStore::sec_refresh_catches_up_missed_months() {
+    // A fresh profile asks for the route's maximum; five months away asks for
+    // enough filings to bridge the gap; an up-to-date profile still asks for a
+    // few (amendments, the quarter in flight); never more than the route allows.
+    QCOMPARE(sec_filings_to_request(QDate(), QDate(2026, 10, 3)), 40);
+    QCOMPARE(sec_filings_to_request(QDate(2026, 4, 30), QDate(2026, 10, 3)), 9);
+    QCOMPARE(sec_filings_to_request(QDate(2026, 8, 31), QDate(2026, 10, 3)), 5);
+    QCOMPARE(sec_filings_to_request(QDate(2026, 9, 30), QDate(2026, 10, 3)), 4);
+    QCOMPARE(sec_filings_to_request(QDate(2021, 1, 31), QDate(2026, 10, 3)), 40);
+    // The latest stored period is read from Batch B's filings table.
+    auto none = EtfResearchRepository::instance().latest_sec_report_period(987654);
+    QVERIFY(none.is_ok());
+    QVERIFY(!none.value().isValid());
 }
 
 void TstEtfResearchStore::stage_status_stale_and_partial() {
@@ -388,6 +436,63 @@ void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failur
         saw_failed_history =
             saw_failed_history || (s.stage == QLatin1String("yahoo_history") && s.status == QLatin1String("FAILED"));
     QVERIFY(saw_failed_history);
+    // A stage whose STORE write fails (here a negative volume violates the
+    // table's CHECK) is recorded FAILED; the other stages are still stored and
+    // the IBKR and SEC stages still run. The write runs through the executor:
+    // nothing completes until its continuation runs.
+    int extra_stages = 0;
+    auto counted = [&](const char* name) {
+        return RefreshStage([name, &extra_stages](std::function<void(SourceStageStatus)> done) {
+            ++extra_stages;
+            SourceStageStatus s;
+            s.stage = QLatin1String(name);
+            s.status = QStringLiteral("UNAVAILABLE");
+            done(s);
+        });
+    };
+    const QJsonObject fred_ok{{"status", "OK"},
+                              {"retrieved_at", "2026-10-08T15:00:01.000Z"},
+                              {"rows", QJsonArray() << QJsonArray{"2026-10-07", 4.1}}, // << nests a single row
+                              {"missing_points", 0},
+                              {"response_sha256", "y"}};
+    RefreshFetcher mixed_fetch = [&](const QJsonObject&, RefreshProgress, std::function<void(Result<QJsonObject>)> d) {
+        d(Result<QJsonObject>::ok(payload(
+            {{"yahoo_history",
+              stage("2026-10-08T22:00:00.000Z",
+                    {{"XLK", history_item("2026-10-08T22:00:01.000Z", QJsonArray() << bar("2026-10-08", 201, -5.0))}})},
+             {"fred", stage("2026-10-08T15:00:00.000Z", {{"DGS10", fred_ok}})}})));
+    };
+    std::function<void()> pending_work, pending_then;
+    RefreshExecutor deferred = [&](std::function<void()> work, std::function<void()> then) {
+        pending_work = std::move(work);
+        pending_then = std::move(then);
+    };
+    bool finished = false;
+    RefreshResult third;
+    run_refresh_pipeline(
+        QStringLiteral("manual_ui"), universe_.version, QJsonObject(), mixed_fetch, counted("ibkr_daily"),
+        counted("sec_nport"), []() { return QDate(2026, 10, 8); }, nullptr,
+        [&](const RefreshResult& r) {
+            third = r;
+            finished = true;
+        },
+        deferred);
+    QVERIFY(!finished);
+    QVERIFY(pending_work && pending_then);
+    QCOMPARE(extra_stages, 0);
+    pending_work();
+    QVERIFY(!finished); // the continuation runs on the caller's thread, after the write
+    pending_then();
+    QVERIFY(finished);
+    QCOMPARE(extra_stages, 2);
+    QStringList st;
+    for (const auto& x : third.stages)
+        st << x.stage + QLatin1Char('=') + x.status + QLatin1Char('(') + x.detail + QLatin1Char(')');
+    QVERIFY2(st.join(',').contains(QStringLiteral("yahoo_history=FAILED")), qPrintable(st.join(',')));
+    QVERIFY2(st.join(',').contains(QStringLiteral("fred=UPDATED")), qPrintable(st.join(',')));
+    QVERIFY(st.join(',').contains(QStringLiteral("ibkr_daily=UNAVAILABLE")));
+    QVERIFY(st.join(',').contains(QStringLiteral("sec_nport=UNAVAILABLE")));
+    QVERIFY(third.error.contains(QStringLiteral("yahoo_history")));
 }
 
 void TstEtfResearchStore::snapshot_replay_is_byte_identical_after_growth() {

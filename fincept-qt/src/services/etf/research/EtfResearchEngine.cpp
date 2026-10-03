@@ -199,8 +199,7 @@ void etfr_measured(UniverseRow& row, const QVector<MeasuredMonth>& months) {
         ResearchValue r;
         r.value = v;
         r.evidence = EvidenceClass::Measured;
-        r.credibility = Credibility::High;
-        r.credibility_reasons = {QStringLiteral("base:HIGH (SEC N-PORT regulatory filing)")};
+        r.source_quality = revised ? QStringLiteral("REVISED") : QStringLiteral("CONFIRMED");
         r.units = QStringLiteral("usd");
         r.method = method;
         r.source = QStringLiteral("sec_nport");
@@ -361,7 +360,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
             row.est.latest = ResearchValue::unavailable(QStringLiteral("not_a_fund"));
             row.est.latest.add_flag(flag::kNotApplicable);
             row.est.sum_5 = row.est.sum_20 = row.est.pct_aum_20 = row.est.coverage_20 = row.est.latest_e2 =
-                row.est.latest_e3 = row.est.validation_vs_measured = row.est.latest;
+                row.est.latest_e3 = row.est.validation_vs_measured = row.est.best = row.est.latest;
         }
         etfr_measured(row, in.measured.value(inst.symbol));
         etfr_cross_check(row, in.ibkr_close.value(inst.symbol), bars);
@@ -376,7 +375,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
         }
         if (row.measured.latest.usable())
             row.flow_evidence = EvidenceClass::Measured;
-        else if (row.est.latest.usable())
+        else if (row.est.best.usable())
             row.flow_evidence = EvidenceClass::Estimated;
         else if (row.ret.m1.usable())
             row.flow_evidence = EvidenceClass::Proxy;
@@ -742,8 +741,9 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                 c.q_z.add_flag(flag::kNotApplicable);
             c.c_z = model_value(carz[u], Credibility::Medium, base, QStringLiteral("z"), method + QStringLiteral(":C"),
                                 QLatin1String(kSourceYahoo), r.last_bar, QStringLiteral("insufficient_history"));
-            c.gdp_3y = gdp[u] ? graded(*gdp[u], EvidenceClass::Measured, Credibility::NotGraded, qc,
-                                       QStringLiteral("pct"), QStringLiteral("world_bank:NY.GDP.MKTP.KD.ZG:3y_mean"),
+            // A three-year mean is a calculated statistic of measured values, not an observation.
+            c.gdp_3y = gdp[u] ? graded(*gdp[u], EvidenceClass::Proxy, Credibility::High, qc, QStringLiteral("pct"),
+                                       QStringLiteral("world_bank:NY.GDP.MKTP.KD.ZG:3y_mean"),
                                        QLatin1String(kSourceWorldBank), QDate(gdp_year[k], 12, 31))
                               : ResearchValue::unavailable(q_missing);
             c.current_account = ca[u]
@@ -1175,6 +1175,7 @@ QJsonObject etfr_flow_json(const EstimatedFlow& e, bool series) {
     QJsonObject o{{QStringLiteral("latest"), e.latest.to_json()},
                   {QStringLiteral("latest_e2_reported_shares"), e.latest_e2.to_json()},
                   {QStringLiteral("latest_e3_close_adjusted"), e.latest_e3.to_json()},
+                  {QStringLiteral("best"), e.best.to_json()},
                   {QStringLiteral("sum_5"), e.sum_5.to_json()},
                   {QStringLiteral("sum_20"), e.sum_20.to_json()},
                   {QStringLiteral("pct_aum_20"), e.pct_aum_20.to_json()},

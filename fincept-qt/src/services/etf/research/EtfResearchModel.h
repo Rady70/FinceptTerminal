@@ -257,6 +257,9 @@ struct ResearchValue {
     QString reason;    ///< why UNAVAILABLE (stable id)
     QStringList flags; ///< kNoObservation, kStale, ...
     QStringList credibility_reasons;
+    /// MEASURED values are not credibility-graded; they carry the source's own
+    /// quality instead (SEC N-PORT: CONFIRMED | REVISED).
+    QString source_quality;
 
     bool usable() const { return value.has_value() || !label.isEmpty(); }
 
@@ -281,6 +284,8 @@ struct ResearchValue {
         o.insert(QStringLiteral("evidence"), QLatin1String(evidence_id(evidence)));
         if (credibility != Credibility::NotGraded)
             o.insert(QStringLiteral("credibility"), QLatin1String(credibility_id(credibility)));
+        if (!source_quality.isEmpty())
+            o.insert(QStringLiteral("source_quality"), source_quality);
         if (!units.isEmpty())
             o.insert(QStringLiteral("units"), units);
         if (!method.isEmpty())

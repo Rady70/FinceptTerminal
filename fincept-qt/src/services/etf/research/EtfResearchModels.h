@@ -370,16 +370,18 @@ inline FactorModelResult compute_factor_model(const QHash<QString, MacroSeries>&
     return r;
 }
 
+/// Neutral research bands. STRONG/WEAK, not HIGH/LOW, so a model state is never
+/// read as a credibility grade.
 inline QString model_band(double score) {
     if (score >= 0.60)
-        return QStringLiteral("HIGH");
+        return QStringLiteral("STRONG");
     if (score >= 0.25)
         return QStringLiteral("ABOVE");
     if (score >= -0.25)
         return QStringLiteral("NEUTRAL");
     if (score >= -0.60)
         return QStringLiteral("BELOW");
-    return QStringLiteral("LOW");
+    return QStringLiteral("WEAK");
 }
 
 /// Confluence over the four layers with renormalised weights; needs three.

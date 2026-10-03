@@ -89,6 +89,23 @@ Cell etfr_cred(Credibility k, const QStringList& reasons) {
     return c;
 }
 
+/// The Cred cell of a value: a credibility grade for calculated values; the
+/// source's own quality for MEASURED values, which are never graded.
+Cell etfr_grade(const ResearchValue& v) {
+    if (v.usable() && v.evidence == EvidenceClass::Measured) {
+        Cell c;
+        c.text = v.source_quality.isEmpty() ? na() : QStringLiteral("Q:") + v.source_quality.left(4);
+        c.sort_text = c.text;
+        c.fg = token(&ui::ThemeTokens::text_secondary);
+        c.align = Qt::AlignCenter;
+        c.tooltip = tr_("MEASURED values are source observations and are not credibility-graded.<br/>"
+                        "Source quality: %1")
+                        .arg(v.source_quality.isEmpty() ? na() : v.source_quality);
+        return c;
+    }
+    return etfr_cred(v.usable() ? v.credibility : Credibility::NotGraded, v.credibility_reasons);
+}
+
 Cell etfr_quadrant(const RrgResult& r) {
     Cell c;
     if (r.quadrant.label.isEmpty()) {
@@ -161,8 +178,12 @@ std::pair<Cell, Cell> etfr_flow_cells(const UniverseRow& r) {
         return {c, etfr_evidence(EvidenceClass::Measured,
                                  tr_("MEASURED: SEC N-PORT monthly flow (%1)").arg(r.measured.reporting_key))};
     }
-    if (r.est.latest.usable()) {
-        Cell c = etfr_value(r.est.latest, 2, tr_("Estimated creation/redemption (E1 implied shares)"));
+    if (r.est.best.usable()) {
+        Cell c = etfr_value(r.est.best, 2,
+                            r.est.latest.usable() ? tr_("Estimated creation/redemption (E1 implied shares)")
+                                                  : tr_("Estimated creation/redemption (E2 reported shares; E1 "
+                                                        "refused: %1)")
+                                                        .arg(r.est.latest.reason));
         return {c,
                 etfr_evidence(
                     EvidenceClass::Estimated,
@@ -1179,8 +1200,8 @@ void EtfResearchScreen::populate_universe() {
           << etfr_quadrant(r.rrg) << etfr_value(r.momentum_z) << etfr_value(r.model_score);
         const auto flow = etfr_flow_cells(r);
         c << flow.first << flow.second;
-        const ResearchValue& fv = r.measured.latest.usable() ? r.measured.latest : r.est.latest;
-        c << etfr_cred(fv.usable() ? fv.credibility : Credibility::NotGraded, fv.credibility_reasons);
+        const ResearchValue& fv = r.measured.latest.usable() ? r.measured.latest : r.est.best;
+        c << etfr_grade(fv);
         Cell e20 = etfr_value(r.est.sum_20, 2, tr("Estimated flow, 20 sessions"));
         e20.tooltip += QStringLiteral("<br/>") + value_tooltip(r.est.coverage_20, tr("Coverage of the 20 sessions"));
         c << e20 << etfr_value(r.fund.aum, 2, tr("AUM")) << etfr_value(r.turnover_delta_bp) << etfr_fresh(r)

@@ -209,11 +209,19 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
     } else if (!have_an) {
         f.reason = QStringLiteral("aum_or_nav_missing");
     } else if (*f.aum_cur == *f.aum_prev && *f.nav_cur != *f.nav_prev) {
-        // The provider re-served the previous AUM: the capture does not describe
-        // this session, so no estimator may use it (E2's share count and E3's AUM
-        // come from the same stale snapshot; E3 would book -AUM x return as flow).
+        // The provider re-served the previous AUM: the AUM-based estimators
+        // cannot use this capture (E3 would book -AUM x return as flow). The
+        // reported share count is a separate field: when it moved, E2 stands
+        // (graded down); when it did not, the snapshot cannot tell a real zero
+        // from a stale field, so there is no E2 either.
         f.reason = QStringLiteral("aum_not_updated");
         f.flags.append(QStringLiteral("AUM_UNCHANGED_NAV_CHANGED"));
+        if (!split && p.shares_outstanding && c.shares_outstanding && f.nav_cur) {
+            if (*c.shares_outstanding != *p.shares_outstanding)
+                f.e2_reported_shares = (*c.shares_outstanding - *p.shares_outstanding) * *f.nav_cur;
+            else
+                f.flags.append(QStringLiteral("REPORTED_SHARES_UNCHANGED"));
+        }
         return f;
     } else {
         f.e1_implied_shares = (*f.implied_shares_cur - *f.implied_shares_prev) * *f.nav_cur;
@@ -265,6 +273,7 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
         e.pct_aum_20 = e.latest;
         e.coverage_20 = e.latest;
         e.validation_vs_measured = e.latest;
+        e.best = e.latest;
     };
     if (raw_captures.isEmpty()) {
         unavailable_all(QStringLiteral("no_capture"));
@@ -334,17 +343,29 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
     } else {
         e.latest = ResearchValue::unavailable(last.reason, method);
     }
+    const bool stale_aum = last.reason == QLatin1String("aum_not_updated");
     auto side = [&](const std::optional<double>& v, const QString& tag, const QString& why) {
         if (!v)
             return ResearchValue::unavailable(why, method + tag);
-        ResearchValue r = graded(*v, EvidenceClass::Estimated, Credibility::Low, {CredCondition::SourceTimingAmbiguous},
-                                 QStringLiteral("usd"), method + tag, QLatin1String(kSourceYahooFund), last.to);
+        QVector<CredCondition> sc{CredCondition::SourceTimingAmbiguous};
+        if (stale_aum)
+            sc.append(CredCondition::Partial); // the rest of the snapshot was stale
+        ResearchValue r = graded(*v, EvidenceClass::Estimated, Credibility::Low, sc, QStringLiteral("usd"),
+                                 method + tag, QLatin1String(kSourceYahooFund), last.to);
+        r.add_flag(flag::kAssumedDate);
+        if (stale_aum)
+            r.add_flag(flag::kLowConfidence);
         return r;
     };
     e.latest_e2 = side(last.e2_reported_shares, QStringLiteral(":E2_reported_shares"),
-                       QStringLiteral("reported_shares_missing_or_split"));
+                       stale_aum && last.flags.contains(QLatin1String("REPORTED_SHARES_UNCHANGED"))
+                           ? QStringLiteral("reported_shares_unchanged_in_stale_snapshot")
+                       : stale_aum ? QStringLiteral("aum_not_updated_and_reported_shares_missing")
+                                   : QStringLiteral("reported_shares_missing_or_split"));
     e.latest_e3 =
         side(last.e3_price_adjusted, QStringLiteral(":E3_close_adjusted_aum"), QStringLiteral("close_or_aum_missing"));
+    // Best available estimate: E1, else E2 (an independent field) when E1 is refused.
+    e.best = e.latest.usable() ? e.latest : e.latest_e2.usable() ? e.latest_e2 : e.latest;
 
     // Windows over the last N NYSE sessions ending at the expected session.
     auto window = [&](int n, ResearchValue* sum, ResearchValue* coverage, ResearchValue* pct) {

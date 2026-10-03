@@ -38,7 +38,7 @@ int usage(const QString& why) {
         {"error", why},
         {"usage",
          QJsonArray{QStringLiteral("--etf-research request [--out <file.json>]"),
-                    QStringLiteral("--etf-research refresh"),
+                    QStringLiteral("--etf-research refresh [--mode incremental|full]"),
                     QStringLiteral("--etf-research snapshot --out <file.json> [--as-of <instant>] "
                                    "[--known-at <instant>] [--compact]"),
                     QStringLiteral("--etf-research export --out <file.json>"), QStringLiteral("--etf-research status"),
@@ -241,8 +241,11 @@ int run_etf_research_cli(int argc, char* argv[]) {
         return 0;
     }
     if (command == QLatin1String("refresh")) {
-        if (const QString bad = allowed({}); !bad.isEmpty())
+        if (const QString bad = allowed({QStringLiteral("mode")}); !bad.isEmpty())
             return usage(QStringLiteral("unknown option --%1 for refresh").arg(bad));
+        const QString mode = options.value(QStringLiteral("mode"), QStringLiteral("incremental"));
+        if (mode != QLatin1String("incremental") && mode != QLatin1String("full"))
+            return usage(QStringLiteral("refresh --mode must be incremental or full"));
         QEventLoop loop;
         auto result = std::make_shared<RefreshResult>();
         bool finished = false;
@@ -256,7 +259,8 @@ int run_etf_research_cli(int argc, char* argv[]) {
                 *result = r;
                 finished = true;
                 loop.quit();
-            });
+            },
+            mode == QLatin1String("full"));
         if (!finished) {
             QTimer::singleShot(60 * 60 * 1000, &loop, &QEventLoop::quit);
             loop.exec();

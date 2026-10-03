@@ -5,6 +5,7 @@
 #include "services/etf/EtfDataService.h"
 #include "services/etf/EtfDerivedAnalytics.h"
 #include "services/etf/EtfGroupAnalytics.h"
+#include "services/etf/EtfSecNportIngestor.h"
 #include "services/etf/EtfSessionCalendar.h"
 #include "services/ibkr/IbkrTwsService.h"
 #include "storage/repositories/EtfDataRepository.h"
@@ -12,10 +13,12 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
 #include <QUuid>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <memory>
 
@@ -110,13 +113,7 @@ const ResearchUniverse* EtfResearchService::universe(QString* error) {
 }
 
 QDate EtfResearchService::expected_us_session(const QDateTime& as_of) {
-    QDate d = UsEquityCalendar::exchange_date(as_of);
-    for (int i = 0; i < 15 && d.isValid(); ++i, d = d.addDays(-1)) {
-        const MarketSessionDay s = UsEquityCalendar::day(d);
-        if (s.is_session() && s.close_utc.addSecs(qint64{30} * 60) <= as_of.toUTC())
-            return d;
-    }
-    return {};
+    return completed_us_session(as_of);
 }
 
 Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QDateTime& known_at) {
@@ -222,7 +219,7 @@ Result<ResearchInputs> EtfResearchService::load(const QDateTime& as_of, const QD
     return Result<ResearchInputs>::ok(in);
 }
 
-QJsonObject EtfResearchService::build_request() const {
+QJsonObject EtfResearchService::build_request(bool full) const {
     const ResearchUniverse* u = const_cast<EtfResearchService*>(this)->universe();
     if (!u)
         return {};
@@ -249,22 +246,74 @@ QJsonObject EtfResearchService::build_request() const {
         }
     for (const auto& s : fetched)
         exclude.append(s);
+    // Incremental history: symbols whose stored coverage is continuous (the
+    // latest window reaches the earliest stored session) and recent fetch only
+    // from two weeks before their last stored session.
+    QHash<QString, etf_research_store::HistoryCoverage> cov;
+    if (!full) {
+        auto c = EtfResearchRepository::instance().history_coverage();
+        if (c.is_ok())
+            cov = c.value();
+    }
+    const QDate today = QDate::currentDate();
+    auto incremental = [&](const QString& s, QDate* min_last) {
+        const auto it = cov.constFind(s);
+        if (it == cov.constEnd() || !it->window_first.isValid() || it->window_first != it->earliest_stored ||
+            it->window_last < today.addDays(-30))
+            return false;
+        if (!min_last->isValid() || it->window_last < *min_last)
+            *min_last = it->window_last;
+        return true;
+    };
+    QStringList long_full, std_full, inc_main;
+    QDate main_last;
+    for (const QString& s : long_syms)
+        (incremental(s, &main_last) ? inc_main : long_full).append(s);
+    for (const QString& s : std_syms)
+        (incremental(s, &main_last) ? inc_main : std_full).append(s);
+    QJsonArray inc_cons;
+    QDate cons_last;
+    for (auto it = cov.constBegin(); it != cov.constEnd(); ++it)
+        if (!fetched.contains(it.key()) && incremental(it.key(), &cons_last))
+            inc_cons.append(it.key());
+    // Constituent fundamentals change slowly: a capture younger than three days is reused.
+    constexpr int kFundamentalsFreshDays = 3;
+    QJsonArray fresh;
+    if (!full) {
+        auto lf = EtfResearchRepository::instance().latest_fundamentals_capture();
+        if (lf.is_ok())
+            for (auto it = lf.value().constBegin(); it != lf.value().constEnd(); ++it)
+                if (it.value().isValid() &&
+                    it.value().secsTo(QDateTime::currentDateTimeUtc()) < qint64{kFundamentalsFreshDays} * 86400)
+                    fresh.append(it.key());
+    }
     QJsonArray wb_codes;
     for (const UniverseInstrument& i : u->instruments)
         if (!i.wb_code.isEmpty() && i.country_type == QLatin1String("single"))
             wb_codes.append(i.wb_code);
     return QJsonObject{
         {QStringLiteral("universe_version"), u->version},
-        {QStringLiteral("history"), QJsonObject{{QStringLiteral("long"), QJsonArray::fromStringList(long_syms)},
-                                                {QStringLiteral("standard"), QJsonArray::fromStringList(std_syms)}}},
+        {QStringLiteral("mode"), full ? QStringLiteral("full") : QStringLiteral("incremental")},
+        {QStringLiteral("history"),
+         QJsonObject{{QStringLiteral("long"), QJsonArray::fromStringList(long_full)},
+                     {QStringLiteral("standard"), QJsonArray::fromStringList(std_full)},
+                     {QStringLiteral("incremental"),
+                      QJsonObject{{QStringLiteral("start"), main_last.addDays(-14).toString(Qt::ISODate)},
+                                  {QStringLiteral("symbols"), QJsonArray::fromStringList(inc_main)}}}}},
         {QStringLiteral("funds"), funds},
-        {QStringLiteral("constituents"), QJsonObject{{QStringLiteral("holding_parents"), parents},
-                                                     {QStringLiteral("max_per_parent"), 10},
-                                                     {QStringLiteral("extra_symbols"), extra},
-                                                     {QStringLiteral("fundamental_extra"), fundamental_extra},
-                                                     {QStringLiteral("exclude"), exclude},
-                                                     {QStringLiteral("history_period"), QStringLiteral("1y")},
-                                                     {QStringLiteral("fundamentals"), true}}},
+        {QStringLiteral("constituents"),
+         QJsonObject{{QStringLiteral("holding_parents"), parents},
+                     {QStringLiteral("max_per_parent"), 10},
+                     {QStringLiteral("extra_symbols"), extra},
+                     {QStringLiteral("fundamental_extra"), fundamental_extra},
+                     {QStringLiteral("exclude"), exclude},
+                     {QStringLiteral("history_period"), QStringLiteral("1y")},
+                     {QStringLiteral("incremental"),
+                      QJsonObject{{QStringLiteral("start"), cons_last.addDays(-14).toString(Qt::ISODate)},
+                                  {QStringLiteral("symbols"), inc_cons}}},
+                     {QStringLiteral("fundamentals_fresh"), fresh},
+                     {QStringLiteral("fundamentals_fresh_days"), kFundamentalsFreshDays},
+                     {QStringLiteral("fundamentals"), true}}},
         {QStringLiteral("fred"),
          QJsonArray{QStringLiteral("T10Y2Y"), QStringLiteral("CFNAI"), QStringLiteral("BAMLH0A0HYM2"),
                     QStringLiteral("VIXCLS"), QStringLiteral("DGS10"), QStringLiteral("T10YIE"),
@@ -420,7 +469,9 @@ void EtfResearchService::default_sec_stage(std::function<void(SourceStageStatus)
         SecNportRequest req;
         req.cik = list->at(idx).cik;
         req.series_id = list->at(idx).series_id;
-        req.max_filings = 2;
+        const auto latest = EtfResearchRepository::instance().latest_sec_report_period(list->at(idx).entity_id);
+        req.max_filings = sec_filings_to_request(latest.is_ok() ? latest.value() : QDate(), QDate::currentDate(),
+                                                 kSecMaxFilingsPerRun);
         EtfDataService::instance().ingest_sec_nport(req, [agg, self, idx, list](const SecNportRunSummary& s) {
             const QString key = list->at(idx).cik + QLatin1Char('/') + list->at(idx).series_id;
             if (s.status == RetrievalStatus::Ok)
@@ -436,7 +487,7 @@ void EtfResearchService::default_sec_stage(std::function<void(SourceStageStatus)
     (*step)(0);
 }
 
-void EtfResearchService::refresh(const QString& trigger, Progress progress, Done done) {
+void EtfResearchService::refresh(const QString& trigger, Progress progress, Done done, bool full) {
     if (running_) {
         RefreshResult r;
         r.error = QStringLiteral("a refresh is already running");
@@ -468,7 +519,7 @@ void EtfResearchService::refresh(const QString& trigger, Progress progress, Done
     });
     emit refresh_started(QString());
     run_refresh_pipeline(
-        trigger, u->version, build_request(), fetch, ibkr, sec,
+        trigger, u->version, build_request(full), fetch, ibkr, sec,
         []() { return expected_us_session(QDateTime::currentDateTimeUtc()); },
         [this, progress](const QString& s, int d, int t) {
             if (progress)
@@ -480,6 +531,17 @@ void EtfResearchService::refresh(const QString& trigger, Progress progress, Done
             emit refresh_finished(r);
             if (done)
                 done(r);
+        },
+        // The store write (hundreds of thousands of rows) runs on a worker
+        // thread with its own database connection; the pipeline continues on
+        // this thread when it is done, so the UI stays responsive.
+        [](std::function<void()> work, std::function<void()> then) {
+            auto* watcher = new QFutureWatcher<void>();
+            QObject::connect(watcher, &QFutureWatcher<void>::finished, watcher, [watcher, then]() {
+                then();
+                watcher->deleteLater();
+            });
+            watcher->setFuture(QtConcurrent::run(std::move(work)));
         });
 }
 

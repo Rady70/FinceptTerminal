@@ -36,6 +36,15 @@ struct StageOutcome {
     services::etf::research::SourceStageStatus status;
 };
 
+/// Stored daily-history coverage of one symbol: its latest coverage window and
+/// the earliest stored session. An incremental fetch is safe only while the
+/// latest window still reaches back to the earliest session (no restatement).
+struct HistoryCoverage {
+    QDate window_first;
+    QDate window_last;
+    QDate earliest_stored;
+};
+
 } // namespace etf_research_store
 
 class EtfResearchRepository : public BaseRepository<services::etf::research::DailyBar> {
@@ -78,6 +87,15 @@ class EtfResearchRepository : public BaseRepository<services::etf::research::Dai
     /// The rule assigning an effective NYSE session to an undated snapshot:
     /// the last NYSE session completed before the capture's New York date.
     static QDate prior_completed_session(const QDateTime& captured_at);
+
+    /// Latest coverage window and earliest stored session of every symbol.
+    Result<QHash<QString, etf_research_store::HistoryCoverage>> history_coverage();
+    /// Latest fundamentals capture time of every constituent.
+    Result<QHash<QString, QDateTime>> latest_fundamentals_capture();
+
+    /// Latest N-PORT report period stored for a reporting entity (Batch B's
+    /// etf_sec_filings, read only); invalid when none is stored.
+    Result<QDate> latest_sec_report_period(qint64 entity_id);
 
   private:
     EtfResearchRepository() = default;
