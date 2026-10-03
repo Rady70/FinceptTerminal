@@ -410,9 +410,12 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                                                           : QStringLiteral("insufficient_history"));
         }
     }
-    for (auto& r : s.rows)
+    for (auto& r : s.rows) {
         if (!r.momentum_z.usable() && r.momentum_z.reason.isEmpty())
             r.momentum_z = ResearchValue::unavailable(QStringLiteral("no_comparable_peer_group"));
+        if (!r.momentum_raw.usable() && r.momentum_raw.reason.isEmpty())
+            r.momentum_raw = ResearchValue::unavailable(QStringLiteral("no_comparable_peer_group"));
+    }
 
     // ── Turnover, tilt, breadth (U.S. sector complex) ───────────────────────
     QStringList sector_syms, defensive, cyclical;

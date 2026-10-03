@@ -11,8 +11,11 @@
 #include "services/etf/research/EtfResearchRotation.h"
 #include "services/etf/research/EtfResearchUniverse.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QTest>
+
+#include <functional>
 
 using namespace fincept::services::etf;
 using namespace fincept::services::etf::research;
@@ -732,6 +735,32 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
     const QByteArray a = QJsonDocument(snapshot_to_json(s)).toJson(QJsonDocument::Compact);
     const QByteArray b = QJsonDocument(snapshot_to_json(compute_snapshot(in))).toJson(QJsonDocument::Compact);
     QCOMPARE(a, b);
+    // Whole document: every UNAVAILABLE value says why and carries no number;
+    // every calculated (ESTIMATED / PROXY / MODEL) value carries a grade.
+    int unavailable = 0, graded_values = 0;
+    std::function<void(const QJsonValue&, const QString&)> walk = [&](const QJsonValue& v, const QString& path) {
+        if (v.isArray()) {
+            for (const QJsonValue& x : v.toArray())
+                walk(x, path + QStringLiteral("[]"));
+            return;
+        }
+        if (!v.isObject())
+            return;
+        const QJsonObject o = v.toObject();
+        const QString ev = o.value(QStringLiteral("evidence")).toString();
+        if (ev == QLatin1String("UNAVAILABLE")) {
+            ++unavailable;
+            QVERIFY2(!o.value(QStringLiteral("reason")).toString().isEmpty(), qPrintable(path));
+            QVERIFY2(o.value(QStringLiteral("value")).isNull(), qPrintable(path));
+        } else if (ev == QLatin1String("ESTIMATED") || ev == QLatin1String("PROXY") || ev == QLatin1String("MODEL")) {
+            ++graded_values;
+            QVERIFY2(!o.value(QStringLiteral("credibility")).toString().isEmpty(), qPrintable(path));
+        }
+        for (auto it = o.begin(); it != o.end(); ++it)
+            walk(it.value(), path + QLatin1Char('.') + it.key());
+    };
+    walk(QJsonDocument::fromJson(a).object(), QString());
+    QVERIFY(unavailable > 0 && graded_values > 0);
 }
 
 QTEST_GUILESS_MAIN(TstEtfResearchCalc)
