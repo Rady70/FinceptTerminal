@@ -491,6 +491,55 @@ qt6_add_resources(tst_etf_group_store "test_etf_group_taxonomy"
     PREFIX "/etf"
     FILES "${PROJECT_SOURCE_DIR}/resources/etf_taxonomy_v2.json")
 
+# MarketLab ETF Flow & Sector Rotation (consolidated Batch E) — the research
+# engine over deterministic synthetic inputs: evidence/credibility rules, the
+# reviewed universe resource, total-return rotation, RRG, turnover/tilt,
+# momentum, baskets, estimated flow (incl. the reference estimators' algebraic
+# identity), business cycle, OLS factor sensitivities, confluence, correlation
+# geometry, HMM regimes and an end-to-end deterministic snapshot.
+fincept_add_test(tst_etf_research_calc
+    tst_etf_research_calc.cpp
+    "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp")
+set_source_files_properties("${PROJECT_SOURCE_DIR}/resources/etf_research_universe_v1.json"
+    PROPERTIES QT_RESOURCE_ALIAS "research_universe_v1.json")
+qt6_add_resources(tst_etf_research_calc "test_etf_research_universe"
+    PREFIX "/etf"
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_research_universe_v1.json")
+
+# Consolidated Batch E — research-source persistence (migration v053), replay,
+# stage statuses and the manual-refresh pipeline with injected stages.
+fincept_add_test(tst_etf_research_store
+    tst_etf_research_store.cpp
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/Database.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/MigrationRunner.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v052_etf_data_foundation.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v053_etf_research_sources.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v054_etf_research_cftc.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/repositories/EtfResearchRepository.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_etf_research_store PRIVATE Qt6::Sql)
+qt6_add_resources(tst_etf_research_store "test_etf_research_store_universe"
+    PREFIX "/etf"
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_research_universe_v1.json")
+
+# Consolidated Batch E — the shipped native workspace widgets over a synthetic
+# snapshot, with the two service bindings stubbed and counted (opening the
+# screen must start no acquisition). Widgets/Concurrent are the seam under test.
+fincept_add_test(tst_etf_research_ui
+    tst_etf_research_ui.cpp
+    "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchScreen.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchScreenDetail.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchTableModel.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchWidgets.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/theme/ThemeManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_etf_research_ui PRIVATE Qt6::Widgets Qt6::Concurrent)
+qt6_add_resources(tst_etf_research_ui "test_etf_research_ui_universe"
+    PREFIX "/etf"
+    FILES "${PROJECT_SOURCE_DIR}/resources/etf_research_universe_v1.json")
+
 # MarketLab ETF Batch B — HttpClient::get_raw, the raw GET the SEC N-PORT route
 # uses: the declared User-Agent replaces the client's default on the wire, the
 # body arrives byte for byte, an HTTP error keeps its status and body, and a

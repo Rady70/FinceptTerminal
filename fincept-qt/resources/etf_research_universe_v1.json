@@ -1,0 +1,3161 @@
+{
+ "version": "etf-research-universe-v1",
+ "description": "MarketLab ETF Flow & Sector Rotation research universe. Listed rows are keyed by Yahoo symbol for the free research sources; taxonomy_v2 rows carry their reviewed IBKR conId and classification. A ticker never creates an SEC/IBKR identity: SEC reporting identities are explicit, copied from taxonomy v2 with their intervals and evidence.",
+ "reference": {
+  "repository": "triphopp/bloomberg-terminal",
+  "commit": "338707216bb4d411335da9685dc9275cd16e106a",
+  "files": [
+   "backend/routers/rotation.py",
+   "backend/analytics/country_rotation.py",
+   "backend/analytics/sector_bc.py",
+   "backend/routers/regime.py",
+   "backend/config.py"
+  ]
+ },
+ "benchmarks": {
+  "us_equity": "SPY",
+  "global_equity": "ACWI",
+  "thailand": "^SET.BK",
+  "thailand_fallback": "TDEX.BK"
+ },
+ "vocabularies": {
+  "structure": [
+   "open_end_etf",
+   "unit_investment_trust",
+   "grantor_trust",
+   "commodity_pool",
+   "index_not_fund"
+  ],
+  "roles": [
+   "cross_asset",
+   "us_sector",
+   "theme",
+   "country",
+   "benchmark"
+  ],
+  "bucket": [
+   "defensive",
+   "cyclical",
+   "unaligned"
+  ]
+ },
+ "instruments": [
+  {
+   "symbol": "AAXJ",
+   "name": "iShares MSCI All Country Asia ex Japan ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Asia ex-Japan",
+   "wb_code": "",
+   "country_type": "regional",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "ACWI",
+   "name": "iShares MSCI ACWI ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "global_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "benchmark"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Added as the declared global benchmark for country/regional relative rotation."
+  },
+  {
+   "symbol": "ARKG",
+   "name": "ARK Genomic Revolution ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Genomics",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "ARKK",
+   "name": "ARK Innovation ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Innovation (ARKK)",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "ARKX",
+   "name": "ARK Space & Defense Innovation ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Space",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "BIL",
+   "name": "SPDR Bloomberg 1-3 Month T-Bill ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "treasury_bill",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 296457239,
+    "category": "treasury_bill",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "BITQ",
+   "name": "Bitwise Crypto Industry Innovators ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Crypto-linked",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Crypto-industry equities; not spot crypto (compare IBIT/ETHA)."
+  },
+  {
+   "symbol": "BOTZ",
+   "name": "Global X Robotics & Artificial Intelligence ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "AI & Robotics",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "CIBR",
+   "name": "First Trust NASDAQ Cybersecurity ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Cybersecurity",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "DIA",
+   "name": "SPDR Dow Jones Industrial Average ETF Trust",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_large_cap_dow",
+   "structure": "unit_investment_trust",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Stored Batch B identity (conId 73128548) but not in the reviewed taxonomy v2 seed; research_curation only.",
+   "ibkr_con_id_unreviewed": 73128548
+  },
+  {
+   "symbol": "EEM",
+   "name": "iShares MSCI Emerging Markets ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "emerging_markets",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "emerging",
+   "sector": "",
+   "theme": "",
+   "country": "Emerging Markets",
+   "wb_code": "",
+   "country_type": "regional",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "cross_asset",
+    "country"
+   ],
+   "taxonomy_v2": {
+    "con_id": 6604766,
+    "category": "emerging_markets",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Global"
+  },
+  {
+   "symbol": "EFA",
+   "name": "iShares MSCI EAFE ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "developed_international",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "developed_ex_us",
+   "sector": "",
+   "theme": "",
+   "country": "Developed ex-US",
+   "wb_code": "",
+   "country_type": "regional",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "cross_asset",
+    "country"
+   ],
+   "taxonomy_v2": {
+    "con_id": 13002510,
+    "category": "developed_international",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Global"
+  },
+  {
+   "symbol": "ETHA",
+   "name": "iShares Ethereum Trust ETF",
+   "instrument_type": "etf",
+   "asset_class": "crypto",
+   "exposure": "spot_ethereum",
+   "structure": "grantor_trust",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "spot_crypto",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 717828992,
+    "category": "spot_ethereum",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "EWA",
+   "name": "iShares MSCI Australia ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Australia",
+   "wb_code": "AU",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "EWC",
+   "name": "iShares MSCI Canada ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Canada",
+   "wb_code": "CA",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Americas"
+  },
+  {
+   "symbol": "EWJ",
+   "name": "iShares MSCI Japan ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Japan",
+   "wb_code": "JP",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "EWT",
+   "name": "iShares MSCI Taiwan ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Taiwan",
+   "wb_code": "TW",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "EWY",
+   "name": "iShares MSCI South Korea ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "South Korea",
+   "wb_code": "KR",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "EWZ",
+   "name": "iShares MSCI Brazil ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Brazil",
+   "wb_code": "BR",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Americas"
+  },
+  {
+   "symbol": "FINX",
+   "name": "Global X FinTech ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Fintech & Payments",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "FXI",
+   "name": "iShares China Large-Cap ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "China",
+   "wb_code": "CN",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "GDX",
+   "name": "VanEck Gold Miners ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Gold Miners",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Equity of gold producers; not physical gold (compare GLD)."
+  },
+  {
+   "symbol": "GLD",
+   "name": "SPDR Gold Shares",
+   "instrument_type": "etf",
+   "asset_class": "commodity",
+   "exposure": "physical_gold",
+   "structure": "grantor_trust",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "physical_commodity",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 51529211,
+    "category": "physical_gold",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "HYG",
+   "name": "iShares iBoxx $ High Yield Corporate Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "high_yield_credit",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us_dollar_bonds",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 43652089,
+    "category": "high_yield_credit",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "IBB",
+   "name": "iShares Biotechnology ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Biotech",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "IBIT",
+   "name": "iShares Bitcoin Trust ETF",
+   "instrument_type": "etf",
+   "asset_class": "crypto",
+   "exposure": "spot_bitcoin",
+   "structure": "grantor_trust",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "spot_crypto",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 677037673,
+    "category": "spot_bitcoin",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "IEF",
+   "name": "iShares 7-10 Year Treasury Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "treasury_intermediate",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 15547844,
+    "category": "treasury_intermediate",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "IGV",
+   "name": "iShares Expanded Tech-Software Sector ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Software",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "INDA",
+   "name": "iShares MSCI India ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "India",
+   "wb_code": "IN",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "ITA",
+   "name": "iShares U.S. Aerospace & Defense ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Defense",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "IVV",
+   "name": "iShares Core S&P 500 ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_large_cap",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 8991352,
+    "category": "us_large_cap",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004310",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "research_declaration_v1",
+     "effective_from": "2025-08-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/Archives/edgar/data/1100663/000119312525069071/d341850d497k.htm"
+    }
+   ],
+   "note": ""
+  },
+  {
+   "symbol": "IWM",
+   "name": "iShares Russell 2000 ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_small_cap",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 9579970,
+    "category": "us_small_cap",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "JEPI",
+   "name": "JPMorgan Equity Premium Income ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "option_income",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "option_overlay",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": true,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 423216410,
+    "category": "option_income",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "JETS",
+   "name": "U.S. Global Jets ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Travel & Airlines",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "KBE",
+   "name": "SPDR S&P Bank ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Banks & Brokers",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "KWEB",
+   "name": "KraneShares CSI China Internet ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "china",
+   "sector": "",
+   "theme": "China Tech",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "LQD",
+   "name": "iShares iBoxx $ Investment Grade Corporate Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "investment_grade_credit",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us_dollar_bonds",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 15547816,
+    "category": "investment_grade_credit",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "MAGS",
+   "name": "Roundhill Magnificent Seven ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Mag 7",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Equal-weight Magnificent Seven exposure; prospectus permits swaps (mechanism not separately reviewed)."
+  },
+  {
+   "symbol": "OIH",
+   "name": "VanEck Oil Services ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Oil Services",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Energy-services equity; not crude-oil futures (compare USO)."
+  },
+  {
+   "symbol": "PPH",
+   "name": "VanEck Pharmaceutical ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Pharma",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "QQQ",
+   "name": "Invesco QQQ Trust",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "nasdaq_100",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "us_listed_mixed_geography",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 320227571,
+    "category": "nasdaq_100",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [
+    {
+     "cik": "0001067839",
+     "series_id": "",
+     "relationship": "registrant_is_instrument",
+     "identity_basis": "research_declaration_v1",
+     "effective_from": "2025-01-27",
+     "effective_to": "2025-09-30",
+     "fund_structure": "unit_investment_trust",
+     "evidence_url": "https://www.sec.gov/Archives/edgar/data/1067839/000119312525013448/d902673d485bpos.htm"
+    },
+    {
+     "cik": "0001067839",
+     "series_id": "S000101292",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "research_declaration_v1",
+     "effective_from": "2025-10-01",
+     "effective_to": "2025-12-19",
+     "fund_structure": "unit_investment_trust",
+     "evidence_url": "https://www.sec.gov/Archives/edgar/data/1067839/000119312525249697/d29525dn30b2.htm"
+    },
+    {
+     "cik": "0001067839",
+     "series_id": "S000101292",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "research_declaration_v1",
+     "effective_from": "2025-12-20",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/Archives/edgar/data/1067839/000110465925123273/tm2529177d1_485bpos.htm"
+    }
+   ],
+   "note": ""
+  },
+  {
+   "symbol": "QTUM",
+   "name": "Defiance Quantum ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Quantum",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SGOV",
+   "name": "iShares 0-3 Month Treasury Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "treasury_bill",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 424099317,
+    "category": "treasury_bill",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SH",
+   "name": "ProShares Short S&P500",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "inverse_us_large_cap",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "inverse_derivative",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": -1,
+   "leveraged": false,
+   "inverse": true,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 738523410,
+    "category": "inverse_us_large_cap",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SHY",
+   "name": "iShares 1-3 Year Treasury Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "treasury_short",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 15547851,
+    "category": "treasury_short",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SKYY",
+   "name": "First Trust Cloud Computing ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Cloud",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SLV",
+   "name": "iShares Silver Trust",
+   "instrument_type": "etf",
+   "asset_class": "commodity",
+   "exposure": "physical_silver",
+   "structure": "grantor_trust",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "physical_commodity",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 39039301,
+    "category": "physical_silver",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SMH",
+   "name": "VanEck Semiconductor ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Semiconductors",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "SPY",
+   "name": "SPDR S&P 500 ETF Trust",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_large_cap",
+   "structure": "unit_investment_trust",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "equity_index",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "United States",
+   "wb_code": "US",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "long",
+   "roles": [
+    "cross_asset",
+    "country"
+   ],
+   "taxonomy_v2": {
+    "con_id": 756733,
+    "category": "us_large_cap",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [
+    {
+     "cik": "0000884394",
+     "series_id": "",
+     "relationship": "registrant_is_instrument",
+     "identity_basis": "research_declaration_v1",
+     "effective_from": "2024-01-26",
+     "effective_to": "",
+     "fund_structure": "unit_investment_trust",
+     "evidence_url": "https://www.sec.gov/Archives/edgar/data/884394/000119312524016958/d109104d497.htm"
+    }
+   ],
+   "note": "",
+   "country_region": "Americas"
+  },
+  {
+   "symbol": "SSO",
+   "name": "ProShares Ultra S&P500",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "leveraged_us_large_cap",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "leveraged_derivative",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 2,
+   "leveraged": true,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 39622943,
+    "category": "leveraged_us_large_cap",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "TAN",
+   "name": "Invesco Solar ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Solar",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "TDEX.BK",
+   "name": "ThaiDEX SET50 ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "thai_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "thailand",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "",
+   "history": "standard",
+   "roles": [
+    "benchmark"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Fallback Thai benchmark when the SET index history is unusable (reference behaviour, now explicit)."
+  },
+  {
+   "symbol": "THD",
+   "name": "iShares MSCI Thailand ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Thailand",
+   "wb_code": "TH",
+   "country_type": "single",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "Asia"
+  },
+  {
+   "symbol": "TIP",
+   "name": "iShares TIPS Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "tips",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 26787475,
+    "category": "tips",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "TLT",
+   "name": "iShares 20+ Year Treasury Bond ETF",
+   "instrument_type": "etf",
+   "asset_class": "fixed_income",
+   "exposure": "treasury_long",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "bond_portfolio",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 15547841,
+    "category": "treasury_long",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "URA",
+   "name": "Global X Uranium ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Nuclear & Uranium",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "USO",
+   "name": "United States Oil Fund",
+   "instrument_type": "etf",
+   "asset_class": "commodity",
+   "exposure": "crude_oil_futures",
+   "structure": "commodity_pool",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "futures_commodity",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 418893644,
+    "category": "crude_oil_futures",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "UUP",
+   "name": "Invesco DB US Dollar Index Bullish Fund",
+   "instrument_type": "etf",
+   "asset_class": "currency",
+   "exposure": "us_dollar",
+   "structure": "commodity_pool",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "currency_futures",
+   "region": "global",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 319355766,
+    "category": "us_dollar",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "VGK",
+   "name": "Vanguard FTSE Europe ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "country_equity",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "equity_index",
+   "region": "",
+   "sector": "",
+   "theme": "",
+   "country": "Europe",
+   "wb_code": "",
+   "country_type": "regional",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "ACWI",
+   "history": "standard",
+   "roles": [
+    "country"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "",
+   "country_region": "EMEA"
+  },
+  {
+   "symbol": "VNQ",
+   "name": "Vanguard Real Estate ETF",
+   "instrument_type": "etf",
+   "asset_class": "real_estate",
+   "exposure": "us_real_estate",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "reit_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "cross_asset"
+   ],
+   "taxonomy_v2": {
+    "con_id": 31230302,
+    "category": "us_real_estate",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XHB",
+   "name": "SPDR S&P Homebuilders ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Homebuilders",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLB",
+   "name": "Materials Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Materials",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLC",
+   "name": "Communication Services Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Communication Services",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLE",
+   "name": "Energy Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Energy",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "unaligned",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "cross_asset",
+    "us_sector"
+   ],
+   "taxonomy_v2": {
+    "con_id": 4215217,
+    "category": "us_energy_sector",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLF",
+   "name": "Financial Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Financials",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLI",
+   "name": "Industrial Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Industrials",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLK",
+   "name": "Technology Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "taxonomy_v2",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Information Technology",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "cross_asset",
+    "us_sector"
+   ],
+   "taxonomy_v2": {
+    "con_id": 4215230,
+    "category": "us_technology_sector",
+    "effective_from": "2026-09-25"
+   },
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLP",
+   "name": "Consumer Staples Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Consumer Staples",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "defensive",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLRE",
+   "name": "Real Estate Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Real Estate",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "defensive",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLU",
+   "name": "Utilities Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Utilities",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "defensive",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLV",
+   "name": "Health Care Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Health Care",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "defensive",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XLY",
+   "name": "Consumer Discretionary Select Sector SPDR",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "us_sector",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "sector_equity",
+   "region": "us",
+   "sector": "Consumer Discretionary",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "cyclical",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "long",
+   "roles": [
+    "us_sector"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "XRT",
+   "name": "SPDR S&P Retail ETF",
+   "instrument_type": "etf",
+   "asset_class": "equity",
+   "exposure": "theme",
+   "structure": "open_end_etf",
+   "structure_basis": "research_curation",
+   "mechanism": "theme_equity",
+   "region": "us",
+   "sector": "",
+   "theme": "Retail",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "SPY",
+   "history": "standard",
+   "roles": [
+    "theme"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": ""
+  },
+  {
+   "symbol": "^SET.BK",
+   "name": "SET Index",
+   "instrument_type": "index",
+   "asset_class": "equity",
+   "exposure": "index",
+   "structure": "index_not_fund",
+   "structure_basis": "research_curation",
+   "mechanism": "index_level",
+   "region": "thailand",
+   "sector": "",
+   "theme": "",
+   "country": "",
+   "wb_code": "",
+   "country_type": "",
+   "bucket": "",
+   "leverage_multiple": 1,
+   "leveraged": false,
+   "inverse": false,
+   "option_overlay": false,
+   "benchmark": "",
+   "history": "standard",
+   "roles": [
+    "benchmark"
+   ],
+   "taxonomy_v2": null,
+   "sec_reporting": [],
+   "note": "Non-ETF index used only as the Thai basket benchmark; never ETF flow."
+  }
+ ],
+ "baskets": [
+  {
+   "id": "th_banking",
+   "name": "Banking",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "KBANK.BK",
+    "BBL.BK",
+    "SCB.BK",
+    "KTB.BK",
+    "TTB.BK"
+   ]
+  },
+  {
+   "id": "th_energy__util",
+   "name": "Energy & Util",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "PTT.BK",
+    "PTTEP.BK",
+    "GULF.BK",
+    "TOP.BK",
+    "BGRIM.BK"
+   ]
+  },
+  {
+   "id": "th_petrochem",
+   "name": "Petrochem",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "PTTGC.BK",
+    "IVL.BK",
+    "SCGP.BK"
+   ]
+  },
+  {
+   "id": "th_ict",
+   "name": "ICT",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "ADVANC.BK",
+    "TRUE.BK",
+    "INTUCH.BK"
+   ]
+  },
+  {
+   "id": "th_commerce",
+   "name": "Commerce",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "CPALL.BK",
+    "CPAXT.BK",
+    "CRC.BK",
+    "HMPRO.BK",
+    "BJC.BK"
+   ]
+  },
+  {
+   "id": "th_food__bev",
+   "name": "Food & Bev",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "CPF.BK",
+    "TU.BK",
+    "MINT.BK",
+    "OSP.BK",
+    "CBG.BK"
+   ]
+  },
+  {
+   "id": "th_healthcare",
+   "name": "Healthcare",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "BDMS.BK",
+    "BH.BK",
+    "BCH.BK",
+    "CHG.BK"
+   ]
+  },
+  {
+   "id": "th_property",
+   "name": "Property",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "LH.BK",
+    "AP.BK",
+    "SPALI.BK",
+    "SIRI.BK"
+   ]
+  },
+  {
+   "id": "th_transport",
+   "name": "Transport",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "AOT.BK",
+    "BEM.BK",
+    "BTS.BK"
+   ]
+  },
+  {
+   "id": "th_electronics",
+   "name": "Electronics",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "DELTA.BK",
+    "HANA.BK",
+    "KCE.BK"
+   ]
+  },
+  {
+   "id": "th_finance_non_bank",
+   "name": "Finance (non-bank)",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "MTC.BK",
+    "SAWAD.BK",
+    "TIDLOR.BK",
+    "KTC.BK"
+   ]
+  },
+  {
+   "id": "th_tourism",
+   "name": "Tourism",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "AWC.BK",
+    "CENTEL.BK",
+    "ERW.BK"
+   ]
+  },
+  {
+   "id": "th_construction_mat",
+   "name": "Construction Mat",
+   "market": "TH",
+   "benchmark": "^SET.BK",
+   "benchmark_fallback": "TDEX.BK",
+   "construction": "equal_weight_daily_rebalanced",
+   "min_member_fraction": 0.5,
+   "members": [
+    "SCC.BK",
+    "TPIPL.BK",
+    "TASCO.BK"
+   ]
+  }
+ ],
+ "intl_sector_stocks": {
+  "th": [
+   {
+    "symbol": "SCB.BK",
+    "label": "SCB",
+    "sector": "Banks"
+   },
+   {
+    "symbol": "KBANK.BK",
+    "label": "KBANK",
+    "sector": "Banks"
+   },
+   {
+    "symbol": "BBL.BK",
+    "label": "BBL",
+    "sector": "Banks"
+   },
+   {
+    "symbol": "KTB.BK",
+    "label": "KTB",
+    "sector": "Banks"
+   },
+   {
+    "symbol": "TTB.BK",
+    "label": "TTB",
+    "sector": "Banks"
+   },
+   {
+    "symbol": "PTT.BK",
+    "label": "PTT",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "PTTEP.BK",
+    "label": "PTTEP",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "GULF.BK",
+    "label": "GULF",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "GPSC.BK",
+    "label": "GPSC",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "ADVANC.BK",
+    "label": "ADVANC",
+    "sector": "Telecom"
+   },
+   {
+    "symbol": "TRUE.BK",
+    "label": "TRUE",
+    "sector": "Telecom"
+   },
+   {
+    "symbol": "INTUCH.BK",
+    "label": "INTUCH",
+    "sector": "Telecom"
+   },
+   {
+    "symbol": "CPF.BK",
+    "label": "CPF",
+    "sector": "Food"
+   },
+   {
+    "symbol": "TU.BK",
+    "label": "TU",
+    "sector": "Food"
+   },
+   {
+    "symbol": "MINT.BK",
+    "label": "MINT",
+    "sector": "Food"
+   },
+   {
+    "symbol": "CPN.BK",
+    "label": "CPN",
+    "sector": "Property"
+   },
+   {
+    "symbol": "LH.BK",
+    "label": "LH",
+    "sector": "Property"
+   },
+   {
+    "symbol": "AP.BK",
+    "label": "AP",
+    "sector": "Property"
+   },
+   {
+    "symbol": "BDMS.BK",
+    "label": "BDMS",
+    "sector": "Healthcare"
+   },
+   {
+    "symbol": "BH.BK",
+    "label": "BH",
+    "sector": "Healthcare"
+   },
+   {
+    "symbol": "SCC.BK",
+    "label": "SCC",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "IVL.BK",
+    "label": "IVL",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "SCGP.BK",
+    "label": "SCGP",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "CPALL.BK",
+    "label": "CPALL",
+    "sector": "Commerce"
+   },
+   {
+    "symbol": "HMPRO.BK",
+    "label": "HMPRO",
+    "sector": "Commerce"
+   },
+   {
+    "symbol": "CRC.BK",
+    "label": "CRC",
+    "sector": "Commerce"
+   }
+  ],
+  "cn": [
+   {
+    "symbol": "BABA",
+    "label": "BABA",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "PDD",
+    "label": "PDD",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "JD",
+    "label": "JD",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "BIDU",
+    "label": "BIDU",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "0700.HK",
+    "label": "TENCENT",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "1398.HK",
+    "label": "ICBC",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "0939.HK",
+    "label": "CCB",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "3988.HK",
+    "label": "BOC",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "3968.HK",
+    "label": "CMB",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "0857.HK",
+    "label": "PETROCH",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "0883.HK",
+    "label": "CNOOC",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "0386.HK",
+    "label": "SINOPEC",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "1211.HK",
+    "label": "BYD",
+    "sector": "EV & Auto"
+   },
+   {
+    "symbol": "NIO",
+    "label": "NIO",
+    "sector": "EV & Auto"
+   },
+   {
+    "symbol": "LI",
+    "label": "LI AUTO",
+    "sector": "EV & Auto"
+   },
+   {
+    "symbol": "XPEV",
+    "label": "XPENG",
+    "sector": "EV & Auto"
+   },
+   {
+    "symbol": "9633.HK",
+    "label": "NONGFU",
+    "sector": "Consumer"
+   },
+   {
+    "symbol": "YUMC",
+    "label": "YUM CN",
+    "sector": "Consumer"
+   },
+   {
+    "symbol": "TCOM",
+    "label": "TRIP.COM",
+    "sector": "Consumer"
+   }
+  ],
+  "kr": [
+   {
+    "symbol": "005930.KS",
+    "label": "SAMSUNG",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "000660.KS",
+    "label": "SK HYNIX",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "035420.KS",
+    "label": "NAVER",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "035720.KS",
+    "label": "KAKAO",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "005380.KS",
+    "label": "HYUNDAI",
+    "sector": "Auto"
+   },
+   {
+    "symbol": "000270.KS",
+    "label": "KIA",
+    "sector": "Auto"
+   },
+   {
+    "symbol": "105560.KS",
+    "label": "KB FIN",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "055550.KS",
+    "label": "SHINHAN",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "006400.KS",
+    "label": "SDI",
+    "sector": "Battery"
+   },
+   {
+    "symbol": "373220.KS",
+    "label": "LG ENERGY",
+    "sector": "Battery"
+   },
+   {
+    "symbol": "051910.KS",
+    "label": "LG CHEM",
+    "sector": "Battery"
+   },
+   {
+    "symbol": "005490.KS",
+    "label": "POSCO",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "068270.KS",
+    "label": "CELLTRN",
+    "sector": "Bio"
+   },
+   {
+    "symbol": "207940.KS",
+    "label": "SAM BIO",
+    "sector": "Bio"
+   }
+  ],
+  "eu": [
+   {
+    "symbol": "SAP.DE",
+    "label": "SAP",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "ASML.AS",
+    "label": "ASML",
+    "sector": "Tech"
+   },
+   {
+    "symbol": "MC.PA",
+    "label": "LVMH",
+    "sector": "Luxury"
+   },
+   {
+    "symbol": "OR.PA",
+    "label": "L'OREAL",
+    "sector": "Luxury"
+   },
+   {
+    "symbol": "CDI.PA",
+    "label": "DIOR",
+    "sector": "Luxury"
+   },
+   {
+    "symbol": "BNP.PA",
+    "label": "BNP",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "SAN.MC",
+    "label": "SANTANDER",
+    "sector": "Finance"
+   },
+   {
+    "symbol": "INGA.AS",
+    "label": "ING",
+    "sector": "Finance",
+    "note": "ING Groep on Euronext Amsterdam (Yahoo: INGA.AS; ING.AS does not resolve)."
+   },
+   {
+    "symbol": "SHEL.L",
+    "label": "SHELL",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "TTE.PA",
+    "label": "TOTAL",
+    "sector": "Energy"
+   },
+   {
+    "symbol": "RO.SW",
+    "label": "ROCHE",
+    "sector": "Healthcare",
+    "note": "Roche bearer share; Yahoo returns no data for the ROG.SW Genussschein (2026-10-03)."
+   },
+   {
+    "symbol": "NOVN.SW",
+    "label": "NOVARTIS",
+    "sector": "Healthcare"
+   },
+   {
+    "symbol": "AZN.L",
+    "label": "AZENECA",
+    "sector": "Healthcare"
+   },
+   {
+    "symbol": "VOW3.DE",
+    "label": "VW",
+    "sector": "Auto"
+   },
+   {
+    "symbol": "BMW.DE",
+    "label": "BMW",
+    "sector": "Auto"
+   },
+   {
+    "symbol": "MBG.DE",
+    "label": "MERCEDES",
+    "sector": "Auto"
+   },
+   {
+    "symbol": "SIE.DE",
+    "label": "SIEMENS",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "AIR.PA",
+    "label": "AIRBUS",
+    "sector": "Industrial"
+   },
+   {
+    "symbol": "NESN.SW",
+    "label": "NESTLE",
+    "sector": "Staples"
+   },
+   {
+    "symbol": "DGE.L",
+    "label": "DIAGEO",
+    "sector": "Staples"
+   }
+  ]
+ },
+ "holding_symbol_map": {
+  "005935": {
+   "yahoo": "005935.KS",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "00939": {
+   "yahoo": "0939.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "01211": {
+   "yahoo": "1211.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "01398": {
+   "yahoo": "1398.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "02318": {
+   "yahoo": "2318.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "03988": {
+   "yahoo": "3988.HK",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "BBDC4": {
+   "yahoo": "BBDC4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "ITUB4": {
+   "yahoo": "ITUB4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "PETR4": {
+   "yahoo": "PETR4.SA",
+   "basis": "exchange_suffix",
+   "note": "Yahoo fund holdings give the local code without its exchange suffix; the suffixed symbol is the same listed security (verified to resolve on Yahoo 2026-10-03)."
+  },
+  "ADVANC-R": {
+   "yahoo": "ADVANC-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "AOT-R": {
+   "yahoo": "AOT-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "BDMS-R": {
+   "yahoo": "BDMS-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "CPALL-R": {
+   "yahoo": "CPALL-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "DELTA-R": {
+   "yahoo": "DELTA-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "GULF-R": {
+   "yahoo": "GULF-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "KTB-R": {
+   "yahoo": "KTB-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "PTT-R": {
+   "yahoo": "PTT-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "PTTEP-R": {
+   "yahoo": "PTTEP-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "SCC-R": {
+   "yahoo": "SCC-R.BK",
+   "basis": "exchange_suffix",
+   "note": "Thai NVDR as listed by Yahoo with the SET suffix: the same NVDR, not the ordinary share (verified 2026-10-03)."
+  },
+  "ING.AS": {
+   "yahoo": "INGA.AS",
+   "basis": "provider_symbol_correction",
+   "note": "ING Groep N.V. trades on Euronext Amsterdam as INGA; Yahoo's holdings list gives ING.AS, which does not resolve (verified 2026-10-03)."
+  }
+ },
+ "holding_symbol_unresolved": {
+  "KAP": "Kazatomprom is listed on several venues (London GDR, Astana, Kazakhstan); the holding does not say which.",
+  "500034": "BSE scrip code; Yahoo returns no data for 500034.BO, and substituting the NSE listing is a venue choice not made here.",
+  "ROG.SW": "Yahoo returns no data; RO.SW is the bearer share, a different Roche instrument."
+ },
+ "holding_symbol_excluded": {
+  "XTSLA": "BlackRock cash fund, not an equity constituent."
+ },
+ "cftc_context": {
+  "report": "legacy",
+  "basis": "futures_only",
+  "note": "CFTC Commitments of Traders positioning of the futures market an ETF tracks directly: market context (PROXY), never ETF creation/redemption. Read through MarketLab's CFTC tool and its archive.",
+  "instruments": {
+   "GLD": {
+    "market": "gold",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "SLV": {
+    "market": "silver",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "USO": {
+    "market": "crude_oil",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "UUP": {
+    "market": "us_dollar_index",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "TLT": {
+    "market": "treasury_bonds",
+    "basis": "underlying",
+    "note": "Long Treasuries vs the 30Y bond future."
+   },
+   "IEF": {
+    "market": "treasury_notes_10y",
+    "basis": "underlying",
+    "note": "7-10Y Treasuries vs the 10Y note future."
+   },
+   "SHY": {
+    "market": "treasury_notes_2y",
+    "basis": "underlying",
+    "note": "1-3Y Treasuries vs the 2Y note future."
+   },
+   "SPY": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "IVV": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "SSO": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on. (2x leveraged fund)"
+   },
+   "SH": {
+    "market": "s&p_500",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on. (inverse fund: the fund's exposure is opposite)"
+   },
+   "QQQ": {
+    "market": "nasdaq_100",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "DIA": {
+    "market": "dow_jones",
+    "basis": "index",
+    "note": "The fund tracks the index the futures contract settles on."
+   },
+   "IBIT": {
+    "market": "bitcoin",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   },
+   "ETHA": {
+    "market": "ether",
+    "basis": "underlying",
+    "note": "The fund holds the futures contract's underlying (or its futures) directly."
+   }
+  }
+ }
+}

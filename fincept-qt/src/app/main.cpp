@@ -4,6 +4,7 @@
 #include "algo_engine/fno/FnoAlgoSelftest.h"
 #include "app/EtfDataCli.h"
 #include "app/EtfDataSelftest.h"
+#include "app/EtfResearchCli.h"
 #include "app/IbkrTwsSelftest.h"
 #include "app/InstanceLock.h"
 #include "app/MarketLabBoundarySelftest.h"
@@ -630,6 +631,8 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v049();
     fincept::register_migration_v051();
     fincept::register_migration_v052();
+    fincept::register_migration_v053();
+    fincept::register_migration_v054();
 
     // Open main database
     QString db_path = fincept::AppPaths::data() + "/fincept.db";
@@ -704,7 +707,7 @@ int main(int argc, char* argv[]) {
         const bool headless_run = [argc, argv]() {
             for (int i = 1; i < argc; ++i) {
                 if (qstrcmp(argv[i], "--smoke-test") == 0 || qstrncmp(argv[i], "--selftest", 10) == 0 ||
-                    qstrcmp(argv[i], "--etf-data") == 0)
+                    qstrcmp(argv[i], "--etf-data") == 0 || qstrcmp(argv[i], "--etf-research") == 0)
                     return true;
             }
             return false;
@@ -780,6 +783,12 @@ int main(int argc, char* argv[]) {
         const int etf_rc = fincept::marketlab::run_etf_data_cli(argc, argv);
         fincept::TerminalShell::instance().shutdown();
         return etf_rc;
+    }
+    // ETF Flow & Sector Rotation (consolidated Batch E): same headless pattern.
+    if (fincept::marketlab::etf_research_cli_requested(argc, argv)) {
+        const int etfr_rc = fincept::marketlab::run_etf_research_cli(argc, argv);
+        fincept::TerminalShell::instance().shutdown();
+        return etfr_rc;
     }
 
     LOG_INFO("App", "Starting session manager...");
@@ -858,6 +867,7 @@ int main(int argc, char* argv[]) {
         {"--selftest-marketlab-boundary", &fincept::marketlab::run_marketlab_boundary_selftest},
         {"--selftest-ibkr", &fincept::marketlab::run_ibkr_tws_selftest},
         {"--selftest-etf-data", &fincept::marketlab::run_etf_data_selftest},
+        {"--selftest-etf-research", &fincept::marketlab::run_etf_research_selftest},
     };
 
     for (int i = 1; i < argc; ++i) {

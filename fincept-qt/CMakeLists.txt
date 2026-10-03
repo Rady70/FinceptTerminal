@@ -1020,12 +1020,15 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v049_order_baskets.cpp
     src/storage/sqlite/migrations/v051_drop_duplicate_indexes.cpp
     src/storage/sqlite/migrations/v052_etf_data_foundation.cpp
+    src/storage/sqlite/migrations/v053_etf_research_sources.cpp
+    src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
 
     # Historical OHLCV data store (Historify, Phase 3 §13)
     src/storage/HistoricalDataStore.cpp
 
     # MarketLab ETF Capital Flows data foundation (Batch B)
     src/storage/repositories/EtfDataRepository.cpp
+    src/storage/repositories/EtfResearchRepository.cpp
 
     # Cloud sync — durable outbox + device-local flags + id map (see CLOUD_SYNC_PLAN.md)
     src/storage/sync/SyncOutbox.cpp
@@ -1248,6 +1251,8 @@ set(SERVICE_SOURCES
     src/services/etf/EtfDataService.cpp
     src/services/etf/EtfDerivedAnalytics.cpp
     src/services/etf/EtfGroupAnalytics.cpp
+    src/services/etf/research/EtfResearchEngine.cpp
+    src/services/etf/research/EtfResearchService.cpp
     src/services/options/OptionChainService.cpp
     src/services/options/OISnapshotter.cpp
     src/services/options/StrategyTemplates.cpp
@@ -1479,6 +1484,11 @@ set(UI_SOURCES
 
 # Screens
 set(SCREEN_SOURCES
+    src/screens/etf_research/EtfResearchBindings.cpp
+    src/screens/etf_research/EtfResearchScreen.cpp
+    src/screens/etf_research/EtfResearchScreenDetail.cpp
+    src/screens/etf_research/EtfResearchTableModel.cpp
+    src/screens/etf_research/EtfResearchWidgets.cpp
     src/screens/auth/LoginScreen.cpp
     src/screens/auth/RegisterScreen.cpp
     src/screens/auth/ForgotPasswordScreen.cpp
@@ -1949,6 +1959,7 @@ set(APP_SOURCES
     src/app/IbkrTwsSelftest.cpp
     src/app/EtfDataCli.cpp
     src/app/EtfDataSelftest.cpp
+    src/app/EtfResearchCli.cpp
     src/app/ScreenSmokeTest.cpp
     # WindowFrame is split across multiple files; see WindowFrame.cpp header
     # comment for the layout. All variants stay outside unity build (see
@@ -2584,6 +2595,18 @@ set_source_files_properties(
     src/services/etf/EtfGroupAnalytics.cpp
     src/app/EtfDataCli.cpp
     src/app/EtfDataSelftest.cpp
+    # Consolidated Batch E (ETF Flow & Sector Rotation): same policy.
+    src/storage/sqlite/migrations/v053_etf_research_sources.cpp
+    src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
+    src/storage/repositories/EtfResearchRepository.cpp
+    src/services/etf/research/EtfResearchEngine.cpp
+    src/services/etf/research/EtfResearchService.cpp
+    src/app/EtfResearchCli.cpp
+    src/screens/etf_research/EtfResearchBindings.cpp
+    src/screens/etf_research/EtfResearchScreen.cpp
+    src/screens/etf_research/EtfResearchScreenDetail.cpp
+    src/screens/etf_research/EtfResearchTableModel.cpp
+    src/screens/etf_research/EtfResearchWidgets.cpp
     PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE
 )
 
@@ -2692,6 +2715,13 @@ set_source_files_properties(resources/etf_taxonomy_v2.json PROPERTIES
 qt6_add_resources(FinceptTerminal "marketlab_etf_taxonomy"
     PREFIX "/etf"
     FILES resources/etf_taxonomy_v2.json
+)
+# Consolidated Batch E research universe (reviewed, immutable, versioned).
+set_source_files_properties(resources/etf_research_universe_v1.json PROPERTIES
+    QT_RESOURCE_ALIAS "research_universe_v1.json")
+qt6_add_resources(FinceptTerminal "marketlab_etf_research_universe"
+    PREFIX "/etf"
+    FILES resources/etf_research_universe_v1.json
 )
 
 
@@ -4207,6 +4237,20 @@ if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
                 -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
                 -p "test_fedwatch_*.py")
     set_tests_properties(marketlab_fedwatch_fixtures PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+# ETF Flow & Sector Rotation Batch E: the research acquisition script
+# (scripts/etf_research_data.py, scripts/etf_research/). Fakes replace every
+# Yahoo, FRED and World Bank call — no network. Registered by name like the
+# suites above; the discovery target above also runs it.
+if(FINCEPT_BUILD_TESTS AND Python3_Interpreter_FOUND AND EXISTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests/test_etf_research_data.py")
+    add_test(NAME marketlab_etf_research_fixtures
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/marketlab/tests"
+                -p "test_etf_research_*.py")
+    set_tests_properties(marketlab_etf_research_fixtures PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 

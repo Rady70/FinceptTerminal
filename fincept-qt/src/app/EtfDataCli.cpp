@@ -220,7 +220,9 @@ bool etf_headless_command_requested(int argc, char* argv[]) {
     if (etf_data_cli_requested(argc, argv))
         return true;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--selftest-etf-data") == 0)
+        // --etf-research (consolidated Batch E) shares the same profile-database guard.
+        if (std::strcmp(argv[i], "--selftest-etf-data") == 0 || std::strcmp(argv[i], "--etf-research") == 0 ||
+            std::strcmp(argv[i], "--selftest-etf-research") == 0)
             return true;
     }
     return false;
@@ -230,7 +232,10 @@ int refuse_etf_command_profile_in_use(int argc, char* argv[], const QString& pro
     const QString detail = QStringLiteral("MarketLab is already running with profile '%1' and owns its database; "
                                           "nothing was run. Close it, or run the command with another --profile.")
                                .arg(profile);
-    if (etf_data_cli_requested(argc, argv)) {
+    bool research = false;
+    for (int i = 1; i < argc; ++i)
+        research = research || std::strcmp(argv[i], "--etf-research") == 0;
+    if (etf_data_cli_requested(argc, argv) || research) {
         etf_cli_detail::print_json(QJsonObject{{"ok", false}, {"error", "profile_in_use"}, {"detail", detail}});
     } else {
         std::printf("[FAIL] profile_in_use: %s\netf-data selftest: FAIL (not run)\n", detail.toUtf8().constData());
