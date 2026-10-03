@@ -212,6 +212,12 @@ void CommandBar::build_commands() {
          "",
          {"surface", "volatility", "correlation", "pca"}},
         // Economics & Data
+        {"etf_research",
+         tr("ETF Flow & Rotation"),
+         "ETF flow evidence and sector, theme and country rotation research",
+         {"etf", "etfflow", "rotation", "etf_research"},
+         "",
+         {"etf", "flow", "rotation", "sector", "rrg", "theme", "country"}},
         {"economics",
          tr("Economics"),
          "Economic indicators",

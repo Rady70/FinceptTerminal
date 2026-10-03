@@ -36,6 +36,7 @@
 #include "screens/docs/DocsScreen.h"
 #include "screens/economics/EconomicsScreen.h"
 #include "screens/equity_research/EquityResearchScreen.h"
+#include "screens/etf_research/EtfResearchScreen.h"
 #include "screens/excel/ExcelScreen.h"
 #include "screens/file_manager/FileManagerScreen.h"
 #include "screens/geopolitics/GeopoliticsScreen.h"
@@ -173,6 +174,7 @@ void WindowFrame::setup_dock_screens() {
     dock_router_->register_factory("node_editor", []() { return new workflow::NodeEditorScreen; });
     dock_router_->register_factory("code_editor", []() { return new screens::CodeEditorScreen; });
     dock_router_->register_factory("economics", []() { return new screens::EconomicsScreen; });
+    dock_router_->register_factory("etf_research", []() { return new screens::EtfResearchScreen; });
     dock_router_->register_factory("gov_data", []() { return new screens::GovDataScreen; });
     dock_router_->register_factory("dbnomics", []() { return new screens::DBnomicsScreen; });
     dock_router_->register_factory("akshare", []() { return new screens::AkShareScreen; });
