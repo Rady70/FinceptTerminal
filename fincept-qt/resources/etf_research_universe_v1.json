@@ -2898,9 +2898,10 @@
     "sector": "Finance"
    },
    {
-    "symbol": "ING.AS",
+    "symbol": "INGA.AS",
     "label": "ING",
-    "sector": "Finance"
+    "sector": "Finance",
+    "note": "ING Groep on Euronext Amsterdam (Yahoo: INGA.AS; ING.AS does not resolve)."
    },
    {
     "symbol": "SHEL.L",
@@ -2913,9 +2914,10 @@
     "sector": "Energy"
    },
    {
-    "symbol": "ROG.SW",
+    "symbol": "RO.SW",
     "label": "ROCHE",
-    "sector": "Healthcare"
+    "sector": "Healthcare",
+    "note": "Roche bearer share; Yahoo returns no data for the ROG.SW Genussschein (2026-10-03)."
    },
    {
     "symbol": "NOVN.SW",

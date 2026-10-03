@@ -278,10 +278,13 @@ QJsonObject EtfResearchService::build_request(bool full) const {
             cov = c.value();
     }
     const QDate today = QDate::currentDate();
-    auto incremental = [&](const QString& s, QDate* min_last) {
+    // A window is continuous when it reaches back over the stored history (a
+    // symbol younger than the requested depth) or over the requested depth (a
+    // rolling window). A restated history leaves a window of a few weeks, so the
+    // next request is a full one.
+    auto incremental = [&](const QString& s, QDate* min_last, int required_days) {
         const auto it = cov.constFind(s);
-        if (it == cov.constEnd() || !it->window_first.isValid() || it->window_first != it->earliest_stored ||
-            it->window_last < today.addDays(-30))
+        if (it == cov.constEnd() || !history_incremental_eligible(*it, today, required_days))
             return false;
         if (!min_last->isValid() || it->window_last < *min_last)
             *min_last = it->window_last;
@@ -290,13 +293,13 @@ QJsonObject EtfResearchService::build_request(bool full) const {
     QStringList long_full, std_full, inc_main;
     QDate main_last;
     for (const QString& s : long_syms)
-        (incremental(s, &main_last) ? inc_main : long_full).append(s);
+        (incremental(s, &main_last, 700) ? inc_main : long_full).append(s);
     for (const QString& s : std_syms)
-        (incremental(s, &main_last) ? inc_main : std_full).append(s);
+        (incremental(s, &main_last, 700) ? inc_main : std_full).append(s);
     QJsonArray inc_cons;
     QDate cons_last;
     for (auto it = cov.constBegin(); it != cov.constEnd(); ++it)
-        if (!fetched.contains(it.key()) && incremental(it.key(), &cons_last))
+        if (!fetched.contains(it.key()) && incremental(it.key(), &cons_last, 330))
             inc_cons.append(it.key());
     // Constituent fundamentals change slowly: a capture younger than three days is reused.
     constexpr int kFundamentalsFreshDays = 3;

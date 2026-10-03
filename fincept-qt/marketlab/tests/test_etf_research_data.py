@@ -181,6 +181,17 @@ class DownloadHistoryTests(unittest.TestCase):
         self.assertEqual(out["INTUCH.BK"]["status"], "FAILED")
         self.assertIn("delisted", out["INTUCH.BK"]["detail"])
 
+    def test_incremental_start_reaches_every_batch(self):
+        # Regression: the batch loop once reused the name `start`, so the first
+        # batch asked for the full history and later batches carried a chunk index.
+        fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 1.0})], columns=("Close",)))
+        out = yahoo.download_history(["A", "B", "C"], None, self.AT, chunk=2, yf_module=fake, start="2026-09-16")
+        self.assertEqual(len(fake.calls), 2)
+        for _batch, kwargs in fake.calls:
+            self.assertEqual(kwargs.get("start"), "2026-09-16")
+            self.assertNotIn("period", kwargs)
+        self.assertTrue(all(v["incremental"] and v["requested_start"] == "2026-09-16" for v in out.values()))
+
     def test_batches_are_chunked_and_deduplicated(self):
         fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 1.0})], columns=("Close",)))
         yahoo.download_history(["B", "A", "C", "A"], "2y", self.AT, chunk=2, yf_module=fake)

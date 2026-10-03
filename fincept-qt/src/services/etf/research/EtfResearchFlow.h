@@ -15,7 +15,8 @@
 //  * A return-adjusted AUM flow must use the NAV PRICE return: AUM already falls
 //    by the distribution on the ex-date, so a total-return adjustment (as the
 //    reference's docstring describes) would book every distribution as an
-//    inflow of shares × distribution.
+//    apparent OUTFLOW of shares × distribution (A1 - A0·(N1+D)/N0 = -S·D with
+//    no creation or redemption at all).
 //  * Yahoo does not date AUM or NAV. The store records each capture with the
 //    last NYSE session completed before it (prior_completed_session_v1), an
 //    upper bound. In live captures Yahoo's navPrice was the NAV of the NYSE

@@ -384,6 +384,14 @@ void TstEtfResearchStore::sec_refresh_catches_up_missed_months() {
     // A fresh profile asks for the route's maximum; five months away asks for
     // enough filings to bridge the gap; an up-to-date profile still asks for a
     // few (amendments, the quarter in flight); never more than the route allows.
+    // Incremental history eligibility.
+    using etf_research_store::HistoryCoverage;
+    const QDate today(2026, 10, 3);
+    QVERIFY(history_incremental_eligible({QDate(2024, 10, 3), QDate(2026, 10, 2), QDate(2024, 9, 25)}, today, 700));
+    QVERIFY(history_incremental_eligible({QDate(2025, 6, 2), QDate(2026, 10, 2), QDate(2025, 6, 2)}, today, 700));
+    QVERIFY(!history_incremental_eligible({QDate(2026, 9, 18), QDate(2026, 10, 2), QDate(2024, 10, 1)}, today, 700));
+    QVERIFY(!history_incremental_eligible({QDate(2024, 10, 3), QDate(2026, 8, 1), QDate(2024, 10, 3)}, today, 700));
+    QVERIFY(!history_incremental_eligible(HistoryCoverage{}, today, 700));
     QCOMPARE(sec_filings_to_request(QDate(), QDate(2026, 10, 3)), 40);
     QCOMPARE(sec_filings_to_request(QDate(2026, 4, 30), QDate(2026, 10, 3)), 9);
     QCOMPARE(sec_filings_to_request(QDate(2026, 8, 31), QDate(2026, 10, 3)), 5);
@@ -459,7 +467,7 @@ void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failur
     int failed = 0;
     for (const auto& s : second.stages)
         failed += s.status == QLatin1String("FAILED") ? 1 : 0;
-    QCOMPARE(failed, 6);
+    QCOMPARE(failed, 7);                               // Yahoo x4, FRED, World Bank, CFTC
     QCOMPARE(count("etf_research_bars"), bars_before); // nothing was erased
     // The last completed run is the failed one, and the loader reports it as such.
     auto in = EtfResearchRepository::instance().load_inputs(universe_, QDateTime::currentDateTimeUtc(),

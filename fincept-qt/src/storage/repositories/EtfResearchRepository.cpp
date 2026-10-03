@@ -786,11 +786,21 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
                                                            q.value().value(3).toString()});
     }
     {
+        // Universe instruments keep their whole stored history (the regime models
+        // use it); constituents and curated stocks feed returns up to three months
+        // and short RRG trails, so only their last 400 days are read.
+        QStringList marks;
+        QVariantList params{k, as_of_date, in.as_of.date().addDays(-400).toString(Qt::ISODate)};
+        for (const auto& inst : universe.instruments) {
+            marks << QStringLiteral("?");
+            params << inst.symbol;
+        }
         auto q = db().execute(QStringLiteral("SELECT symbol, session_date, revision, close, volume, dividend, "
                                              "capital_gain, split_ratio, first_seen_at FROM etf_research_bars "
-                                             "WHERE first_seen_at <= ? AND session_date <= ? "
-                                             "ORDER BY symbol, session_date, revision"),
-                              {k, as_of_date});
+                                             "WHERE first_seen_at <= ? AND session_date <= ? AND (session_date >= ? "
+                                             "OR symbol IN (%1)) ORDER BY symbol, session_date, revision")
+                                  .arg(marks.join(QLatin1Char(','))),
+                              params);
         if (q.is_err())
             return R::err(q.error());
         auto& s = q.value();

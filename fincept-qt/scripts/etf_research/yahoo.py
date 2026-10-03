@@ -105,8 +105,8 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
 
     out = {}
     syms = sorted(set(symbols))
-    for start in range(0, len(syms), chunk):
-        batch = syms[start:start + chunk]
+    for offset in range(0, len(syms), chunk):
+        batch = syms[offset:offset + chunk]
         try:
             span = {"start": start} if start else {"period": period}
             raw = yf_module.download(batch, interval="1d", auto_adjust=False, actions=True, progress=False,

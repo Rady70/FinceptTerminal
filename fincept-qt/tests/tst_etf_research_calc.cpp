@@ -400,7 +400,7 @@ void TstEtfResearchCalc::distribution_is_not_a_flow() {
     QVERIFY(e.latest.value);
     QVERIFY(std::abs(*e.latest.value) < 1e-6);
     QVERIFY(e.latest.has_flag(flag::kActualZero));
-    // A total-return adjustment would have booked +1,000,000 (shares x distribution).
+    // A total-return adjustment would have booked -1,000,000: an apparent outflow of shares x distribution.
     const double tr_style = 49e6 - 50e6 * ((49.0 + 1.0) / 50.0);
     QVERIFY(std::abs(tr_style + 1e6) < 1e-3);
     QCOMPARE(e.agreement, QStringLiteral("agree"));

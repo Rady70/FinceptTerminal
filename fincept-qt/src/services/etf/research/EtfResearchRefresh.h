@@ -40,6 +40,20 @@ inline int sec_filings_to_request(const QDate& latest_report_period, const QDate
     return std::clamp(behind + 3, 4, route_max);
 }
 
+/// Whether a symbol's stored history may be refreshed incrementally: its latest
+/// coverage window is recent and continuous, i.e. it reaches back over the stored
+/// history (a symbol younger than the requested depth) or over the requested
+/// depth (a rolling window). A restated history leaves a window of a few weeks,
+/// which is neither, so the next request fetches the full history.
+inline bool history_incremental_eligible(const etf_research_store::HistoryCoverage& c, const QDate& today,
+                                         int required_days) {
+    if (!c.window_first.isValid() || !c.window_last.isValid() || c.window_last < today.addDays(-30))
+        return false;
+    const bool covers_stored = c.earliest_stored.isValid() && c.window_first <= c.earliest_stored.addDays(30);
+    const bool covers_depth = c.window_first.daysTo(c.window_last) >= required_days;
+    return covers_stored || covers_depth;
+}
+
 inline QString refresh_retrieval_status(const QString& stage_status) {
     if (stage_status == QLatin1String("NOT_CONFIGURED") || stage_status == QLatin1String("UNAVAILABLE") ||
         stage_status == QLatin1String("FAILED") || stage_status == QLatin1String("PARTIAL"))
@@ -100,7 +114,7 @@ inline void run_refresh_pipeline(const QString& trigger, const QString& universe
         if (payload.is_err()) {
             for (const QString& st : {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"),
                                       QStringLiteral("yahoo_funds"), QStringLiteral("yahoo_fundamentals"),
-                                      QStringLiteral("fred"), QStringLiteral("world_bank")}) {
+                                      QStringLiteral("fred"), QStringLiteral("world_bank"), QStringLiteral("cftc")}) {
                 SourceStageStatus s;
                 s.stage = st;
                 s.status = QStringLiteral("FAILED");
@@ -128,7 +142,7 @@ inline void run_refresh_pipeline(const QString& trigger, const QString& universe
             const QJsonObject stages = pl.value(QStringLiteral("stages")).toObject();
             for (const QString& st : {QStringLiteral("yahoo_history"), QStringLiteral("yahoo_constituent_history"),
                                       QStringLiteral("yahoo_funds"), QStringLiteral("yahoo_fundamentals"),
-                                      QStringLiteral("fred"), QStringLiteral("world_bank")}) {
+                                      QStringLiteral("fred"), QStringLiteral("world_bank"), QStringLiteral("cftc")}) {
                 if (!stages.contains(st))
                     continue;
                 QJsonObject one = pl;
