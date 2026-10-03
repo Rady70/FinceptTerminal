@@ -903,7 +903,7 @@ def backfill_polymarket(
         )
         if (
             not force
-            and resolution != MEETING_STATUS_RESOLVED
+            and resolution not in (MEETING_STATUS_RESOLVED, MEETING_STATUS_PENDING)
             and mapping.get("last_revalidation_status") in ("NOT_FOUND", "AMBIGUOUS")
         ):
             result["backfills"].append({**entry_base, "status": "MAPPING_NOT_CURRENT"})

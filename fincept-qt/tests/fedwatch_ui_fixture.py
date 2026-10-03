@@ -39,7 +39,7 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
                            {"t": epoch(utc(2026, 8, 3)), "p": 2.5},
                            {"t": epoch(utc(2030, 1, 1)), "p": 0.5}])
         transport.add_json("prices-history", make_clob_history({mapping["external_token_id"]: points}))
-    return history.backfill_polymarket(store, transport, meeting_dates=[meeting], force=True,
+    return history.backfill_polymarket(store, transport, meeting_dates=[meeting], force=(case != "normal"),
                                       clock=FixedClock(now), sleep=lambda _: None)
 
 
@@ -50,6 +50,16 @@ def main() -> None:
         meeting = sys.argv[3] if len(sys.argv) > 3 else None
         print(json.dumps(acquisition.local_snapshot(store, meeting, clock=FixedClock(utc(2026, 9, 28, 12))), allow_nan=False))
         return
+    if case.startswith("pending-refresh-"):
+        transport = FakeTransport()
+        if case == "pending-refresh-ok":
+            for name, value in (("DFEDTARU", 4.25), ("DFEDTARL", 4.0)):
+                transport.add_text(name, f"DATE,{name}\n2026-10-27,{value}\n2026-10-29,{value}\n")
+        result = acquisition.refresh_current(store, "2026-10-28", transport=transport,
+                                             clock=FixedClock(utc(2026, 10, 30, 12)))
+        result["data"]["fixture_requests"] = {"text": transport.text_calls, "json": transport.json_calls}
+        print(json.dumps(result, allow_nan=False))
+        return
     if case.startswith("backfill-"):
         meeting = sys.argv[3] if len(sys.argv) > 3 else "2026-10-28"
         print(json.dumps({"success": True, "data": backfill_fixture(store, case.removeprefix("backfill-"), meeting)},
@@ -57,6 +67,9 @@ def main() -> None:
         return
     if case == "pending":
         store.mark_pending("2026-10-28", "FRED_COVERAGE_INSUFFICIENT", now=utc(2026, 10, 29, 12))
+        if len(sys.argv) > 3:
+            store.mark_mapping_revalidation("2026-10-28", history.POLY_SOURCE, history.POLY_METHOD,
+                                             sys.argv[3], now=utc(2026, 10, 29, 12))
         print(json.dumps({"success": True}))
         return
     if case == "mapping-without-history":

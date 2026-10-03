@@ -495,6 +495,98 @@ class AcquisitionTests(unittest.TestCase):
         acquisition.refresh_current(self.store, MEETING, transport=untouched, clock=self.clock)
         self.assertEqual(untouched.text_calls + untouched.json_calls, [])
 
+    def test_demoted_mapping_is_historical_for_pending_and_resolved_only(self):
+        for state in ("UPCOMING", "PENDING", "RESOLVED"):
+            for demotion in ("NOT_FOUND", "AMBIGUOUS"):
+                with self.subTest(state=state, demotion=demotion):
+                    store = FedwatchHistoryStore(self.root / (state + demotion + ".db"))
+                    acquisition.refresh_current(store, MEETING, transport=make_snapshot_transport(NOW),
+                                                clock=self.clock, sleep=lambda _: None)
+                    if state == "PENDING":
+                        store.mark_pending(MEETING, "FRED_COVERAGE_INSUFFICIENT", now=NOW)
+                    elif state == "RESOLVED":
+                        store.mark_resolved(MEETING, 0, "fixture", now=NOW)
+                    store.mark_mapping_revalidation(MEETING, history.POLY_SOURCE, history.POLY_METHOD, demotion, now=NOW)
+                    tokens = {m["external_token_id"] for m in store.validated_mappings([MEETING])}
+                    transport = FakeTransport().add_json("prices-history", {"history": [{"t": epoch(NOW - timedelta(days=2)), "p": 0.42}]})
+                    result = history.backfill_polymarket(store, transport, meeting_dates=[MEETING],
+                                                        clock=self.clock, sleep=lambda _: None)
+                    self.assertFalse(result["errors"])
+                    self.assertEqual(transport.text_calls, [])
+                    if state == "UPCOMING":
+                        self.assertEqual(transport.json_calls, [])
+                        self.assertEqual({r["status"] for r in result["backfills"]}, {"MAPPING_NOT_CURRENT"})
+                    else:
+                        self.assertEqual({c["params"]["market"] for c in transport.json_calls}, tokens)
+                        self.assertTrue(all(c["params"]["interval"] == "max" for c in transport.json_calls))
+                        self.assertNotIn("MAPPING_NOT_CURRENT", {r["status"] for r in result["backfills"]})
+
+    def test_lifecycle_only_failure_reports_partial_without_poisoning_quote_quality(self):
+        self.refresh()
+        later = FixedClock(utc(2026, 10, 30, 12))
+        result = acquisition.refresh_current(self.store, MEETING, transport=FakeTransport(), clock=later)
+        self.assertTrue(result["partial"])
+        self.assertIn("fred", result["failed_components"])
+        self.assertTrue(result["data"]["errors"])
+        self.assertTrue(result["data"]["history_collection"]["errors"])
+        retained = acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), MEETING, later)
+        self.assertFalse(retained["partial"])
+        self.assertEqual(retained["data"]["errors"], [])
+        self.assertTrue(retained["data"]["history_collection"]["errors"])
+
+    def test_selected_pending_refresh_retries_only_fred_history_and_recovers(self):
+        self.refresh()
+        original = self.store.current_acquisition(MEETING)["acquired_at"]
+        self.store.upsert_meeting("2026-09-16", now=NOW)
+        self.store.mark_pending(MEETING, "FRED_SOURCE_UNAVAILABLE", now=NOW)
+        later = FixedClock(utc(2026, 10, 30, 12))
+        transport = FakeTransport()
+        for name, value in (("DFEDTARU", 4.25), ("DFEDTARL", 4.0)):
+            transport.add_text(name, f"DATE,{name}\n2026-10-27,{value}\n2026-10-29,{value}\n")
+        result = acquisition.refresh_current(self.store, MEETING, transport=transport, clock=later)
+        self.assertEqual(self.store.get_meeting(MEETING)["status"], "RESOLVED")
+        self.assertFalse(result.get("partial"))
+        self.assertEqual(self.store.get_meeting(MEETING)["actual_outcome_bp"], 0)
+        self.assertEqual(self.store.get_meeting("2026-09-16")["status"], "UPCOMING")
+        self.assertEqual(self.store.current_acquisition(MEETING)["acquired_at"], original)
+        self.assertEqual(len(transport.text_calls), 2)
+        self.assertEqual(transport.json_calls, [])
+        self.assertTrue(all("fred.stlouisfed.org" in c["url"] for c in transport.text_calls))
+        untouched = FakeTransport()
+        acquisition.refresh_current(self.store, MEETING, transport=untouched, clock=later)
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+
+    def test_aggregate_mismatch_diagnostic_survives_restart_and_selected_refresh(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE)
+                                .replace("Dec 09, 2026", "Dec 10, 2026"))
+        acquisition.refresh_current(self.store, transport=self.transport, clock=self.clock, sleep=lambda _: None)
+        restarted = FedwatchHistoryStore(self.store.path)
+        overview = acquisition.local_snapshot(restarted, clock=self.clock)
+        report = overview["data"]["aggregate_acquisition"]
+        self.assertTrue(report["partial"])
+        self.assertIn("INVESTING_MEETING_DATE_MISMATCH", {e["code"] for e in report["errors"]})
+        self.assertEqual(report["acquired_at"], "2026-09-28T12:00:00Z")
+        untouched = FakeTransport()
+        selected = acquisition.refresh_current(restarted, MEETING, transport=untouched, clock=self.clock)
+        self.assertFalse(selected["partial"])
+        self.assertEqual(untouched.text_calls + untouched.json_calls, [])
+        # Even a fresh selected write must preserve the latest aggregate report.
+        acquisition.refresh_current(restarted, MEETING, force=True, transport=make_snapshot_transport(NOW),
+                                    clock=self.clock, sleep=lambda _: None)
+        self.assertEqual(acquisition.local_snapshot(FedwatchHistoryStore(self.store.path), clock=self.clock)
+                         ["data"]["aggregate_acquisition"], report)
+
+    def test_selected_official_meeting_missing_investing_is_explicit_partial(self):
+        self.transport.add_text("fed-rate-monitor", fixture_text(FIXTURE_INVESTING_LIVE)
+                                .replace("Dec 09, 2026", "Dec 10, 2026"))
+        result = acquisition.refresh_current(self.store, "2026-12-09", transport=self.transport,
+                                             clock=self.clock, sleep=lambda _: None)
+        self.assertTrue(result["partial"])
+        errors = [e for e in result["data"]["errors"] if e["provider"] == "investing"]
+        self.assertTrue(errors)
+        self.assertEqual({e["detail"]["meeting_date"] for e in errors}, {"2026-12-09"})
+        self.assertIsNone(result["data"]["meetings"][0]["fed_side"])
+
     def test_old_lifecycle_failure_does_not_invalidate_current_acquisition(self):
         self.store.upsert_meeting("2026-09-16", now=NOW)
         upper_calls = []

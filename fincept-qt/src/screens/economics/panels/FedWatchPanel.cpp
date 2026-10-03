@@ -623,7 +623,7 @@ void FedWatchPanel::load_local() {
 void FedWatchPanel::on_fetch() {
     if (collect_in_flight_ || backfill_in_flight_)
         return;
-    if (!selected_meeting_.isEmpty() && local_only()) {
+    if (!selected_meeting_.isEmpty() && resolved()) {
         load_local();
         return;
     }
@@ -889,13 +889,25 @@ void FedWatchPanel::render() {
     QStringList state;
     state << tr("Snapshot retrieved: %1").arg(snapshot_["retrieved_at"].toString(tr("Not refreshed")));
     if (meeting()["status"].toString() == "PENDING")
-        state << tr("PENDING · stored local history only");
+        state << tr("PENDING · no current probabilities; Refresh retries FRED resolution; history loading is explicit");
     if (resolved())
         state << tr("RESOLVED · stored local history; no live collection");
     else if (!current_ok_)
         state << tr("Current providers unavailable or not refreshed. Stored observations are historical, not current.");
     if (!current_error_.isEmpty())
         state << current_error_;
+    const auto collection = snapshot_["history_collection"].toObject();
+    bool selected_lifecycle_failed = false;
+    for (const auto& item : collection["lifecycle"].toObject()["pending"].toArray())
+        if (item.toObject()["meeting_date"].toString() == selected_meeting_ &&
+            !collection["errors"].toArray().isEmpty())
+            selected_lifecycle_failed = true;
+    if (selected_lifecycle_failed) {
+        state.prepend(tr("Lifecycle update failed: %1").arg(errors(collection)));
+        summary_->setText(summary_->text() + tr("\nFRED lifecycle update failed · press Refresh to retry"));
+    } else if (meeting()["status"].toString() == "PENDING")
+        summary_->setText(summary_->text() +
+                          tr("\nPending resolution · Refresh retries FRED; history loading is explicit"));
     const QStringList history_issues{inventory_error_, series_error_, analytics_error_};
     bool history_issue_present = false;
     for (const auto& issue : history_issues)
@@ -951,6 +963,8 @@ void FedWatchPanel::render() {
                                                               : tr("unavailable");
         concise << tr("Polymarket %1 · mapping %2").arg(data_label, mapping_label);
     }
+    if (selected_lifecycle_failed)
+        concise << tr("FRED lifecycle update failed · Refresh retries resolution");
     if (history_issue_present)
         concise << tr("History incomplete · see Research details");
     if (!backfill.isEmpty())
@@ -1182,10 +1196,11 @@ void FedWatchPanel::render_history() {
     contextual_load_history_->setText(retry_history ? tr("Retry history") : tr("Load Polymarket history"));
     contextual_load_history_->setAccessibleName(retry_history ? tr("Retry Polymarket history")
                                                               : tr("Load Polymarket history"));
-    contextual_load_history_->setVisible(diagnostics_->isHidden() && !resolved() && selected_token &&
-                                         mapping["mapping_status"].toString() == "VALIDATED" &&
-                                         revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS" &&
-                                         (history_not_loaded || retry_history));
+    contextual_load_history_->setVisible(
+        diagnostics_->isHidden() && !resolved() && selected_token &&
+        mapping["mapping_status"].toString() == "VALIDATED" &&
+        (meeting()["status"].toString() == "PENDING" || (revalidation != "NOT_FOUND" && revalidation != "AMBIGUOUS")) &&
+        (history_not_loaded || retry_history));
     contextual_load_history_->setEnabled(!collect_in_flight_ && !backfill_in_flight_);
     int fed_count = 0, poly_count = 0;
     for (const auto& bar : current_chart_->bars())

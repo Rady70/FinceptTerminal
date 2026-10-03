@@ -369,6 +369,18 @@ class FedwatchHistoryStore:
     @staticmethod
     def _write_current_attempt(conn, envelope, acquired_at, meeting_date=None):
         meetings = envelope["data"].get("meetings", [])
+        aggregate = envelope["data"].get("aggregate_acquisition")
+        if meeting_date is None:
+            # Compact last-unscoped acquisition diagnostics survive splitting,
+            # including rejected identities outside the official meeting set.
+            aggregate = {"acquired_at": acquired_at, "partial": envelope.get("partial", False),
+                         "failed_components": envelope.get("failed_components", []),
+                         **{key: envelope["data"].get(key, []) for key in ("errors", "warnings", "sources")}}
+        elif aggregate is None:
+            row = conn.execute("SELECT envelope_json FROM fedwatch_current_acquisition WHERE meeting_date=?",
+                               (meeting_date,)).fetchone()
+            if row:
+                aggregate = json.loads(row[0])["data"].get("aggregate_acquisition")
         days = {meeting_date} if meeting_date else {m["meeting_date"] for m in meetings}
         if meeting_date is None:
             # A full refresh replaces every prior attempt, including omitted
@@ -391,6 +403,8 @@ class FedwatchHistoryStore:
             if metadata is not None:
                 retained["data"].update(metadata)
             retained["data"].pop("meeting_metadata", None)
+            if aggregate is not None:
+                retained["data"]["aggregate_acquisition"] = aggregate
             scoped_sources = []
             for source in retained["data"].get("sources", []):
                 scoped = dict(source, meeting_date=day)
@@ -748,7 +762,7 @@ class FedwatchHistoryStore:
 
         A negative re-validation (``NOT_FOUND``/``AMBIGUOUS``) is stored on the
         previously validated rows so the backfill path can fail closed for a
-        meeting that is still current, while a resolved meeting keeps its last
+        meeting that is still current, while a pending/resolved meeting keeps its last
         validated historical mapping.
         """
         now_iso = timeutil.iso_z(now) if now is not None else _utc_now_iso()

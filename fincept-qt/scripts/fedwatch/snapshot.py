@@ -218,7 +218,17 @@ def build_snapshot(
         else []
     )
 
+    selected_missing_dates = sorted(
+        (set(selected_meeting_dates or []) & official_upcoming_dates) -
+        {timeutil.parse_date(day) for day in fed_sections}
+    ) if distributions is not None and fred_target is not None else []
     if distributions is not None:
+        for day in selected_missing_dates:
+            errors.append(FedwatchError(
+                PROVIDER_INVESTING, "INVESTING_SELECTED_MEETING_UNAVAILABLE",
+                f"Investing.com has no usable Fed-side distribution for selected official meeting {day.isoformat()}",
+                detail={"meeting_date": day.isoformat(), "reported_meeting_dates": sorted(fed_sections)},
+            ).to_dict())
         if investing_only_dates:
             errors.append(
                 FedwatchError(
@@ -244,7 +254,7 @@ def build_snapshot(
             _source_entry(
                 PROVIDER_INVESTING,
                 distributions["source"],
-                "PARTIAL" if investing_only_dates else "OK",
+                "PARTIAL" if investing_only_dates or selected_missing_dates else "OK",
                 distributions["retrieved_at"],
                 method=distributions["method"],
                 detail=(

@@ -80,6 +80,11 @@ def local_snapshot(store, meeting_date=None, clock=timeutil.utc_now):
             data["sources"].extend(dict(source, meeting_date=saved["meeting_date"]) for source in current.get("sources", []))
             data["warnings"].extend(current.get("warnings", []))
             data["method_notes"] = list(dict.fromkeys(data["method_notes"] + current.get("method_notes", [])))
+        reports = [d["aggregate_acquisition"] for d in qualified if d.get("aggregate_acquisition")]
+        if reports:
+            # Shared last-unscoped diagnostics are not any selected meeting's
+            # quote quality, and never participate in selected reuse decisions.
+            data["aggregate_acquisition"] = max(reports, key=lambda r: r["acquired_at"])
         if attempts:
             # The overview exposes per-meeting acquisition timestamps. Its age
             # is conservative, so a new meeting cannot freshen an older quote.
@@ -104,7 +109,7 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
         meeting = store.get_meeting(meeting_date)
         if day < now.date() or (meeting and meeting["status"] in ("RESOLVED", "PENDING")):
             recorded = None
-            if day < now.date() and meeting and meeting["status"] == "UPCOMING":
+            if day < now.date() and meeting and meeting["status"] in ("UPCOMING", "PENDING"):
                 # Explicit Refresh repairs the selected stale lifecycle using
                 # official target history only, never obsolete current quotes.
                 recorded = history.collect(store, {"retrieved_at": timeutil.iso_z(now), "meetings": []},
@@ -116,6 +121,13 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
                 # Lifecycle work must not freshen a retained probability quote.
                 store.save_current_acquisition(result, saved["acquired_at"] if saved else timeutil.iso_z(now),
                                                meeting_date=meeting_date)
+                # Here lifecycle evaluation IS the explicit operation. Report
+                # its errors to the caller after storing independent quote quality.
+                operation_errors = recorded.get("errors") or []
+                result["data"]["errors"] = list(result["data"].get("errors") or []) + operation_errors
+                result["partial"] = bool(result["data"]["errors"])
+                result["failed_components"] = sorted({e["provider"] for e in result["data"]["errors"]})
+                result["data"]["acquisition"]["operation"] = "LIFECYCLE_REFRESH"
             result["data"]["acquisition"]["reason"] = "HISTORICAL_MEETING"
             return result
     saved = store.current_acquisition(meeting_date)

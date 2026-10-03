@@ -341,10 +341,17 @@ class TestFedWatchPanel : public QObject {
         flush();
         QVERIFY(control("fedwatchMeeting")->findData("2026-10-28") >= 0);
     }
-    void pendingMeetingRefreshStaysLocalAndHistoryIsExplicit() {
+    void pendingMeetingRefreshRetriesFredAndHistoryIsExplicit_data() {
+        QTest::addColumn<QString>("demotion");
+        QTest::newRow("not-found") << QString("NOT_FOUND");
+        QTest::newRow("ambiguous") << QString("AMBIGUOUS");
+    }
+    void pendingMeetingRefreshRetriesFredAndHistoryIsExplicit() {
+        QFETCH(QString, demotion);
         process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
                 {database_, "mapping-without-history", "25"});
-        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"), {database_, "pending"});
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                {database_, "pending", demotion});
         durable_current_reads_ = true;
         panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 25}});
         panel_->activate();
@@ -354,10 +361,16 @@ class TestFedWatchPanel : public QObject {
         auto* contextual = panel_->findChild<QPushButton*>("fedwatchContextLoadHistory");
         QVERIFY(load->isEnabled());
         QVERIFY(!contextual->isHidden());
-        panel_->findChild<QPushButton*>("econFetchBtn")->click();
-        flush();
         for (const auto& request : sent_)
             QVERIFY(request.command != "collect" && request.command != "history_backfill");
+        panel_->findChild<QPushButton*>("econFetchBtn")->click();
+        auto lifecycle = pending_.takeFirst();
+        QCOMPARE(lifecycle.command, QString("collect"));
+        QVERIFY(lifecycle.args.contains("2026-10-28"));
+        deliver(lifecycle, process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                                   {database_, "pending-refresh-failure"}));
+        flush();
+        QVERIFY(text("fedwatchSummary").contains("FRED lifecycle update failed"));
         QVERIFY(text("fedwatchSourceStatus").contains("PENDING"));
         contextual->click();
         QCOMPARE(pending_.size(), 1);
@@ -368,7 +381,7 @@ class TestFedWatchPanel : public QObject {
         load->click(); // Busy guard coalesces both history controls.
         QVERIFY(pending_.isEmpty());
         deliver(request, process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
-                                 {database_, "backfill-ok"}));
+                                 {database_, "backfill-normal"}));
         flush();
         QVERIFY(currentChart()->bars().isEmpty());
         QCOMPARE(chart("fedwatchPolymarketChart")->series()[0].points.size(), 1);
@@ -377,8 +390,60 @@ class TestFedWatchPanel : public QObject {
         load->click();
         request = pending_.takeFirst();
         QCOMPARE(request.command, QString("history_backfill"));
+        int collects = 0;
         for (const auto& sent : sent_)
-            QVERIFY(sent.command != "collect");
+            collects += sent.command == "collect";
+        QCOMPARE(collects, 1);
+    }
+    void selectedPendingLifecycleFailureIsVisibleAndRetryRecovers() {
+        process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"), {database_, "pending"});
+        durable_current_reads_ = true;
+        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 0}});
+        panel_->activate();
+        flush();
+        for (const auto& sent : sent_)
+            QVERIFY(sent.command != "collect" && sent.command != "history_backfill");
+        auto* refresh = panel_->findChild<QPushButton*>("econFetchBtn");
+        refresh->click();
+        auto request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("collect"));
+        QVERIFY(request.args.contains("--meeting") && request.args.contains("2026-10-28"));
+        auto response = process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                                {database_, "pending-refresh-failure"});
+        QVERIFY(response["partial"].toBool());
+        QCOMPARE(response["data"].toObject()["fixture_requests"].toObject()["json"].toArray().size(), 0);
+        deliver(request, response);
+        flush();
+        QVERIFY(text("fedwatchSummary").contains("FRED lifecycle update failed"));
+        QVERIFY(!panel_->findChild<QLabel*>("fedwatchSummary")->isHidden());
+        QVERIFY(text("fedwatchSourceStatus").contains("FRED_SOURCE_UNAVAILABLE"));
+        QVERIFY(!text("fedwatchSourceStatus").contains("stored local history only"));
+        QVERIFY(currentChart()->bars().isEmpty());
+        // Restart the panel: failure stays visible from durable lifecycle data.
+        makePanel();
+        panel_->restore_panel_state({{"meeting", "2026-10-28"}, {"outcome_bp", 0}});
+        panel_->activate();
+        flush();
+        QVERIFY(text("fedwatchSummary").contains("FRED lifecycle update failed"));
+        refresh = panel_->findChild<QPushButton*>("econFetchBtn");
+        refresh->click();
+        request = pending_.takeFirst();
+        QCOMPARE(request.command, QString("collect"));
+        response = process(QStringLiteral(FEDWATCH_TEST_SOURCE_DIR "/tests/fedwatch_ui_fixture.py"),
+                           {database_, "pending-refresh-ok"});
+        QVERIFY(!response["partial"].toBool());
+        QCOMPARE(response["data"].toObject()["fixture_requests"].toObject()["text"].toArray().size(), 2);
+        QCOMPARE(response["data"].toObject()["fixture_requests"].toObject()["json"].toArray().size(), 0);
+        deliver(request, response);
+        flush();
+        QVERIFY(text("fedwatchSummary").contains("RESOLVED"));
+        QVERIFY(!text("fedwatchSummary").contains("lifecycle update failed"));
+        QVERIFY(currentChart()->bars().isEmpty());
+        const int count = sent_.size();
+        refresh->click();
+        flush();
+        for (int i = count; i < sent_.size(); ++i)
+            QVERIFY(sent_[i].command != "collect" && sent_[i].command != "history_backfill");
     }
     void freshUpcomingPrefersExactNoChangeAndPreservesUserChoice() {
         // No restoration and no openUpcoming() helper: exercise a genuinely fresh panel.

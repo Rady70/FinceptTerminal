@@ -45,10 +45,11 @@ Loading old saved data re-evaluates quote age and meeting lifecycle:
 stale Fed-side values cannot populate current distributions, stale Polymarket
 values retain `STALE`, and current comparisons are cleared. Resolved/past/pending
 selected meetings return retained history without a current provider call.
-An explicit Refresh of a stored UPCOMING meeting whose day has passed first
+An explicit Refresh of a stored UPCOMING or PENDING meeting whose day has passed
 advances only that meeting using at most the two existing FRED target-history
 requests. It resolves from official paired observations or becomes PENDING
-with the exact refusal reason. No Investing/current Polymarket/calendar query
+with the exact refusal reason. PENDING retries are selected and FRED-only,
+as authorized by the owner after the latest review. No Investing/current Polymarket/calendar query
 is made and the old probability acquisition timestamp is not refreshed.
 
 Schema **v4** stores the latest current attempt independently for each meeting.
@@ -62,11 +63,21 @@ Token-request failures inherit their validated meeting identity. Selected
 Investing date validation ignores unrelated dates without narrowing the
 cumulative chain needed for the local probability transformation.
 Historical lifecycle collection is separately retained in `history_collection`.
-Its errors stay inspectable after restart but do not determine current-acquisition
-partial/reuse state. Current-context FRED, calendar and discovery failures still
+Its errors stay inspectable after restart but do not determine unrelated
+current-acquisition partial/reuse state. When lifecycle evaluation is the explicit
+selected Refresh operation, its failure returns a partial Economics envelope
+and appears in the normal meeting summary, including after reopening. The
+retained probability quality and acquisition clock remain separate. Current-context FRED, calendar and discovery failures still
 fail closed. Per-meeting retained source statuses/warnings are scoped to that
 meeting; shared method notes remain global methodology. The full acquisition
-response keeps aggregate diagnostics.
+response keeps aggregate diagnostics. A compact `aggregate_acquisition` report
+(the latest unscoped attempt timestamp, errors, warnings and source statuses)
+is retained in the existing per-meeting JSON envelopes and exposed on local
+overview reads. It survives selected writes without affecting selected reuse.
+This is a bounded last-report record, not an event journal or a new schema.
+A selected official meeting without usable Investing observations reports
+`INVESTING_SELECTED_MEETING_UNAVAILABLE`, rather than source success with no
+quality explanation. Unrelated date errors remain excluded from selected quality.
 
 The initial empty-key failure diagnostic is removed when real attempts exist. Accepted observation history is never used to manufacture current
 state. Local overview reads qualify each meeting separately and expose its
@@ -208,10 +219,14 @@ The existing horizontal current bars, compact navigation, default upcoming
 Validated mapping outcomes remain available before the first stored quote.
 
 Primary Refresh dispatches `collect --meeting <selected upcoming date>` once.
-Resolved/PENDING Refresh remains local-only. Empty inventory stays empty on
+Resolved Refresh remains local-only. PENDING Refresh explicitly retries only
+official FRED history, with no upcoming-current collection. Empty inventory stays empty on
 activation and offers deliberate acquisition via the existing Refresh or
 Update upcoming meetings buttons. Update upcoming meetings explicitly performs
-unscoped `collect`. PENDING meetings permit explicit history backfill, while
+unscoped `collect`. PENDING meetings permit explicit history backfill using
+their previously VALIDATED tokens even after negative current revalidation;
+UPCOMING demoted mappings remain blocked and no current quote is rehabilitated.
+Resolved terminal backfill reuse remains unchanged. Meanwhile
 RESOLVED meetings keep the existing local-only UI history boundary.
 Load/Retry history remains explicit bounded Polymarket
 backfill; provisional CME/monthly imports are never automatic or new primary
