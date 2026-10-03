@@ -42,6 +42,8 @@ const char* observation_outcome_id(ObservationOutcome o) {
             return "already_recorded";
         case ObservationOutcome::RefusedDocumentChanged:
             return "refused_document_changed";
+        case ObservationOutcome::ConfirmedAcceptanceChanged:
+            return "confirmed_acceptance_changed";
     }
     return "";
 }
@@ -90,10 +92,28 @@ const QString& etf_observation_columns() {
 /// A stored vintage and an incoming observation mean the same thing: the same
 /// kind, units, basis, period and (SEC) acceptance time. A later retrieval
 /// confirms a vintage only when its value AND its meaning agree.
-bool etf_same_meaning(const StoredObservation& v, const etf_store::ObservationInput& in) {
+bool etf_same_meaning_except_acceptance(const StoredObservation& v, const etf_store::ObservationInput& in) {
     return v.measurement_kind == QLatin1String(measurement_kind_id(in.kind)) && v.units == in.units &&
            v.basis == in.basis && v.period_start == in.period_start && v.period_end == in.period_end &&
-           v.report_period == in.report_period && v.accepted_at == in.accepted_at;
+           v.report_period == in.report_period;
+}
+
+bool etf_same_meaning(const StoredObservation& v, const etf_store::ObservationInput& in) {
+    return etf_same_meaning_except_acceptance(v, in) && v.accepted_at == in.accepted_at;
+}
+
+/// Whether an SEC vintage stored under one acceptance time would be timed the
+/// same under another: the classification is re-derived from the new time, the
+/// same observation start and the stored first sighting, and must reproduce the
+/// stored history type, point-in-time status, availability basis and
+/// available_from exactly.
+bool etf_same_sec_timing(const StoredObservation& v, const etf_store::ObservationInput& in) {
+    const TimingAssessment t = classify_sec_vintage(in.accepted_at, in.observation_start, v.first_seen_at);
+    const QString available = t.available_from.isValid() ? etf_store::iso_utc(t.available_from) : QString();
+    const QString stored = v.available_from.isValid() ? etf_store::iso_utc(v.available_from) : QString();
+    return v.history_type == QLatin1String(history_type_id(t.history_type)) &&
+           v.point_in_time_status == QLatin1String(point_in_time_status_id(t.point_in_time_status)) &&
+           v.availability_basis == QLatin1String(availability_basis_id(t.availability_basis)) && available == stored;
 }
 
 QJsonValue etf_json_value(const QVariant& v) {
@@ -405,6 +425,16 @@ EtfDataRepository::upsert_sec_filing(const etf_store::SecFilingFacts& f, qint64 
     return R::ok({ins.value(), etf_store::FilingOutcome::Inserted});
 }
 
+Result<std::optional<QDateTime>> EtfDataRepository::stored_filing_accepted_at(const QString& accession) {
+    using R = Result<std::optional<QDateTime>>;
+    auto r = db().execute("SELECT accepted_at FROM etf_sec_filings WHERE accession = ?", {etf_text(accession)});
+    if (r.is_err())
+        return R::err(r.error());
+    if (!r.value().next())
+        return R::ok(std::nullopt);
+    return R::ok(etf_store::parse_iso_utc(r.value().value(0).toString()));
+}
+
 Result<std::optional<QString>> EtfDataRepository::stored_filing_sha256(const QString& accession) {
     auto r = db().execute("SELECT document_sha256 FROM etf_sec_filings WHERE accession = ?", {etf_text(accession)});
     if (r.is_err())
@@ -504,13 +534,24 @@ Result<etf_store::ObservationOutcome> EtfDataRepository::record_observation(cons
         // retrieval re-applied. Deterministically a no-op.
         if (in.retrieval_id <= same_doc_max_retrieval)
             return R::ok(ObservationOutcome::AlreadyRecorded);
-        if (latest_same->value.same_value(in.value) && etf_same_meaning(*latest_same, in)) {
+        const bool same_value = latest_same->value.same_value(in.value);
+        // The SEC can re-list a filing with another acceptance time while the
+        // document, and every value and meaning read from it, is unchanged. That
+        // is listing metadata, not a changed filing: when the vintage would be
+        // timed exactly the same under the new time, the observation is
+        // confirmed and keeps its stored acceptance time (the caller records the
+        // discrepancy). If the timing would differ, it is refused below.
+        const bool acceptance_only = sec && same_value && etf_same_meaning_except_acceptance(*latest_same, in) &&
+                                     latest_same->accepted_at != in.accepted_at &&
+                                     etf_same_sec_timing(*latest_same, in);
+        if ((same_value && etf_same_meaning(*latest_same, in)) || acceptance_only) {
             auto upd = exec_write("UPDATE etf_observations SET last_seen_at = ?, last_retrieval_id = ?, "
                                   "seen_count = seen_count + 1 WHERE observation_id = ?",
                                   {etf_store::iso_utc(in.seen_at), in.retrieval_id, latest_same->observation_id});
             if (upd.is_err())
                 return R::err(upd.error());
-            return R::ok(ObservationOutcome::Confirmed);
+            return R::ok(acceptance_only ? ObservationOutcome::ConfirmedAcceptanceChanged
+                                         : ObservationOutcome::Confirmed);
         }
         // A filed SEC document does not change. A different value, or the same
         // number with a different meaning, under the same accession is an

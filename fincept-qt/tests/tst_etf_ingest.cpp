@@ -277,6 +277,7 @@ class TstEtfIngest : public QObject {
     void sec_storage_failure_is_not_ok();
     void sec_older_filing_ingested_later_keeps_the_newer_attributes();
     void sec_changed_document_is_refused_as_delivered();
+    void sec_acceptance_time_change_keeps_an_unchanged_filing();
     void sec_issue_storage_failure_is_not_ok();
     void sec_unrecorded_retrieval_is_not_ok();
     void sec_unreadable_older_page_is_not_ok();
@@ -699,6 +700,73 @@ void TstEtfIngest::sec_changed_document_is_refused_as_delivered() {
     QCOMPARE(scalar("SELECT MIN(seen_count) || '|' || MAX(seen_count) FROM etf_observations WHERE source_document = "
                     "'0001410368-26-055357'"),
              QStringLiteral("2|2"));
+}
+
+void TstEtfIngest::sec_acceptance_time_change_keeps_an_unchanged_filing() {
+    // Live shape (SPY, 2026-10-03): the SEC re-listed 0001410368-26-089410 with
+    // acceptance 16:25:47Z instead of the 12:25:47Z stored on first delivery; the
+    // document bytes and every value read from them are unchanged.
+    auto serve = [](FakeSec& sec, const char* june_acceptance) {
+        sec.ok(kSpySubs,
+               submissions_json(
+                   QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                   {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", june_acceptance},
+                    {"0000000000-26-000009", "N-CSR", "2026-06-01", "", "2026-06-01T20:00:00.000Z"},
+                    {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}));
+        sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+    };
+    const QString june_avail = QStringLiteral(
+        "SELECT available_from FROM etf_observations WHERE measure = 'nport_net_assets' AND effective_date = "
+        "'2026-06-30'");
+    {
+        FakeSec first;
+        serve(first, "2026-08-28T12:25:47.000Z");
+        QCOMPARE(run_sec(first, request("884394"), "2026-09-26T10:00:00.000Z").status, RetrievalStatus::Ok);
+    }
+    const int rows = count("etf_observations");
+    QCOMPARE(scalar(june_avail), QStringLiteral("2026-08-31T13:30:00.000Z"));
+
+    // 1. Same New York date: the vintage is timed the same (available from the
+    //    Monday 08-31 open either way). Retained: confirmed, the stored acceptance
+    //    kept, the discrepancy recorded once, the run not an error.
+    FakeSec moved;
+    serve(moved, "2026-08-28T16:25:47.000Z");
+    const SecNportRunSummary s = run_sec(moved, request("884394"), "2026-10-03T21:20:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.observations_refused, 0);
+    QCOMPARE(s.observations_acceptance_changed, 10);
+    QCOMPARE(s.observations_confirmed, 20);
+    QCOMPARE(count("etf_observations"), rows);
+    QCOMPARE(scalar("SELECT accepted_at FROM etf_sec_filings WHERE accession = '0001410368-26-089410'"),
+             QStringLiteral("2026-08-28T12:25:47.000Z"));
+    QCOMPARE(scalar("SELECT COUNT(DISTINCT accepted_at) FROM etf_observations WHERE source_document = "
+                    "'0001410368-26-089410'"),
+             QStringLiteral("1"));
+    QCOMPARE(scalar("SELECT MIN(seen_count) FROM etf_observations WHERE source_document = '0001410368-26-089410'"),
+             QStringLiteral("2"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'sec_acceptance_time_changed'")), 1);
+    const QString detail = scalar("SELECT detail FROM etf_retrieval_issues WHERE code = 'sec_acceptance_time_changed'");
+    QVERIFY2(detail.contains(QStringLiteral("2026-08-28T16:25:47.000Z")) &&
+                 detail.contains(QStringLiteral("2026-08-28T12:25:47.000Z")),
+             qPrintable(detail));
+    QCOMPARE(scalar("SELECT state FROM etf_retrieval_issues WHERE code = 'sec_acceptance_time_changed'"),
+             QStringLiteral("RECONCILIATION_EXCEPTION"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'filed_observation_changed'")), 0);
+
+    // 2. An acceptance time that moves the usable boundary (Monday 08-31 15:00Z
+    //    makes it usable from the Tuesday 09-01 open) is not equivalent: refused,
+    //    nothing written, the stored vintage unchanged.
+    FakeSec later;
+    serve(later, "2026-08-31T15:00:00.000Z");
+    const SecNportRunSummary r = run_sec(later, request("884394"), "2026-10-04T10:00:00.000Z");
+    QCOMPARE(r.status, RetrievalStatus::SourceError);
+    QCOMPARE(r.observations_refused, 10);
+    QCOMPARE(r.observations_acceptance_changed, 0);
+    QCOMPARE(count("etf_observations"), rows);
+    QCOMPARE(scalar(june_avail), QStringLiteral("2026-08-31T13:30:00.000Z"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'filed_observation_changed'")), 10);
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'sec_acceptance_time_changed'")), 1);
 }
 
 void TstEtfIngest::sec_issue_storage_failure_is_not_ok() {

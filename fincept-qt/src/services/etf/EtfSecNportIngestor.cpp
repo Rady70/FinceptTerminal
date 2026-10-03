@@ -57,6 +57,7 @@ QJsonObject SecNportRunSummary::to_json() const {
     o["observations_confirmed"] = observations_confirmed;
     o["observations_already_recorded"] = observations_already_recorded;
     o["observations_refused"] = observations_refused;
+    o["observations_acceptance_changed"] = observations_acceptance_changed;
     o["issues"] = issues;
     o["accessions"] = QJsonArray::fromStringList(accessions);
     QJsonArray ids;
@@ -597,6 +598,13 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     if (start.is_err())
         return fail(start.error(), true);
 
+    // The acceptance time stored with this accession, if any: the SEC can
+    // re-list a filing with another one (kept; the discrepancy is recorded).
+    auto stored_accepted = repo.stored_filing_accepted_at(ref.accession);
+    if (stored_accepted.is_err())
+        return fail(stored_accepted.error(), true);
+    int acceptance_changed = 0;
+
     etf_store::SecFilingFacts filing;
     filing.accession = ref.accession;
     filing.filer_cik = cik10_;
@@ -657,6 +665,11 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
             case etf_store::ObservationOutcome::Confirmed:
                 ++summary_.observations_confirmed;
                 break;
+            case etf_store::ObservationOutcome::ConfirmedAcceptanceChanged:
+                ++summary_.observations_confirmed;
+                ++summary_.observations_acceptance_changed;
+                ++acceptance_changed;
+                break;
             case etf_store::ObservationOutcome::AlreadyRecorded:
                 ++summary_.observations_already_recorded;
                 break;
@@ -709,6 +722,22 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
                     return false;
             }
         }
+    }
+
+    // One provenance record per filing for a changed acceptance time: both times,
+    // and that the stored one, the values and their timing are unchanged.
+    if (acceptance_changed > 0) {
+        const QDateTime stored = stored_accepted.value().value_or(QDateTime());
+        auto issue = record_issue(
+            retrieval_id, QualityState::ReconciliationException, QStringLiteral("sec_acceptance_time_changed"),
+            QStringLiteral("%1: the SEC now lists acceptance %2; %3 stored (kept). %4 observation(s) unchanged and "
+                           "timed the same under either time, so they stay usable")
+                .arg(ref.accession, etf_store::iso_utc(ref.accepted_at),
+                     stored.isValid() ? etf_store::iso_utc(stored) : QStringLiteral("unknown"))
+                .arg(acceptance_changed),
+            entity_id, doc.rep_pd_date);
+        if (issue.is_err())
+            return fail(issue.error(), true);
     }
 
     auto commit = db.commit();

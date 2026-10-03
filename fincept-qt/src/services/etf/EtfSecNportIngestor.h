@@ -94,6 +94,7 @@ struct SecNportRunSummary {
     int observations_confirmed = 0;
     int observations_already_recorded = 0;
     int observations_refused = 0;
+    int observations_acceptance_changed = 0; ///< confirmed although the SEC listed another acceptance time
     int issues = 0;
     QStringList accessions;
     QVector<qint64> entity_ids;
