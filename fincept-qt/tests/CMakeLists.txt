@@ -180,6 +180,40 @@ fincept_add_test(tst_market_parse
 fincept_add_test(tst_economics_envelope
     tst_economics_envelope.cpp)
 
+# FedWatch Batch C presentation semantics: missing/zero, exact/tail identity,
+# UTC chronology and display-only ranges. Header-only, Qt Core.
+fincept_add_test(tst_fedwatch_view_model
+    tst_fedwatch_view_model.cpp)
+
+# Deliberate widget-test exception: exercise the actual native FedWatch panel,
+# base widgets and chart with an injected command dispatcher. The explicit
+# test-local EconomicsService transport stub aborts on accidental default
+# dispatch, and does not claim real-service/PythonRunner integration. History
+# responses come from the shipped Python CLI reading a temporary SQLite seeded
+# by the finalized backend with captured provider fixtures (no live HTTP).
+fincept_add_test(tst_fedwatch_panel
+    tst_fedwatch_panel.cpp
+    fedwatch_economics_transport_stub.cpp
+    "${PROJECT_SOURCE_DIR}/src/services/economics/EconomicsService.h"
+    "${PROJECT_SOURCE_DIR}/src/core/session/ScreenStateManager.h"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchPanel.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchHistoryChart.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchCurrentChart.cpp"
+    "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/EconPanelBase.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/widgets/PaginationBar.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/TimeSeriesChartView.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/TimeAxisNavigator.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/charts/ChartFactory.cpp"
+    "${PROJECT_SOURCE_DIR}/src/ui/theme/ThemeManager.cpp"
+    "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
+target_link_libraries(tst_fedwatch_panel PRIVATE Qt6::Widgets Qt6::Charts)
+target_compile_definitions(tst_fedwatch_panel PRIVATE
+    FEDWATCH_TEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+set(FINCEPT_FEDWATCH_TEST_PYTHON "$ENV{LOCALAPPDATA}/com.marketlab.terminal/venv-numpy2/Scripts/python.exe"
+    CACHE FILEPATH "Existing MarketLab Python runtime for deterministic FedWatch widget/CLI tests")
+set_tests_properties(tst_fedwatch_panel PROPERTIES
+    ENVIRONMENT "FEDWATCH_TEST_PYTHON=${FINCEPT_FEDWATCH_TEST_PYTHON}")
+
 # MarketLab: the CFTC net-position sign rule — a positive net gets "+", an
 # exact zero is neutral and must not render as "+0". Header-only over Qt Core;
 # no app sources.
@@ -481,4 +515,4 @@ fincept_add_test(tst_qt_message_routing
     "${PROJECT_SOURCE_DIR}/src/core/logging/QtMessageRouting.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
 
-message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_news_dedupe, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")
+message(STATUS "Fincept tests: tst_broker_modify_fields, tst_result, tst_order_validator, tst_marketlab_boundary, tst_direct_clients, tst_equity_parse, tst_market_parse, tst_economics_envelope, tst_fedwatch_view_model, tst_fedwatch_panel, tst_cftc_net_format, tst_portfolio_rules, tst_ibkr_parse, tst_ibkr_history_route, tst_redirect_guard, tst_news_date_parse, tst_news_dedupe, tst_time_series_data, tst_ilostat_series_shape, tst_cftc_workspace, tst_cftc_metrics, tst_cftc_interpretation, tst_cftc_presentation, tst_cftc_sync_chart, tst_cftc_workspace_contract, tst_cftc_monitor, tst_cftc_monitor_visual, tst_dashboard_layout, tst_etf_calendar_timing, tst_etf_sec_parse, tst_etf_ibkr_daily, tst_etf_store, tst_etf_ingest, tst_etf_derived_calc, tst_etf_derived_store, tst_http_get_raw, tst_qt_message_routing")

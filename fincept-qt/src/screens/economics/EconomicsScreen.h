@@ -60,6 +60,7 @@ class EconomicsScreen : public QWidget, public IStatefulScreen {
     };
     QList<SourceEntry> sources_;
     QString active_id_;
+    QVariantMap pending_panel_states_; // Preserve saved inputs for panels still lazy/unconstructed.
 
     EconPanelBase* get_or_create_panel(SourceEntry& entry);
 };

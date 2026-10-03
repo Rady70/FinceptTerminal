@@ -646,6 +646,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(meeting["status"], "PENDING")
         self.assertEqual(meeting["status_reason"], "FRED_SOURCE_UNAVAILABLE")
 
+    def test_overview_exposes_validated_outcomes_without_observations(self):
+        store = new_store(self)
+        store.upsert_meeting("2026-10-28")
+        store.upsert_mapping_outcome(
+            "2026-10-28", fedwatch_history.POLY_SOURCE, fedwatch_history.POLY_METHOD,
+            -50, True, "VALIDATED", "event", "October decision", "market",
+            "token", "50 bp or more cut", {},
+        )
+        overview = fedwatch_history.meetings_overview(store)
+        meeting = overview["meetings"][0]
+        self.assertEqual(meeting["observations"], {})
+        self.assertEqual(meeting["polymarket_mapping"]["outcome_count"], 1)
+        self.assertEqual(meeting["polymarket_mapping"]["outcomes"], [{
+            "outcome_bp": -50, "open_ended": True,
+            "external_market_id": "market", "external_token_id": "token",
+            "question": "50 bp or more cut",
+        }])
+
     def test_resolved_meeting_history_remains_readable(self):
         store = new_store(self)
         store.upsert_meeting("2026-09-16", default_status="UPCOMING")
@@ -1287,6 +1305,7 @@ class CliTests(unittest.TestCase):
         code, payload, stderr = self.run_cli(
             "history_analytics", "--db", str(store.path),
             "--meeting", "2026-10-28", "--outcome-bp", "25",
+            "--as-of", "2026-09-28T12:00:00Z",
         )
         self.assertEqual(code, 0, stderr)
         difference = payload["data"]["difference"]
