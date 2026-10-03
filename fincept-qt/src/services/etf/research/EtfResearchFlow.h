@@ -16,10 +16,13 @@
 //    by the distribution on the ex-date, so a total-return adjustment (as the
 //    reference's docstring describes) would book every distribution as an
 //    inflow of shares × distribution.
-//  * Yahoo does not date AUM or NAV. Each capture is assigned the last NYSE
-//    session completed before its New York calendar date (rule
-//    prior_completed_session_v1) and flagged ASSUMED_EFFECTIVE_DATE; the NAV is
-//    checked against that session's close and a > 0.5 % gap lowers credibility.
+//  * Yahoo does not date AUM or NAV. The store records each capture with the
+//    last NYSE session completed before it (prior_completed_session_v1), an
+//    upper bound. In live captures Yahoo's navPrice was the NAV of the NYSE
+//    session BEFORE that stored session, so the engine dates each capture's NAV
+//    there (yahoo_nav_prev_session_v1), checked against the stored closes, and
+//    refuses captures where the lag is unvalidated or contradicted. totalAssets
+//    has no date at all, so E1 always carries SourceTimingAmbiguous.
 //  * Captures several sessions apart give ONE interval estimate, never a value
 //    smeared over the missing days; a missed capture stays a gap.
 //  * An interval containing a split has no E1 or E2. Where AUM did not change
@@ -33,6 +36,10 @@
 #include "services/etf/research/EtfResearchInputs.h"
 #include "services/etf/research/EtfResearchSnapshot.h"
 
+#include <QMap>
+#include <QSet>
+
+#include <algorithm>
 #include <cmath>
 
 namespace fincept::services::etf::research {
@@ -40,7 +47,11 @@ namespace fincept::services::etf::research {
 inline constexpr const char* kFlowMethod = "etfr_estimated_flow_v1";
 inline constexpr const char* kSourceYahooFund = "yahoo_fund_snapshot";
 inline constexpr double kFlowAgreementTolerance = 0.002; ///< of prior AUM
-inline constexpr double kNavDateTolerance = 0.005;       ///< NAV vs assumed-session close
+inline constexpr double kNavDateTolerance = 0.005;       ///< NAV vs the matched session's close
+inline constexpr const char* kNavDatingRule = "yahoo_nav_prev_session_v1";
+inline constexpr double kNavFarFromClose = 0.02;      ///< NAV beyond 2 % of its session's close: not that session
+inline constexpr double kNavContradictionRatio = 3.0; ///< a neighbour's close at least 3x nearer ...
+inline constexpr double kNavContradictionGap = 0.001; ///< ... and at least 10 bp nearer contradicts the lag
 
 /// Sessions in (from, to] on the NYSE calendar; -1 when outside coverage.
 inline int nyse_sessions_between(const QDate& from, const QDate& to) {
@@ -59,24 +70,23 @@ inline int nyse_sessions_between(const QDate& from, const QDate& to) {
 
 /// The latest capture of each effective session, ascending.
 inline QVector<FundCapture> captures_by_session(const QVector<FundCapture>& caps, int* duplicates) {
-    QVector<FundCapture> out;
+    QMap<QDate, FundCapture> latest;
     int dup = 0;
     for (const FundCapture& c : caps) {
         if (!c.effective_session.isValid())
             continue;
-        if (!out.isEmpty() && out.last().effective_session == c.effective_session) {
-            ++dup;
-            if (c.captured_at >= out.last().captured_at)
-                out.last() = c;
+        const auto it = latest.find(c.effective_session);
+        if (it == latest.end()) {
+            latest.insert(c.effective_session, c);
             continue;
         }
-        out.append(c);
+        ++dup;
+        if (c.captured_at >= it->captured_at)
+            *it = c;
     }
-    std::sort(out.begin(), out.end(),
-              [](const FundCapture& a, const FundCapture& b) { return a.effective_session < b.effective_session; });
     if (duplicates)
         *duplicates = dup;
-    return out;
+    return QVector<FundCapture>(latest.cbegin(), latest.cend());
 }
 
 inline std::optional<double> close_on(const BarSeries& bars, const QDate& d) {
@@ -94,6 +104,83 @@ inline bool split_between(const BarSeries& bars, const QDate& from, const QDate&
         if (b.date > from && b.date <= to && b.split > 0.0)
             return true;
     return false;
+}
+
+/// The close of session `d` as it was published: Yahoo restates earlier closes
+/// at a split, while a captured NAV keeps its published scale.
+inline std::optional<double> unadjusted_close_on(const BarSeries& bars, const QDate& d) {
+    double factor = 1.0;
+    for (int i = bars.bars.size() - 1; i >= 0; --i) {
+        const DailyBar& b = bars.bars[i];
+        if (b.date > d) {
+            if (b.split > 0.0)
+                factor *= b.split;
+            continue;
+        }
+        if (b.date == d)
+            return b.close * factor;
+        break;
+    }
+    return std::nullopt;
+}
+
+/// Date a capture's NAV. In MarketLab's live captures (2026-10-02 before the
+/// open and 2026-10-03, 72 funds) Yahoo's navPrice was the NAV of the NYSE
+/// session BEFORE the stored session in 71 of the 76 captures whose NAV matched
+/// one close clearly; the five others were funds whose NAV is not struck at the
+/// U.S. close (gold and silver fixes, Asian markets). The capture is dated to
+/// that previous session unless
+///  * it was taken after an NYSE session's close and before midnight New York
+///    time: the lag has not been observed there;
+///  * that session's close is not stored;
+///  * the NAV is more than 2 % from that close; or
+///  * the stored session's close or the one before the NAV session is at least
+///    3x and 10 bp nearer the NAV: the lag is contradicted.
+/// A refused capture keeps an invalid effective_session, *reason says why, and no
+/// estimator uses it.
+inline FundCapture nav_dated(const FundCapture& c, const BarSeries& bars, QString* reason) {
+    FundCapture out = c;
+    out.effective_session = QDate();
+    auto fail = [&](const char* why) {
+        if (reason)
+            *reason = QLatin1String(why);
+        return out;
+    };
+    if (!c.effective_session.isValid())
+        return fail("capture_outside_calendar");
+    if (!c.nav || !(*c.nav > 0.0))
+        return fail("nav_missing");
+    if (c.captured_at.isValid()) {
+        const MarketSessionDay day = UsEquityCalendar::day(UsEquityCalendar::exchange_date(c.captured_at));
+        if (day.is_session() && day.close_utc.isValid() && c.captured_at.toUTC() >= day.close_utc)
+            return fail("nav_lag_unvalidated_after_close");
+    }
+    const auto prev = UsEquityCalendar::last_session_before(c.effective_session);
+    if (!prev)
+        return fail("capture_outside_calendar");
+    const QDate nav_session = prev->date;
+    const auto nav_close = unadjusted_close_on(bars, nav_session);
+    if (!nav_close || !(*nav_close > 0.0))
+        return fail("close_missing_for_nav_dating");
+    const double at_lag = std::abs(*c.nav / *nav_close - 1.0);
+    if (at_lag > kNavFarFromClose)
+        return fail("nav_far_from_close");
+    QVector<QDate> neighbours{c.effective_session};
+    if (const auto before = UsEquityCalendar::last_session_before(nav_session))
+        neighbours.append(before->date);
+    for (const QDate& n : neighbours) {
+        const auto close = unadjusted_close_on(bars, n);
+        if (!close || !(*close > 0.0))
+            continue;
+        const double d = std::abs(*c.nav / *close - 1.0);
+        if (d * kNavContradictionRatio <= at_lag && at_lag - d >= kNavContradictionGap)
+            return fail("nav_lag_contradicted");
+    }
+    out.effective_session = nav_session;
+    out.effective_rule = QLatin1String(kNavDatingRule);
+    if (reason)
+        reason->clear();
+    return out;
 }
 
 inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, const BarSeries& bars) {
@@ -150,9 +237,23 @@ inline FlowInterval flow_interval(const FundCapture& p, const FundCapture& c, co
 inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, const BarSeries& bars,
                                    const QVector<MeasuredMonth>& measured, const QDate& expected_session) {
     EstimatedFlow e;
-    int dup = 0;
-    const QVector<FundCapture> caps = captures_by_session(raw_captures, &dup);
     e.captures = raw_captures.size();
+    QSet<QDate> stored_sessions;
+    QVector<FundCapture> dated;
+    for (const FundCapture& c : raw_captures) {
+        if (c.effective_session.isValid())
+            stored_sessions.insert(c.effective_session);
+        QString why;
+        FundCapture d = nav_dated(c, bars, &why);
+        if (d.effective_session.isValid()) {
+            dated.append(d);
+        } else {
+            ++e.undated_captures;
+            e.undated_reason = why;
+        }
+    }
+    int dup = 0;
+    const QVector<FundCapture> caps = captures_by_session(dated, &dup);
     e.capture_sessions = caps.size();
     const QString method = QLatin1String(kFlowMethod);
     auto unavailable_all = [&](const QString& why) {
@@ -165,15 +266,23 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
         e.coverage_20 = e.latest;
         e.validation_vs_measured = e.latest;
     };
-    if (caps.isEmpty()) {
+    if (raw_captures.isEmpty()) {
         unavailable_all(QStringLiteral("no_capture"));
         e.latest.add_flag(flag::kNoObservation);
         return e;
     }
-    e.first_session = caps.first().effective_session;
-    e.last_session = caps.last().effective_session;
-    if (caps.size() < 2) {
+    if (!caps.isEmpty()) {
+        e.first_session = caps.first().effective_session;
+        e.last_session = caps.last().effective_session;
+    }
+    if (stored_sessions.size() < 2) {
         unavailable_all(QStringLiteral("record_too_young_one_capture_session"));
+        return e;
+    }
+    if (caps.size() < 2) {
+        // Enough captures, but too few could be dated by their NAV.
+        unavailable_all(e.undated_reason.isEmpty() ? QStringLiteral("record_too_young_one_capture_session")
+                                                   : e.undated_reason);
         return e;
     }
     // Intervals run between fresh captures. A capture whose AUM was re-served
@@ -206,10 +315,10 @@ inline EstimatedFlow estimate_flow(const QVector<FundCapture>& raw_captures, con
     } else {
         e.agreement = QStringLiteral("uncorroborated");
     }
-    // NAV date check against the assumed session's close.
-    const auto c = close_on(bars, lc.effective_session);
-    if (!c || !lc.nav || std::abs(*lc.nav / *c - 1.0) > kNavDateTolerance)
-        conds.append(CredCondition::SourceTimingAmbiguous);
+    // Captures are dated by their NAV, but Yahoo's totalAssets carries no date
+    // and was re-served unchanged across sessions in live data: the AUM may
+    // describe an earlier session, so E1 always carries the timing condition.
+    conds.append(CredCondition::SourceTimingAmbiguous);
     if (expected_session.isValid()) {
         const int lag = nyse_sessions_between(lc.effective_session, expected_session);
         if (lag < 0 || lag > 1)

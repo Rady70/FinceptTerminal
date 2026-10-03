@@ -59,7 +59,9 @@ struct EstimatedFlow {
     ResearchValue coverage_20; ///< share of the last 20 sessions covered by captured intervals
     QString agreement;         ///< agree | disagree | uncorroborated | ''
     int captures = 0;
-    int capture_sessions = 0;
+    int capture_sessions = 0; ///< distinct NAV-dated sessions
+    int undated_captures = 0; ///< captures whose NAV matched no session unambiguously
+    QString undated_reason;   ///< reason of the latest undated capture
     QDate first_session;
     QDate last_session;
     QVector<FlowInterval> intervals;
@@ -79,7 +81,8 @@ struct FundFacts {
     ResearchValue implied_shares;  ///< ESTIMATED, AUM/NAV
     ResearchValue reported_shares; ///< MEASURED (provider field)
     ResearchValue shares_gap_pct;  ///< ESTIMATED, implied vs reported shares, percent
-    QDate assumed_session;
+    QDate assumed_session;         ///< session of the latest capture (NAV-dated when possible)
+    QString session_rule;          ///< nav_close_match_v1, or the stored rule plus why NAV dating failed
     QDateTime captured_at;
     QString name, family, category, exchange, legal_type, currency;
     ResearchValue expense_pct, yield_pct, beta3y, ytd_pct, ret3y_pct, ret5y_pct, pe, nav_premium_pct;

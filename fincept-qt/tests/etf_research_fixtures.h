@@ -43,12 +43,37 @@ inline BarSeries series(const QString& sym, const QVector<QDate>& dates, double 
     return s;
 }
 
-inline FundCapture capture(const QDate& session, double aum, double nav, std::optional<double> shares = std::nullopt,
-                           const QDateTime& at = QDateTime()) {
+/// Bars with the given closes on the given sessions, one per session.
+inline BarSeries closes(const QString& sym, const QVector<QDate>& dates, const QVector<double>& values) {
+    BarSeries s;
+    s.symbol = sym;
+    for (int i = 0; i < dates.size(); ++i) {
+        DailyBar b;
+        b.date = dates[i];
+        b.close = values[i];
+        b.volume = 1e6;
+        s.bars.append(b);
+    }
+    return s;
+}
+
+/// The NYSE session after `d` (plain weekdays outside the calendar's coverage).
+inline QDate next_session(const QDate& d) {
+    for (QDate x = d.addDays(1);; x = x.addDays(1)) {
+        if (UsEquityCalendar::covers(x) ? UsEquityCalendar::day(x).is_session() : x.dayOfWeek() < 6)
+            return x;
+    }
+}
+
+/// A Yahoo fund capture whose NAV is `nav_session`'s NAV, as Yahoo serves it: the
+/// store records the next session (the last one completed at capture time) and
+/// the capture is taken the morning after that session, before any close.
+inline FundCapture capture(const QDate& nav_session, double aum, double nav,
+                           std::optional<double> shares = std::nullopt, const QDateTime& at = QDateTime()) {
     FundCapture c;
-    c.effective_session = session;
+    c.effective_session = next_session(nav_session);
     c.effective_rule = QStringLiteral("prior_completed_session_v1");
-    c.captured_at = at.isValid() ? at : QDateTime(session.addDays(1), QTime(14, 0), QTimeZone::UTC);
+    c.captured_at = at.isValid() ? at : QDateTime(c.effective_session.addDays(1), QTime(13, 0), QTimeZone::UTC);
     c.total_assets = aum;
     c.nav = nav;
     c.shares_outstanding = shares;

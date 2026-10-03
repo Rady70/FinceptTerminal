@@ -96,28 +96,36 @@ FundFacts fund_facts_from_captures(const QVector<FundCapture>& caps, const BarSe
     const FundCapture& c = caps.last();
     const QJsonObject& o = c.fields;
     f.captured_at = c.captured_at;
-    f.assumed_session = c.effective_session;
+    QString dating_reason = QStringLiteral("no_close_to_date_nav");
+    const FundCapture dc = bars ? nav_dated(c, *bars, &dating_reason) : FundCapture{};
+    const bool nav_dated_ok = dc.effective_session.isValid();
+    // The NAV-matched session when the NAV can be dated; otherwise the stored
+    // upper bound, and the premium (which needs the right close) is unavailable.
+    const QDate session = nav_dated_ok ? dc.effective_session : c.effective_session;
+    f.assumed_session = session;
+    f.session_rule = nav_dated_ok ? QString(QLatin1String(kNavDatingRule))
+                                  : c.effective_rule + QStringLiteral(":nav_undated:") + dating_reason;
     bool stale = false;
-    if (expected_session.isValid() && c.effective_session.isValid()) {
-        const int lag = nyse_sessions_between(c.effective_session, expected_session);
+    if (expected_session.isValid() && session.isValid()) {
+        const int lag = nyse_sessions_between(session, expected_session);
         stale = lag < 0 || lag > 1;
     }
-    f.aum = observed(c.total_assets, QStringLiteral("usd"), method + QStringLiteral(":totalAssets"),
-                     c.effective_session, stale, QStringLiteral("field_not_supplied"));
-    f.nav = observed(c.nav, QStringLiteral("per_share"), method + QStringLiteral(":navPrice"), c.effective_session,
-                     stale, QStringLiteral("field_not_supplied"));
+    f.aum = observed(c.total_assets, QStringLiteral("usd"), method + QStringLiteral(":totalAssets"), session, stale,
+                     QStringLiteral("field_not_supplied"));
+    f.nav = observed(c.nav, QStringLiteral("per_share"), method + QStringLiteral(":navPrice"), session, stale,
+                     QStringLiteral("field_not_supplied"));
     f.reported_shares =
-        observed(c.shares_outstanding, QStringLiteral("shares"), method + QStringLiteral(":sharesOutstanding"),
-                 c.effective_session, stale, QStringLiteral("field_not_supplied"));
+        observed(c.shares_outstanding, QStringLiteral("shares"), method + QStringLiteral(":sharesOutstanding"), session,
+                 stale, QStringLiteral("field_not_supplied"));
     if (c.total_assets && c.nav && *c.nav > 0) {
         f.implied_shares = graded(*c.total_assets / *c.nav, EvidenceClass::Estimated, Credibility::Medium,
                                   {CredCondition::SourceTimingAmbiguous}, QStringLiteral("shares"),
-                                  QStringLiteral("etfr_implied_shares_v1"), kFundSource, c.effective_session);
+                                  QStringLiteral("etfr_implied_shares_v1"), kFundSource, session);
         if (c.shares_outstanding && *c.shares_outstanding > 0)
             f.shares_gap_pct =
                 graded((*c.total_assets / *c.nav / *c.shares_outstanding - 1.0) * 100.0, EvidenceClass::Estimated,
                        Credibility::Medium, {CredCondition::SourceTimingAmbiguous}, QStringLiteral("pct"),
-                       QStringLiteral("etfr_shares_consistency_v1"), kFundSource, c.effective_session);
+                       QStringLiteral("etfr_shares_consistency_v1"), kFundSource, session);
         else
             f.shares_gap_pct = ResearchValue::unavailable(QStringLiteral("reported_shares_missing"));
     } else {
@@ -135,7 +143,7 @@ FundFacts fund_facts_from_captures(const QVector<FundCapture>& caps, const BarSe
     //   ytdReturn: percent; threeYear/fiveYearAverageReturn: fraction; beta3Year: ratio.
     auto pct_field = [&](const char* key, double scale, const QString& units) {
         return observed(json_num(o, key) ? std::optional<double>(*json_num(o, key) * scale) : std::nullopt, units,
-                        method + QLatin1Char(':') + QLatin1String(key), c.effective_session, stale,
+                        method + QLatin1Char(':') + QLatin1String(key), session, stale,
                         QStringLiteral("field_not_supplied"));
     };
     f.expense_pct = json_num(o, "netExpenseRatio")
@@ -151,12 +159,14 @@ FundFacts fund_facts_from_captures(const QVector<FundCapture>& caps, const BarSe
         v->flags.removeAll(QLatin1String(flag::kAssumedDate)); // metadata, not dated observations
     if (const auto inc = json_num(o, "fundInceptionDate"))
         f.inception = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(*inc), QTimeZone::UTC).date();
-    const auto close = bars ? close_on(*bars, c.effective_session) : std::nullopt;
-    if (close && c.nav && *c.nav > 0)
+    const auto close = bars && nav_dated_ok ? unadjusted_close_on(*bars, session) : std::nullopt;
+    if (!nav_dated_ok && c.nav)
+        f.nav_premium_pct = ResearchValue::unavailable(dating_reason);
+    else if (close && c.nav && *c.nav > 0)
         f.nav_premium_pct = graded((*close / *c.nav - 1.0) * 100.0, EvidenceClass::Estimated, Credibility::Low,
                                    {CredCondition::SourceTimingAmbiguous}, QStringLiteral("pct"),
                                    QStringLiteral("etfr_premium_discount_v1"),
-                                   QStringLiteral("yahoo_chart+yahoo_fund_snapshot"), c.effective_session);
+                                   QStringLiteral("yahoo_chart+yahoo_fund_snapshot"), session);
     else
         f.nav_premium_pct = ResearchValue::unavailable(QStringLiteral("close_or_nav_missing"));
     return f;
@@ -1172,6 +1182,8 @@ QJsonObject etfr_flow_json(const EstimatedFlow& e, bool series) {
                   {QStringLiteral("agreement"), e.agreement},
                   {QStringLiteral("captures"), e.captures},
                   {QStringLiteral("capture_sessions"), e.capture_sessions},
+                  {QStringLiteral("undated_captures"), e.undated_captures},
+                  {QStringLiteral("undated_reason"), e.undated_reason},
                   {QStringLiteral("validation_vs_measured"), e.validation_vs_measured.to_json()}};
     if (series) {
         QJsonArray iv;
@@ -1252,7 +1264,8 @@ QJsonObject snapshot_to_json(const ResearchSnapshot& s, bool include_series) {
                          {QStringLiteral("exchange"), r.fund.exchange},
                          {QStringLiteral("captures"), r.fund.captures},
                          {QStringLiteral("holdings"), r.fund.holdings.size()},
-                         {QStringLiteral("assumed_session"), r.fund.assumed_session.toString(Qt::ISODate)}};
+                         {QStringLiteral("assumed_session"), r.fund.assumed_session.toString(Qt::ISODate)},
+                         {QStringLiteral("session_rule"), r.fund.session_rule}};
         o.insert(QStringLiteral("fund"), fund);
         o.insert(QStringLiteral("estimated_flow"), etfr_flow_json(r.est, include_series));
         o.insert(QStringLiteral("measured_flow"),

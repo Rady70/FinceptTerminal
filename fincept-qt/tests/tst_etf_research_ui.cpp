@@ -53,8 +53,15 @@ ResearchSnapshot build_snapshot() {
                        series(i.symbol, d, 50 + k, 0.0003 * (k % 7) - 0.0009, 0.03, 15 + k % 5, 1e6 * (1 + k % 3)));
         ++k;
     }
-    in.funds.insert(QStringLiteral("XLK"),
-                    {capture(d[318], 1.2e11, 195, 6.1e8), capture(d[319], 1.21e11, 196, 6.13e8)});
+    {
+        auto& xb = in.bars[QStringLiteral("XLK")].bars;
+        xb[316].close = xb[318].close * 0.992; // distinct closes so each NAV dates to one session
+        xb[317].close = xb[318].close * 0.996;
+        xb[319].close = xb[318].close * 1.004;
+        const double n0 = xb[318].close, n1 = xb[319].close;
+        in.funds.insert(QStringLiteral("XLK"),
+                        {capture(d[318], 6.1e8 * n0, n0, 6.1e8), capture(d[319], 6.13e8 * n1, n1, 6.13e8)});
+    }
     HoldingsCapture h;
     h.captured_at = QDateTime(d[319], QTime(20, 0), QTimeZone::UTC);
     h.holdings = {{1, QStringLiteral("NVDA"), QStringLiteral("NVIDIA"), 0.14},

@@ -49,6 +49,7 @@ class TstEtfResearchCalc : public QObject {
     void stale_aum_and_split_are_unavailable();
     void capture_gap_is_one_interval();
     void stale_aum_capture_is_not_an_anchor();
+    void nav_dating_follows_the_fund_lag();
     void one_capture_is_record_too_young();
     void positive_negative_and_zero_flow();
     // ── models ──
@@ -405,12 +406,12 @@ void TstEtfResearchCalc::distribution_is_not_a_flow() {
 
 void TstEtfResearchCalc::reported_shares_disagreement_is_experimental() {
     const auto d = nyse_sessions(QDate(2026, 9, 30), 2);
-    BarSeries bars = series(QStringLiteral("F"), d, 100, 0.0);
+    const BarSeries bars = closes(QStringLiteral("F"), d, {100.0, 100.5});
     // Implied shares grow by 1%, reported shares unchanged (a stale field).
-    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 101e6, 100.0, 1e6)};
+    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 1.01e6 * 100.5, 100.5, 1e6)};
     const EstimatedFlow e = estimate_flow(caps, bars, {}, d[1]);
     QVERIFY(e.latest.value);
-    QVERIFY(std::abs(*e.latest.value - 1e6) < 1e-3);
+    QVERIFY(std::abs(*e.latest.value - 0.01e6 * 100.5) < 1e-3);
     QCOMPARE(e.agreement, QStringLiteral("disagree"));
     QCOMPARE(e.latest.credibility, Credibility::Experimental);
     QVERIFY(e.latest.has_flag(flag::kDisagreement));
@@ -438,7 +439,7 @@ void TstEtfResearchCalc::stale_aum_and_split_are_unavailable() {
         QVERIFY(e.intervals.last().flags.contains(QStringLiteral("AUM_UNCHANGED_NAV_CHANGED")));
     }
     {
-        BarSeries split = bars;
+        BarSeries split = closes(QStringLiteral("F"), d, {50.0, 50.0, 50.0}); // d0 restated from 100 by the 2:1 split
         split.bars[1].split = 2.0;
         const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[1], 100e6, 50.0, 2e6)};
         const EstimatedFlow e = estimate_flow(caps, split, {}, d[1]);
@@ -468,16 +469,94 @@ void TstEtfResearchCalc::stale_aum_capture_is_not_an_anchor() {
     QVERIFY(e.latest.usable() && e.latest.has_flag(flag::kGap));
 }
 
+void TstEtfResearchCalc::nav_dating_follows_the_fund_lag() {
+    // Live shape (Yahoo, 2026-10-03 08:24 New York): the capture is stored as
+    // session 10-02 and its navPrice equals the 10-01 close. Synthetic values.
+    const auto d = nyse_sessions(QDate(2026, 10, 2), 4); // 09-29 .. 10-02
+    const BarSeries spy = closes(QStringLiteral("SPY"), d, {100.00, 99.80, 99.98, 100.72});
+    const QDateTime saturday(QDate(2026, 10, 3), QTime(12, 24), QTimeZone::UTC);
+    const QDateTime friday_pre_open(QDate(2026, 10, 2), QTime(13, 9), QTimeZone::UTC);
+    auto cap = [](const QDate& stored, double nav, const QDateTime& at, double aum = 8e11) {
+        FundCapture c;
+        c.effective_session = stored;
+        c.effective_rule = QStringLiteral("prior_completed_session_v1");
+        c.captured_at = at;
+        c.total_assets = aum;
+        c.nav = nav;
+        return c;
+    };
+    QString why;
+    const FundCapture dated = nav_dated(cap(d[3], 99.95, saturday), spy, &why);
+    QCOMPARE(dated.effective_session, d[2]);
+    QCOMPARE(dated.effective_rule, QLatin1String(kNavDatingRule));
+    QVERIFY(why.isEmpty());
+    // A quiet market (adjacent closes 1 bp apart) does not contradict the lag.
+    const BarSeries quiet = closes(QStringLiteral("Q"), d, {100.00, 100.00, 100.02, 100.03});
+    QCOMPARE(nav_dated(cap(d[3], 100.03, saturday), quiet, &why).effective_session, d[2]);
+    // A NAV that clearly matches the stored session's close contradicts the lag
+    // (live: GLD, whose NAV is struck at the London fix, not the U.S. close).
+    QVERIFY(!nav_dated(cap(d[3], 100.70, saturday), spy, &why).effective_session.isValid());
+    QCOMPARE(why, QStringLiteral("nav_lag_contradicted"));
+    QVERIFY(!nav_dated(cap(d[3], 103.0, saturday), spy, &why).effective_session.isValid());
+    QCOMPARE(why, QStringLiteral("nav_far_from_close"));
+    // After an NYSE close and before midnight New York time the lag is unobserved.
+    const QDateTime friday_evening(QDate(2026, 10, 2), QTime(21, 30), QTimeZone::UTC);
+    QVERIFY(!nav_dated(cap(d[3], 99.95, friday_evening), spy, &why).effective_session.isValid());
+    QCOMPARE(why, QStringLiteral("nav_lag_unvalidated_after_close"));
+    BarSeries gap = spy;
+    gap.bars.removeAt(2);
+    QVERIFY(!nav_dated(cap(d[3], 99.95, saturday), gap, &why).effective_session.isValid());
+    QCOMPARE(why, QStringLiteral("close_missing_for_nav_dating"));
+    // Closes restated by a later 2:1 split still date a NAV published before it.
+    BarSeries split = closes(QStringLiteral("S"), d, {50.00, 49.90, 49.99, 50.36});
+    split.bars[3].split = 2.0;
+    QCOMPARE(nav_dated(cap(d[3], 99.97, saturday), split, &why).effective_session, d[2]);
+
+    // Flow: the interval runs between the NAV sessions (09-30 -> 10-01), one
+    // session earlier than the stored ones, and E1 always carries the
+    // undated-AUM timing condition.
+    const QVector<FundCapture> caps{cap(d[2], 99.80, friday_pre_open, 8.00e11), cap(d[3], 99.95, saturday, 8.01e11)};
+    const EstimatedFlow e = estimate_flow(caps, spy, {}, d[3]);
+    QCOMPARE(e.capture_sessions, 2);
+    QCOMPARE(e.undated_captures, 0);
+    QCOMPARE(e.intervals.size(), 1);
+    QCOMPARE(e.intervals.first().from, d[1]);
+    QCOMPARE(e.intervals.first().to, d[2]);
+    QVERIFY(e.latest.usable());
+    bool timing = false;
+    for (const QString& r : e.latest.credibility_reasons)
+        timing = timing || r.startsWith(QLatin1String("source_timing_ambiguous"));
+    QVERIFY(timing);
+    // An undatable capture is counted and never used.
+    const EstimatedFlow u =
+        estimate_flow({cap(d[2], 99.80, friday_pre_open), cap(d[3], 103.0, saturday)}, spy, {}, d[3]);
+    QVERIFY(!u.latest.value);
+    QCOMPARE(u.undated_captures, 1);
+    QCOMPARE(u.latest.reason, QStringLiteral("nav_far_from_close"));
+
+    // Fund facts: the premium is measured against the NAV session's close (it
+    // read +0.77 % against the stored session's close before this rule).
+    const FundFacts f = fund_facts_from_captures({cap(d[3], 99.95, saturday)}, &spy, nullptr, d[3]);
+    QCOMPARE(f.assumed_session, d[2]);
+    QCOMPARE(f.session_rule, QLatin1String(kNavDatingRule));
+    QVERIFY(f.nav_premium_pct.value);
+    QVERIFY(std::abs(*f.nav_premium_pct.value - (99.98 / 99.95 - 1.0) * 100.0) < 1e-9);
+    const FundFacts g = fund_facts_from_captures({cap(d[3], 103.0, saturday)}, &spy, nullptr, d[3]);
+    QVERIFY(!g.nav_premium_pct.value);
+    QCOMPARE(g.nav_premium_pct.reason, QStringLiteral("nav_far_from_close"));
+    QVERIFY(g.session_rule.contains(QLatin1String("nav_undated")));
+}
+
 void TstEtfResearchCalc::capture_gap_is_one_interval() {
     const auto d = nyse_sessions(QDate(2026, 9, 30), 5);
-    BarSeries bars = series(QStringLiteral("F"), d, 100, 0.0);
-    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[3], 103e6, 100.0, 1.03e6)};
+    const BarSeries bars = closes(QStringLiteral("F"), d, {100.0, 100.25, 100.75, 101.25, 101.5});
+    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1e6), capture(d[3], 1.03e6 * 101.25, 101.25, 1.03e6)};
     const EstimatedFlow e = estimate_flow(caps, bars, {}, d[4]);
     QCOMPARE(e.intervals.size(), 1);
     QCOMPARE(e.intervals.first().sessions, 3);
     QVERIFY(e.intervals.first().flags.contains(QLatin1String(flag::kGap)));
     QVERIFY(e.latest.has_flag(flag::kGap));
-    QVERIFY(std::abs(*e.latest.value - 3e6) < 1e-3);
+    QVERIFY(std::abs(*e.latest.value - 0.03e6 * 101.25) < 1e-3);
     // The 20-session window is only partly covered and says so.
     QVERIFY(e.sum_20.has_flag(flag::kPartial));
     QVERIFY(e.coverage_20.value && *e.coverage_20.value < 100.0);
@@ -494,9 +573,10 @@ void TstEtfResearchCalc::one_capture_is_record_too_young() {
 
 void TstEtfResearchCalc::positive_negative_and_zero_flow() {
     const auto d = nyse_sessions(QDate(2026, 9, 30), 4);
-    BarSeries bars = series(QStringLiteral("F"), d, 100, 0.0);
-    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1.00e6), capture(d[1], 102e6, 100.0, 1.02e6),
-                                    capture(d[2], 101e6, 100.0, 1.01e6), capture(d[3], 101e6 * 1.01, 101.0, 1.01e6)};
+    const BarSeries bars = closes(QStringLiteral("F"), d, {100.0, 100.5, 100.25, 101.25});
+    const QVector<FundCapture> caps{capture(d[0], 100e6, 100.0, 1.00e6), capture(d[1], 1.02e6 * 100.5, 100.5, 1.02e6),
+                                    capture(d[2], 1.01e6 * 100.25, 100.25, 1.01e6),
+                                    capture(d[3], 1.01e6 * 101.25, 101.25, 1.01e6)};
     const EstimatedFlow e = estimate_flow(caps, bars, {}, d[3]);
     QCOMPARE(e.intervals.size(), 3);
     QVERIFY(*e.intervals[0].e1_implied_shares > 0);
@@ -504,7 +584,7 @@ void TstEtfResearchCalc::positive_negative_and_zero_flow() {
     QVERIFY(std::abs(*e.intervals[2].e1_implied_shares) < 1e-6); // price move only: zero, not missing
     QVERIFY(e.latest.has_flag(flag::kActualZero));
     QVERIFY(e.sum_5.value);
-    QVERIFY(std::abs(*e.sum_5.value - 1e6) < 1e-3);
+    QVERIFY(std::abs(*e.sum_5.value - (0.02e6 * 100.5 - 0.01e6 * 100.25)) < 1e-3);
 }
 
 void TstEtfResearchCalc::business_cycle_probabilities_and_missing_input() {
@@ -687,7 +767,15 @@ void TstEtfResearchCalc::snapshot_end_to_end_and_deterministic() {
         in.bars.insert(i.symbol, s);
         ++k;
     }
-    in.funds.insert(QStringLiteral("SPY"), {capture(d[318], 6e11, 700, 8.57e8), capture(d[319], 6.01e11, 700, 8.57e8)});
+    {
+        auto& sb = in.bars[QStringLiteral("SPY")].bars;
+        sb[316].close = sb[318].close * 0.992; // distinct closes so each NAV dates to one session
+        sb[317].close = sb[318].close * 0.996;
+        sb[319].close = sb[318].close * 1.004;
+        const double n0 = sb[318].close, n1 = sb[319].close;
+        in.funds.insert(QStringLiteral("SPY"),
+                        {capture(d[318], 8.57e8 * n0, n0, 8.57e8), capture(d[319], 8.58e8 * n1, n1, 8.57e8)});
+    }
     MeasuredMonth mm;
     mm.month = QDate(2026, 7, 1);
     mm.flow_usd = 0.0;

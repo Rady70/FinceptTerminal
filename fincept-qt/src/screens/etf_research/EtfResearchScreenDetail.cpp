@@ -107,9 +107,10 @@ void EtfResearchScreen::populate_detail() {
     o += etfr_row_html(tr("Trailing 12M distribution yield"), r->carry_12m);
     o += etfr_row_html(tr("IBKR vs Yahoo 1M price-return gap"), r->cross_check);
     o += QStringLiteral("<tr><td colspan='3' style='color:%1'><b>%2</b></td></tr>")
-             .arg(QLatin1String(t.accent), tr("Fund facts (Yahoo quote summary, capture %1, assumed session %2)")
-                                               .arg(r->fund.captured_at.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
-                                                    r->fund.assumed_session.toString(Qt::ISODate)));
+             .arg(QLatin1String(t.accent),
+                  tr("Fund facts (Yahoo quote summary, capture %1, session %2 by %3)")
+                      .arg(r->fund.captured_at.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                           r->fund.assumed_session.toString(Qt::ISODate), r->fund.session_rule.toHtmlEscaped()));
     o += etfr_row_html(tr("AUM"), r->fund.aum) + etfr_row_html(tr("NAV"), r->fund.nav);
     o += etfr_row_html(tr("Implied shares (AUM/NAV)"), r->fund.implied_shares) +
          etfr_row_html(tr("Reported shares"), r->fund.reported_shares) +
@@ -171,11 +172,17 @@ void EtfResearchScreen::populate_detail() {
         f += tr("<b>Measured SEC N-PORT monthly flow</b>: <span style='color:%1'>UNAVAILABLE (%2)</span><br/><br/>")
                  .arg(QLatin1String(t.text_tertiary), r->measured.latest.reason.toHtmlEscaped());
     f += QStringLiteral("<b>%1</b><br/>").arg(tr("Estimated creation/redemption from MarketLab's own captures"));
-    f += tr("Captures %1 on %2 sessions (%3 → %4). Agreement E1/E2: %5.<br/>")
+    f += tr("Captures %1 on %2 NAV-dated sessions (%3 → %4). Agreement E1/E2: %5.<br/>")
              .arg(r->est.captures)
              .arg(r->est.capture_sessions)
              .arg(r->est.first_session.toString(Qt::ISODate), r->est.last_session.toString(Qt::ISODate),
                   r->est.agreement.isEmpty() ? na() : r->est.agreement);
+    if (r->est.undated_captures > 0)
+        f += tr("<span style='color:%1'>%2 capture(s) not used: the NAV matched no session unambiguously "
+                "(%3).</span><br/>")
+                 .arg(QLatin1String(t.warning))
+                 .arg(r->est.undated_captures)
+                 .arg(r->est.undated_reason.toHtmlEscaped());
     f += QStringLiteral("<table cellspacing='0' cellpadding='3'>") +
          etfr_row_html(tr("E1 implied shares"), r->est.latest) +
          etfr_row_html(tr("E2 reported shares"), r->est.latest_e2) +
