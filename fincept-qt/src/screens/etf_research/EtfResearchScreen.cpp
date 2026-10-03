@@ -15,6 +15,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
@@ -1410,10 +1411,19 @@ void EtfResearchScreen::populate_flow() {
     for (const auto& t : tiles)
         with += t.value ? 1 : 0;
     flow_heat_->set_tiles(tiles, etfr_range(tiles), flow_mode_->currentText());
+    // Why the latest estimated interval is unavailable, counted over the funds.
+    QMap<QString, int> why;
+    for (const UniverseRow& r : snap_->rows)
+        if (r.inst.is_fund() && !r.est.latest.usable() && !r.est.latest.reason.isEmpty())
+            ++why[r.est.latest.reason];
+    QStringList why_text;
+    for (auto it = why.cbegin(); it != why.cend(); ++it)
+        why_text << QStringLiteral("%1 %2").arg(it.value()).arg(it.key());
     flow_note_->setText(tr("%1 of %2 funds have a value in this mode; hatched tiles have none (never zero). "
-                           "Estimated flow needs two captures on different sessions; each manual refresh adds one.")
+                           "Latest estimate unavailable: %3.")
                             .arg(with)
-                            .arg(tiles.size()));
+                            .arg(tiles.size())
+                            .arg(why_text.isEmpty() ? tr("none") : why_text.join(QStringLiteral(", "))));
     flow_note_->setToolTip(flow_note_->text());
     const QVector<Column> cols = {
         {tr("Ticker"), QString(), 52, true},
@@ -1422,7 +1432,11 @@ void EtfResearchScreen::populate_flow() {
         {tr("E1 latest"), tr("Δ(AUM/NAV) × NAV over the latest captured interval"), 84},
         {tr("E2"), tr("Δ(reported shares) × NAV"), 80},
         {tr("E3"), tr("AUM − AUM_prev × close ratio"), 80},
-        {tr("Agree"), tr("E1 vs E2 within 0.2% of prior AUM"), 70, true},
+        {tr("Agree"), tr("E1 vs E2 within 0.2% of prior AUM"), 110, true},
+        {tr("Why not"),
+         tr("Reason the latest E1 interval has no value (aum_not_updated = Yahoo re-served the "
+            "previous AUM while NAV moved; record_too_young = one capture session)"),
+         150, true},
         {tr("Cred"), QString(), 42},
         {tr("Est 5D"), QString(), 80},
         {tr("Est 20D"), QString(), 80},
@@ -1446,6 +1460,7 @@ void EtfResearchScreen::populate_flow() {
         c << etfr_text(r.inst.symbol, QString(), true) << meas << etfr_value(r.measured.sum_3m)
           << etfr_value(r.est.latest) << etfr_value(r.est.latest_e2) << etfr_value(r.est.latest_e3)
           << etfr_text(r.est.agreement.isEmpty() ? na() : r.est.agreement.toUpper())
+          << etfr_text(r.est.latest.usable() ? QString() : r.est.latest.reason)
           << etfr_cred(r.est.latest.usable() ? r.est.latest.credibility : Credibility::NotGraded,
                        r.est.latest.credibility_reasons)
           << etfr_value(r.est.sum_5) << etfr_value(r.est.sum_20) << etfr_value(r.est.pct_aum_20)
@@ -1453,7 +1468,7 @@ void EtfResearchScreen::populate_flow() {
           << etfr_text(QStringLiteral("%1/%2").arg(r.est.capture_sessions).arg(r.est.captures))
           << etfr_value(r.fund.aum) << etfr_value(r.fund.shares_gap_pct, 1) << etfr_value(r.fund.nav_premium_pct)
           << etfr_value(r.est.validation_vs_measured);
-        c[13].text = r.fund.aum.value ? fmt_usd(*r.fund.aum.value, false) : na();
+        c[14].text = r.fund.aum.value ? fmt_usd(*r.fund.aum.value, false) : na();
         rows << c;
         keys << r.inst.symbol;
         tags << etfr_row_tags(r);
