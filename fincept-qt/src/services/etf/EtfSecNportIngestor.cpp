@@ -485,11 +485,17 @@ void EtfSecNportIngestor::fetch_next_document() {
             fetch_next_document();
             return;
         }
-        // Identity and form checks come before anything is stored.
+        // Identity checks come before anything is stored, and a failed one
+        // refuses the document: values must never attach to the wrong fund or
+        // a document that is not an N-PORT report. Where only the SEC's listing
+        // metadata disagrees with the filed document (its form between NPORT-P
+        // and NPORT-P/A, its report date), or an amendment pointer cannot be
+        // read, the document's own values are kept and the disagreement is
+        // recorded (2026-10-04 data-preservation rule).
         QString refusal;
-        if (doc.submission_type != ref.form)
-            refusal = QStringLiteral("form_mismatch: submissions list %1, the document says %2")
-                          .arg(ref.form, doc.submission_type);
+        QStringList disagreements; // "code: detail"
+        if (doc.submission_type != QLatin1String("NPORT-P") && doc.submission_type != QLatin1String("NPORT-P/A"))
+            refusal = QStringLiteral("form_not_nport: the document says '%1'").arg(doc.submission_type);
         else if (doc.reg_cik.isEmpty())
             refusal = QStringLiteral("registrant_cik_missing: the document names no regCik");
         else if (doc.reg_cik != cik10_)
@@ -501,12 +507,27 @@ void EtfSecNportIngestor::fetch_next_document() {
             refusal = QStringLiteral("series_id_invalid: '%1'").arg(doc.series_id);
         else if (!doc.rep_pd_date.isValid())
             refusal = QStringLiteral("report_period_invalid: repPdDate '%1'").arg(doc.rep_pd_date_raw);
-        else if (!ref.report_date.isEmpty() && ref.report_date != doc.rep_pd_date.toString(Qt::ISODate))
-            refusal = QStringLiteral("report_date_mismatch: submissions list %1, the document says %2")
-                          .arg(ref.report_date, doc.rep_pd_date_raw);
-        else if (doc.submission_type == QLatin1String("NPORT-P/A") && !doc.amended_accession.isEmpty() &&
-                 !sec_valid_accession(doc.amended_accession))
-            refusal = QStringLiteral("amended_accession_invalid: '%1'").arg(doc.amended_accession);
+        NportDocument kept = doc;
+        SecFilingRef kept_ref = ref;
+        if (refusal.isEmpty()) {
+            if (doc.submission_type != ref.form) {
+                disagreements << QStringLiteral("form_listing_disagrees: the submissions list %1, the document says "
+                                                "%2; the document's form is used")
+                                     .arg(ref.form, doc.submission_type);
+                kept_ref.form = doc.submission_type;
+            }
+            if (!ref.report_date.isEmpty() && ref.report_date != doc.rep_pd_date.toString(Qt::ISODate))
+                disagreements << QStringLiteral("report_date_listing_disagrees: the submissions list %1, the document "
+                                                "says %2; the document's report period is used")
+                                     .arg(ref.report_date, doc.rep_pd_date_raw);
+            if (doc.submission_type == QLatin1String("NPORT-P/A") && !doc.amended_accession.isEmpty() &&
+                !sec_valid_accession(doc.amended_accession)) {
+                disagreements << QStringLiteral("amended_accession_unreadable: '%1'; the amendment's values are kept, "
+                                                "the filing it amends is unknown")
+                                     .arg(doc.amended_accession);
+                kept.amended_accession.clear();
+            }
+        }
         if (refusal.isEmpty()) {
             // A filed document does not change. An accession already stored
             // from other bytes is refused here, before anything is written:
@@ -544,12 +565,23 @@ void EtfSecNportIngestor::fetch_next_document() {
             return;
         }
         QString storage_error;
-        if (!persist_document(ref, doc, r.body, retrieval_id, retrieved_at, &storage_error)) {
+        if (!persist_document(kept_ref, kept, r.body, retrieval_id, retrieved_at, &storage_error)) {
             // Storage failing is not a property of this filing: stop, so the
             // run neither reports success nor spends further SEC requests.
             finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
                    QStringLiteral("%1 could not be stored: %2").arg(ref.accession, storage_error));
             return;
+        }
+        for (const QString& d : disagreements) {
+            auto issue = record_issue(
+                retrieval_id, QualityState::ReconciliationException, d.section(QLatin1Char(':'), 0, 0),
+                ref.accession + QStringLiteral(": ") + d.section(QLatin1Char(':'), 1).trimmed(), 0, doc.rep_pd_date);
+            if (issue.is_err()) {
+                finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
+                       QStringLiteral("%1: the issue could not be recorded: %2")
+                           .arg(ref.accession, QString::fromStdString(issue.error())));
+                return;
+            }
         }
         fetch_next_document();
     });

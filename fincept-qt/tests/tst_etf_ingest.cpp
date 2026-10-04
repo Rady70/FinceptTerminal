@@ -272,6 +272,7 @@ class TstEtfIngest : public QObject {
     void sec_missing_nport_fields_stay_missing();
     void sec_unknown_or_mismatched_identity_is_refused();
     void sec_report_date_not_month_end_keeps_flows_unmapped();
+    void sec_listing_metadata_disagreement_keeps_the_document();
     void sec_requires_a_declared_user_agent();
     void sec_invalid_request_touches_nothing();
     void sec_storage_failure_is_not_ok();
@@ -538,24 +539,59 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
         QCOMPARE(count("etf_retrievals", "detail_code = 'series_mismatch'"), 1);
     }
     {
-        // A registrant mismatch and a form mismatch are refused as well.
+        // A registrant mismatch is refused, and so is a document that is not an
+        // N-PORT report at all.
         FakeSec sec;
         serve_spy(sec);
         NportSpec wrong_cik = spy_2026_06();
         wrong_cik.cik = QStringLiteral("0000000001");
         sec.ok(kSpyDocJune, nport_xml(wrong_cik));
-        NportSpec wrong_form = spy_2026_03();
-        wrong_form.submission_type = QStringLiteral("NPORT-P/A");
-        sec.ok(kSpyDocMarch, nport_xml(wrong_form));
+        NportSpec not_nport = spy_2026_03();
+        not_nport.submission_type = QStringLiteral("N-CSR");
+        sec.ok(kSpyDocMarch, nport_xml(not_nport));
         const int observations_before = count("etf_observations"); // the blocks above share this database
         const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T13:00:00.000Z");
         QCOMPARE(s.filings_stored, 0);
         QCOMPARE(s.status, RetrievalStatus::SourceError);
         QCOMPARE(count("etf_retrievals", "detail_code = 'registrant_mismatch'"), 1);
-        QCOMPARE(count("etf_retrievals", "detail_code = 'form_mismatch'"), 1);
+        QCOMPARE(count("etf_retrievals", "detail_code = 'form_not_nport'"), 1);
         QCOMPARE(count("etf_observations"), observations_before);
         QCOMPARE(count("etf_reporting_entities", "cik = '0000884394'"), 0);
     }
+}
+
+void TstEtfIngest::sec_listing_metadata_disagreement_keeps_the_document() {
+    // The SEC's listing and the filed document disagree on metadata only: the
+    // document's own form and report period are used, its values are kept, and
+    // each disagreement is recorded. An unreadable amendment pointer keeps the
+    // amendment's values with its lineage unknown.
+    FakeSec sec;
+    sec.ok(kSpySubs,
+           submissions_json(
+               QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+               {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-05-31", "2026-08-28T12:25:47.000Z"},
+                {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}));
+    sec.ok(kSpyDocJune, nport_xml(spy_2026_06())); // the document says 2026-06-30
+    NportSpec amended = spy_2026_03();
+    amended.submission_type = QStringLiteral("NPORT-P/A"); // listed as NPORT-P
+    amended.amended_accession = QStringLiteral("not-an-accession");
+    sec.ok(kSpyDocMarch, nport_xml(amended));
+    const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.filings_stored, 2);
+    QCOMPARE(s.filings_skipped, 0);
+    QCOMPARE(count("etf_observations", "measure = 'nport_net_assets' AND effective_date = '2026-06-30'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'report_date_listing_disagrees' AND state = "
+                                           "'RECONCILIATION_EXCEPTION'"),
+             1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'form_listing_disagrees'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'amended_accession_unreadable'"), 1);
+    QCOMPARE(scalar("SELECT form || '|' || amends_accession FROM etf_sec_filings WHERE accession = "
+                    "'0001410368-26-055357'"),
+             QStringLiteral("NPORT-P/A|"));
+    QCOMPARE(count("etf_observations", "source_document = '0001410368-26-055357' AND revision_state = "
+                                       "'amended_filing'"),
+             10);
 }
 
 void TstEtfIngest::sec_report_date_not_month_end_keeps_flows_unmapped() {

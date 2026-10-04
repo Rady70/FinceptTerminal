@@ -161,11 +161,13 @@ struct SecSubmissions {
     QVector<SecOlderPage> older_pages;
 };
 
-/// "2026-08-28T12:25:47.000Z" → UTC instant. Only an explicit UTC designator
-/// is accepted: a local or offset-less time would be a guess.
+/// "2026-08-28T12:25:47.000Z" → UTC instant. A time with an explicit UTC
+/// designator or an explicit offset ("2026-08-28T08:25:47-04:00") names one
+/// instant and is accepted; a local or offset-less time would be a guess.
 inline QDateTime sec_parse_acceptance(const QString& raw) {
     const QString t = raw.trimmed();
-    if (!t.endsWith(QLatin1Char('Z')))
+    static const QRegularExpression kOffset(QStringLiteral("[+-]\\d{2}:\\d{2}$"));
+    if (!t.endsWith(QLatin1Char('Z')) && !kOffset.match(t).hasMatch())
         return {};
     QDateTime dt = QDateTime::fromString(t, Qt::ISODateWithMs);
     if (!dt.isValid())

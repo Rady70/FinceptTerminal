@@ -161,6 +161,12 @@ void TstEtfSecParse::submissions_parse_with_exact_acceptance() {
     // An offset-less time is refused rather than guessed.
     QVERIFY(!sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47.000")).isValid());
     QVERIFY(sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47Z")).isValid());
+    // An explicit offset names the same instant and is accepted.
+    QCOMPARE(sec_parse_acceptance(QStringLiteral("2026-08-28T08:25:47-04:00")),
+             QDateTime(QDate(2026, 8, 28), QTime(12, 25, 47), QTimeZone::UTC));
+    QCOMPARE(sec_parse_acceptance(QStringLiteral("2026-08-28T14:25:47.000+02:00")),
+             QDateTime(QDate(2026, 8, 28), QTime(12, 25, 47), QTimeZone::UTC));
+    QVERIFY(!sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47 EDT")).isValid());
     // Older pages carry the arrays at the top level.
     const SecSubmissions page =
         parse_sec_submissions(submissions_page_json({{"0002071691-25-007634", "NPORT-P", "2025-11-26", "2025-09-30",
