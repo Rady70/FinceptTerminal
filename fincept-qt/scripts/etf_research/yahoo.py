@@ -109,11 +109,14 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
     ``start`` (an ISO date) requests only the sessions from that date: an
     incremental delivery, marked so the store can join it to stored history.
 
-    A batch request that fails as a whole does not fail every symbol in it: its
-    symbols are retried one at a time, so a transient error or one problem
-    symbol does not cost the others. Two single retries failing in a row are
-    taken as a provider-wide failure (e.g. throttling): the retries stop and the
-    symbols not retried keep the batch's error.
+    yfinance fetches each symbol of a batch on its own and does not raise for a
+    symbol that fails: it records the error in ``shared._ERRORS`` and returns no
+    bars for it. Such a symbol (no bars and a provider error), and every symbol
+    of a batch request that raised as a whole, is retried alone once, so a
+    transient error (throttling, a timeout) does not cost it this refresh. Two
+    single retries failing in a row are taken as a provider-wide failure: the
+    retries stop, and the symbols not retried keep their first error. A symbol
+    that answered without a completed bar and without an error is not retried.
     """
     import pandas as pd  # noqa: F401  (yfinance returns pandas frames)
 
@@ -129,58 +132,72 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
             errors = dict(getattr(yf_module, "shared")._ERRORS)
         except Exception:
             errors = {}
-        return batch, raw, errors
+        return raw, errors
+
+    def provider_error(s, errors):
+        return errors.get(s) or errors.get(s.upper())
 
     out = {}
 
-    def fail(s, exc, note=""):
-        out[s] = {"status": "FAILED", "detail": f"download failed: {exc}{note}", "rows": []}
+    def convert(s, raw, errors):
+        """Store one symbol's result in ``out``; True when it has bars."""
+        try:
+            if raw is None or len(raw) == 0:
+                frame = None
+            elif hasattr(raw.columns, "levels"):
+                frame = raw.xs(s, axis=1, level=1) if s in raw.columns.get_level_values(1) else None
+            else:
+                frame = raw
+            conv = frame_to_bars(s, frame, retrieved_at_utc)
+        except Exception as exc:
+            out[s] = {"status": "FAILED", "detail": f"conversion failed: {exc}", "rows": []}
+            return False
+        if not conv["rows"]:
+            why = provider_error(s, errors) or "no completed session with a close was returned"
+            out[s] = {"status": "FAILED", "detail": str(why), "rows": [],
+                      "dropped_no_close": conv["dropped_no_close"],
+                      "in_progress_excluded": conv["in_progress_excluded"],
+                      "actions_without_close": conv["actions_without_close"]}
+            return False
+        out[s] = {"status": "OK", "detail": "", "period": period, **conv}
+        if start:
+            out[s]["incremental"] = True
+            out[s]["requested_start"] = start
+        return True
+
+    def fail(s, why, note=""):
+        out[s] = {"status": "FAILED", "detail": f"download failed: {why}{note}", "rows": []}
 
     syms = sorted(set(symbols))
     for offset in range(0, len(syms), chunk):
         batch = syms[offset:offset + chunk]
         try:
-            fetched = [fetch(batch)]
+            raw, errors = fetch(batch)
         except Exception as exc:  # the whole request failed
-            fetched = []
-            if len(batch) == 1:
-                fail(batch[0], exc)
-            failed_in_row = 0
-            for i, s in enumerate(batch if len(batch) > 1 else []):
-                if failed_in_row == 2:
-                    for rest in batch[i:]:
-                        fail(rest, exc, " (not retried alone: two single retries failed in a row)")
-                    break
-                try:
-                    fetched.append(fetch([s]))
-                    failed_in_row = 0
-                except Exception as single_exc:
-                    failed_in_row += 1
-                    fail(s, single_exc, " (retried alone after the batch request failed)")
-        for part, raw, errors in fetched:
-            for s in part:
-                try:
-                    if raw is None or len(raw) == 0:
-                        frame = None
-                    elif hasattr(raw.columns, "levels"):
-                        frame = raw.xs(s, axis=1, level=1) if s in raw.columns.get_level_values(1) else None
-                    else:
-                        frame = raw
-                    conv = frame_to_bars(s, frame, retrieved_at_utc)
-                except Exception as exc:
-                    out[s] = {"status": "FAILED", "detail": f"conversion failed: {exc}", "rows": []}
-                    continue
-                if not conv["rows"]:
-                    why = errors.get(s) or "no completed session with a close was returned"
-                    out[s] = {"status": "FAILED", "detail": str(why), "rows": [],
-                              "dropped_no_close": conv["dropped_no_close"],
-                              "in_progress_excluded": conv["in_progress_excluded"],
-                              "actions_without_close": conv["actions_without_close"]}
-                    continue
-                out[s] = {"status": "OK", "detail": "", "period": period, **conv}
-                if start:
-                    out[s]["incremental"] = True
-                    out[s]["requested_start"] = start
+            for s in batch:
+                fail(s, exc)
+            retry = list(batch)
+        else:
+            retry = [s for s in batch if not convert(s, raw, errors) and provider_error(s, errors)]
+        failed_in_row = 0
+        for i, s in enumerate(retry):
+            if failed_in_row == 2:
+                for rest in retry[i:]:
+                    out[rest]["detail"] += " (not retried alone: two single retries failed in a row)"
+                break
+            try:
+                raw, errors = fetch([s])
+            except Exception as exc:
+                failed_in_row += 1
+                fail(s, exc, " (retried alone)")
+                continue
+            if convert(s, raw, errors):
+                failed_in_row = 0
+            elif provider_error(s, errors):
+                failed_in_row += 1
+                out[s]["detail"] += " (retried alone)"
+            else:
+                failed_in_row = 0  # it answered, without a completed bar
     return out
 
 
@@ -210,23 +227,33 @@ def fund_snapshot(symbol: str, ticker_factory=None) -> dict:
     if not fields:
         out["quote_status"] = "FAILED"
         out["detail"] = out["detail"] or "no quote-summary fields returned"
+    # Holdings and sector weights come from one yfinance parse of Yahoo's fund
+    # profile. yfinance gives up on the whole profile when it cannot read it
+    # (e.g. one listed holding without a symbol raises "No Fund data found"; other
+    # errors are logged and leave ``top_holdings`` as None). That is a failed
+    # read, not a fund that publishes nothing: it is FAILED and the item PARTIAL
+    # (MarketLab cannot read the rest without modifying yfinance; a recorded
+    # limitation). Only a successful, empty parse is UNAVAILABLE.
     try:
         fd = tk.funds_data
         th = fd.top_holdings
+        if th is None:
+            raise ValueError("yfinance returned no holdings table (the fund profile could not be parsed)")
         holdings = []
-        if th is not None and len(th) > 0:
-            for rank, (hsym, rec) in enumerate(th.iterrows(), start=1):
-                weight = _finite(rec.get("Holding Percent"))
-                holdings.append([rank, str(hsym), str(rec.get("Name") or ""), weight])
+        for rank, (hsym, rec) in enumerate(th.iterrows(), start=1):
+            weight = _finite(rec.get("Holding Percent"))
+            holdings.append([rank, str(hsym), str(rec.get("Name") or ""), weight])
         sw = fd.sector_weightings or {}
         out["holdings"] = holdings
         out["sector_weights"] = {str(k): _finite(v) for k, v in sw.items() if _finite(v) is not None}
+        # A sector weight that is not a number is left out alone, counted.
+        out["sector_weights_unparseable"] = sum(1 for v in sw.values() if _finite(v) is None)
         out["holdings_status"] = "OK" if (holdings or out["sector_weights"]) else "UNAVAILABLE"
         if out["holdings_status"] == "UNAVAILABLE":
             out["holdings_detail"] = "Yahoo published no holdings or sector weights for this fund"
     except Exception as exc:
-        out["holdings_status"] = "UNAVAILABLE"
-        out["holdings_detail"] = f"fund holdings unavailable: {exc}"
+        out["holdings_status"] = "FAILED"
+        out["holdings_detail"] = f"fund holdings could not be read: {exc}"
     if out["quote_status"] == "FAILED" and out["holdings_status"] != "OK":
         out["status"] = "FAILED"  # nothing of the fund was obtained
     return out

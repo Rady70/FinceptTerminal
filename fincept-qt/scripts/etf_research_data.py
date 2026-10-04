@@ -97,18 +97,23 @@ def fetch_cftc(markets, report: str, futures_only: bool, wrapper=None) -> dict:
     items = {}
     for mk in res.get("data", {}).get("markets", []):
         rows = []
+        undated = 0
         for r in mk.get("rows", []):
             day = str(r.get("report_date_as_yyyy_mm_dd") or "")[:10]
             if not day:
+                undated += 1  # cannot be placed in time: left out alone, counted
                 continue
             rows.append([day, _num(r.get("open_interest_all")), _num(r.get("non_commercial_long")),
                          _num(r.get("non_commercial_short"))])
-        ok = any(row[1] is not None for row in rows)
+        # Each field stands on its own: a market is usable when any of open
+        # interest and the non-commercial long/short positions has a value.
+        ok = any(v is not None for row in rows for v in row[1:])
         items[mk.get("market_key")] = {
             "status": "OK" if ok else "FAILED",
-            "detail": mk.get("refresh_error") or ("" if ok else "no CFTC rows for this market"),
+            "detail": mk.get("refresh_error") or ("" if ok else "no CFTC position or open interest for this market"),
             "source_status": mk.get("status", ""),
             "rows": rows,
+            "unparseable_points": undated,
             "retrieved_at": _iso(_now()),
         }
     for m in markets:

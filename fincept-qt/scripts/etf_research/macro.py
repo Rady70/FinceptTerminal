@@ -30,11 +30,13 @@ WORLD_BANK_MAX_PAGES = 50
 UNPARSEABLE_EXAMPLES = 3
 
 
-def parse_fred_rows(text: str) -> dict:
+def parse_fred_rows(text: str, series_id: str | None = None) -> dict:
     """``fredgraph.csv`` into rows [iso_date, value], row by row.
 
     Raises ``ValueError`` only when the response itself is unusable (empty, or
-    no value column). A '.' or empty value is a missing observation (counted).
+    no value column) or, given ``series_id``, names another series in its value
+    column: the response's identity is then not the request's, and nothing of
+    it is used. A '.' or empty value is a missing observation (counted).
     A line whose date or value cannot be read is unparseable: counted, kept as
     an example, left out; the other rows stand.
     """
@@ -44,6 +46,8 @@ def parse_fred_rows(text: str) -> dict:
     header = [column.strip() for column in lines[0].split(",")]
     if len(header) < 2:
         raise ValueError(f"FRED response has no value column: {lines[0]!r}")
+    if series_id is not None and header[1].upper() != series_id.upper():
+        raise ValueError(f"FRED response is for series {header[1]!r}, not the requested {series_id!r}")
     rows, missing, bad = [], 0, []
     for line in lines[1:]:
         fields = [field.strip() for field in line.split(",")]
@@ -80,7 +84,7 @@ def fred_series(series_id: str, transport: Transport | None = None) -> dict:
     except TransportError as exc:
         return {"status": "FAILED", "detail": f"FRED {series_id} request failed: {exc}", "rows": [], "url": url}
     try:
-        parsed = parse_fred_rows(text)
+        parsed = parse_fred_rows(text, series_id)
     except ValueError as exc:
         return {"status": "FAILED", "detail": f"FRED {series_id} response could not be parsed: {exc}", "rows": [],
                 "url": url}
@@ -108,10 +112,17 @@ def parse_world_bank(payload) -> dict:
         raise ValueError(f"World Bank error: {meta.get('message')}")
     rows, bad = [], []
     for rec in payload[1] or []:
-        country = (rec.get("country") or {}).get("id") or ""
+        # A record that cannot be placed (not an object, no country, no year) is
+        # left out alone and counted with the unparseable ones, never silently.
+        if not isinstance(rec, dict):
+            bad.append(f"record {rec!r:.40}")
+            continue
+        country_obj = rec.get("country")
+        country = (country_obj.get("id") or "") if isinstance(country_obj, dict) else ""
         year = str(rec.get("date") or "")
         value = rec.get("value")
         if not country or not year.isdigit():
+            bad.append(f"{country or '?'} {year or '?'}: no country or year")
             continue
         if value is None:
             rows.append([country, int(year), None])  # the source's own "no value"

@@ -183,6 +183,67 @@ class DownloadHistoryTests(unittest.TestCase):
         self.assertEqual({k: v["status"] for k, v in out.items()}, {"XLB": "FAILED", "XLE": "FAILED"})
         self.assertIn("HTTP 429", out["XLB"]["detail"])
 
+    class _YfLike:
+        """yfinance 0.2.66's ``download`` as observed: each symbol is fetched on its
+        own; a failing symbol is recorded in ``shared._ERRORS`` (reset on every
+        call, keyed by the upper-case ticker) and comes back as NaN columns. It
+        does not raise. ``plan`` maps a symbol to how many of its calls fail."""
+
+        def __init__(self, plan):
+            self.plan = dict(plan)
+            self.calls = []
+            self.shared = type("S", (), {"_ERRORS": {}})()
+
+        def download(self, batch, **kwargs):
+            import pandas as pd
+
+            self.calls.append(list(batch))
+            self.shared._ERRORS = {}
+            data = {}
+            for s in batch:
+                close = 10.0
+                if self.plan.get(s, 0) > 0:
+                    self.plan[s] -= 1
+                    self.shared._ERRORS[s.upper()] = "YFRateLimitError('Too Many Requests. Rate limited.')"
+                    close = float("nan")
+                data[("Close", s)] = [close]
+                data[("Volume", s)] = [1e6]
+            frame = pd.DataFrame(data, index=pd.DatetimeIndex([pd.Timestamp(2026, 10, 1)]))
+            frame.columns = pd.MultiIndex.from_tuples(list(data), names=["Price", "Ticker"])
+            return frame
+
+    def test_symbol_failed_by_the_provider_is_retried_alone(self):
+        # The batch call succeeds; yfinance recorded a transient error for XLE
+        # only. XLE is retried alone and delivered; the others are not re-fetched.
+        fake = self._YfLike({"XLE": 1})
+        out = yahoo.download_history(["XLB", "XLE", "XLF"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()}, {"XLB": "OK", "XLE": "OK", "XLF": "OK"})
+        self.assertEqual(fake.calls, [["XLB", "XLE", "XLF"], ["XLE"]])
+
+    def test_provider_errors_stop_retrying_after_two_in_a_row(self):
+        fake = self._YfLike({"A": 2, "B": 2, "C": 2, "D": 2})
+        out = yahoo.download_history(["A", "B", "C", "D"], "2y", self.AT, yf_module=fake)
+        self.assertTrue(all(v["status"] == "FAILED" for v in out.values()))
+        self.assertEqual(fake.calls, [["A", "B", "C", "D"], ["A"], ["B"]])
+        self.assertIn("Too Many Requests", out["A"]["detail"])
+        self.assertIn("retried alone", out["A"]["detail"])
+        self.assertIn("not retried alone", out["D"]["detail"])
+
+    def test_symbol_without_bars_and_without_error_is_not_retried(self):
+        fake = self._YfLike({})
+        fake_download = fake.download
+
+        def no_bars_for_xle(batch, **kwargs):
+            frame = fake_download(batch, **kwargs)
+            if ("Close", "XLE") in frame.columns:
+                frame[("Close", "XLE")] = float("nan")  # answered, no completed bar, no error
+            return frame
+
+        fake.download = no_bars_for_xle
+        out = yahoo.download_history(["XLB", "XLE"], "2y", self.AT, yf_module=fake)
+        self.assertEqual(out["XLE"]["status"], "FAILED")
+        self.assertEqual(fake.calls, [["XLB", "XLE"]])
+
     def test_failed_batch_is_retried_symbol_by_symbol(self):
         # The batch request fails as a whole (here one symbol breaks it); retried
         # alone, the other symbols are delivered and only the bad one fails.
@@ -294,19 +355,38 @@ class FundSnapshotTests(unittest.TestCase):
         self.assertEqual(out["holdings"], [[1, "LIN", "Linde PLC", 0.1313], [2, "NEM", "Newmont", None]])
         self.assertEqual(out["sector_weights"], {"basic_materials": 0.84, "consumer_cyclical": 0.16, "energy": 0.0})
         self.assertEqual(out["holdings_status"], "OK")
+        self.assertEqual(out["sector_weights_unparseable"], 1)  # "tech": NaN, left out alone and counted
 
     def test_holdings_failure_keeps_the_quote_fields(self):
         out = yahoo.fund_snapshot("GLD", ticker_factory=lambda s: _Ticker({"totalAssets": 1.0},
                                                                           _FundsData(None, {}, fail=True)))
         self.assertEqual(out["status"], "OK")
-        self.assertEqual(out["holdings_status"], "UNAVAILABLE")
+        self.assertEqual(out["holdings_status"], "FAILED")  # a failed read, not "published none"
         self.assertIn("404", out["holdings_detail"])
+
+    def test_unreadable_fund_profile_is_a_failed_read_not_unavailable(self):
+        # yfinance raises "No Fund data found" when one listed holding lacks a
+        # symbol, and leaves top_holdings None on other parse errors: both are a
+        # failed read. Only a successful, empty parse means Yahoo published none.
+        class Raising(_FundsData):
+            @property
+            def top_holdings(self):
+                raise RuntimeError("YFDataException: No Fund data found.")
+
+        info = {"totalAssets": 1.0}
+        raised = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, Raising(None, {})))
+        self.assertEqual((raised["status"], raised["holdings_status"]), ("OK", "FAILED"))
+        self.assertIn("No Fund data found", raised["holdings_detail"])
+        unparsed = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, _FundsData(None, None)))
+        self.assertEqual(unparsed["holdings_status"], "FAILED")
+        empty = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, _FundsData(_Holdings([]), {})))
+        self.assertEqual(empty["holdings_status"], "UNAVAILABLE")
 
     def test_quote_failure_and_empty_quote(self):
         # Nothing obtained from either surface: the fund fails.
         failed = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker(fail=True))
         self.assertEqual((failed["status"], failed["quote_status"]), ("FAILED", "FAILED"))
-        self.assertEqual(failed["holdings_status"], "UNAVAILABLE")  # attempted, not assumed
+        self.assertEqual(failed["holdings_status"], "FAILED")  # attempted, and the read failed
         empty = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker({}))
         self.assertEqual(empty["status"], "FAILED")
 
@@ -370,6 +450,23 @@ class MacroTests(unittest.TestCase):
         self.assertEqual(out["rows"], [["TH", 2025, 2.5], ["TH", 2024, None]])
         self.assertEqual(out["countries_absent"], ["TW"])
         self.assertEqual(out["source_last_updated"], "2026-07-13")
+
+    def test_fred_response_for_another_series_is_refused(self):
+        # The value column names the series; one that is not the requested
+        # series means the response's identity is wrong: nothing is used.
+        out = macro.fred_series("DGS10", transport=_FakeTransport(text="observation_date,DGS2\n2026-09-30,3.6\n"))
+        self.assertEqual(out["status"], "FAILED")
+        self.assertIn("'DGS2', not the requested 'DGS10'", out["detail"])
+
+    def test_world_bank_record_without_country_or_year_is_counted(self):
+        payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-01"},
+                   [{"country": {"id": "TH"}, "date": "2024", "value": 2.5},
+                    {"country": {"id": ""}, "date": "2024", "value": 1.0},
+                    {"country": {"id": "JP"}, "date": "n/a", "value": 1.0},
+                    "not a record"]]
+        parsed = macro.parse_world_bank(payload)
+        self.assertEqual(parsed["rows"], [["TH", 2024, 2.5]])
+        self.assertEqual(len(parsed["unparseable"]), 3)
 
     def test_world_bank_bad_value_is_left_out_not_the_indicator(self):
         payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-13"},
@@ -438,6 +535,24 @@ class CftcStageTests(unittest.TestCase):
         self.assertEqual(items["bitcoin"]["status"], "FAILED")
         self.assertIn("503", items["bitcoin"]["detail"])
         self.assertEqual(items["ether"]["status"], "FAILED")  # never silently dropped
+
+    def test_market_without_open_interest_keeps_its_positions(self):
+        # Open interest missing everywhere, positions present: the market is
+        # usable (each field stands on its own). An undated row is counted.
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "silver", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": None,
+                 "non_commercial_long": 40000, "non_commercial_short": 30000},
+                {"report_date_as_yyyy_mm_dd": None, "open_interest_all": 1,
+                 "non_commercial_long": 1, "non_commercial_short": 1}]},
+            {"market_key": "copper", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": None,
+                 "non_commercial_long": None, "non_commercial_short": None}]}]}}
+        items = etf_research_data.fetch_cftc(["silver", "copper"], "legacy", True, wrapper=_FakeCftc(answer))
+        self.assertEqual(items["silver"]["status"], "OK")
+        self.assertEqual(items["silver"]["rows"], [["2026-09-22", None, 40000.0, 30000.0]])
+        self.assertEqual(items["silver"]["unparseable_points"], 1)
+        self.assertEqual(items["copper"]["status"], "FAILED")
 
     def test_tool_failure_fails_every_market(self):
         items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(error=RuntimeError("boom")))
