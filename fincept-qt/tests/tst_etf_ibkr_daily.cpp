@@ -57,7 +57,7 @@ class TstEtfIbkrDaily : public QObject {
     void newest_bar_before_last_completed_session_is_stale();
     void in_progress_session_is_rejected();
     void early_close_session_is_completed_at_one_pm();
-    void untrusted_bar_dates_refuse_the_response();
+    void non_session_bars_are_left_out_unless_repeated();
     void wrapper_stale_rule_is_kept();
     void entitlement_block_is_not_an_error();
     void tws_unavailable_is_a_source_error();
@@ -66,7 +66,7 @@ class TstEtfIbkrDaily : public QObject {
     void contract_identity_is_checked();
     void an_ordinary_stock_is_not_an_etf();
     void uncertain_rows_and_fields_are_rejected_alone();
-    void conflicting_duplicate_refuses_the_response();
+    void conflicting_bars_drop_only_their_date();
     void withheld_series_keeps_its_valid_rows();
 };
 
@@ -174,19 +174,33 @@ void TstEtfIbkrDaily::early_close_session_is_completed_at_one_pm() {
     QCOMPARE(count_state(b, QualityState::InProgressSession), 1);
 }
 
-void TstEtfIbkrDaily::untrusted_bar_dates_refuse_the_response() {
-    // A bar on a holiday or a weekend means the response's dating cannot be
-    // trusted: the whole response is refused, and the bar is never re-dated.
+void TstEtfIbkrDaily::non_session_bars_are_left_out_unless_repeated() {
+    // One bar on a holiday or a weekend is more likely a calendar gap or one
+    // misdated bar than a misdated response: it alone is left out (never
+    // re-dated) and recorded; the nine valid sessions are kept.
     for (const char* date : {"20260907", "20260920"}) { // Labor Day, a Sunday
         QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
         bars.append(BarSpec{QString::fromLatin1(date)});
         const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.accepted.size(), 9);
+        int recorded = 0;
+        for (const auto& i : a.issues)
+            recorded +=
+                i.code == QLatin1String("bar_on_non_session_date") && i.detail.contains(QString::fromLatin1(date)) ? 1
+                                                                                                                   : 0;
+        QCOMPARE(recorded, 1);
+    }
+    {
+        // Two or more suggest the response's dates are shifted: none is used.
+        QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
+        bars.append(BarSpec{QStringLiteral("20260919")}); // Saturday
+        bars.append(BarSpec{QStringLiteral("20260920")}); // Sunday
+        const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
         QCOMPARE(a.status, RetrievalStatus::SourceError);
         QCOMPARE(a.detail_code, QStringLiteral("bar_on_non_session_date"));
-        QVERIFY(a.detail.contains(QString::fromLatin1(date)));
+        QVERIFY(a.detail.contains(QStringLiteral("20260919")) && a.detail.contains(QStringLiteral("20260920")));
         QVERIFY(a.accepted.isEmpty());
-        QVERIFY(a.issues.isEmpty());
-        QVERIFY(a.window_days.isEmpty());
     }
     // A bar the calendar does not cover, or a completed session after the
     // requested end, is excluded on its own; the nine valid sessions are kept.
@@ -354,17 +368,26 @@ void TstEtfIbkrDaily::uncertain_rows_and_fields_are_rejected_alone() {
     }
 }
 
-void TstEtfIbkrDaily::conflicting_duplicate_refuses_the_response() {
-    // Two different bars for one date: the response's dating cannot be trusted.
+void TstEtfIbkrDaily::conflicting_bars_drop_only_their_date() {
+    // Two different bars for one date: which is right is unknown, so neither is
+    // used; that date is recorded (and its session is missing), the other eight
+    // sessions are kept.
     QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
     BarSpec other = bars[3];
     other.close = 120.0;
     bars.append(other);
     const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
-    QCOMPARE(a.status, RetrievalStatus::SourceError);
-    QCOMPARE(a.detail_code, QStringLiteral("bar_dates_conflicting"));
-    QVERIFY(a.accepted.isEmpty());
-    QVERIFY(a.issues.isEmpty());
+    QCOMPARE(a.status, RetrievalStatus::Ok);
+    QCOMPARE(a.accepted.size(), 8);
+    const QDate dropped = QDate::fromString(bars[3].date, QStringLiteral("yyyyMMdd"));
+    QVERIFY(dropped.isValid());
+    int conflicts = 0;
+    for (const auto& i : a.issues)
+        conflicts += i.code == QLatin1String("bar_dates_conflicting") && i.session_date == dropped ? 1 : 0;
+    QCOMPARE(conflicts, 1);
+    for (const auto& b : a.accepted)
+        QVERIFY(b.session_date != dropped);
+    QCOMPARE(count_state(a, QualityState::Missing), 1);
 }
 
 void TstEtfIbkrDaily::withheld_series_keeps_its_valid_rows() {
@@ -403,6 +426,27 @@ void TstEtfIbkrDaily::withheld_series_keeps_its_valid_rows() {
         for (const auto& i : a.issues)
             excluded += i.code == QLatin1String("bar_row_excluded") && i.session_date == QDate(2026, 9, 23) ? 1 : 0;
         QCOMPARE(excluded, 1);
+    }
+    {
+        // A delivered-but-unusable volume (the wrapper passes it as text in
+        // `volume_unusable`) is stored as unparseable, not as missing.
+        QJsonObject p =
+            withheld("VALUES_INVALID", "BAR_VOLUME_NEGATIVE",
+                     QJsonArray{QJsonObject{
+                         {"index", 2}, {"date", "20260916"}, {"reason", "BAR_VOLUME_NEGATIVE"}, {"scope", "volume"}}});
+        QJsonArray rows = p.value("retained_bars").toArray();
+        QJsonObject r = rows.at(2).toObject();
+        r.remove("volume");
+        r.insert("volume_unusable", "-5.0");
+        rows.replace(2, r);
+        p.insert("retained_bars", rows);
+        const auto a = assess(p);
+        QCOMPARE(a.accepted.size(), 7);
+        QCOMPARE(a.accepted[2].volume.state, ValueState::Unparseable);
+        int unusable = 0;
+        for (const auto& i : a.issues)
+            unusable += i.code == QLatin1String("bar_field_unusable") ? 1 : 0;
+        QCOMPARE(unusable, 1);
     }
     {
         // Without retained rows nothing is kept, as before.

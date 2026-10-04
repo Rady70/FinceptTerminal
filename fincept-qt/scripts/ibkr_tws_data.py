@@ -1099,6 +1099,12 @@ def _bar_payload(row: dict[str, Any], *, with_volume: bool = True) -> dict[str, 
         bar["timestamp"] = timestamp
     for field in ("open", "high", "low", "close", "volume", "wap"):
         if field == "volume" and not with_volume:
+            # A volume that was delivered but cannot be used (negative or not a
+            # finite number) is passed on as text, so the consumer stores it as
+            # unparseable rather than missing; an absent or unset one is omitted.
+            raw = row.get("volume")
+            if raw is not None and not _is_unset(raw):
+                bar["volume_unusable"] = str(raw)
             continue
         value = row.get(field)
         if isinstance(value, (int, float)) and not isinstance(value, bool):

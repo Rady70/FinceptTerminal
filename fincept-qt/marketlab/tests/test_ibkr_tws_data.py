@@ -347,6 +347,33 @@ class IBKRTWSReadOnlyAdapter:
 '''
 
 
+class RetainedRowVolumeTest(unittest.TestCase):
+    """A delivered-but-unusable volume reaches the consumer as text, so it is
+    stored as unparseable; an absent or IBKR-unset one stays missing."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("ibkr_tws_data_under_test", WRAPPER)
+        cls.wrapper = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.wrapper  # dataclasses resolve their module by name
+        spec.loader.exec_module(cls.wrapper)
+
+    def test_unusable_volume_is_passed_as_text(self) -> None:
+        def row(day: str, volume):
+            return {"date": day, "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": volume}
+
+        retained, problems = self.wrapper._retained_history(
+            [row("20260914", -5), row("20260915", float("inf")), row("20260916", -1), row("20260917", None),
+             row("20260918", 1000)])
+        self.assertEqual([r.get("volume_unusable") for r in retained], ["-5", "inf", None, None, None])
+        self.assertEqual([r.get("volume") for r in retained], [None, None, None, None, 1000.0])
+        self.assertEqual([p["reason"] for p in problems],
+                         ["BAR_VOLUME_NEGATIVE", "BAR_VOLUME_INVALID", "BAR_VOLUME_MISSING_OR_UNSET",
+                          "BAR_VOLUME_MISSING_OR_UNSET"])
+
+
 class IbkrWrapperTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

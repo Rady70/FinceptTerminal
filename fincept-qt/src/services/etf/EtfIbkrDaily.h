@@ -240,11 +240,19 @@ inline IbkrDailyEnvelope parse_ibkr_daily_envelope(const QJsonObject& payload) {
             continue;
         }
         // An unusable volume does not make the bar's prices uncertain: the bar
-        // is kept, its volume stored as missing (or unparseable), never zero.
+        // is kept, its volume stored as missing (not delivered) or unparseable
+        // (delivered but negative or not a finite number), never zero. The
+        // wrapper passes a delivered-but-unusable volume as `volume_unusable`.
+        if (!row.volume.reported() && b.value(QLatin1String("volume_unusable")).isString())
+            row.volume = FieldValue::unparseable(b.value(QLatin1String("volume_unusable")).toString());
         if (!row.volume.reported() || row.volume.value < 0.0) {
             if (row.volume.reported())
                 row.volume = FieldValue::unparseable(QString::number(row.volume.value, 'g', 17));
-            e.row_problems.append({row.date_text, QStringLiteral("bar_volume_missing_or_negative"), false});
+            e.row_problems.append({row.date_text,
+                                   row.volume.state == ValueState::Unparseable
+                                       ? QStringLiteral("bar_volume_unparseable")
+                                       : QStringLiteral("bar_volume_missing"),
+                                   false});
         }
         e.bars.append(row);
     }
@@ -354,10 +362,12 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
                          QStringLiteral("%1 '%2'").arg(pr.reason, pr.date_text)});
         (pr.row_excluded ? excluded : fields_unusable) += 1;
     }
-    // One date, one bar. An identical repeat is kept once; two different bars
-    // for one date mean the response's dating cannot be trusted.
+    // One date, one bar. An identical repeat is kept once. When the bars of one
+    // date differ, which one is right is unknown: every bar of that date is
+    // left out and recorded, and the other dates are kept.
     QVector<IbkrDailyBarRow> unique;
     QHash<QDate, int> seen;
+    QSet<QDate> conflicting;
     for (const IbkrDailyBarRow& b : e.bars) {
         const auto it = seen.constFind(b.session_date);
         if (it == seen.constEnd()) {
@@ -367,12 +377,27 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
         }
         const IbkrDailyBarRow& first = unique[*it];
         if (!(first.open.same_value(b.open) && first.high.same_value(b.high) && first.low.same_value(b.low) &&
-              first.close.same_value(b.close) && first.volume.same_value(b.volume)))
-            return fail(RetrievalStatus::SourceError, QStringLiteral("bar_dates_conflicting"),
-                        QStringLiteral("date %1 appears twice with different values").arg(b.date_text));
+              first.close.same_value(b.close) && first.volume.same_value(b.volume))) {
+            conflicting.insert(b.session_date);
+            continue;
+        }
         a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_row_duplicated"),
                          QStringLiteral("an identical bar for %1 was delivered again and kept once").arg(b.date_text)});
         ++excluded;
+    }
+    if (!conflicting.isEmpty()) {
+        QVector<IbkrDailyBarRow> kept;
+        for (const IbkrDailyBarRow& b : unique) {
+            if (!conflicting.contains(b.session_date)) {
+                kept.append(b);
+                continue;
+            }
+            a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_dates_conflicting"),
+                             QStringLiteral("%1 was delivered with different values; no bar of that date is used")
+                                 .arg(b.date_text)});
+            ++excluded;
+        }
+        unique = kept;
     }
     if (!requested_last_session.isValid() || !requested_at_utc.isValid())
         return fail(RetrievalStatus::SourceError, QStringLiteral("request_window_unknown"),
@@ -381,12 +406,28 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
     QVector<IbkrDailyBarRow> bars = unique;
     std::sort(bars.begin(), bars.end(),
               [](const IbkrDailyBarRow& l, const IbkrDailyBarRow& r) { return l.session_date < r.session_date; });
+    // Bars on non-session dates (holidays, weekends). One such bar is more
+    // likely a gap in the session calendar, or a single misdated bar, than a
+    // response whose dating is wrong: it alone is left out and recorded. Two or
+    // more suggest the dates themselves are shifted: none of the response is
+    // used.
+    QStringList non_session;
     for (const IbkrDailyBarRow& b : bars) {
         const MarketSessionDay day = UsEquityCalendar::day(b.session_date);
-        // A bar on a holiday or a weekend means the response's dates cannot be
-        // trusted: none of it is used. A bar the calendar does not cover cannot
-        // be checked, and a completed session after the requested last session
-        // was not asked for: each is excluded on its own.
+        if (day.type != SessionDayType::OutsideCoverage && !day.is_session())
+            non_session << QStringLiteral("%1 (%2)").arg(b.date_text, QLatin1String(session_day_type_id(day.type)));
+    }
+    if (non_session.size() >= 2)
+        return fail(RetrievalStatus::SourceError, QStringLiteral("bar_on_non_session_date"),
+                    QStringLiteral("%1 bars on non-session dates (%2): the response's dates cannot be trusted")
+                        .arg(non_session.size())
+                        .arg(non_session.join(QStringLiteral(", "))));
+    for (const IbkrDailyBarRow& b : bars) {
+        const MarketSessionDay day = UsEquityCalendar::day(b.session_date);
+        // A bar the calendar does not cover cannot be checked, a single bar on a
+        // non-session date is left out (above), and a completed session after
+        // the requested last session was not asked for: each is excluded on its
+        // own.
         if (day.type == SessionDayType::OutsideCoverage) {
             a.issues.append(
                 {b.session_date, QualityState::SourceError, QStringLiteral("bar_outside_calendar_coverage"),
@@ -394,9 +435,13 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
             ++excluded;
             continue;
         }
-        if (!day.is_session())
-            return fail(RetrievalStatus::SourceError, QStringLiteral("bar_on_non_session_date"),
-                        QStringLiteral("%1 is a %2").arg(b.date_text, QLatin1String(session_day_type_id(day.type))));
+        if (!day.is_session()) {
+            a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_on_non_session_date"),
+                             QStringLiteral("%1 is a %2 in the session calendar; the bar is not used")
+                                 .arg(b.date_text, QLatin1String(session_day_type_id(day.type)))});
+            ++excluded;
+            continue;
+        }
         if (day.close_utc > requested_at_utc) {
             a.issues.append({b.session_date, QualityState::InProgressSession,
                              QStringLiteral("session_not_completed_at_request"),
