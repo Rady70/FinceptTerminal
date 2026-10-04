@@ -89,6 +89,7 @@ struct SecNportRunSummary {
     int filings_selected = 0;
     int filings_stored = 0;
     int filings_skipped = 0;
+    int filings_outside_period = 0; ///< read to learn their report period; outside the request, not stored
     int observations_inserted = 0;
     int observations_amended = 0;
     int observations_confirmed = 0;
@@ -167,6 +168,9 @@ class EtfSecNportIngestor : public QObject {
     int pages_fetched_ = 0;
     int pages_unreadable_ = 0; ///< older submissions pages the run needed and could not read
     QVector<SecFilingRef> selected_;
+    /// Selected filings whose listing gives no report date while a report
+    /// period is requested: not counted against max_filings until read.
+    int selected_unconfirmed_ = 0;
     int document_cursor_ = 0;
 };
 

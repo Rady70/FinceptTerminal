@@ -563,8 +563,8 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
 
 void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
     // The listing has no reportDate array and the request limits the report
-    // period. Both filings are read; the document's own period decides: June is
-    // stored, March (outside the period) is skipped with a recorded issue.
+    // period. June is read and stored. March was filed (2026-05-28) before the
+    // period starts, so it cannot report inside it and is not read at all.
     // Previously both were dropped at the listing, silently.
     FakeSec sec;
     QJsonObject root =
@@ -586,11 +586,30 @@ void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
     r.report_period_from = QDate(2026, 6, 1);
     const SecNportRunSummary s = run_sec(sec, r, "2026-09-26T10:00:00.000Z");
     QCOMPARE(s.filings_stored, 1);
-    QCOMPARE(s.filings_skipped, 1);
+    QCOMPARE(s.filings_outside_period, 0);
+    QCOMPARE(s.filings_skipped, 0);
+    QCOMPARE(s.status, RetrievalStatus::Ok);
     QCOMPARE(count("etf_observations", "measure = 'nport_net_assets' AND effective_date = '2026-06-30'"), 1);
     QCOMPARE(count("etf_observations", "source_document = '0001410368-26-055357'"), 0);
-    QCOMPARE(count("etf_retrieval_issues", "code = 'report_period_outside_request' AND state = 'NOT_APPLICABLE'"), 1);
     QCOMPARE(count("etf_retrieval_issues", "code = 'submissions_array_missing'"), 1);
+    {
+        // One filing asked for, the period ends in April: the newest undated
+        // filing (June) is outside it and must not use up the one slot, so the
+        // March filing is still read and stored.
+        FakeSec sec2;
+        sec2.ok(kSpySubs, QJsonDocument(root).toJson());
+        sec2.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec2.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+        SecNportRequest one = request("884394", "", 1);
+        one.report_period_to = QDate(2026, 4, 30);
+        const SecNportRunSummary t = run_sec(sec2, one, "2026-09-27T10:00:00.000Z");
+        QCOMPARE(t.status, RetrievalStatus::Ok); // an out-of-period read is not a failure
+        QCOMPARE(t.filings_outside_period, 1);
+        QCOMPARE(t.filings_skipped, 0);
+        QCOMPARE(count("etf_retrieval_issues", "code = 'report_period_outside_request' AND state = 'NOT_APPLICABLE'"),
+                 1);
+        QVERIFY(t.accessions.contains(QStringLiteral("0001410368-26-055357")));
+    }
 }
 
 void TstEtfIngest::sec_listing_metadata_disagreement_keeps_the_document() {

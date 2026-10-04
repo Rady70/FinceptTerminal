@@ -52,6 +52,7 @@ QJsonObject SecNportRunSummary::to_json() const {
     o["filings_selected"] = filings_selected;
     o["filings_stored"] = filings_stored;
     o["filings_skipped"] = filings_skipped;
+    o["filings_outside_period"] = filings_outside_period;
     o["observations_inserted"] = observations_inserted;
     o["observations_amended"] = observations_amended;
     o["observations_confirmed"] = observations_confirmed;
@@ -382,7 +383,15 @@ void EtfSecNportIngestor::fetch_page_then(const SecOlderPage& page, std::functio
 }
 
 void EtfSecNportIngestor::select_next_candidate() {
-    while (selected_.size() < request_.max_filings && index_cursor_ < index_entries_.size()) {
+    // Filings selected without a listed report date under a period limit do not
+    // use up the requested count (they may turn out to be outside the period);
+    // their extra reads are bounded at twice the requested count.
+    const bool period_limited = request_.report_period_from.isValid() || request_.report_period_to.isValid();
+    const auto counted = [this]() { return selected_.size() - selected_unconfirmed_; };
+    const auto room = [&]() {
+        return counted() < request_.max_filings && selected_unconfirmed_ < 2 * request_.max_filings;
+    };
+    while (room() && index_cursor_ < index_entries_.size()) {
         const SecIndexEntry& entry = index_entries_[index_cursor_];
         if (!refs_by_accession_.contains(entry.accession)) {
             // The filing is older than the pages read so far: read the page
@@ -418,13 +427,21 @@ void EtfSecNportIngestor::select_next_candidate() {
         if (report.isValid() && ((request_.report_period_from.isValid() && report < request_.report_period_from) ||
                                  (request_.report_period_to.isValid() && report > request_.report_period_to)))
             continue;
+        if (!report.isValid() && period_limited) {
+            // A report period ends on or before its filing date: a filing filed
+            // before the requested period starts cannot report inside it.
+            if (request_.report_period_from.isValid() && ref.filing_date.isValid() &&
+                ref.filing_date < request_.report_period_from)
+                continue;
+            ++selected_unconfirmed_;
+        }
         selected_.append(ref);
     }
     // A registrant target lists its filings in its own submissions: when the
     // recent window holds fewer N-PORT filings than asked for, read the next
     // older page (newest first), within the page budget.
-    if (request_.series_id.isEmpty() && selected_.size() < request_.max_filings &&
-        index_cursor_ >= index_entries_.size() && pages_fetched_ < kSecMaxOlderPagesPerRun) {
+    if (request_.series_id.isEmpty() && room() && index_cursor_ >= index_entries_.size() &&
+        pages_fetched_ < kSecMaxOlderPagesPerRun) {
         for (const SecOlderPage& page : older_pages_) {
             if (!fetched_pages_.contains(page.name)) {
                 fetch_page_then(page, [this]() { select_next_candidate(); });
@@ -519,7 +536,8 @@ void EtfSecNportIngestor::fetch_next_document() {
              (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
             // Selected without a listed report date; the document's own period
             // is outside the request: not asked for, so not stored (recorded).
-            ++summary_.filings_skipped;
+            // Not a failure: the run's status does not count it as skipped.
+            ++summary_.filings_outside_period;
             record_issue(first_retrieval_id_, QualityState::NotApplicable,
                          QStringLiteral("report_period_outside_request"),
                          QStringLiteral("%1 reports %2, outside the requested period; listed without a report "
