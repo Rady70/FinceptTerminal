@@ -272,16 +272,21 @@ class TstEtfIngest : public QObject {
     void sec_missing_nport_fields_stay_missing();
     void sec_unknown_or_mismatched_identity_is_refused();
     void sec_report_date_not_month_end_keeps_flows_unmapped();
+    void sec_listing_metadata_disagreement_keeps_the_document();
+    void sec_listing_without_report_dates_still_honours_a_period();
     void sec_requires_a_declared_user_agent();
     void sec_invalid_request_touches_nothing();
     void sec_storage_failure_is_not_ok();
     void sec_older_filing_ingested_later_keeps_the_newer_attributes();
     void sec_changed_document_is_refused_as_delivered();
+    void sec_acceptance_time_change_keeps_an_unchanged_filing();
+    void sec_relisted_acceptance_never_reorders_entity_attributes();
     void sec_issue_storage_failure_is_not_ok();
     void sec_unrecorded_retrieval_is_not_ok();
     void sec_unreadable_older_page_is_not_ok();
 
     void ibkr_backfill_is_stored_with_sessions_and_identity();
+    void ibkr_partial_response_keeps_its_valid_rows();
     void ibkr_replay_confirms_and_revision_is_kept();
     void ibkr_forward_observation_uses_the_next_session();
     void ibkr_in_progress_session_is_rejected_and_recorded();
@@ -535,24 +540,128 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
         QCOMPARE(count("etf_retrievals", "detail_code = 'series_mismatch'"), 1);
     }
     {
-        // A registrant mismatch and a form mismatch are refused as well.
+        // A registrant mismatch is refused, and so is a document that is not an
+        // N-PORT report at all.
         FakeSec sec;
         serve_spy(sec);
         NportSpec wrong_cik = spy_2026_06();
         wrong_cik.cik = QStringLiteral("0000000001");
         sec.ok(kSpyDocJune, nport_xml(wrong_cik));
-        NportSpec wrong_form = spy_2026_03();
-        wrong_form.submission_type = QStringLiteral("NPORT-P/A");
-        sec.ok(kSpyDocMarch, nport_xml(wrong_form));
+        NportSpec not_nport = spy_2026_03();
+        not_nport.submission_type = QStringLiteral("N-CSR");
+        sec.ok(kSpyDocMarch, nport_xml(not_nport));
         const int observations_before = count("etf_observations"); // the blocks above share this database
         const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T13:00:00.000Z");
         QCOMPARE(s.filings_stored, 0);
         QCOMPARE(s.status, RetrievalStatus::SourceError);
         QCOMPARE(count("etf_retrievals", "detail_code = 'registrant_mismatch'"), 1);
-        QCOMPARE(count("etf_retrievals", "detail_code = 'form_mismatch'"), 1);
+        QCOMPARE(count("etf_retrievals", "detail_code = 'form_not_nport'"), 1);
         QCOMPARE(count("etf_observations"), observations_before);
         QCOMPARE(count("etf_reporting_entities", "cik = '0000884394'"), 0);
     }
+}
+
+void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
+    // The listing has no reportDate array and the request limits the report
+    // period. June is read and stored. March was filed (2026-05-28) before the
+    // period starts, so it cannot report inside it and is not read at all.
+    // Previously both were dropped at the listing, silently.
+    FakeSec sec;
+    QJsonObject root =
+        QJsonDocument::fromJson(
+            submissions_json(
+                QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", "2026-08-28T12:25:47.000Z"},
+                 {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}))
+            .object();
+    QJsonObject filings = root.value("filings").toObject();
+    QJsonObject recent = filings.value("recent").toObject();
+    recent.remove("reportDate");
+    filings.insert("recent", recent);
+    root.insert("filings", filings);
+    sec.ok(kSpySubs, QJsonDocument(root).toJson());
+    sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+    sec.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+    SecNportRequest r = request("884394");
+    r.report_period_from = QDate(2026, 6, 1);
+    const SecNportRunSummary s = run_sec(sec, r, "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.filings_stored, 1);
+    QCOMPARE(s.filings_outside_period, 0);
+    QCOMPARE(s.filings_skipped, 0);
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(count("etf_observations", "measure = 'nport_net_assets' AND effective_date = '2026-06-30'"), 1);
+    QCOMPARE(count("etf_observations", "source_document = '0001410368-26-055357'"), 0);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'submissions_array_missing'"), 1);
+    {
+        // One filing asked for, the period ends in April: the newest undated
+        // filing (June) is outside it and must not use up the one slot, so the
+        // March filing is still read and stored.
+        FakeSec sec2;
+        sec2.ok(kSpySubs, QJsonDocument(root).toJson());
+        sec2.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec2.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+        SecNportRequest one = request("884394", "", 1);
+        one.report_period_to = QDate(2026, 4, 30);
+        const SecNportRunSummary t = run_sec(sec2, one, "2026-09-27T10:00:00.000Z");
+        QCOMPARE(t.status, RetrievalStatus::Ok); // an out-of-period read is not a failure
+        QCOMPARE(t.filings_outside_period, 1);
+        // The document read to learn its period is recorded as a retrieval.
+        QCOMPARE(count("etf_retrievals", "endpoint = 'nport_primary_doc' AND detail_code = "
+                                         "'report_period_outside_request' AND status = 'OK'"),
+                 1);
+        QCOMPARE(t.filings_skipped, 0);
+        QCOMPARE(count("etf_retrieval_issues", "code = 'report_period_outside_request' AND state = 'NOT_APPLICABLE'"),
+                 1);
+        QVERIFY(t.accessions.contains(QStringLiteral("0001410368-26-055357")));
+    }
+    {
+        // One filing asked for and both undated filings inside the period: only
+        // the newest (June) is stored, never more than asked for.
+        FakeSec sec3;
+        sec3.ok(kSpySubs, QJsonDocument(root).toJson());
+        sec3.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec3.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+        SecNportRequest one = request("884394", "", 1);
+        one.report_period_to = QDate(2026, 7, 31);
+        const SecNportRunSummary u = run_sec(sec3, one, "2026-09-28T10:00:00.000Z");
+        QCOMPARE(u.status, RetrievalStatus::Ok);
+        QCOMPARE(u.filings_selected, 1);
+        QCOMPARE(u.accessions, QStringList{QStringLiteral("0001410368-26-089410")});
+    }
+}
+
+void TstEtfIngest::sec_listing_metadata_disagreement_keeps_the_document() {
+    // The SEC's listing and the filed document disagree on metadata only: the
+    // document's own form and report period are used, its values are kept, and
+    // each disagreement is recorded. An unreadable amendment pointer keeps the
+    // amendment's values with its lineage unknown.
+    FakeSec sec;
+    sec.ok(kSpySubs,
+           submissions_json(
+               QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+               {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-05-31", "2026-08-28T12:25:47.000Z"},
+                {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}));
+    sec.ok(kSpyDocJune, nport_xml(spy_2026_06())); // the document says 2026-06-30
+    NportSpec amended = spy_2026_03();
+    amended.submission_type = QStringLiteral("NPORT-P/A"); // listed as NPORT-P
+    amended.amended_accession = QStringLiteral("not-an-accession");
+    sec.ok(kSpyDocMarch, nport_xml(amended));
+    const SecNportRunSummary s = run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.filings_stored, 2);
+    QCOMPARE(s.filings_skipped, 0);
+    QCOMPARE(count("etf_observations", "measure = 'nport_net_assets' AND effective_date = '2026-06-30'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'report_date_listing_disagrees' AND state = "
+                                           "'RECONCILIATION_EXCEPTION'"),
+             1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'form_listing_disagrees'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'amended_accession_unreadable'"), 1);
+    QCOMPARE(scalar("SELECT form || '|' || amends_accession FROM etf_sec_filings WHERE accession = "
+                    "'0001410368-26-055357'"),
+             QStringLiteral("NPORT-P/A|"));
+    QCOMPARE(count("etf_observations", "source_document = '0001410368-26-055357' AND revision_state = "
+                                       "'amended_filing'"),
+             10);
 }
 
 void TstEtfIngest::sec_report_date_not_month_end_keeps_flows_unmapped() {
@@ -701,6 +810,122 @@ void TstEtfIngest::sec_changed_document_is_refused_as_delivered() {
              QStringLiteral("2|2"));
 }
 
+void TstEtfIngest::sec_acceptance_time_change_keeps_an_unchanged_filing() {
+    // Live shape (SPY, 2026-10-03): the SEC re-listed 0001410368-26-089410 with
+    // acceptance 16:25:47Z instead of the 12:25:47Z stored on first delivery; the
+    // document bytes and every value read from them are unchanged.
+    auto serve = [](FakeSec& sec, const char* june_acceptance) {
+        sec.ok(kSpySubs,
+               submissions_json(
+                   QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                   {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", june_acceptance},
+                    {"0000000000-26-000009", "N-CSR", "2026-06-01", "", "2026-06-01T20:00:00.000Z"},
+                    {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}));
+        sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+    };
+    const QString june_avail = QStringLiteral(
+        "SELECT available_from FROM etf_observations WHERE measure = 'nport_net_assets' AND effective_date = "
+        "'2026-06-30'");
+    {
+        FakeSec first;
+        serve(first, "2026-08-28T12:25:47.000Z");
+        QCOMPARE(run_sec(first, request("884394"), "2026-09-26T10:00:00.000Z").status, RetrievalStatus::Ok);
+    }
+    const int rows = count("etf_observations");
+    QCOMPARE(scalar(june_avail), QStringLiteral("2026-08-31T13:30:00.000Z"));
+
+    // 1. Same New York date: the vintage is timed the same (available from the
+    //    Monday 08-31 open either way). Retained: confirmed, the stored acceptance
+    //    kept, the discrepancy recorded once, the run not an error.
+    FakeSec moved;
+    serve(moved, "2026-08-28T16:25:47.000Z");
+    const SecNportRunSummary s = run_sec(moved, request("884394"), "2026-10-03T21:20:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.observations_refused, 0);
+    QCOMPARE(s.observations_acceptance_changed, 10);
+    QCOMPARE(s.observations_confirmed, 20);
+    QCOMPARE(count("etf_observations"), rows);
+    QCOMPARE(scalar("SELECT accepted_at FROM etf_sec_filings WHERE accession = '0001410368-26-089410'"),
+             QStringLiteral("2026-08-28T12:25:47.000Z"));
+    QCOMPARE(scalar("SELECT COUNT(DISTINCT accepted_at) FROM etf_observations WHERE source_document = "
+                    "'0001410368-26-089410'"),
+             QStringLiteral("1"));
+    QCOMPARE(scalar("SELECT MIN(seen_count) FROM etf_observations WHERE source_document = '0001410368-26-089410'"),
+             QStringLiteral("2"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'sec_acceptance_time_changed'")), 1);
+    const QString detail = scalar("SELECT detail FROM etf_retrieval_issues WHERE code = 'sec_acceptance_time_changed'");
+    QVERIFY2(detail.contains(QStringLiteral("2026-08-28T16:25:47.000Z")) &&
+                 detail.contains(QStringLiteral("2026-08-28T12:25:47.000Z")),
+             qPrintable(detail));
+    QCOMPARE(scalar("SELECT state FROM etf_retrieval_issues WHERE code = 'sec_acceptance_time_changed'"),
+             QStringLiteral("RECONCILIATION_EXCEPTION"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'filed_observation_changed'")), 0);
+
+    // 2. An acceptance time that moves the usable boundary (Monday 08-31 15:00Z
+    //    makes it usable from the Tuesday 09-01 open) is not equivalent: refused,
+    //    nothing written, the stored vintage unchanged.
+    FakeSec later;
+    serve(later, "2026-08-31T15:00:00.000Z");
+    const SecNportRunSummary r = run_sec(later, request("884394"), "2026-10-04T10:00:00.000Z");
+    QCOMPARE(r.status, RetrievalStatus::SourceError);
+    QCOMPARE(r.observations_refused, 10);
+    QCOMPARE(r.observations_acceptance_changed, 0);
+    QCOMPARE(count("etf_observations"), rows);
+    QCOMPARE(scalar(june_avail), QStringLiteral("2026-08-31T13:30:00.000Z"));
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'filed_observation_changed'")), 10);
+    QCOMPARE(count("etf_retrieval_issues", QStringLiteral("code = 'sec_acceptance_time_changed'")), 1);
+}
+
+void TstEtfIngest::sec_relisted_acceptance_never_reorders_entity_attributes() {
+    // The entity keeps the names and LEIs of its newest filing by acceptance time
+    // (sec_older_filing_ingested_later_keeps_the_newer_attributes). A re-listed
+    // acceptance time must not change that order, whether the re-listing is
+    // accepted as timing-equivalent or refused.
+    NportSpec march = spy_2026_03();
+    march.reg_name = QStringLiteral("Former SPDR S&amp;P 500 ETF Trust name");
+    march.reg_lei = QStringLiteral("5493000FORMERLEI0001");
+    auto serve = [&](FakeSec& sec, const char* march_acceptance) {
+        sec.ok(kSpySubs,
+               submissions_json(
+                   QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                   {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", "2026-08-28T12:25:47.000Z"},
+                    {"0001410368-26-055357", "NPORT-P", "2026-08-28", "2026-03-31", march_acceptance}}));
+        sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec.ok(kSpyDocMarch, nport_xml(march));
+    };
+    const QString attributes = QStringLiteral("SELECT registrant_name || '|' || registrant_lei FROM "
+                                              "etf_reporting_entities");
+    {
+        // Both filings accepted the same morning: March at 12:00Z, June at 12:25:47Z.
+        FakeSec first;
+        serve(first, "2026-08-28T12:00:00.000Z");
+        QCOMPARE(run_sec(first, request("884394"), "2026-09-26T10:00:00.000Z").filings_stored, 2);
+    }
+    const QString newest = scalar(attributes);
+    QVERIFY(!newest.startsWith(QLatin1String("Former")));
+
+    // (ii) The SEC re-lists March at 14:00Z, after June: the same New York date, so
+    // timed the same and kept (issue recorded). The entity keeps June's names.
+    FakeSec same_day;
+    serve(same_day, "2026-08-28T14:00:00.000Z");
+    const SecNportRunSummary kept = run_sec(same_day, request("884394"), "2026-10-03T21:20:00.000Z");
+    QCOMPARE(kept.status, RetrievalStatus::Ok);
+    QVERIFY(kept.observations_acceptance_changed > 0);
+    QCOMPARE(scalar(attributes), newest);
+    QCOMPARE(scalar("SELECT accepted_at FROM etf_sec_filings WHERE accession = '0001410368-26-055357'"),
+             QStringLiteral("2026-08-28T12:00:00.000Z"));
+
+    // (i) The SEC re-lists March on Monday 08-31, which moves its usable boundary:
+    // the observations are refused, and the entity still keeps June's names.
+    FakeSec later;
+    serve(later, "2026-08-31T15:00:00.000Z");
+    const SecNportRunSummary refused = run_sec(later, request("884394"), "2026-10-04T10:00:00.000Z");
+    QVERIFY(refused.observations_refused > 0);
+    QCOMPARE(scalar(attributes), newest);
+    QCOMPARE(count("etf_reporting_entities"), 1);
+}
+
 void TstEtfIngest::sec_issue_storage_failure_is_not_ok() {
     // A report date that is not a month end is stored with an issue saying
     // the flows are unmapped. The issue belongs to the filing's unit: when it
@@ -806,6 +1031,38 @@ void TstEtfIngest::ibkr_backfill_is_stored_with_sessions_and_identity() {
     QCOMPARE(count("etf_market_sessions"), 19);
     QVERIFY(scalar("SELECT runtime_identity FROM etf_retrievals").contains(QLatin1String("\"commit\":\"4a3c606e\"")));
     QVERIFY(scalar("SELECT interpretation FROM etf_retrievals").contains(QLatin1String(kIbkrRequestEndRule)));
+}
+
+void TstEtfIngest::ibkr_partial_response_keeps_its_valid_rows() {
+    // One bar without a close and one without a volume among 18 sessions: 17
+    // bars are stored; the bar without a volume keeps its prices and stores its
+    // volume as missing (never zero); each problem is an issue of its session.
+    FakeIbkr ibkr;
+    const QString end = QStringLiteral("20260925 23:59:59 US/Eastern");
+    QJsonObject p = ibkr_history_envelope("SPY", 756733, bars_for_sessions(QDate(2026, 9, 1), QDate(2026, 9, 25)), end);
+    QJsonArray rows = p.value("bars").toArray();
+    QJsonObject no_close = rows[3].toObject();
+    no_close.remove("close");
+    rows[3] = no_close;
+    QJsonObject no_volume = rows[5].toObject();
+    no_volume.remove("volume");
+    rows[5] = no_volume;
+    p.insert("bars", rows);
+    ibkr.payload = p;
+    const IbkrDailyRunSummary s = run_ibkr(ibkr, "2026-09-26T09:00:00.000Z");
+    QCOMPARE(s.status, RetrievalStatus::Ok);
+    QCOMPARE(s.bars_accepted, 17);
+    QCOMPARE(s.observations_inserted, 85);
+    QCOMPARE(scalar("SELECT detail_code FROM etf_retrievals"), QStringLiteral("bars_partially_kept"));
+    const QString d5 = rows[5].toObject().value("date").toString();
+    const QString iso5 = QDate::fromString(d5, QStringLiteral("yyyyMMdd")).toString(Qt::ISODate);
+    QCOMPARE(scalar(QStringLiteral("SELECT value_state || '|' || IFNULL(value, 'null') FROM etf_observations WHERE "
+                                   "measure = 'bar_volume' AND effective_date = '%1'")
+                        .arg(iso5)),
+             QStringLiteral("missing|null"));
+    QCOMPARE(count("etf_observations", QStringLiteral("measure = 'bar_close' AND effective_date = '%1'").arg(iso5)), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'bar_row_excluded'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'bar_field_unusable'"), 1);
 }
 
 void TstEtfIngest::ibkr_replay_confirms_and_revision_is_kept() {

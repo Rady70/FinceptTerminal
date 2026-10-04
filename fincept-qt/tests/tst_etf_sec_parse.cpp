@@ -11,6 +11,8 @@
 #include "etf_test_fixtures.h"
 #include "services/etf/SecEdgarParse.h"
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTest>
 
 using namespace fincept::services::etf;
@@ -28,6 +30,7 @@ class TstEtfSecParse : public QObject {
     void malformed_or_foreign_documents_are_refused();
     void month_mapping_follows_the_report_period();
     void submissions_parse_with_exact_acceptance();
+    void submissions_without_optional_arrays_still_list_filings();
     void submissions_refuse_ragged_or_foreign_shapes();
     void series_index_lists_filings_and_registrant();
     void unknown_series_index_is_an_error();
@@ -161,6 +164,12 @@ void TstEtfSecParse::submissions_parse_with_exact_acceptance() {
     // An offset-less time is refused rather than guessed.
     QVERIFY(!sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47.000")).isValid());
     QVERIFY(sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47Z")).isValid());
+    // An explicit offset names the same instant and is accepted.
+    QCOMPARE(sec_parse_acceptance(QStringLiteral("2026-08-28T08:25:47-04:00")),
+             QDateTime(QDate(2026, 8, 28), QTime(12, 25, 47), QTimeZone::UTC));
+    QCOMPARE(sec_parse_acceptance(QStringLiteral("2026-08-28T14:25:47.000+02:00")),
+             QDateTime(QDate(2026, 8, 28), QTime(12, 25, 47), QTimeZone::UTC));
+    QVERIFY(!sec_parse_acceptance(QStringLiteral("2026-08-28T12:25:47 EDT")).isValid());
     // Older pages carry the arrays at the top level.
     const SecSubmissions page =
         parse_sec_submissions(submissions_page_json({{"0002071691-25-007634", "NPORT-P", "2025-11-26", "2025-09-30",
@@ -168,6 +177,35 @@ void TstEtfSecParse::submissions_parse_with_exact_acceptance() {
                               true);
     QVERIFY(page.ok);
     QCOMPARE(page.filings[0].form, QStringLiteral("NPORT-P"));
+}
+
+void TstEtfSecParse::submissions_without_optional_arrays_still_list_filings() {
+    // A listing without its reportDate / primaryDocument / filingDate arrays still
+    // identifies and dates each filing: it is kept, the missing arrays named.
+    QJsonObject root =
+        QJsonDocument::fromJson(submissions_json(QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                                                 {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30",
+                                                   "2026-08-28T12:25:47.000Z"}}))
+            .object();
+    QJsonObject filings = root.value("filings").toObject();
+    QJsonObject recent = filings.value("recent").toObject();
+    recent.remove("reportDate");
+    recent.remove("primaryDocument");
+    filings.insert("recent", recent);
+    root.insert("filings", filings);
+    const SecSubmissions s = parse_sec_submissions(QJsonDocument(root).toJson(), false);
+    QVERIFY2(s.ok, qPrintable(s.error));
+    QCOMPARE(s.filings.size(), 1);
+    QVERIFY(s.filings[0].report_date.isEmpty());
+    QVERIFY(s.filings[0].accepted_at.isValid());
+    QCOMPARE(s.missing_arrays, (QStringList{QStringLiteral("reportDate"), QStringLiteral("primaryDocument")}));
+    // Without the acceptance times nothing can be dated: refused.
+    recent.remove("acceptanceDateTime");
+    filings.insert("recent", recent);
+    root.insert("filings", filings);
+    const SecSubmissions none = parse_sec_submissions(QJsonDocument(root).toJson(), false);
+    QVERIFY(!none.ok);
+    QVERIFY(none.error.startsWith(QLatin1String("submissions_missing_array")));
 }
 
 void TstEtfSecParse::submissions_refuse_ragged_or_foreign_shapes() {

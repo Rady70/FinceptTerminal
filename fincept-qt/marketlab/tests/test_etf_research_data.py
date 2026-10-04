@@ -1,0 +1,727 @@
+"""Fixture tests for the ETF research acquisition script (no network).
+
+Every Yahoo, FRED and World Bank call is replaced by an in-memory fake, so the
+tests exercise the project-owned conversion rules only: completed-session
+filtering, missing versus zero, per-item and per-stage status, the constituent
+policy, the paginated-response refusal and the atomic payload write.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import io
+import json
+import math
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+import etf_research_data  # noqa: E402
+from etf_research import macro, sessions, yahoo  # noqa: E402
+from fedwatch.transport import Transport, TransportError  # noqa: E402
+
+UTC = dt.timezone.utc
+NAN = float("nan")
+
+
+class _Stamp:
+    """A pandas-Timestamp stand-in: only ``date()`` is used."""
+
+    def __init__(self, day: dt.date):
+        self._day = day
+
+    def date(self) -> dt.date:
+        return self._day
+
+
+class _Row(dict):
+    pass
+
+
+class _Frame:
+    """The slice of a pandas DataFrame that ``frame_to_bars`` touches."""
+
+    def __init__(self, rows, columns=("Close", "Volume", "Dividends", "Capital Gains", "Stock Splits")):
+        self._rows = rows
+        self.columns = list(columns)
+
+    def __len__(self):
+        return len(self._rows)
+
+    def iterrows(self):
+        for day, rec in self._rows:
+            yield _Stamp(day), _Row(rec)
+
+
+class _FakeYf:
+    def __init__(self, frame=None, error=None, errors=None):
+        self._frame = frame
+        self._error = error
+        self.shared = type("S", (), {"_ERRORS": errors or {}})()
+        self.calls = []
+
+    def download(self, batch, **kwargs):
+        self.calls.append((list(batch), kwargs))
+        if self._error:
+            raise self._error
+        return self._frame
+
+
+class _FakeTransport(Transport):
+    def __init__(self, text=None, payload=None, error=None):
+        self.text, self.payload, self.error = text, payload, error
+        self.urls = []
+
+    def get_text(self, url, headers=None, timeout=20):
+        self.urls.append(url)
+        if self.error:
+            raise self.error
+        return self.text
+
+    def get_json(self, url, params=None, timeout=20):
+        self.urls.append(url)
+        if self.error:
+            raise self.error
+        return self.payload
+
+
+class CompletedSessionTests(unittest.TestCase):
+    def test_us_bar_is_in_progress_until_close_plus_buffer(self):
+        day = dt.date(2026, 10, 2)  # Friday; 16:00 ET close = 20:00 UTC (EDT)
+        self.assertFalse(sessions.is_completed_session("SPY", day, dt.datetime(2026, 10, 2, 17, 8, tzinfo=UTC)))
+        self.assertFalse(sessions.is_completed_session("SPY", day, dt.datetime(2026, 10, 2, 20, 29, tzinfo=UTC)))
+        self.assertTrue(sessions.is_completed_session("SPY", day, dt.datetime(2026, 10, 2, 20, 30, tzinfo=UTC)))
+        self.assertTrue(sessions.is_completed_session("SPY", dt.date(2026, 10, 1),
+                                                      dt.datetime(2026, 10, 2, 17, 8, tzinfo=UTC)))
+
+    def test_exchange_suffixes_use_their_own_close(self):
+        day = dt.date(2026, 10, 2)
+        at = dt.datetime(2026, 10, 2, 10, 0, tzinfo=UTC)  # 17:00 Bangkok, 06:00 New York
+        self.assertTrue(sessions.is_completed_session("PTT.BK", day, at))  # 16:30 + 30 min
+        self.assertTrue(sessions.is_completed_session("^SET.BK", day, at))  # index carries the suffix
+        self.assertFalse(sessions.is_completed_session("^VIX", day, at))  # bare caret is U.S.
+        self.assertTrue(sessions.is_completed_session("005930.KQ", day, at))  # 15:30 Seoul + 30 min
+        self.assertEqual(sessions.exchange_rule("005930.KQ")[0], "Asia/Seoul")
+
+    def test_unknown_suffix_is_conservative(self):
+        zone, _, _, known = sessions.exchange_rule("ABC.XX")
+        self.assertFalse(known)
+        at = dt.datetime(2026, 10, 2, 23, 59, tzinfo=UTC)
+        self.assertFalse(sessions.is_completed_session("ABC.XX", dt.date(2026, 10, 2), at))
+        self.assertTrue(sessions.is_completed_session("ABC.XX", dt.date(2026, 10, 1), at))
+
+
+class FrameToBarsTests(unittest.TestCase):
+    AT = dt.datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+
+    def test_missing_volume_is_none_and_absent_events_are_zero(self):
+        frame = _Frame([
+            (dt.date(2026, 9, 30), {"Close": 10.0, "Volume": NAN, "Dividends": NAN, "Capital Gains": NAN,
+                                    "Stock Splits": NAN}),
+            (dt.date(2026, 10, 1), {"Close": 10.5, "Volume": 0.0, "Dividends": 0.12, "Capital Gains": 0.0,
+                                    "Stock Splits": 2.0}),
+        ])
+        out = yahoo.frame_to_bars("XLB", frame, self.AT)
+        self.assertEqual(out["rows"][0], ["2026-09-30", 10.0, None, 0.0, 0.0, 0.0])
+        # A reported zero volume stays a zero; it is an observation, not a gap.
+        self.assertEqual(out["rows"][1], ["2026-10-01", 10.5, 0.0, 0.12, 0.0, 2.0])
+
+    def test_missing_or_non_positive_close_is_not_a_bar(self):
+        frame = _Frame([
+            (dt.date(2026, 9, 29), {"Close": NAN, "Volume": 5.0}),
+            (dt.date(2026, 9, 30), {"Close": 0.0, "Volume": 5.0}),
+            (dt.date(2026, 10, 1), {"Close": math.inf, "Volume": 5.0}),
+            (dt.date(2026, 10, 2), {"Close": 11.0, "Volume": 5.0}),
+        ], columns=("Close", "Volume"))
+        out = yahoo.frame_to_bars("XLB", frame, self.AT)
+        self.assertEqual(out["dropped_no_close"], 3)
+        self.assertEqual([r[0] for r in out["rows"]], ["2026-10-02"])
+        self.assertEqual(out["rows"][0][3:], [0.0, 0.0, 0.0])  # no event columns at all: no events
+
+    def test_corporate_action_on_a_row_without_a_close_is_kept_apart(self):
+        # No price is made up for the row, but its distribution and split are
+        # not dropped with it: they are returned apart, visible.
+        frame = _Frame([
+            (dt.date(2026, 9, 30), {"Close": NAN, "Volume": 5.0, "Dividends": 0.25, "Capital Gains": NAN,
+                                    "Stock Splits": 2.0}),
+            (dt.date(2026, 10, 1), {"Close": NAN, "Volume": 5.0, "Dividends": NAN, "Capital Gains": NAN,
+                                    "Stock Splits": NAN}),
+            (dt.date(2026, 10, 2), {"Close": 11.0, "Volume": 5.0, "Dividends": NAN, "Capital Gains": NAN,
+                                    "Stock Splits": NAN}),
+        ])
+        out = yahoo.frame_to_bars("XLB", frame, self.AT)
+        self.assertEqual(out["dropped_no_close"], 2)
+        self.assertEqual([r[0] for r in out["rows"]], ["2026-10-02"])
+        self.assertEqual(out["actions_without_close"], [["2026-09-30", 0.25, 0.0, 2.0]])
+
+    def test_in_progress_session_is_dropped_and_counted(self):
+        at = dt.datetime(2026, 10, 2, 17, 8, tzinfo=UTC)  # before the U.S. close
+        frame = _Frame([(dt.date(2026, 10, 1), {"Close": 10.0}), (dt.date(2026, 10, 2), {"Close": 10.2})],
+                       columns=("Close",))
+        out = yahoo.frame_to_bars("SPY", frame, at)
+        self.assertEqual(out["in_progress_excluded"], 1)
+        self.assertEqual([r[0] for r in out["rows"]], ["2026-10-01"])
+
+    def test_empty_frame(self):
+        self.assertEqual(yahoo.frame_to_bars("SPY", None, self.AT)["rows"], [])
+        self.assertEqual(yahoo.frame_to_bars("SPY", _Frame([]), self.AT)["rows"], [])
+
+
+class DownloadHistoryTests(unittest.TestCase):
+    AT = dt.datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
+
+    def test_whole_request_failure_marks_every_symbol_failed(self):
+        fake = _FakeYf(error=RuntimeError("HTTP 429"))
+        out = yahoo.download_history(["XLB", "XLE"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()}, {"XLB": "FAILED", "XLE": "FAILED"})
+        self.assertIn("HTTP 429", out["XLB"]["detail"])
+
+    class _YfLike:
+        """yfinance 0.2.66's ``download`` as observed: each symbol is fetched on its
+        own; a failing symbol is recorded in ``shared._ERRORS`` (reset on every
+        call, keyed by the upper-case ticker) and comes back as NaN columns. It
+        does not raise. ``plan`` maps a symbol to how many of its calls fail."""
+
+        def __init__(self, plan, no_data=()):
+            self.plan = dict(plan)
+            self.no_data = set(no_data)  # symbols Yahoo has no prices for, ever
+            self.calls = []
+            self.shared = type("S", (), {"_ERRORS": {}})()
+
+        def download(self, batch, **kwargs):
+            import pandas as pd
+
+            self.calls.append(list(batch))
+            self.shared._ERRORS = {}
+            data = {}
+            for s in batch:
+                close = 10.0
+                if s in self.no_data:
+                    self.shared._ERRORS[s.upper()] = ("YFPricesMissingError('$%s: possibly delisted; no price data "
+                                                      "found  (period=2y)')" % s)
+                    close = float("nan")
+                elif self.plan.get(s, 0) > 0:
+                    self.plan[s] -= 1
+                    self.shared._ERRORS[s.upper()] = "YFRateLimitError('Too Many Requests. Rate limited.')"
+                    close = float("nan")
+                data[("Close", s)] = [close]
+                data[("Volume", s)] = [1e6]
+            frame = pd.DataFrame(data, index=pd.DatetimeIndex([pd.Timestamp(2026, 10, 1)]))
+            frame.columns = pd.MultiIndex.from_tuples(list(data), names=["Price", "Ticker"])
+            return frame
+
+    def test_symbol_failed_by_the_provider_is_retried_alone(self):
+        # The batch call succeeds; yfinance recorded a transient error for XLE
+        # only. XLE is retried alone and delivered; the others are not re-fetched.
+        fake = self._YfLike({"XLE": 1})
+        out = yahoo.download_history(["XLB", "XLE", "XLF"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()}, {"XLB": "OK", "XLE": "OK", "XLF": "OK"})
+        self.assertEqual(fake.calls, [["XLB", "XLE", "XLF"], ["XLE"]])
+
+    def test_provider_errors_stop_retrying_after_two_in_a_row(self):
+        fake = self._YfLike({"A": 2, "B": 2, "C": 2, "D": 2})
+        out = yahoo.download_history(["A", "B", "C", "D"], "2y", self.AT, yf_module=fake)
+        self.assertTrue(all(v["status"] == "FAILED" for v in out.values()))
+        self.assertEqual(fake.calls, [["A", "B", "C", "D"], ["A"], ["B"]])
+        self.assertIn("Too Many Requests", out["A"]["detail"])
+        self.assertIn("retried alone", out["A"]["detail"])
+        self.assertIn("not retried alone", out["D"]["detail"])
+
+    def test_no_data_errors_are_retried_once_but_do_not_stop_the_retries(self):
+        # Two symbols Yahoo has no prices for sort ahead of a rate-limited one.
+        # "Possibly delisted" is retried once (yfinance also reports a timed-out
+        # time-zone lookup that way) but not counted toward the stop, so the
+        # rate-limited symbol is still retried and delivered.
+        fake = self._YfLike({"CCC": 1}, no_data=("AAA.BK", "BBB.BK"))
+        out = yahoo.download_history(["AAA.BK", "BBB.BK", "CCC"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()},
+                         {"AAA.BK": "FAILED", "BBB.BK": "FAILED", "CCC": "OK"})
+        self.assertEqual(fake.calls, [["AAA.BK", "BBB.BK", "CCC"], ["AAA.BK"], ["BBB.BK"], ["CCC"]])
+        self.assertIn("possibly delisted", out["AAA.BK"]["detail"])
+        self.assertIn("retried alone", out["AAA.BK"]["detail"])
+
+    def test_no_data_that_was_a_timeout_is_delivered_on_retry(self):
+        # A timed-out time-zone lookup surfaces as "no timezone found"; the
+        # retry delivers the symbol.
+        class TzTimeout(self._YfLike):
+            def download(self, batch, **kwargs):
+                frame = super().download(batch, **kwargs)
+                if "NEW1" in batch and not self.tz_failed:
+                    self.tz_failed = True
+                    self.shared._ERRORS["NEW1"] = "YFTzMissingError('$NEW1: possibly delisted; no timezone found')"
+                    frame[("Close", "NEW1")] = float("nan")
+                return frame
+
+        fake = TzTimeout({})
+        fake.tz_failed = False
+        out = yahoo.download_history(["NEW1", "XLB"], "2y", self.AT, yf_module=fake)
+        self.assertEqual(out["NEW1"]["status"], "OK")
+        self.assertEqual(fake.calls, [["NEW1", "XLB"], ["NEW1"]])
+
+    def test_symbol_without_bars_and_without_error_is_not_retried(self):
+        fake = self._YfLike({})
+        fake_download = fake.download
+
+        def no_bars_for_xle(batch, **kwargs):
+            frame = fake_download(batch, **kwargs)
+            if ("Close", "XLE") in frame.columns:
+                frame[("Close", "XLE")] = float("nan")  # answered, no completed bar, no error
+            return frame
+
+        fake.download = no_bars_for_xle
+        out = yahoo.download_history(["XLB", "XLE"], "2y", self.AT, yf_module=fake)
+        self.assertEqual(out["XLE"]["status"], "FAILED")
+        self.assertEqual(fake.calls, [["XLB", "XLE"]])
+
+    def test_failed_batch_is_retried_symbol_by_symbol(self):
+        # The batch request fails as a whole (here one symbol breaks it); retried
+        # alone, the other symbols are delivered and only the bad one fails.
+        class Picky(_FakeYf):
+            def download(self, batch, **kwargs):
+                self.calls.append((list(batch), kwargs))
+                if len(batch) > 1 or batch == ["BAD"]:
+                    raise RuntimeError("batch failed")
+                return _Frame([(dt.date(2026, 10, 1), {"Close": 10.0})], columns=("Close",))
+
+        fake = Picky()
+        out = yahoo.download_history(["XLE", "BAD", "XLB"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()}, {"BAD": "FAILED", "XLB": "OK", "XLE": "OK"})
+        self.assertEqual([c[0] for c in fake.calls], [["BAD", "XLB", "XLE"], ["BAD"], ["XLB"], ["XLE"]])
+        self.assertIn("retried alone", out["BAD"]["detail"])
+
+    def test_provider_wide_failure_is_not_repeated_per_symbol(self):
+        # Two single retries failing in a row stop the retries: the rest keep
+        # the batch's error instead of one request per symbol.
+        fake = _FakeYf(error=RuntimeError("HTTP 429"))
+        out = yahoo.download_history(["A", "B", "C", "D"], "2y", self.AT, yf_module=fake)
+        self.assertTrue(all(v["status"] == "FAILED" for v in out.values()))
+        self.assertEqual([c[0] for c in fake.calls], [["A", "B", "C", "D"], ["A"], ["B"]])
+        self.assertIn("not retried alone", out["D"]["detail"])
+
+    def test_requests_are_unadjusted_daily_with_actions(self):
+        fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 10.0})], columns=("Close",)))
+        out = yahoo.download_history(["XLB"], "max", self.AT, yf_module=fake)
+        self.assertEqual(out["XLB"]["status"], "OK")
+        _, kwargs = fake.calls[0]
+        self.assertEqual((kwargs["interval"], kwargs["auto_adjust"], kwargs["actions"], kwargs["period"]),
+                         ("1d", False, True, "max"))
+
+    def test_symbol_without_completed_bars_fails_with_provider_reason(self):
+        fake = _FakeYf(frame=_Frame([]), errors={"INTUCH.BK": "possibly delisted; no price data found"})
+        out = yahoo.download_history(["INTUCH.BK"], "2y", self.AT, yf_module=fake)
+        self.assertEqual(out["INTUCH.BK"]["status"], "FAILED")
+        self.assertIn("delisted", out["INTUCH.BK"]["detail"])
+
+    def test_incremental_start_reaches_every_batch(self):
+        # Regression: the batch loop once reused the name `start`, so the first
+        # batch asked for the full history and later batches carried a chunk index.
+        fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 1.0})], columns=("Close",)))
+        out = yahoo.download_history(["A", "B", "C"], None, self.AT, chunk=2, yf_module=fake, start="2026-09-16")
+        self.assertEqual(len(fake.calls), 2)
+        for _batch, kwargs in fake.calls:
+            self.assertEqual(kwargs.get("start"), "2026-09-16")
+            self.assertNotIn("period", kwargs)
+        self.assertTrue(all(v["incremental"] and v["requested_start"] == "2026-09-16" for v in out.values()))
+
+    def test_batches_are_chunked_and_deduplicated(self):
+        fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 1.0})], columns=("Close",)))
+        yahoo.download_history(["B", "A", "C", "A"], "2y", self.AT, chunk=2, yf_module=fake)
+        self.assertEqual([c[0] for c in fake.calls], [["A", "B"], ["C"]])
+
+
+class _Holdings:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __len__(self):
+        return len(self._rows)
+
+    def iterrows(self):
+        for sym, rec in self._rows:
+            yield sym, _Row(rec)
+
+
+class _FundsData:
+    def __init__(self, holdings, weights, fail=False):
+        self._h, self._w, self._fail = holdings, weights, fail
+
+    @property
+    def top_holdings(self):
+        if self._fail:
+            raise RuntimeError("404 fundsData")
+        return self._h
+
+    @property
+    def sector_weightings(self):
+        return self._w
+
+
+class _Ticker:
+    def __init__(self, info=None, funds=None, fail=False):
+        self._info, self.funds_data, self._fail = info, funds, fail
+
+    @property
+    def info(self):
+        if self._fail:
+            raise RuntimeError("quoteSummary 401")
+        return self._info
+
+
+class FundSnapshotTests(unittest.TestCase):
+    def test_fields_holdings_and_weights(self):
+        info = {"totalAssets": 8.75e9, "navPrice": 89.1, "sharesOutstanding": None, "longName": "Materials",
+                "yield": NAN, "unrelated": 1, "beta3Year": True}
+        funds = _FundsData(_Holdings([("LIN", {"Name": "Linde PLC", "Holding Percent": 0.1313}),
+                                      ("NEM", {"Name": "Newmont", "Holding Percent": NAN})]),
+                           {"basic_materials": 0.84, "consumer_cyclical": 0.16, "energy": 0.0, "tech": NAN})
+        out = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, funds))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["fields"]["totalAssets"], 8.75e9)
+        self.assertNotIn("sharesOutstanding", out["fields"])  # absent stays absent
+        self.assertNotIn("unrelated", out["fields"])
+        self.assertIsNone(out["fields"]["yield"])  # NaN is not a number, and never zero
+        self.assertEqual(out["fields"]["beta3Year"], "True")  # a non-numeric value is kept as text
+        self.assertEqual(out["holdings"], [[1, "LIN", "Linde PLC", 0.1313], [2, "NEM", "Newmont", None]])
+        self.assertEqual(out["sector_weights"], {"basic_materials": 0.84, "consumer_cyclical": 0.16, "energy": 0.0})
+        self.assertEqual(out["holdings_status"], "OK")
+        self.assertEqual(out["sector_weights_unparseable"], 1)  # "tech": NaN, left out alone and counted
+
+    def test_holdings_failure_keeps_the_quote_fields(self):
+        out = yahoo.fund_snapshot("GLD", ticker_factory=lambda s: _Ticker({"totalAssets": 1.0},
+                                                                          _FundsData(None, {}, fail=True)))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["holdings_status"], "FAILED")  # a failed read, not "published none"
+        self.assertIn("404", out["holdings_detail"])
+
+    def test_unreadable_fund_profile_is_a_failed_read_not_unavailable(self):
+        # yfinance raises "No Fund data found" when one listed holding lacks a
+        # symbol, and leaves top_holdings None on other parse errors: both are a
+        # failed read. Only a successful, empty parse means Yahoo published none.
+        class Raising(_FundsData):
+            @property
+            def top_holdings(self):
+                raise RuntimeError("YFDataException: No Fund data found.")
+
+        info = {"totalAssets": 1.0}
+        raised = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, Raising(None, {})))
+        self.assertEqual((raised["status"], raised["holdings_status"]), ("OK", "FAILED"))
+        self.assertIn("No Fund data found", raised["holdings_detail"])
+        unparsed = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, _FundsData(None, None)))
+        self.assertEqual(unparsed["holdings_status"], "FAILED")
+        empty = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(info, _FundsData(_Holdings([]), {})))
+        self.assertEqual(empty["holdings_status"], "UNAVAILABLE")
+
+    def test_quote_failure_and_empty_quote(self):
+        # Nothing obtained from either surface: the fund fails.
+        failed = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker(fail=True))
+        self.assertEqual((failed["status"], failed["quote_status"]), ("FAILED", "FAILED"))
+        self.assertEqual(failed["holdings_status"], "FAILED")  # attempted, and the read failed
+        empty = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker({}))
+        self.assertEqual(empty["status"], "FAILED")
+
+    def test_quote_failure_does_not_hide_available_holdings(self):
+        # The quote summary and the holdings are separate Yahoo surfaces: a
+        # failed quote no longer prevents the holdings request.
+        funds = _FundsData(_Holdings([("LIN", {"Name": "Linde PLC", "Holding Percent": 0.13})]), {"energy": 0.2})
+        out = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(funds=funds, fail=True))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["quote_status"], "FAILED")
+        self.assertIn("401", out["detail"])
+        self.assertEqual(out["fields"], {})
+        self.assertEqual(out["holdings"], [[1, "LIN", "Linde PLC", 0.13]])
+        self.assertEqual(out["holdings_status"], "OK")
+
+    def test_fundamentals(self):
+        ok = yahoo.fundamentals("LIN", ticker_factory=lambda s: _Ticker({"trailingPE": 30.8, "currency": "USD"}))
+        self.assertEqual(ok, {"status": "OK", "detail": "", "fields": {"trailingPE": 30.8, "currency": "USD"}})
+        self.assertEqual(yahoo.fundamentals("X", ticker_factory=lambda s: _Ticker(fail=True))["status"], "FAILED")
+
+
+class MacroTests(unittest.TestCase):
+    def test_fred_missing_points_are_counted_not_zeroed(self):
+        text = "observation_date,VIXCLS\n2026-09-30,16.1\n2026-10-01,.\n2026-10-02,15.8\n"
+        out = macro.fred_series("VIXCLS", transport=_FakeTransport(text=text))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["2026-09-30", 16.1], ["2026-10-02", 15.8]])
+        self.assertEqual(out["missing_points"], 1)
+        self.assertTrue(out["url"].endswith("id=VIXCLS"))
+
+    def test_fred_bad_line_is_left_out_not_the_series(self):
+        # One unreadable value and one unreadable date no longer cost the series:
+        # each is counted, kept as an example and left out.
+        text = ("observation_date,DGS10\n2026-09-29,4.10\n2026-09-30,n/a\nnot-a-date,4.2\n"
+                "2026-10-01,.\n2026-10-02,4.05\n")
+        out = macro.fred_series("DGS10", transport=_FakeTransport(text=text))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["2026-09-29", 4.1], ["2026-10-02", 4.05]])
+        self.assertEqual(out["missing_points"], 1)
+        self.assertEqual(out["unparseable_points"], 2)
+        self.assertEqual(out["unparseable_examples"], ["2026-09-30,n/a", "not-a-date,4.2"])
+        self.assertIn("2 unparseable", out["detail"])
+        # Nothing numeric at all is still a failure, and says how many lines were unreadable.
+        none = macro.fred_series("X", transport=_FakeTransport(text="observation_date,X\n2026-09-30,bad\n"))
+        self.assertEqual(none["status"], "FAILED")
+        self.assertEqual(none["unparseable_points"], 1)
+
+    def test_fred_transport_and_parse_failures(self):
+        failed = macro.fred_series("X", transport=_FakeTransport(error=TransportError("HTTP 503")))
+        self.assertEqual((failed["status"], failed["rows"]), ("FAILED", []))
+        bad = macro.fred_series("X", transport=_FakeTransport(text="<html>blocked</html>"))
+        self.assertEqual(bad["status"], "FAILED")
+
+    def test_world_bank_null_is_kept_distinct(self):
+        payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-13"},
+                   [{"country": {"id": "TH"}, "date": "2025", "value": 2.5},
+                    {"country": {"id": "TH"}, "date": "2024", "value": None},
+                    {"country": {"id": ""}, "date": "2024", "value": 1.0}]]
+        out = macro.world_bank_indicator("NY.GDP.MKTP.KD.ZG", ["TH", "TW"], transport=_FakeTransport(payload=payload))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["TH", 2025, 2.5], ["TH", 2024, None]])
+        self.assertEqual(out["countries_absent"], ["TW"])
+        self.assertEqual(out["source_last_updated"], "2026-07-13")
+
+    def test_fred_response_for_another_series_is_refused(self):
+        # The value column names the series; one that is not the requested
+        # series means the response's identity is wrong: nothing is used.
+        out = macro.fred_series("DGS10", transport=_FakeTransport(text="observation_date,DGS2\n2026-09-30,3.6\n"))
+        self.assertEqual(out["status"], "FAILED")
+        self.assertIn("'DGS2', not the requested 'DGS10'", out["detail"])
+
+    def test_world_bank_record_without_country_or_year_is_counted(self):
+        payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-01"},
+                   [{"country": {"id": "TH"}, "date": "2024", "value": 2.5},
+                    {"country": {"id": ""}, "date": "2024", "value": 1.0},
+                    {"country": {"id": "JP"}, "date": "n/a", "value": 1.0},
+                    "not a record"]]
+        parsed = macro.parse_world_bank(payload)
+        self.assertEqual(parsed["rows"], [["TH", 2024, 2.5]])
+        self.assertEqual(len(parsed["unparseable"]), 3)
+
+    def test_world_bank_bad_value_is_left_out_not_the_indicator(self):
+        payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-13"},
+                   [{"country": {"id": "TH"}, "date": "2025", "value": 2.5},
+                    {"country": {"id": "TH"}, "date": "2024", "value": "n/a"},
+                    {"country": {"id": "KR"}, "date": "2025", "value": None}]]
+        out = macro.world_bank_indicator("I", ["TH", "KR"], transport=_FakeTransport(payload=payload))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["TH", 2025, 2.5], ["KR", 2025, None]])  # null stays the source's null
+        self.assertEqual(out["unparseable_points"], 1)
+        self.assertIn("TH 2024", out["unparseable_examples"][0])
+
+    def test_world_bank_pages_are_followed(self):
+        class Paged(_FakeTransport):
+            def get_json(self, url, params=None, timeout=20):
+                self.urls.append((url, (params or {}).get("page", 1)))
+                page = (params or {}).get("page", 1)
+                if page == 3:
+                    raise TransportError("HTTP 502")
+                return [{"page": page, "pages": 3, "lastupdated": "2026-07-13"},
+                        [{"country": {"id": "TH"}, "date": str(2020 + page), "value": float(page)}]]
+
+        t = Paged()
+        out = macro.world_bank_indicator("I", ["TH"], transport=t)
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual([p for _u, p in t.urls], [1, 2, 3])
+        self.assertEqual(out["rows"], [["TH", 2021, 1.0], ["TH", 2022, 2.0]])  # pages 1 and 2 kept
+        self.assertEqual(out["pages"], 3)
+        self.assertEqual(len(out["pages_failed"]), 1)
+        self.assertIn("page 3", out["detail"])
+
+    def test_world_bank_refuses_error_responses(self):
+        err = [{"message": [{"id": "120", "value": "Invalid value"}]}]
+        self.assertEqual(macro.world_bank_indicator("I", ["TH"], transport=_FakeTransport(payload=err))["status"],
+                         "FAILED")
+        with self.assertRaises(ValueError):
+            macro.parse_world_bank({"not": "a list"})
+
+
+class _FakeCftc:
+    def __init__(self, answer=None, error=None):
+        self.answer, self.error, self.calls = answer, error, []
+
+    def get_cot_monitor(self, report, futures_only, markets, max_rows):
+        self.calls.append((report, futures_only, list(markets)))
+        if self.error:
+            raise self.error
+        return self.answer
+
+
+class CftcStageTests(unittest.TestCase):
+    def test_rows_fields_and_missing_cells(self):
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "gold", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": 500000,
+                 "non_commercial_long": 250000, "non_commercial_short": None},
+                {"report_date_as_yyyy_mm_dd": "2026-09-29T00:00:00", "open_interest_all": 510000,
+                 "non_commercial_long": 255000, "non_commercial_short": 90000}]},
+            {"market_key": "bitcoin", "status": "unavailable", "refresh_error": "HTTP 503", "rows": []}]}}
+        fake = _FakeCftc(answer)
+        items = etf_research_data.fetch_cftc(["gold", "bitcoin", "ether"], "legacy", True, wrapper=fake)
+        self.assertEqual(fake.calls, [("legacy", True, ["gold", "bitcoin", "ether"])])
+        self.assertEqual(items["gold"]["status"], "OK")
+        self.assertEqual(items["gold"]["rows"], [["2026-09-22", 500000.0, 250000.0, None],
+                                                 ["2026-09-29", 510000.0, 255000.0, 90000.0]])
+        self.assertEqual(items["bitcoin"]["status"], "FAILED")
+        self.assertIn("503", items["bitcoin"]["detail"])
+        self.assertEqual(items["ether"]["status"], "FAILED")  # never silently dropped
+
+    def test_market_without_open_interest_keeps_its_positions(self):
+        # Open interest missing everywhere, positions present: the market is
+        # usable (each field stands on its own). An undated row is counted.
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "silver", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": None,
+                 "non_commercial_long": 40000, "non_commercial_short": 30000},
+                {"report_date_as_yyyy_mm_dd": None, "open_interest_all": 1,
+                 "non_commercial_long": 1, "non_commercial_short": 1}]},
+            {"market_key": "copper", "status": "current", "refresh_error": "", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": None,
+                 "non_commercial_long": None, "non_commercial_short": None}]}]}}
+        items = etf_research_data.fetch_cftc(["silver", "copper"], "legacy", True, wrapper=_FakeCftc(answer))
+        self.assertEqual(items["silver"]["status"], "OK")
+        self.assertEqual(items["silver"]["rows"], [["2026-09-22", None, 40000.0, 30000.0]])
+        self.assertEqual(items["silver"]["unparseable_points"], 1)
+        self.assertEqual(items["copper"]["status"], "FAILED")
+
+    def test_failed_refresh_keeps_the_stored_archive_marked_not_read(self):
+        # The provider request failed (HTTP 503); the tool returned its stored
+        # archive (`archive_only`). Its rows are kept (the research store may
+        # not have them yet), marked as not read from the provider: the store
+        # makes the item PARTIAL, never UNCHANGED. A market with no stored rows
+        # either is FAILED.
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "gold", "status": "archive_only", "refresh_error": "HTTP 503", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": 500000,
+                 "non_commercial_long": 250000, "non_commercial_short": 90000}]}]}}
+        answer["data"]["markets"].append({"market_key": "silver", "status": "unavailable",
+                                           "refresh_error": "HTTP 503", "rows": []})
+        items = etf_research_data.fetch_cftc(["gold", "silver"], "legacy", True, wrapper=_FakeCftc(answer))
+        self.assertEqual(items["gold"]["status"], "OK")
+        self.assertTrue(items["gold"]["provider_not_read"])
+        self.assertEqual(len(items["gold"]["rows"]), 1)
+        self.assertIn("503", items["gold"]["detail"])
+        self.assertIn("stored archive is used", items["gold"]["detail"])
+        self.assertEqual(items["silver"]["status"], "FAILED")
+        self.assertFalse(items["silver"]["provider_not_read"])
+
+    def test_tool_failure_fails_every_market(self):
+        items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(error=RuntimeError("boom")))
+        self.assertEqual(items["gold"]["status"], "FAILED")
+        self.assertIn("boom", items["gold"]["detail"])
+
+
+class RunFetchTests(unittest.TestCase):
+    REQUEST = {
+        "history": {"long": ["SPY", "XLB"], "standard": ["THD"]},
+        "funds": ["XLB", "GLD"],
+        "constituents": {"holding_parents": ["XLB"], "max_per_parent": 2, "extra_symbols": ["PTT.BK"],
+                         "exclude": ["SPY"], "history_period": "1y", "fundamentals": True,
+                         "fundamental_extra": ["ASML.AS"], "symbol_map": {"LIN": "LIN.TEST"},
+                         "exclude_holdings": ["CASHFUND"]},
+        "fred": ["VIXCLS", "BAD"],
+        "world_bank": {"countries": ["TH"], "indicators": ["NY.GDP.MKTP.KD.ZG"]},
+    }
+
+    def _patches(self):
+        def history(symbols, period, at, **_):
+            return {s: ({"status": "FAILED", "detail": "x", "rows": []} if s == "THD" else
+                        {"status": "OK", "detail": "", "rows": [["2026-10-01", 1.0, None, 0.0, 0.0, 0.0]]})
+                    for s in symbols}
+
+        def snapshot(sym):
+            holdings = [[1, "LIN", "Linde", 0.13], [2, "CASHFUND", "Cash fund", 0.01], [3, "NEM", "Newmont", 0.07]]
+            return {"status": "OK", "fields": {"totalAssets": 1.0}, "holdings": holdings if sym == "XLB" else []}
+
+        def fred(sid):
+            if sid == "BAD":
+                return {"status": "FAILED", "detail": "HTTP 500", "rows": [], "url": "u"}
+            return {"status": "OK", "detail": "", "rows": [["2026-10-01", 1.0]], "text": "a,b\n2026-10-01,1\n"}
+
+        return [mock.patch.object(yahoo, "download_history", side_effect=history),
+                mock.patch.object(yahoo, "fund_snapshot", side_effect=snapshot),
+                mock.patch.object(yahoo, "fundamentals", side_effect=lambda s: {"status": "OK", "fields": {}}),
+                mock.patch.object(macro, "fred_series", side_effect=fred),
+                mock.patch.object(macro, "world_bank_indicator",
+                                  side_effect=lambda i, c: {"status": "OK", "rows": [["TH", 2025, 1.0]]})]
+
+    def _run(self):
+        patches = self._patches()
+        for p in patches:
+            p.start()
+        try:
+            with mock.patch.object(sys, "stderr", io.StringIO()) as err:
+                payload = etf_research_data.run_fetch(self.REQUEST)
+            return payload, err.getvalue()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_stage_statuses_and_constituent_policy(self):
+        payload, progress = self._run()
+        st = payload["stages"]
+        self.assertEqual(st["yahoo_history"]["status"], "PARTIAL")  # THD failed, SPY/XLB ok
+        self.assertEqual((st["yahoo_history"]["items_ok"], st["yahoo_history"]["items_requested"]), (2, 3))
+        self.assertEqual(st["yahoo_funds"]["status"], "OK")
+        self.assertEqual(st["fred"]["status"], "PARTIAL")
+        self.assertEqual(st["world_bank"]["status"], "OK")
+        # Top-2 holdings of XLB without CASH, plus extras, minus the excluded long-history symbols.
+        # The reviewed symbol map renames a holding before it is fetched.
+        self.assertEqual(payload["constituents"], ["LIN.TEST", "PTT.BK"])
+        self.assertEqual(sorted(st["yahoo_fundamentals"]["items"]), ["ASML.AS", "LIN.TEST", "PTT.BK"])
+        # The response body is reduced to its digest; the text itself is not carried.
+        self.assertNotIn("text", st["fred"]["items"]["VIXCLS"])
+        self.assertEqual(len(st["fred"]["items"]["VIXCLS"]["response_sha256"]), 64)
+        self.assertEqual(st["fred"]["items"]["BAD"]["response_sha256"], "")
+        lines = [ln for ln in progress.splitlines() if ln.startswith("ETFR_PROGRESS ")]
+        self.assertTrue(lines)
+        self.assertTrue(all(json.loads(ln[len("ETFR_PROGRESS "):])["stage"] for ln in lines))
+
+    def test_empty_request_stages_are_unavailable(self):
+        with mock.patch.object(sys, "stderr", io.StringIO()):
+            payload = etf_research_data.run_fetch({})
+        self.assertEqual({k: v["status"] for k, v in payload["stages"].items()},
+                         {k: "UNAVAILABLE" for k in payload["stages"]})
+
+    def test_stage_rollup(self):
+        t = dt.datetime(2026, 10, 3, tzinfo=UTC)
+        self.assertEqual(etf_research_data._stage("s", t, {"a": {"status": "FAILED"}})["status"], "FAILED")
+        self.assertEqual(etf_research_data._stage("s", t, {"a": {"status": "OK"}})["status"], "OK")
+
+    def test_main_writes_atomically_and_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            req = Path(tmp) / "req.json"
+            out = Path(tmp) / "out.json"
+            req.write_text(json.dumps({}), encoding="utf-8")
+            buf = io.StringIO()
+            with mock.patch.object(sys, "stderr", io.StringIO()), redirect_stdout(buf):
+                code = etf_research_data.main(["fetch", "--request", str(req), "--out", str(out)])
+            self.assertEqual(code, 0)
+            summary = json.loads(buf.getvalue())
+            self.assertTrue(summary["ok"])
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["script_version"],
+                             etf_research_data.SCRIPT_VERSION)
+            self.assertFalse((Path(tmp) / "out.json.part").exists())
+
+    def test_usage_and_bad_request(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(etf_research_data.main([]), 2)
+        self.assertEqual(json.loads(buf.getvalue())["error"]["code"], "USAGE")
+        with tempfile.TemporaryDirectory() as tmp:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = etf_research_data.main(["fetch", "--request", str(Path(tmp) / "missing.json"),
+                                               "--out", str(Path(tmp) / "o.json")])
+            self.assertEqual(code, 2)
+            self.assertEqual(json.loads(buf.getvalue())["error"]["code"], "BAD_REQUEST")
+
+
+if __name__ == "__main__":
+    unittest.main()

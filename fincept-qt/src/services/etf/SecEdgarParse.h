@@ -159,13 +159,16 @@ struct SecSubmissions {
     QString name;
     QVector<SecFilingRef> filings;
     QVector<SecOlderPage> older_pages;
+    QStringList missing_arrays; ///< optional listing arrays the SEC did not send (their fields stay empty)
 };
 
-/// "2026-08-28T12:25:47.000Z" → UTC instant. Only an explicit UTC designator
-/// is accepted: a local or offset-less time would be a guess.
+/// "2026-08-28T12:25:47.000Z" → UTC instant. A time with an explicit UTC
+/// designator or an explicit offset ("2026-08-28T08:25:47-04:00") names one
+/// instant and is accepted; a local or offset-less time would be a guess.
 inline QDateTime sec_parse_acceptance(const QString& raw) {
     const QString t = raw.trimmed();
-    if (!t.endsWith(QLatin1Char('Z')))
+    static const QRegularExpression kOffset(QStringLiteral("[+-]\\d{2}:\\d{2}$"));
+    if (!t.endsWith(QLatin1Char('Z')) && !kOffset.match(t).hasMatch())
         return {};
     QDateTime dt = QDateTime::fromString(t, Qt::ISODateWithMs);
     if (!dt.isValid())
@@ -209,8 +212,13 @@ inline SecSubmissions parse_sec_submissions(const QByteArray& body, bool older_p
                 out.older_pages.append(page);
         }
     }
-    static const char* kRequired[] = {"accessionNumber",    "form",           "filingDate", "reportDate",
-                                      "acceptanceDateTime", "primaryDocument"};
+    // Accession, form and acceptance time identify a filing and date it: without
+    // one of them nothing can be used. Filing date, report date and primary
+    // document are listing metadata (the filed document carries its own report
+    // period): a missing one leaves its fields empty and is reported, it does
+    // not discard the listing. Arrays that are present must align row by row.
+    static const char* kRequired[] = {"accessionNumber", "form", "acceptanceDateTime"};
+    static const char* kOptional[] = {"filingDate", "reportDate", "primaryDocument"};
     qsizetype n = -1;
     for (const char* key : kRequired) {
         const QJsonValue v = arrays.value(QLatin1String(key));
@@ -224,6 +232,17 @@ inline SecSubmissions parse_sec_submissions(const QByteArray& body, bool older_p
             return out;
         }
         n = len;
+    }
+    for (const char* key : kOptional) {
+        const QJsonValue v = arrays.value(QLatin1String(key));
+        if (!v.isArray()) {
+            out.missing_arrays << QLatin1String(key);
+            continue;
+        }
+        if (v.toArray().size() != n) {
+            out.error = QStringLiteral("submissions_ragged_arrays: %1").arg(QLatin1String(key));
+            return out;
+        }
     }
     const QJsonArray acc = arrays.value(QLatin1String("accessionNumber")).toArray();
     const QJsonArray form = arrays.value(QLatin1String("form")).toArray();

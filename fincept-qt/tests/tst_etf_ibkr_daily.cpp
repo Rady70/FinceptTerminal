@@ -5,14 +5,19 @@
 // exactly as IBKR reported them; the in-progress session rejected on its own;
 // missing expected sessions and stale history reported; entitlement,
 // TWS/process failures and IBKR errors kept apart; an ordinary share never
-// taken for an ETF; and any response whose parameters, identity, rows or bar
-// dates (a holiday, a weekend, an uncovered date, a session after the
-// requested end) cannot be trusted refused as a whole. Synthetic prices only.
+// taken for an ETF; a response whose parameters, identity or dating (a bar on
+// a holiday or a weekend, two different bars for one date) cannot be trusted
+// refused as a whole; and an uncertain row or field (a bad close, an unusable
+// volume, an uncovered date, a session after the requested end, an identical
+// repeat) rejected on its own while the valid rows are kept, also from a
+// series the wrapper withheld (`retained_bars`). Synthetic prices only.
 
 #include "etf_test_fixtures.h"
 #include "services/etf/EtfIbkrDaily.h"
 
 #include <QTest>
+
+#include <functional>
 
 using namespace fincept::services::etf;
 using namespace etf_fixtures;
@@ -52,7 +57,7 @@ class TstEtfIbkrDaily : public QObject {
     void newest_bar_before_last_completed_session_is_stale();
     void in_progress_session_is_rejected();
     void early_close_session_is_completed_at_one_pm();
-    void untrusted_bar_dates_refuse_the_response();
+    void non_session_bars_are_left_out_unless_repeated();
     void wrapper_stale_rule_is_kept();
     void entitlement_block_is_not_an_error();
     void tws_unavailable_is_a_source_error();
@@ -60,7 +65,9 @@ class TstEtfIbkrDaily : public QObject {
     void parameter_mismatch_is_refused();
     void contract_identity_is_checked();
     void an_ordinary_stock_is_not_an_etf();
-    void malformed_or_duplicated_rows_refuse_the_response();
+    void uncertain_rows_and_fields_are_rejected_alone();
+    void conflicting_bars_drop_only_their_date();
+    void withheld_series_keeps_its_valid_rows();
 };
 
 void TstEtfIbkrDaily::complete_window_is_accepted() {
@@ -130,12 +137,17 @@ void TstEtfIbkrDaily::in_progress_session_is_rejected() {
     QCOMPARE(a.accepted.last().session_date, kLast);
     QCOMPARE(count_state(a, QualityState::InProgressSession), 1);
     // After the close, the same bar is a completed session the request did not
-    // ask for: IBKR did not answer as asked, so nothing is used.
+    // ask for: that bar alone is not used (and recorded); the four sessions the
+    // request asked for are kept.
     const auto after = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-25T21:00:00.000Z");
-    QCOMPARE(after.status, RetrievalStatus::SourceError);
-    QCOMPARE(after.detail_code, QStringLiteral("bar_after_requested_end"));
-    QVERIFY(after.accepted.isEmpty());
-    QVERIFY(after.issues.isEmpty());
+    QCOMPARE(after.status, RetrievalStatus::Ok);
+    QCOMPARE(after.detail_code, QStringLiteral("bars_partially_kept"));
+    QCOMPARE(after.accepted.size(), 4);
+    QCOMPARE(after.accepted.last().session_date, kLast);
+    int after_end = 0;
+    for (const auto& i : after.issues)
+        after_end += i.code == QLatin1String("bar_after_requested_end") ? 1 : 0;
+    QCOMPARE(after_end, 1);
     // A response that holds only the in-progress bar has nothing acceptable.
     const auto only = assess(ibkr_history_envelope("SPY", 756733, {BarSpec{QStringLiteral("20260925")}}, kEnd),
                              "2026-09-25T14:51:00.000Z");
@@ -162,26 +174,51 @@ void TstEtfIbkrDaily::early_close_session_is_completed_at_one_pm() {
     QCOMPARE(count_state(b, QualityState::InProgressSession), 1);
 }
 
-void TstEtfIbkrDaily::untrusted_bar_dates_refuse_the_response() {
-    // One stray bar among nine valid sessions: the whole response is refused,
-    // never partially used, and the stray bar is never re-dated.
+void TstEtfIbkrDaily::non_session_bars_are_left_out_unless_repeated() {
+    // One bar on a holiday or a weekend is more likely a calendar gap or one
+    // misdated bar than a misdated response: it alone is left out (never
+    // re-dated) and recorded; the nine valid sessions are kept.
+    for (const char* date : {"20260907", "20260920"}) { // Labor Day, a Sunday
+        QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
+        bars.append(BarSpec{QString::fromLatin1(date)});
+        const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.accepted.size(), 9);
+        int recorded = 0;
+        for (const auto& i : a.issues)
+            recorded +=
+                i.code == QLatin1String("bar_on_non_session_date") && i.detail.contains(QString::fromLatin1(date)) ? 1
+                                                                                                                   : 0;
+        QCOMPARE(recorded, 1);
+    }
+    {
+        // Two or more suggest the response's dates are shifted: none is used.
+        QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
+        bars.append(BarSpec{QStringLiteral("20260919")}); // Saturday
+        bars.append(BarSpec{QStringLiteral("20260920")}); // Sunday
+        const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
+        QCOMPARE(a.status, RetrievalStatus::SourceError);
+        QCOMPARE(a.detail_code, QStringLiteral("bar_on_non_session_date"));
+        QVERIFY(a.detail.contains(QStringLiteral("20260919")) && a.detail.contains(QStringLiteral("20260920")));
+        QVERIFY(a.accepted.isEmpty());
+    }
+    // A bar the calendar does not cover, or a completed session after the
+    // requested end, is excluded on its own; the nine valid sessions are kept.
     const struct {
         const char* date;
         const char* code;
-    } cases[] = {{"20260907", "bar_on_non_session_date"},       // Labor Day
-                 {"20260920", "bar_on_non_session_date"},       // a Sunday
-                 {"20181228", "bar_outside_calendar_coverage"}, // before the calendar's coverage
-                 {"20260925", "bar_after_requested_end"}};      // completed, but not asked for
-    for (const auto& c : cases) {
+    } alone[] = {{"20181228", "bar_outside_calendar_coverage"}, {"20260925", "bar_after_requested_end"}};
+    for (const auto& c : alone) {
         QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
         bars.append(BarSpec{QString::fromLatin1(c.date)});
         const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd), "2026-09-26T09:00:00.000Z");
-        QCOMPARE(a.status, RetrievalStatus::SourceError);
-        QCOMPARE(a.detail_code, QString::fromLatin1(c.code));
-        QVERIFY(a.detail.contains(QString::fromLatin1(c.date)));
-        QVERIFY(a.accepted.isEmpty());
-        QVERIFY(a.issues.isEmpty());
-        QVERIFY(a.window_days.isEmpty());
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.accepted.size(), 9);
+        QCOMPARE(a.detail_code, QStringLiteral("bars_partially_kept"));
+        int coded = 0;
+        for (const auto& i : a.issues)
+            coded += i.code == QLatin1String(c.code) ? 1 : 0;
+        QCOMPARE(coded, 1);
     }
 }
 
@@ -273,28 +310,159 @@ void TstEtfIbkrDaily::an_ordinary_stock_is_not_an_etf() {
              QStringLiteral("ETF"));
 }
 
-void TstEtfIbkrDaily::malformed_or_duplicated_rows_refuse_the_response() {
+void TstEtfIbkrDaily::uncertain_rows_and_fields_are_rejected_alone() {
+    const QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast); // nine sessions
+    auto with_row = [&](int index, const std::function<void(QJsonObject&)>& edit) {
+        QJsonObject p = ibkr_history_envelope("SPY", 756733, bars, kEnd);
+        QJsonArray rows = p.value("bars").toArray();
+        QJsonObject r = rows[index].toObject();
+        edit(r);
+        rows[index] = r;
+        p.insert("bars", rows);
+        return p;
+    };
+    auto issue_codes = [](const IbkrDailyAssessment& a) {
+        QStringList c;
+        for (const auto& i : a.issues)
+            c << i.code;
+        return c;
+    };
+    {
+        // One bar without a close: that row is excluded (and its session is
+        // missing); the other eight are kept.
+        const auto a = assess(with_row(2, [](QJsonObject& r) { r.remove("close"); }));
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.detail_code, QStringLiteral("bars_partially_kept"));
+        QCOMPARE(a.accepted.size(), 8);
+        QVERIFY(issue_codes(a).contains(QStringLiteral("bar_row_excluded")));
+        QCOMPARE(count_state(a, QualityState::Missing), 1);
+    }
+    {
+        // An intraday stamp instead of a session date: excluded, never re-dated.
+        const auto a = assess(with_row(0, [](QJsonObject& r) { r.insert("date", "20260914 16:00:00"); }));
+        QCOMPARE(a.accepted.size(), 8);
+        QVERIFY(issue_codes(a).contains(QStringLiteral("bar_row_excluded")));
+    }
+    {
+        // A missing volume does not make the prices uncertain: all nine bars are
+        // kept, that bar's volume is stored as missing, never zero.
+        const auto a = assess(with_row(4, [](QJsonObject& r) { r.remove("volume"); }));
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.accepted.size(), 9);
+        QVERIFY(issue_codes(a).contains(QStringLiteral("bar_field_unusable")));
+        QCOMPARE(a.accepted[4].volume.state, ValueState::Missing);
+        QVERIFY(a.accepted[4].close.reported());
+        // A negative volume is kept as unparseable, not as a number.
+        const auto n = assess(with_row(4, [](QJsonObject& r) { r.insert("volume", -5.0); }));
+        QCOMPARE(n.accepted.size(), 9);
+        QCOMPARE(n.accepted[4].volume.state, ValueState::Unparseable);
+    }
+    {
+        // An identical repeat of a bar is kept once.
+        QVector<BarSpec> twice = bars;
+        twice.append(bars[3]);
+        const auto a = assess(ibkr_history_envelope("SPY", 756733, twice, kEnd));
+        QCOMPARE(a.status, RetrievalStatus::Ok);
+        QCOMPARE(a.accepted.size(), 9);
+        QVERIFY(issue_codes(a).contains(QStringLiteral("bar_row_duplicated")));
+    }
+}
+
+void TstEtfIbkrDaily::conflicting_bars_drop_only_their_date() {
+    // Two different bars for one date: which is right is unknown, so neither is
+    // used; that date is recorded (and its session is missing), the other eight
+    // sessions are kept.
     QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), kLast);
-    QJsonObject p = ibkr_history_envelope("SPY", 756733, bars, kEnd);
-    QJsonArray rows = p.value("bars").toArray();
-    QJsonObject bad = rows[2].toObject();
-    bad.remove("close");
-    rows[2] = bad;
-    p.insert("bars", rows);
-    QCOMPARE(assess(p).detail_code, QStringLiteral("bars_malformed"));
-    QVERIFY(assess(p).accepted.isEmpty()); // never partially used
+    BarSpec other = bars[3];
+    other.close = 120.0;
+    bars.append(other);
+    const auto a = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
+    QCOMPARE(a.status, RetrievalStatus::Ok);
+    QCOMPARE(a.accepted.size(), 8);
+    const QDate dropped = QDate::fromString(bars[3].date, QStringLiteral("yyyyMMdd"));
+    QVERIFY(dropped.isValid());
+    int conflicts = 0;
+    for (const auto& i : a.issues)
+        conflicts += i.code == QLatin1String("bar_dates_conflicting") && i.session_date == dropped ? 1 : 0;
+    QCOMPARE(conflicts, 1);
+    for (const auto& b : a.accepted)
+        QVERIFY(b.session_date != dropped);
+    QCOMPARE(count_state(a, QualityState::Missing), 1);
+    // Both bars of the date are counted as excluded.
+    QVERIFY2(a.detail.contains(QStringLiteral("2 row(s) excluded")), qPrintable(a.detail));
+    // Delivered A, B, A: all three are left out and counted.
+    bars.append(bars_for_sessions(QDate(2026, 9, 14), kLast)[3]);
+    const auto aba = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
+    QCOMPARE(aba.accepted.size(), 8);
+    QVERIFY2(aba.detail.contains(QStringLiteral("3 row(s) excluded")), qPrintable(aba.detail));
+}
 
-    QJsonObject intraday = ibkr_history_envelope("SPY", 756733, bars, kEnd);
-    QJsonArray r2 = intraday.value("bars").toArray();
-    QJsonObject stamp = r2[0].toObject();
-    stamp.insert("date", "20260914 16:00:00");
-    r2[0] = stamp;
-    intraday.insert("bars", r2);
-    QCOMPARE(assess(intraday).detail_code, QStringLiteral("bars_malformed"));
-
-    bars.append(bars.last());
-    QCOMPARE(assess(ibkr_history_envelope("SPY", 756733, bars, kEnd)).detail_code,
-             QStringLiteral("bar_dates_duplicated"));
+void TstEtfIbkrDaily::withheld_series_keeps_its_valid_rows() {
+    // The wrapper withholds a series it judges stale or invalid from `bars`
+    // (its envelope contract) and returns the individually valid rows apart.
+    const QVector<BarSpec> bars = bars_for_sessions(QDate(2026, 9, 14), QDate(2026, 9, 22)); // 7, ends early
+    auto withheld = [&](const char* status, const char* reason, const QJsonArray& problems) {
+        QJsonObject p = ibkr_history_envelope("SPY", 756733, bars, kEnd);
+        const QJsonArray rows = p.value("bars").toArray();
+        p.insert("bars", QJsonArray());
+        p.insert("retained_bars", rows);
+        p.insert("row_problems", problems);
+        QJsonObject cls = p.value("classification").toObject();
+        cls.insert("usable", false);
+        cls.insert("status", QLatin1String(status));
+        cls.insert("validation_reason", QLatin1String(reason));
+        p.insert("classification", cls);
+        return p;
+    };
+    {
+        // Stale by the wrapper's own rule: the seven completed sessions are kept,
+        // the two newest expected sessions are missing, the retrieval is STALE.
+        const auto a = assess(withheld("STALE", "HISTORY_STALE", {}));
+        QCOMPARE(a.status, RetrievalStatus::Stale);
+        QCOMPARE(a.accepted.size(), 7);
+        QCOMPARE(count_state(a, QualityState::Missing), 2);
+        QVERIFY(a.detail.contains(QStringLiteral("HISTORY_STALE")));
+    }
+    {
+        // One row the wrapper excluded (crossed OHLC): recorded, the rest kept.
+        const QJsonArray problems{
+            QJsonObject{{"index", 7}, {"date", "20260923"}, {"reason", "BAR_OHLC_RELATION_INVALID"}, {"scope", "row"}}};
+        const auto a = assess(withheld("VALUES_INVALID", "BAR_OHLC_RELATION_INVALID", problems));
+        QCOMPARE(a.accepted.size(), 7);
+        int excluded = 0;
+        for (const auto& i : a.issues)
+            excluded += i.code == QLatin1String("bar_row_excluded") && i.session_date == QDate(2026, 9, 23) ? 1 : 0;
+        QCOMPARE(excluded, 1);
+    }
+    {
+        // A delivered-but-unusable volume (the wrapper passes it as text in
+        // `volume_unusable`) is stored as unparseable, not as missing.
+        QJsonObject p =
+            withheld("VALUES_INVALID", "BAR_VOLUME_NEGATIVE",
+                     QJsonArray{QJsonObject{
+                         {"index", 2}, {"date", "20260916"}, {"reason", "BAR_VOLUME_NEGATIVE"}, {"scope", "volume"}}});
+        QJsonArray rows = p.value("retained_bars").toArray();
+        QJsonObject r = rows.at(2).toObject();
+        r.remove("volume");
+        r.insert("volume_unusable", "-5.0");
+        rows.replace(2, r);
+        p.insert("retained_bars", rows);
+        const auto a = assess(p);
+        QCOMPARE(a.accepted.size(), 7);
+        QCOMPARE(a.accepted[2].volume.state, ValueState::Unparseable);
+        int unusable = 0;
+        for (const auto& i : a.issues)
+            unusable += i.code == QLatin1String("bar_field_unusable") ? 1 : 0;
+        QCOMPARE(unusable, 1);
+    }
+    {
+        // Without retained rows nothing is kept, as before.
+        QJsonObject p = withheld("STALE", "HISTORY_STALE", {});
+        p.remove("retained_bars");
+        const auto a = assess(p);
+        QCOMPARE(a.status, RetrievalStatus::Stale);
+        QVERIFY(a.accepted.isEmpty());
+    }
 }
 
 QTEST_GUILESS_MAIN(TstEtfIbkrDaily)

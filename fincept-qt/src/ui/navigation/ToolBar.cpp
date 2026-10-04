@@ -280,6 +280,7 @@ QMenu* ToolBar::build_navigate_menu() {
 
     auto* mkt = add_sub(tr("Markets & Data"));
     nav(mkt, tr("Economics"), "economics");
+    nav(mkt, tr("ETF Flow & Rotation"), "etf_research");
     nav(mkt, tr("GOVT Data"), "gov_data");
     nav(mkt, tr("DBnomics"), "dbnomics");
     nav(mkt, tr("AKShare Data"), "akshare");

@@ -45,6 +45,8 @@ ComponentAvailability screen_entry(const QString& id) {
         {"portfolio", S::Available, "manually maintained local portfolios and analytics", ""},
         {"backtesting", S::Available, "local historical simulation only", ""},
         {"economics", S::Available, "public economics data (no Fincept macro panel)", ""},
+        {"etf_research", S::Available,
+         "ETF flow and sector/theme/country rotation research; manual refresh of free sources", ""},
         {"dbnomics", S::Available, "public DBnomics API", ""},
         {"gov_data", S::Available, "public government data connectors", ""},
         {"akshare", S::Available, "public AkShare connectors", ""},

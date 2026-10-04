@@ -521,6 +521,8 @@ void TstEtfStore::confirmation_needs_the_same_meaning() {
     QVERIFY(!open_fresh().isEmpty());
     // SEC: the same number under the same accession, delivered later with any
     // part of its meaning changed, is refused, never taken as a confirmation.
+    // An acceptance time is part of that meaning when it changes how the vintage
+    // is timed; one that leaves the timing unchanged is listing metadata (below).
     const qint64 entity = add_entity("0000884394");
     const qint64 r1 = sec_retrieval("2026-09-01T10:00:00.000Z");
     const qint64 r2 = sec_retrieval("2026-09-02T10:00:00.000Z");
@@ -534,7 +536,8 @@ void TstEtfStore::confirmation_needs_the_same_meaning() {
         [](etf_store::ObservationInput& in) { in.kind = MeasurementKind::AccountingObservation; },
         [](etf_store::ObservationInput& in) { in.period_end = QDate(2026, 6, 30); },
         [](etf_store::ObservationInput& in) { in.report_period = QDate(2026, 3, 31); },
-        [](etf_store::ObservationInput& in) { in.accepted_at = utc("2026-08-28T12:25:48.000Z"); },
+        // Monday 15:00Z: usable from the Tuesday 09-01 open instead of Monday 08-31.
+        [](etf_store::ObservationInput& in) { in.accepted_at = utc("2026-08-31T15:00:00.000Z"); },
     };
     for (auto change : changes) {
         auto later = first;
@@ -554,6 +557,21 @@ void TstEtfStore::confirmation_needs_the_same_meaning() {
     same.retrieval_id = r2;
     same.seen_at = utc("2026-09-02T10:00:01.000Z");
     QCOMPARE(repo().record_observation(same).value(), ObservationOutcome::Confirmed);
+    // The SEC re-lists the accession with another acceptance time on the same New
+    // York date: timed the same (Monday 08-31 open), so confirmed as such; the
+    // stored acceptance time and availability are kept.
+    const qint64 r3 = sec_retrieval("2026-09-03T10:00:00.000Z");
+    auto relisted = first;
+    relisted.retrieval_id = r3;
+    relisted.seen_at = utc("2026-09-03T10:00:01.000Z");
+    relisted.accepted_at = utc("2026-08-28T16:25:47.000Z");
+    QCOMPARE(repo().record_observation(relisted).value(), ObservationOutcome::ConfirmedAcceptanceChanged);
+    auto kept = repo().vintages(SubjectType::ReportingEntity, entity, QStringLiteral("nport_net_assets"),
+                                QDate(2026, 6, 30), SourceType::SecNport);
+    QCOMPARE(kept.value().size(), 1);
+    QCOMPARE(kept.value()[0].accepted_at, utc("2026-08-28T12:25:47.000Z"));
+    QCOMPARE(kept.value()[0].available_from, utc("2026-08-31T13:30:00.000Z"));
+    QCOMPARE(kept.value()[0].seen_count, 3);
 
     // IBKR: the same close in other units is a new vintage beside the old one.
     const qint64 instrument = add_instrument(756733, "SPY");

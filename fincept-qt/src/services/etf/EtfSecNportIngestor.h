@@ -89,11 +89,13 @@ struct SecNportRunSummary {
     int filings_selected = 0;
     int filings_stored = 0;
     int filings_skipped = 0;
+    int filings_outside_period = 0; ///< read to learn their report period; outside the request, not stored
     int observations_inserted = 0;
     int observations_amended = 0;
     int observations_confirmed = 0;
     int observations_already_recorded = 0;
     int observations_refused = 0;
+    int observations_acceptance_changed = 0; ///< confirmed although the SEC listed another acceptance time
     int issues = 0;
     QStringList accessions;
     QVector<qint64> entity_ids;
@@ -166,6 +168,16 @@ class EtfSecNportIngestor : public QObject {
     int pages_fetched_ = 0;
     int pages_unreadable_ = 0; ///< older submissions pages the run needed and could not read
     QVector<SecFilingRef> selected_;
+    /// Documents read during selection, to learn the report period of a filing
+    /// listed without one while a report period is requested. The processing
+    /// pass replays the cached response instead of fetching it again.
+    struct ProbedResponse {
+        SecHttpResponse response;
+        QDateTime requested_at;
+        QDateTime retrieved_at;
+    };
+    QHash<QString, ProbedResponse> probed_;
+    int probes_ = 0;
     int document_cursor_ = 0;
 };
 

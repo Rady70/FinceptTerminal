@@ -52,11 +52,13 @@ QJsonObject SecNportRunSummary::to_json() const {
     o["filings_selected"] = filings_selected;
     o["filings_stored"] = filings_stored;
     o["filings_skipped"] = filings_skipped;
+    o["filings_outside_period"] = filings_outside_period;
     o["observations_inserted"] = observations_inserted;
     o["observations_amended"] = observations_amended;
     o["observations_confirmed"] = observations_confirmed;
     o["observations_already_recorded"] = observations_already_recorded;
     o["observations_refused"] = observations_refused;
+    o["observations_acceptance_changed"] = observations_acceptance_changed;
     o["issues"] = issues;
     o["accessions"] = QJsonArray::fromStringList(accessions);
     QJsonArray ids;
@@ -113,6 +115,17 @@ void EtfSecNportIngestor::run(const SecNportRequest& request, Done done) {
 // ── Transport and recording ──────────────────────────────────────────────────
 
 void EtfSecNportIngestor::fetch(const QString& url, Handler handler) {
+    if (probed_.contains(url)) {
+        // Read during selection: replay it, without asking the SEC again.
+        const ProbedResponse c = probed_.take(url);
+        QPointer<EtfSecNportIngestor> self(this);
+        QTimer::singleShot(0, this, [self, handler, c]() {
+            if (!self || self->finished_)
+                return;
+            handler(c.response, c.requested_at, c.retrieved_at);
+        });
+        return;
+    }
     int delay = 0;
     if (pacer_.isValid()) {
         const qint64 elapsed = pacer_.elapsed();
@@ -299,10 +312,14 @@ void EtfSecNportIngestor::start_submissions() {
             finish(RetrievalStatus::SourceError, code, detail);
             return;
         }
-        record_response(SourceType::SecSubmissions, QStringLiteral("submissions_json"), url, r, requested_at,
-                        retrieved_at, RetrievalStatus::Ok, QString(),
-                        QStringLiteral("%1 recent filings").arg(subs.filings.size()),
-                        QLatin1String(kSecSubmissionsInterpretation));
+        const qint64 subs_retrieval = record_response(
+            SourceType::SecSubmissions, QStringLiteral("submissions_json"), url, r, requested_at, retrieved_at,
+            RetrievalStatus::Ok, QString(), QStringLiteral("%1 recent filings").arg(subs.filings.size()),
+            QLatin1String(kSecSubmissionsInterpretation));
+        if (!subs.missing_arrays.isEmpty())
+            record_issue(subs_retrieval, QualityState::Missing, QStringLiteral("submissions_array_missing"),
+                         QStringLiteral("the listing has no %1 array; those fields are empty")
+                             .arg(subs.missing_arrays.join(QStringLiteral(", "))));
         on_submissions(subs);
     });
 }
@@ -377,7 +394,14 @@ void EtfSecNportIngestor::fetch_page_then(const SecOlderPage& page, std::functio
 }
 
 void EtfSecNportIngestor::select_next_candidate() {
-    while (selected_.size() < request_.max_filings && index_cursor_ < index_entries_.size()) {
+    // Under a report-period limit, a filing listed without a report date is read
+    // here, during selection, to learn its period: only filings inside the
+    // period are selected, so max_filings counts exactly as without the limit
+    // and the newest filings in the period are the ones kept. These reads are
+    // bounded at three times the requested count.
+    const bool period_limited = request_.report_period_from.isValid() || request_.report_period_to.isValid();
+    const auto room = [&]() { return selected_.size() < request_.max_filings; };
+    while (room() && index_cursor_ < index_entries_.size()) {
         const SecIndexEntry& entry = index_entries_[index_cursor_];
         if (!refs_by_accession_.contains(entry.accession)) {
             // The filing is older than the pages read so far: read the page
@@ -406,17 +430,76 @@ void EtfSecNportIngestor::select_next_candidate() {
                          QStringLiteral("%1 acceptanceDateTime '%2'").arg(ref.accession, ref.accepted_at_raw));
             continue;
         }
+        // A listed report date outside the requested period is not asked for.
+        // A filing the listing gives no report date is selected: the document
+        // carries its own report period, which is checked once it is read.
         const QDate report = QDate::fromString(ref.report_date, Qt::ISODate);
-        if ((request_.report_period_from.isValid() && (!report.isValid() || report < request_.report_period_from)) ||
-            (request_.report_period_to.isValid() && (!report.isValid() || report > request_.report_period_to)))
+        if (report.isValid() && ((request_.report_period_from.isValid() && report < request_.report_period_from) ||
+                                 (request_.report_period_to.isValid() && report > request_.report_period_to)))
             continue;
+        if (!report.isValid() && period_limited) {
+            // A report period ends on or before its filing date: a filing filed
+            // before the requested period starts cannot report inside it.
+            if (request_.report_period_from.isValid() && ref.filing_date.isValid() &&
+                ref.filing_date < request_.report_period_from)
+                continue;
+            const QString url = sec_nport_primary_doc_url(cik10_, ref.accession);
+            if (!probed_.contains(url)) {
+                if (probes_ >= 3 * request_.max_filings) {
+                    record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                                 QStringLiteral("report_period_read_budget_exhausted"),
+                                 QStringLiteral("%1 and older filings are listed without a report date; the %2 "
+                                                "document reads allowed to learn their periods are used up")
+                                     .arg(ref.accession)
+                                     .arg(probes_));
+                    break;
+                }
+                ++probes_;
+                --index_cursor_; // decide this filing again once its document is read
+                fetch(url, [this, url](const SecHttpResponse& r, const QDateTime& requested_at,
+                                       const QDateTime& retrieved_at) {
+                    probed_.insert(url, {r, requested_at, retrieved_at});
+                    select_next_candidate();
+                });
+                return;
+            }
+            const ProbedResponse& c = probed_[url];
+            if (http_problem(c.response).isEmpty()) {
+                const NportDocument doc = parse_nport_primary_doc(c.response.body);
+                if (doc.ok && doc.rep_pd_date.isValid() &&
+                    ((request_.report_period_from.isValid() && doc.rep_pd_date < request_.report_period_from) ||
+                     (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
+                    // Outside the request: not selected, not a failure. The
+                    // document request is recorded like any other SEC read
+                    // (OK: it was read; nothing of it is stored), and an issue
+                    // says why it was not used.
+                    ++summary_.filings_outside_period;
+                    record_response(SourceType::SecNport, QStringLiteral("nport_primary_doc"), url, c.response,
+                                    c.requested_at, c.retrieved_at, RetrievalStatus::Ok,
+                                    QStringLiteral("report_period_outside_request"),
+                                    QStringLiteral("%1 reports %2, outside the requested period; read only to learn "
+                                                   "its report period, nothing of it is stored")
+                                        .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)),
+                                    QLatin1String(kSecNportInterpretation));
+                    record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                                 QStringLiteral("report_period_outside_request"),
+                                 QStringLiteral("%1 reports %2, outside the requested period; listed without a "
+                                                "report date, so its document was read to find out")
+                                     .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)));
+                    probed_.remove(url);
+                    continue;
+                }
+            }
+            // Inside the period, or unreadable: selected, and the processing pass
+            // replays this response (and records any problem with it).
+        }
         selected_.append(ref);
     }
     // A registrant target lists its filings in its own submissions: when the
     // recent window holds fewer N-PORT filings than asked for, read the next
     // older page (newest first), within the page budget.
-    if (request_.series_id.isEmpty() && selected_.size() < request_.max_filings &&
-        index_cursor_ >= index_entries_.size() && pages_fetched_ < kSecMaxOlderPagesPerRun) {
+    if (request_.series_id.isEmpty() && room() && index_cursor_ >= index_entries_.size() &&
+        pages_fetched_ < kSecMaxOlderPagesPerRun) {
         for (const SecOlderPage& page : older_pages_) {
             if (!fetched_pages_.contains(page.name)) {
                 fetch_page_then(page, [this]() { select_next_candidate(); });
@@ -484,11 +567,17 @@ void EtfSecNportIngestor::fetch_next_document() {
             fetch_next_document();
             return;
         }
-        // Identity and form checks come before anything is stored.
+        // Identity checks come before anything is stored, and a failed one
+        // refuses the document: values must never attach to the wrong fund or
+        // a document that is not an N-PORT report. Where only the SEC's listing
+        // metadata disagrees with the filed document (its form between NPORT-P
+        // and NPORT-P/A, its report date), or an amendment pointer cannot be
+        // read, the document's own values are kept and the disagreement is
+        // recorded (2026-10-04 data-preservation rule).
         QString refusal;
-        if (doc.submission_type != ref.form)
-            refusal = QStringLiteral("form_mismatch: submissions list %1, the document says %2")
-                          .arg(ref.form, doc.submission_type);
+        QStringList disagreements; // "code: detail"
+        if (doc.submission_type != QLatin1String("NPORT-P") && doc.submission_type != QLatin1String("NPORT-P/A"))
+            refusal = QStringLiteral("form_not_nport: the document says '%1'").arg(doc.submission_type);
         else if (doc.reg_cik.isEmpty())
             refusal = QStringLiteral("registrant_cik_missing: the document names no regCik");
         else if (doc.reg_cik != cik10_)
@@ -500,12 +589,42 @@ void EtfSecNportIngestor::fetch_next_document() {
             refusal = QStringLiteral("series_id_invalid: '%1'").arg(doc.series_id);
         else if (!doc.rep_pd_date.isValid())
             refusal = QStringLiteral("report_period_invalid: repPdDate '%1'").arg(doc.rep_pd_date_raw);
-        else if (!ref.report_date.isEmpty() && ref.report_date != doc.rep_pd_date.toString(Qt::ISODate))
-            refusal = QStringLiteral("report_date_mismatch: submissions list %1, the document says %2")
-                          .arg(ref.report_date, doc.rep_pd_date_raw);
-        else if (doc.submission_type == QLatin1String("NPORT-P/A") && !doc.amended_accession.isEmpty() &&
-                 !sec_valid_accession(doc.amended_accession))
-            refusal = QStringLiteral("amended_accession_invalid: '%1'").arg(doc.amended_accession);
+        if (refusal.isEmpty() &&
+            ((request_.report_period_from.isValid() && doc.rep_pd_date < request_.report_period_from) ||
+             (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
+            // Selected without a listed report date; the document's own period
+            // is outside the request: not asked for, so not stored (recorded).
+            // Not a failure: the run's status does not count it as skipped.
+            ++summary_.filings_outside_period;
+            record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                         QStringLiteral("report_period_outside_request"),
+                         QStringLiteral("%1 reports %2, outside the requested period; listed without a report "
+                                        "date, so it was read to find out")
+                             .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)));
+            fetch_next_document();
+            return;
+        }
+        NportDocument kept = doc;
+        SecFilingRef kept_ref = ref;
+        if (refusal.isEmpty()) {
+            if (doc.submission_type != ref.form) {
+                disagreements << QStringLiteral("form_listing_disagrees: the submissions list %1, the document says "
+                                                "%2; the document's form is used")
+                                     .arg(ref.form, doc.submission_type);
+                kept_ref.form = doc.submission_type;
+            }
+            if (!ref.report_date.isEmpty() && ref.report_date != doc.rep_pd_date.toString(Qt::ISODate))
+                disagreements << QStringLiteral("report_date_listing_disagrees: the submissions list %1, the document "
+                                                "says %2; the document's report period is used")
+                                     .arg(ref.report_date, doc.rep_pd_date_raw);
+            if (doc.submission_type == QLatin1String("NPORT-P/A") && !doc.amended_accession.isEmpty() &&
+                !sec_valid_accession(doc.amended_accession)) {
+                disagreements << QStringLiteral("amended_accession_unreadable: '%1'; the amendment's values are kept, "
+                                                "the filing it amends is unknown")
+                                     .arg(doc.amended_accession);
+                kept.amended_accession.clear();
+            }
+        }
         if (refusal.isEmpty()) {
             // A filed document does not change. An accession already stored
             // from other bytes is refused here, before anything is written:
@@ -543,12 +662,23 @@ void EtfSecNportIngestor::fetch_next_document() {
             return;
         }
         QString storage_error;
-        if (!persist_document(ref, doc, r.body, retrieval_id, retrieved_at, &storage_error)) {
+        if (!persist_document(kept_ref, kept, r.body, retrieval_id, retrieved_at, &storage_error)) {
             // Storage failing is not a property of this filing: stop, so the
             // run neither reports success nor spends further SEC requests.
             finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
                    QStringLiteral("%1 could not be stored: %2").arg(ref.accession, storage_error));
             return;
+        }
+        for (const QString& d : disagreements) {
+            auto issue = record_issue(
+                retrieval_id, QualityState::ReconciliationException, d.section(QLatin1Char(':'), 0, 0),
+                ref.accession + QStringLiteral(": ") + d.section(QLatin1Char(':'), 1).trimmed(), 0, doc.rep_pd_date);
+            if (issue.is_err()) {
+                finish(RetrievalStatus::SourceError, QStringLiteral("storage_error"),
+                       QStringLiteral("%1: the issue could not be recorded: %2")
+                           .arg(ref.accession, QString::fromStdString(issue.error())));
+                return;
+            }
         }
         fetch_next_document();
     });
@@ -578,6 +708,16 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     if (begin.is_err())
         return fail(begin.error(), false);
 
+    // The acceptance time stored with this accession, if any. The SEC can
+    // re-list a filing with another one; until MarketLab has judged it (per
+    // observation, below), the stored time stays canonical for everything that
+    // orders filings, so a re-listed time can never make an older filing's names
+    // or LEIs replace a newer filing's. The bytes were already checked unchanged.
+    auto stored_accepted = repo.stored_filing_accepted_at(ref.accession);
+    if (stored_accepted.is_err())
+        return fail(stored_accepted.error(), true);
+    int acceptance_changed = 0;
+
     etf_store::ReportingEntityFacts facts;
     facts.cik = doc.reg_cik;
     facts.series_id = doc.series_id;
@@ -586,7 +726,7 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
     facts.reg_file_number = doc.reg_file_number;
     facts.registrant_lei = doc.reg_lei;
     facts.series_lei = doc.series_lei;
-    facts.source_accepted_at = ref.accepted_at;
+    facts.source_accepted_at = stored_accepted.value().value_or(ref.accepted_at);
     auto entity = repo.upsert_reporting_entity(facts, seen_at);
     if (entity.is_err())
         return fail(entity.error(), true);
@@ -657,6 +797,11 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
             case etf_store::ObservationOutcome::Confirmed:
                 ++summary_.observations_confirmed;
                 break;
+            case etf_store::ObservationOutcome::ConfirmedAcceptanceChanged:
+                ++summary_.observations_confirmed;
+                ++summary_.observations_acceptance_changed;
+                ++acceptance_changed;
+                break;
             case etf_store::ObservationOutcome::AlreadyRecorded:
                 ++summary_.observations_already_recorded;
                 break;
@@ -709,6 +854,22 @@ bool EtfSecNportIngestor::persist_document(const SecFilingRef& ref, const NportD
                     return false;
             }
         }
+    }
+
+    // One provenance record per filing for a changed acceptance time: both times,
+    // and that the stored one, the values and their timing are unchanged.
+    if (acceptance_changed > 0) {
+        const QDateTime stored = stored_accepted.value().value_or(QDateTime());
+        auto issue = record_issue(
+            retrieval_id, QualityState::ReconciliationException, QStringLiteral("sec_acceptance_time_changed"),
+            QStringLiteral("%1: the SEC now lists acceptance %2; %3 stored (kept). %4 observation(s) unchanged and "
+                           "timed the same under either time, so they stay usable")
+                .arg(ref.accession, etf_store::iso_utc(ref.accepted_at),
+                     stored.isValid() ? etf_store::iso_utc(stored) : QStringLiteral("unknown"))
+                .arg(acceptance_changed),
+            entity_id, doc.rep_pd_date);
+        if (issue.is_err())
+            return fail(issue.error(), true);
     }
 
     auto commit = db.commit();

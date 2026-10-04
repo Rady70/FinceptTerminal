@@ -158,6 +158,12 @@ enum class ObservationOutcome {
     Confirmed,              ///< same value and meaning from a later retrieval: last_seen_at / seen_count updated
     AlreadyRecorded,        ///< this very retrieval already recorded this value (exact replay): nothing changed
     RefusedDocumentChanged, ///< an SEC accession re-delivered a different value or meaning: refused, nothing written
+    /// The SEC listed a different acceptance time for an accession whose value and
+    /// every other meaning field are unchanged, and the vintage's timing (history
+    /// type, point-in-time status, availability basis and available_from) is the
+    /// same under either time: confirmed like Confirmed, the stored acceptance
+    /// time kept; the caller records the discrepancy. A timing change is refused.
+    ConfirmedAcceptanceChanged,
 };
 
 const char* observation_outcome_id(ObservationOutcome o);
@@ -254,6 +260,8 @@ class EtfDataRepository : public BaseRepository<services::etf::StoredObservation
     /// The document SHA-256 stored for an accession, or nullopt when the
     /// accession is not stored.
     Result<std::optional<QString>> stored_filing_sha256(const QString& accession);
+    /// The acceptance time stored with an accession (first delivery); nullopt when unknown.
+    Result<std::optional<QDateTime>> stored_filing_accepted_at(const QString& accession);
 
     // ── Observation start ────────────────────────────────────────────────────
     /// The stored observation start for (source, subject); stores `candidate`
