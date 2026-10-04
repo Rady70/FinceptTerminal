@@ -33,6 +33,7 @@ import unittest
 import urllib.parse
 import zipfile
 from datetime import datetime, timedelta
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRIPTS = os.path.abspath(os.path.join(_HERE, "..", "..", "scripts"))
@@ -1420,6 +1421,48 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         # The second read is a bounded increment from the stored latest date,
         # not another full-history download.
         self.assertIn(">= '2024-06-25'", urllib.parse.unquote(self.captured_urls[-1]))
+
+    def test_monitor_row_problems_are_left_out_alone(self):
+        # An undated provider row is left out and an identical repeated row kept
+        # once; the market's other rows are stored and the note says so.
+        undated = raw_legacy_row(report_date="2026-09-08")
+        undated["report_date_as_yyyy_mm_dd"] = None
+        market = self._monitor_rows([raw_legacy_row(report_date="2026-09-01"),
+                                     raw_legacy_row(report_date="2026-09-01"), undated,
+                                     raw_legacy_row(report_date="2026-09-15")])
+        self.assertEqual(market["status"], "updated")
+        self.assertEqual(market["inserted"], 2)
+        self.assertIn("1 provider row(s) without a report date left out", market["refresh_error"])
+        self.assertIn("1 identical repeated row(s) kept once", market["refresh_error"])
+        self.assertEqual([row["report_date"] for row in self._archive_rows()], ["2026-09-01", "2026-09-15"])
+
+    def test_monitor_market_that_cannot_be_stored_fails_alone(self):
+        # A store failure for one market (here injected for gold) fails that
+        # market only; silver, fetched in the same call, is stored.
+        silver = raw_legacy_row(report_date="2026-09-01", market="SILVER - COMMODITY EXCHANGE INC.",
+                                code="084691")
+
+        def fake_get(url):
+            self.captured_urls.append(url)
+            unquoted = urllib.parse.unquote(url)
+            return [copy.deepcopy(silver if "084691" in unquoted else raw_legacy_row(report_date="2026-09-01"))]
+
+        self.wrapper._monitor_get = fake_get
+        original = cftc_data.CftcCotArchive.upsert_observations
+
+        def failing_for_gold(archive, rows, *args, **kwargs):
+            if rows and rows[0].get("cftc_contract_market_code") == "088691":
+                raise sqlite3.OperationalError("database is locked")
+            return original(archive, rows, *args, **kwargs)
+
+        with mock.patch.object(cftc_data.CftcCotArchive, "upsert_observations", failing_for_gold):
+            result = self.wrapper.get_cot_monitor("legacy", True, ["gold", "silver"], 25000, refresh=True)
+        self.assertTrue(result.get("success"), result)
+        by_key = {market["market_key"]: market for market in result["data"]["markets"]}
+        self.assertEqual(by_key["gold"]["status"], "unavailable")
+        self.assertIn("database is locked", by_key["gold"]["refresh_error"])
+        self.assertEqual(by_key["silver"]["status"], "updated")
+        self.assertEqual([row["contract_code"] for row in self._archive_rows()], ["084691"])
 
     def test_monitor_refresh_failure_uses_archive_with_explicit_status(self):
         self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))

@@ -1846,9 +1846,12 @@ class CFTCDataWrapper:
             if len(records) >= max_rows:
                 raise Exception(f"the contract history reached the {max_rows}-row monitor cap")
         rows = [self._canonical_history_row(record, family) for record in records]
+        # A row without its report date cannot be placed in time: it is left out
+        # alone and counted. A row naming another contract, or none, puts the
+        # response's identity in doubt and still fails the market.
+        undated = sum(1 for row in rows if not row.get("report_date_as_yyyy_mm_dd"))
+        rows = [row for row in rows if row.get("report_date_as_yyyy_mm_dd")]
         for row in rows:
-            if not row.get("report_date_as_yyyy_mm_dd"):
-                raise Exception("a provider row is missing its report date")
             identity = row.get("cftc_contract_market_code")
             if not identity:
                 raise Exception("a provider row is missing its contract market code")
@@ -1861,10 +1864,23 @@ class CFTCDataWrapper:
                     "the provider returned a row for contract {0} while {1} was requested".format(
                         identity, code))
         rows.sort(key=lambda item: item["report_date_as_yyyy_mm_dd"])
-        for index in range(1, len(rows)):
-            if rows[index]["report_date_as_yyyy_mm_dd"] == rows[index - 1]["report_date_as_yyyy_mm_dd"]:
-                raise Exception("the provider returned two rows for the same report date")
-        return rows
+        # An identical repeated row is kept once (as the annual path does); two
+        # different rows for one report date still fail the market.
+        kept: List[Dict[str, Any]] = []
+        repeated = 0
+        for row in rows:
+            if kept and kept[-1]["report_date_as_yyyy_mm_dd"] == row["report_date_as_yyyy_mm_dd"]:
+                if CftcCotArchive._comparison_key(kept[-1]) != CftcCotArchive._comparison_key(row):
+                    raise Exception("the provider returned two rows for the same report date, with different values")
+                repeated += 1
+                continue
+            kept.append(row)
+        notes = []
+        if undated:
+            notes.append(f"{undated} provider row(s) without a report date left out")
+        if repeated:
+            notes.append(f"{repeated} identical repeated row(s) kept once")
+        return kept, "; ".join(notes)
 
     @staticmethod
     def _monitor_weekly_step(previous: Optional[str], current: Optional[str]) -> bool:
@@ -2005,11 +2021,12 @@ class CFTCDataWrapper:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": None}
         try:
-            fetched = self._monitor_fetch_rows(
+            fetched, row_note = self._monitor_fetch_rows(
                 code, family, resource_id, max_rows,
                 since_date=None if full_required else since_date)
             return {"market_key": key, "contract_code": code, "fetched": fetched,
-                    "fetch_ok": True, "fetch_error": None, "full_history": full_required}
+                    "fetch_ok": True, "fetch_error": None, "full_history": full_required,
+                    "row_note": row_note}
         except Exception as exc:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": str(exc), "full_history": full_required}
@@ -2078,14 +2095,22 @@ class CFTCDataWrapper:
                 fetched = result.get("fetched")
                 fetch_ok = bool(result.get("fetch_ok"))
                 fetch_error = result.get("fetch_error")
-                refresh_note = fetch_error or ""
+                refresh_note = fetch_error or result.get("row_note") or ""
                 inserted = updated = 0
                 if fetched:
-                    inserted, updated, _unchanged = archive.upsert_observations(
-                        fetched, family, basis_code, source=f"socrata:{resource_id}",
-                        retrieval_time=retrieved_at)
-                    if fetch_ok and result.get("full_history"):
-                        archive.mark_full_history(family, basis_code, code)
+                    # A market whose fetched rows cannot be stored (e.g. two
+                    # different observations for one report) fails on its own:
+                    # nothing of it is written, its stored history is still
+                    # returned, and the other markets are unaffected.
+                    try:
+                        inserted, updated, _unchanged = archive.upsert_observations(
+                            fetched, family, basis_code, source=f"socrata:{resource_id}",
+                            retrieval_time=retrieved_at)
+                        if fetch_ok and result.get("full_history"):
+                            archive.mark_full_history(family, basis_code, code)
+                    except Exception as exc:
+                        fetch_error = f"the fetched rows were not stored: {exc}"
+                        refresh_note = fetch_error
                 rows = archive.observations(family, basis_code, code)
                 archive_rows = len(rows)
                 transport_rows, concentration_history = self._monitor_transport_rows(rows, family)
