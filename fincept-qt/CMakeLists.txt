@@ -1022,6 +1022,7 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v052_etf_data_foundation.cpp
     src/storage/sqlite/migrations/v053_etf_research_sources.cpp
     src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
+    src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp
 
     # Historical OHLCV data store (Historify, Phase 3 §13)
     src/storage/HistoricalDataStore.cpp
@@ -2598,6 +2599,7 @@ set_source_files_properties(
     # Consolidated Batch E (ETF Flow & Sector Rotation): same policy.
     src/storage/sqlite/migrations/v053_etf_research_sources.cpp
     src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
+    src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp
     src/storage/repositories/EtfResearchRepository.cpp
     src/services/etf/research/EtfResearchEngine.cpp
     src/services/etf/research/EtfResearchService.cpp

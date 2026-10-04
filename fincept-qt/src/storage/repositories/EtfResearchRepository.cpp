@@ -283,6 +283,21 @@ EtfrPoints etfr_unique_points(const EtfrPoints& pts, int* repeated, int* conflic
         repeated, conflicting);
 }
 
+/// Records the outcome of a fund's holdings read (v055) for a yahoo_funds
+/// retrieval; nothing when the item carries no recognised holdings status.
+Result<void> etfr_record_holdings_read(qint64 retrieval_id, const QString& symbol, const QJsonObject& item) {
+    const QString status = item.value(QStringLiteral("holdings_status")).toString();
+    if (status != QLatin1String("OK") && status != QLatin1String("UNAVAILABLE") && status != QLatin1String("FAILED"))
+        return Result<void>::ok();
+    auto r = Database::instance().execute(
+        QStringLiteral(
+            "INSERT INTO etf_research_holdings_reads (retrieval_id, symbol, status, detail) VALUES (?,?,?,?)"),
+        {retrieval_id, symbol, status, etfr_text(item.value(QStringLiteral("holdings_detail")).toString())});
+    if (r.is_err())
+        return Result<void>::err(r.error());
+    return Result<void>::ok();
+}
+
 /// Why an item that was obtained is only partly usable ('' when it is whole):
 /// rows left out as unparseable, World Bank pages that failed, a fund whose
 /// quote summary failed while its holdings came, or corporate actions on rows
@@ -295,6 +310,8 @@ QString etfr_partial_reason(const QJsonObject& it) {
         why << QStringLiteral("%1 page(s) not read").arg(it.value(QStringLiteral("pages_failed")).toArray().size());
     if (it.value(QStringLiteral("holdings_status")).toString() == QLatin1String("FAILED"))
         why << QStringLiteral("holdings could not be read");
+    if (it.value(QStringLiteral("provider_not_read")).toBool())
+        why << QStringLiteral("provider not read; stored CFTC archive used");
     if (const int n = it.value(QStringLiteral("sector_weights_unparseable")).toInt(); n > 0)
         why << QStringLiteral("%1 non-numeric sector weight(s) left out").arg(n);
     if (it.value(QStringLiteral("quote_status")).toString() == QLatin1String("FAILED"))
@@ -530,6 +547,9 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                                                      QString(), 0, QString(), QString());
                     if (rid.is_err())
                         return Result<void>::err(rid.error());
+                    if (stage == QLatin1String("yahoo_funds"))
+                        if (auto hr = etfr_record_holdings_read(rid.value(), subject, it); hr.is_err())
+                            return hr;
                     st.failed_subjects.append(subject);
                     return Result<void>::ok();
                 }
@@ -749,6 +769,8 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                         if (ins.is_err())
                             return Result<void>::err(ins.error());
                     }
+                    if (auto hr = etfr_record_holdings_read(rid.value(), subject, it); hr.is_err())
+                        return hr;
                     for (auto& row : hrows)
                         row.prepend(rid.value());
                     for (auto& row : wrows)
@@ -1142,25 +1164,27 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
         }
     }
     // ── Latest holdings read per fund, as of the frame ───────────────────────
-    // A read whose holdings could not be read (the retrieval's detail starts with
-    // the holdings status FAILED, or the whole item failed) is named, so the
-    // HOLDINGS view does not explain it as "none published". A failed item has
-    // no retrieved_at; its request time places it.
+    // The recorded outcome (v055) of each fund's latest holdings read: a FAILED
+    // read is named, so the HOLDINGS view does not explain it as "none
+    // published". A quote failure is not a holdings failure. Retrievals stored
+    // before v055 have no outcome and are never guessed from their text. A
+    // failed item has no retrieved_at; its request time places it.
     {
-        auto q = db().execute(
-            QStringLiteral(
-                "SELECT subject, status, detail FROM etf_research_retrievals WHERE stage = 'yahoo_funds' "
-                "AND COALESCE(retrieved_at, requested_at) <= ? AND COALESCE(retrieved_at, requested_at) <= ? "
-                "ORDER BY subject, COALESCE(retrieved_at, requested_at), retrieval_id"),
-            {k, etfr_iso(in.as_of)});
+        auto q =
+            db().execute(QStringLiteral("SELECT h.symbol, h.status, h.detail FROM etf_research_holdings_reads h JOIN "
+                                        "etf_research_retrievals r ON r.retrieval_id = h.retrieval_id WHERE "
+                                        "COALESCE(r.retrieved_at, r.requested_at) <= ? AND "
+                                        "COALESCE(r.retrieved_at, r.requested_at) <= ? "
+                                        "ORDER BY h.symbol, COALESCE(r.retrieved_at, r.requested_at), r.retrieval_id"),
+                         {k, etfr_iso(in.as_of)});
         if (q.is_err())
             return R::err(q.error());
         QHash<QString, QString> latest;
         while (q.value().next()) {
-            const QString status = q.value().value(1).toString();
-            const QString detail = q.value().value(2).toString();
-            const bool failed = status == QLatin1String("FAILED") || detail.startsWith(QLatin1String("FAILED "));
-            latest.insert(q.value().value(0).toString(), failed ? (detail.isEmpty() ? status : detail) : QString());
+            const bool failed = q.value().value(1).toString() == QLatin1String("FAILED");
+            const QString why = q.value().value(2).toString();
+            latest.insert(q.value().value(0).toString(),
+                          failed ? (why.isEmpty() ? QStringLiteral("the holdings read failed") : why) : QString());
         }
         for (auto it = latest.constBegin(); it != latest.constEnd(); ++it)
             if (!it.value().isEmpty())
@@ -1360,10 +1384,10 @@ Result<QDate> EtfResearchRepository::latest_sec_report_period(qint64 entity_id) 
 
 Result<QJsonObject> EtfResearchRepository::table_counts() {
     QJsonObject o;
-    for (const char* t :
-         {"etf_research_runs", "etf_research_retrievals", "etf_research_bars", "etf_research_bar_coverage",
-          "etf_research_fund_snapshots", "etf_research_holdings", "etf_research_sector_weights",
-          "etf_research_fundamentals", "etf_research_macro", "etf_research_macro_coverage"}) {
+    for (const char* t : {"etf_research_runs", "etf_research_retrievals", "etf_research_bars",
+                          "etf_research_bar_coverage", "etf_research_fund_snapshots", "etf_research_holdings",
+                          "etf_research_holdings_reads", "etf_research_sector_weights", "etf_research_fundamentals",
+                          "etf_research_macro", "etf_research_macro_coverage"}) {
         auto q = db().execute(QStringLiteral("SELECT COUNT(*) FROM %1").arg(QLatin1String(t)));
         if (q.is_err())
             return Result<QJsonObject>::err(q.error());
@@ -1384,6 +1408,7 @@ Result<QJsonObject> EtfResearchRepository::export_all() {
                   {"etf_research_bar_coverage", "retrieval_id"},
                   {"etf_research_fund_snapshots", "retrieval_id"},
                   {"etf_research_holdings", "retrieval_id, rank"},
+                  {"etf_research_holdings_reads", "retrieval_id"},
                   {"etf_research_sector_weights", "retrieval_id, sector_key"},
                   {"etf_research_fundamentals", "retrieval_id"},
                   {"etf_research_macro", "source, series_id, area, obs_date, revision"},

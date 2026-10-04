@@ -633,6 +633,7 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v052();
     fincept::register_migration_v053();
     fincept::register_migration_v054();
+    fincept::register_migration_v055();
 
     // Open main database
     QString db_path = fincept::AppPaths::data() + "/fincept.db";
@@ -947,47 +948,47 @@ int main(int argc, char* argv[]) {
         // When setup completes, hide setup screen and launch main window.
         // The connection uses Qt::SingleShotConnection (Qt 6.0+) so the lambda
         // fires exactly once even if setup_complete is somehow emitted twice.
-        QObject::connect(
-            setup_screen, &fincept::screens::SetupScreen::setup_complete, [&app, &instance_lock, screen_guard]() {
-                if (!screen_guard)
-                    return; // already cleaned up — ignore
-                screen_guard->hide();
-                screen_guard->deleteLater();
+        QObject::connect(setup_screen, &fincept::screens::SetupScreen::setup_complete,
+                         [&app, &instance_lock, screen_guard]() {
+                             if (!screen_guard)
+                                 return; // already cleaned up — ignore
+                             screen_guard->hide();
+                             screen_guard->deleteLater();
 
-                fincept::KeyConfigManager::instance(); // init before WindowFrame registers shortcuts
+                             fincept::KeyConfigManager::instance(); // init before WindowFrame registers shortcuts
 
-                // Phase 6 final: if the previous session ended uncleanly and a
-                // workspace snapshot is available, give the user the option to
-                // restore. On accept, WorkspaceShell::apply already constructs
-                // the frames it needs — we skip our own primary-window creation
-                // path. On skip (or no recovery available), fall through.
-                bool recovered = false;
-                if (auto* recovery = fincept::TerminalShell::instance().crash_recovery();
-                    recovery && recovery->needs_recovery()) {
-                    fincept::screens::CrashRecoveryDialog dlg(recovery,
-                                                              fincept::TerminalShell::instance().snapshot_ring());
-                    dlg.exec();
-                    recovered = dlg.was_restored();
-                }
+                             // Phase 6 final: if the previous session ended uncleanly and a
+                             // workspace snapshot is available, give the user the option to
+                             // restore. On accept, WorkspaceShell::apply already constructs
+                             // the frames it needs — we skip our own primary-window creation
+                             // path. On skip (or no recovery available), fall through.
+                             bool recovered = false;
+                             if (auto* recovery = fincept::TerminalShell::instance().crash_recovery();
+                                 recovery && recovery->needs_recovery()) {
+                                 fincept::screens::CrashRecoveryDialog dlg(
+                                     recovery, fincept::TerminalShell::instance().snapshot_ring());
+                                 dlg.exec();
+                                 recovered = dlg.was_restored();
+                             }
 
-                if (!recovered) {
-                    // Single primary window by default — see the matching no-setup
-                    // path below for the full rationale. Extra windows stay an
-                    // explicit user action ("New Window" / Ctrl+Shift+N / tear-off).
-                    const QList<int> saved_ids = fincept::SessionManager::instance().load_window_ids();
-                    const int primary_id = saved_ids.isEmpty() ? 0 : saved_ids.first();
-                    auto* window = new fincept::WindowFrame(primary_id);
-                    window->setAttribute(Qt::WA_DeleteOnClose);
-                    window->show();
-                }
+                             if (!recovered) {
+                                 // Single primary window by default — see the matching no-setup
+                                 // path below for the full rationale. Extra windows stay an
+                                 // explicit user action ("New Window" / Ctrl+Shift+N / tear-off).
+                                 const QList<int> saved_ids = fincept::SessionManager::instance().load_window_ids();
+                                 const int primary_id = saved_ids.isEmpty() ? 0 : saved_ids.first();
+                                 auto* window = new fincept::WindowFrame(primary_id);
+                                 window->setAttribute(Qt::WA_DeleteOnClose);
+                                 window->show();
+                             }
 
-                // Wire new-window handler + Launchpad surface now that the
-                // primary window exists. Single source of truth — see
-                // wire_app_lifecycle() at the top of this file.
-                wire_app_lifecycle(app, instance_lock);
+                             // Wire new-window handler + Launchpad surface now that the
+                             // primary window exists. Single source of truth — see
+                             // wire_app_lifecycle() at the top of this file.
+                             wire_app_lifecycle(app, instance_lock);
 
-                LOG_INFO("App", "Application ready (after setup)");
-            });
+                             LOG_INFO("App", "Application ready (after setup)");
+                         });
 
         return app.exec();
     }

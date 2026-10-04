@@ -69,6 +69,7 @@ class TstEtfResearchStore : public QObject {
         register_migration_v052();
         register_migration_v053();
         register_migration_v054();
+        register_migration_v055();
         QVERIFY(Database::instance().open(dir_.filePath(QStringLiteral("research.db"))).is_ok());
         QString err;
         const auto u = load_universe(QLatin1String(kUniverseResourcePath), &err);
@@ -659,11 +660,29 @@ void TstEtfResearchStore::persist_isolates_items_and_repeated_dates() {
                            {"holdings_status", "FAILED"},
                            {"holdings_detail", "fund holdings could not be read: No Fund data found."},
                            {"sector_weights_unparseable", 0}};
+    // A fund whose quote failed while its holdings read worked and found none
+    // published: a failed item, but not a failed holdings read.
+    const QJsonObject quote_only_failed{{"status", "FAILED"},
+                                        {"captured_at", "2026-10-07T22:00:06.000Z"},
+                                        {"detail", "quote summary failed: 401"},
+                                        {"fields", QJsonObject()},
+                                        {"quote_status", "FAILED"},
+                                        {"holdings_status", "UNAVAILABLE"},
+                                        {"holdings_detail", "Yahoo published no holdings or sector weights"}};
+    // A CFTC market whose provider request failed, served from the tool's
+    // stored archive: kept, marked as not read from the provider (PARTIAL).
+    const QJsonObject copper{{"status", "OK"},
+                             {"retrieved_at", "2026-10-07T22:00:07.000Z"},
+                             {"source_status", "archive_only"},
+                             {"provider_not_read", true},
+                             {"detail", "CFTC provider not read (HTTP 503); the CFTC tool's stored archive is used"},
+                             {"rows", QJsonArray() << QJsonArray{"2026-09-29", 1000.0, 400.0, 300.0}}};
     auto p = repo.persist_payload(
         QStringLiteral("r8c"),
         payload({{"yahoo_history", stage("2026-10-07T22:00:00.000Z", {{"XLI", xli}, {"XLY", xly}, {"BOOM", boom}})},
                  {"fred", stage("2026-10-07T22:00:00.000Z", {{"T10YIE", dgs}})},
-                 {"yahoo_funds", stage("2026-10-07T22:00:00.000Z", {{"XLU", fund}})}}),
+                 {"yahoo_funds", stage("2026-10-07T22:00:00.000Z", {{"XLU", fund}, {"XLV", quote_only_failed}})},
+                 {"cftc", stage("2026-10-07T22:00:00.000Z", {{"copper", copper}})}}),
         QDate(2026, 10, 7));
     QVERIFY(Database::instance().execute(QStringLiteral("DROP TRIGGER etfr_test_boom")).is_ok());
     QVERIFY2(p.is_ok(), p.is_err() ? p.error().c_str() : "");
@@ -718,6 +737,20 @@ void TstEtfResearchStore::persist_isolates_items_and_repeated_dates() {
     auto after = repo.load_inputs(universe_, utc("2026-10-08T00:00:00.000Z"), utc("2026-10-08T00:00:00.000Z"));
     QVERIFY(after.is_ok());
     QVERIFY(after.value().holdings_read_failed.value(QStringLiteral("XLU")).contains(QLatin1String("No Fund data")));
+    QVERIFY(!after.value().holdings_read_failed.contains(
+        QStringLiteral("XLV"))); // a quote failure is not a holdings failure
+    QCOMPARE(scalar(QStringLiteral("SELECT GROUP_CONCAT(symbol || ':' || status) FROM (SELECT h.symbol, h.status FROM "
+                                   "etf_research_holdings_reads h JOIN etf_research_retrievals r ON r.retrieval_id = "
+                                   "h.retrieval_id WHERE r.run_id = 'r8c' ORDER BY h.symbol)")),
+             QStringLiteral("XLU:FAILED,XLV:UNAVAILABLE"));
+    QCOMPARE(by_stage.value(QStringLiteral("cftc")).status, QStringLiteral("PARTIAL"));
+    QVERIFY2(row_of("cftc", "copper").startsWith(QLatin1String("PARTIAL")) &&
+                 row_of("cftc", "copper").contains(QLatin1String("stored archive is used")),
+             qPrintable(row_of("cftc", "copper")));
+    QVERIFY2(by_stage.value(QStringLiteral("cftc")).detail.contains(QLatin1String("provider not read")),
+             qPrintable(by_stage.value(QStringLiteral("cftc")).detail));
+    QCOMPARE(after.value().cftc.value(QStringLiteral("copper")).value(QStringLiteral("open_interest")).points.size(),
+             1);
     const auto snap = compute_snapshot(after.value());
     bool seen = false;
     for (const auto& row : snap.rows)

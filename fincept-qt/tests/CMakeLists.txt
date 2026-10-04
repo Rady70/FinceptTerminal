@@ -515,6 +515,7 @@ fincept_add_test(tst_etf_research_store
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v052_etf_data_foundation.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v053_etf_research_sources.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v054_etf_research_cftc.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/repositories/EtfResearchRepository.cpp"
     "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
