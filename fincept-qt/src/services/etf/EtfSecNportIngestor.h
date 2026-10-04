@@ -168,9 +168,16 @@ class EtfSecNportIngestor : public QObject {
     int pages_fetched_ = 0;
     int pages_unreadable_ = 0; ///< older submissions pages the run needed and could not read
     QVector<SecFilingRef> selected_;
-    /// Selected filings whose listing gives no report date while a report
-    /// period is requested: not counted against max_filings until read.
-    int selected_unconfirmed_ = 0;
+    /// Documents read during selection, to learn the report period of a filing
+    /// listed without one while a report period is requested. The processing
+    /// pass replays the cached response instead of fetching it again.
+    struct ProbedResponse {
+        SecHttpResponse response;
+        QDateTime requested_at;
+        QDateTime retrieved_at;
+    };
+    QHash<QString, ProbedResponse> probed_;
+    int probes_ = 0;
     int document_cursor_ = 0;
 };
 

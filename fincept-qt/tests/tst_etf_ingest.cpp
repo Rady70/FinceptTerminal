@@ -610,6 +610,20 @@ void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
                  1);
         QVERIFY(t.accessions.contains(QStringLiteral("0001410368-26-055357")));
     }
+    {
+        // One filing asked for and both undated filings inside the period: only
+        // the newest (June) is stored, never more than asked for.
+        FakeSec sec3;
+        sec3.ok(kSpySubs, QJsonDocument(root).toJson());
+        sec3.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+        sec3.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+        SecNportRequest one = request("884394", "", 1);
+        one.report_period_to = QDate(2026, 7, 31);
+        const SecNportRunSummary u = run_sec(sec3, one, "2026-09-28T10:00:00.000Z");
+        QCOMPARE(u.status, RetrievalStatus::Ok);
+        QCOMPARE(u.filings_selected, 1);
+        QCOMPARE(u.accessions, QStringList{QStringLiteral("0001410368-26-089410")});
+    }
 }
 
 void TstEtfIngest::sec_listing_metadata_disagreement_keeps_the_document() {

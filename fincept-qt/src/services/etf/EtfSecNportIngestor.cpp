@@ -115,6 +115,17 @@ void EtfSecNportIngestor::run(const SecNportRequest& request, Done done) {
 // ── Transport and recording ──────────────────────────────────────────────────
 
 void EtfSecNportIngestor::fetch(const QString& url, Handler handler) {
+    if (probed_.contains(url)) {
+        // Read during selection: replay it, without asking the SEC again.
+        const ProbedResponse c = probed_.take(url);
+        QPointer<EtfSecNportIngestor> self(this);
+        QTimer::singleShot(0, this, [self, handler, c]() {
+            if (!self || self->finished_)
+                return;
+            handler(c.response, c.requested_at, c.retrieved_at);
+        });
+        return;
+    }
     int delay = 0;
     if (pacer_.isValid()) {
         const qint64 elapsed = pacer_.elapsed();
@@ -383,14 +394,13 @@ void EtfSecNportIngestor::fetch_page_then(const SecOlderPage& page, std::functio
 }
 
 void EtfSecNportIngestor::select_next_candidate() {
-    // Filings selected without a listed report date under a period limit do not
-    // use up the requested count (they may turn out to be outside the period);
-    // their extra reads are bounded at twice the requested count.
+    // Under a report-period limit, a filing listed without a report date is read
+    // here, during selection, to learn its period: only filings inside the
+    // period are selected, so max_filings counts exactly as without the limit
+    // and the newest filings in the period are the ones kept. These reads are
+    // bounded at three times the requested count.
     const bool period_limited = request_.report_period_from.isValid() || request_.report_period_to.isValid();
-    const auto counted = [this]() { return selected_.size() - selected_unconfirmed_; };
-    const auto room = [&]() {
-        return counted() < request_.max_filings && selected_unconfirmed_ < 2 * request_.max_filings;
-    };
+    const auto room = [&]() { return selected_.size() < request_.max_filings; };
     while (room() && index_cursor_ < index_entries_.size()) {
         const SecIndexEntry& entry = index_entries_[index_cursor_];
         if (!refs_by_accession_.contains(entry.accession)) {
@@ -433,7 +443,45 @@ void EtfSecNportIngestor::select_next_candidate() {
             if (request_.report_period_from.isValid() && ref.filing_date.isValid() &&
                 ref.filing_date < request_.report_period_from)
                 continue;
-            ++selected_unconfirmed_;
+            const QString url = sec_nport_primary_doc_url(cik10_, ref.accession);
+            if (!probed_.contains(url)) {
+                if (probes_ >= 3 * request_.max_filings) {
+                    record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                                 QStringLiteral("report_period_read_budget_exhausted"),
+                                 QStringLiteral("%1 and older filings are listed without a report date; the %2 "
+                                                "document reads allowed to learn their periods are used up")
+                                     .arg(ref.accession)
+                                     .arg(probes_));
+                    break;
+                }
+                ++probes_;
+                --index_cursor_; // decide this filing again once its document is read
+                fetch(url, [this, url](const SecHttpResponse& r, const QDateTime& requested_at,
+                                       const QDateTime& retrieved_at) {
+                    probed_.insert(url, {r, requested_at, retrieved_at});
+                    select_next_candidate();
+                });
+                return;
+            }
+            const ProbedResponse& c = probed_[url];
+            if (http_problem(c.response).isEmpty()) {
+                const NportDocument doc = parse_nport_primary_doc(c.response.body);
+                if (doc.ok && doc.rep_pd_date.isValid() &&
+                    ((request_.report_period_from.isValid() && doc.rep_pd_date < request_.report_period_from) ||
+                     (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
+                    // Outside the request: not selected, not a failure (recorded).
+                    ++summary_.filings_outside_period;
+                    record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                                 QStringLiteral("report_period_outside_request"),
+                                 QStringLiteral("%1 reports %2, outside the requested period; listed without a "
+                                                "report date, so its document was read to find out")
+                                     .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)));
+                    probed_.remove(url);
+                    continue;
+                }
+            }
+            // Inside the period, or unreadable: selected, and the processing pass
+            // replays this response (and records any problem with it).
         }
         selected_.append(ref);
     }
