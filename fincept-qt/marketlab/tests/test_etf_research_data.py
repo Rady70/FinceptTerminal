@@ -189,8 +189,9 @@ class DownloadHistoryTests(unittest.TestCase):
         call, keyed by the upper-case ticker) and comes back as NaN columns. It
         does not raise. ``plan`` maps a symbol to how many of its calls fail."""
 
-        def __init__(self, plan):
+        def __init__(self, plan, no_data=()):
             self.plan = dict(plan)
+            self.no_data = set(no_data)  # symbols Yahoo has no prices for, ever
             self.calls = []
             self.shared = type("S", (), {"_ERRORS": {}})()
 
@@ -202,7 +203,11 @@ class DownloadHistoryTests(unittest.TestCase):
             data = {}
             for s in batch:
                 close = 10.0
-                if self.plan.get(s, 0) > 0:
+                if s in self.no_data:
+                    self.shared._ERRORS[s.upper()] = ("YFPricesMissingError('$%s: possibly delisted; no price data "
+                                                      "found  (period=2y)')" % s)
+                    close = float("nan")
+                elif self.plan.get(s, 0) > 0:
                     self.plan[s] -= 1
                     self.shared._ERRORS[s.upper()] = "YFRateLimitError('Too Many Requests. Rate limited.')"
                     close = float("nan")
@@ -228,6 +233,18 @@ class DownloadHistoryTests(unittest.TestCase):
         self.assertIn("Too Many Requests", out["A"]["detail"])
         self.assertIn("retried alone", out["A"]["detail"])
         self.assertIn("not retried alone", out["D"]["detail"])
+
+    def test_no_data_errors_are_not_retried_and_do_not_stop_the_retries(self):
+        # Two symbols Yahoo has no prices for sort ahead of a rate-limited one.
+        # Asking again cannot cure "possibly delisted": they are not retried and
+        # not counted, so the rate-limited symbol is still retried and delivered.
+        fake = self._YfLike({"CCC": 1}, no_data=("AAA.BK", "BBB.BK"))
+        out = yahoo.download_history(["AAA.BK", "BBB.BK", "CCC"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()},
+                         {"AAA.BK": "FAILED", "BBB.BK": "FAILED", "CCC": "OK"})
+        self.assertEqual(fake.calls, [["AAA.BK", "BBB.BK", "CCC"], ["CCC"]])
+        self.assertIn("possibly delisted", out["AAA.BK"]["detail"])
+        self.assertNotIn("retried", out["AAA.BK"]["detail"])
 
     def test_symbol_without_bars_and_without_error_is_not_retried(self):
         fake = self._YfLike({})
@@ -553,6 +570,19 @@ class CftcStageTests(unittest.TestCase):
         self.assertEqual(items["silver"]["rows"], [["2026-09-22", None, 40000.0, 30000.0]])
         self.assertEqual(items["silver"]["unparseable_points"], 1)
         self.assertEqual(items["copper"]["status"], "FAILED")
+
+    def test_failed_refresh_with_stored_history_is_not_obtained(self):
+        # The provider request failed (HTTP 503); the tool returned its stored
+        # history (`archive_only`). This refresh obtained nothing: FAILED, with
+        # the reason, never UNCHANGED.
+        answer = {"success": True, "data": {"markets": [
+            {"market_key": "gold", "status": "archive_only", "refresh_error": "HTTP 503", "rows": [
+                {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": 500000,
+                 "non_commercial_long": 250000, "non_commercial_short": 90000}]}]}}
+        items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(answer))
+        self.assertEqual(items["gold"]["status"], "FAILED")
+        self.assertIn("archive_only", items["gold"]["detail"])
+        self.assertIn("503", items["gold"]["detail"])
 
     def test_tool_failure_fails_every_market(self):
         items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(error=RuntimeError("boom")))

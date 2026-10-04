@@ -107,10 +107,22 @@ def fetch_cftc(markets, report: str, futures_only: bool, wrapper=None) -> dict:
                          _num(r.get("non_commercial_short"))])
         # Each field stands on its own: a market is usable when any of open
         # interest and the non-commercial long/short positions has a value.
-        ok = any(v is not None for row in rows for v in row[1:])
+        # Only a refresh that read the provider (`updated`, `current`) is
+        # obtained: `archive_only` means the request failed and the tool fell
+        # back to its stored history, which this refresh did not obtain.
+        has_values = any(v is not None for row in rows for v in row[1:])
+        refreshed = mk.get("status") in ("updated", "current")
+        ok = has_values and refreshed
+        if ok:
+            why = mk.get("refresh_error") or ""
+        elif not refreshed:
+            why = (f"CFTC refresh {mk.get('status') or 'failed'}: "
+                   f"{mk.get('refresh_error') or 'the provider was not read'}")
+        else:
+            why = mk.get("refresh_error") or "no CFTC position or open interest for this market"
         items[mk.get("market_key")] = {
             "status": "OK" if ok else "FAILED",
-            "detail": mk.get("refresh_error") or ("" if ok else "no CFTC position or open interest for this market"),
+            "detail": why,
             "source_status": mk.get("status", ""),
             "rows": rows,
             "unparseable_points": undated,

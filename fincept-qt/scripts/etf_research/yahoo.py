@@ -102,6 +102,11 @@ def frame_to_bars(symbol: str, frame, retrieved_at_utc: _dt.datetime) -> dict:
             "actions_without_close": actions_without_close}
 
 
+# yfinance errors (as ``repr`` in ``shared._ERRORS``) that mean the provider
+# answered "no data for this symbol": asking again cannot cure them.
+_NO_DATA_ERRORS = ("YFPricesMissingError", "YFTzMissingError", "YFTickerMissingError", "YFInvalidPeriodError")
+
+
 def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int = 40, yf_module=None,
                      start=None):
     """Daily history for ``symbols``; one result entry per requested symbol.
@@ -113,10 +118,14 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
     symbol that fails: it records the error in ``shared._ERRORS`` and returns no
     bars for it. Such a symbol (no bars and a provider error), and every symbol
     of a batch request that raised as a whole, is retried alone once, so a
-    transient error (throttling, a timeout) does not cost it this refresh. Two
-    single retries failing in a row are taken as a provider-wide failure: the
-    retries stop, and the symbols not retried keep their first error. A symbol
-    that answered without a completed bar and without an error is not retried.
+    transient error (throttling, a timeout, a connection error) does not cost it
+    this refresh. An error that says the symbol has no data (yfinance's
+    ``YFPricesMissingError`` / ``YFTzMissingError`` family, "possibly delisted",
+    or an invalid period) cannot be cured by asking again: it is neither retried
+    nor counted below. Two retried symbols failing in a row are taken as a
+    provider-wide failure: the retries stop, and the symbols not retried keep
+    their first error. A symbol that answered without a completed bar and
+    without an error is not retried.
     """
     import pandas as pd  # noqa: F401  (yfinance returns pandas frames)
 
@@ -136,6 +145,11 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
 
     def provider_error(s, errors):
         return errors.get(s) or errors.get(s.upper())
+
+    def retryable(s, errors):
+        """A provider error that asking again might cure (not "no data")."""
+        why = str(provider_error(s, errors) or "")
+        return bool(why) and not why.startswith(_NO_DATA_ERRORS)
 
     out = {}
 
@@ -178,7 +192,7 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
                 fail(s, exc)
             retry = list(batch)
         else:
-            retry = [s for s in batch if not convert(s, raw, errors) and provider_error(s, errors)]
+            retry = [s for s in batch if not convert(s, raw, errors) and retryable(s, errors)]
         failed_in_row = 0
         for i, s in enumerate(retry):
             if failed_in_row == 2:
@@ -193,11 +207,12 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
                 continue
             if convert(s, raw, errors):
                 failed_in_row = 0
-            elif provider_error(s, errors):
+            elif retryable(s, errors):
                 failed_in_row += 1
                 out[s]["detail"] += " (retried alone)"
             else:
-                failed_in_row = 0  # it answered, without a completed bar
+                failed_in_row = 0  # it answered: no completed bar, or no data for it
+                out[s]["detail"] += " (retried alone)"
     return out
 
 
