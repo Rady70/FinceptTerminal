@@ -18,9 +18,9 @@ World Bank response is followed page by page; a page that fails is named.
 
 from __future__ import annotations
 
+import datetime as _dt
 import math
 
-from fedwatch import timeutil
 from fedwatch.fred import FRED_CSV_URL
 from fedwatch.transport import HttpTransport, Transport, TransportError
 
@@ -52,7 +52,7 @@ def parse_fred_rows(text: str) -> dict:
             continue
         raw_date, raw_value = fields[0], fields[1]
         try:
-            day = timeutil.parse_date(raw_date)
+            day = _dt.date.fromisoformat(raw_date)
         except (ValueError, TypeError):
             bad.append(line)
             continue
