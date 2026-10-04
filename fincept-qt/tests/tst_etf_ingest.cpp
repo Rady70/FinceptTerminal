@@ -273,6 +273,7 @@ class TstEtfIngest : public QObject {
     void sec_unknown_or_mismatched_identity_is_refused();
     void sec_report_date_not_month_end_keeps_flows_unmapped();
     void sec_listing_metadata_disagreement_keeps_the_document();
+    void sec_listing_without_report_dates_still_honours_a_period();
     void sec_requires_a_declared_user_agent();
     void sec_invalid_request_touches_nothing();
     void sec_storage_failure_is_not_ok();
@@ -558,6 +559,38 @@ void TstEtfIngest::sec_unknown_or_mismatched_identity_is_refused() {
         QCOMPARE(count("etf_observations"), observations_before);
         QCOMPARE(count("etf_reporting_entities", "cik = '0000884394'"), 0);
     }
+}
+
+void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
+    // The listing has no reportDate array and the request limits the report
+    // period. Both filings are read; the document's own period decides: June is
+    // stored, March (outside the period) is skipped with a recorded issue.
+    // Previously both were dropped at the listing, silently.
+    FakeSec sec;
+    QJsonObject root =
+        QJsonDocument::fromJson(
+            submissions_json(
+                QStringLiteral("0000884394"), QStringLiteral("SPDR S&P 500 ETF TRUST"),
+                {{"0001410368-26-089410", "NPORT-P", "2026-08-28", "2026-06-30", "2026-08-28T12:25:47.000Z"},
+                 {"0001410368-26-055357", "NPORT-P", "2026-05-28", "2026-03-31", "2026-05-28T19:11:03.000Z"}}))
+            .object();
+    QJsonObject filings = root.value("filings").toObject();
+    QJsonObject recent = filings.value("recent").toObject();
+    recent.remove("reportDate");
+    filings.insert("recent", recent);
+    root.insert("filings", filings);
+    sec.ok(kSpySubs, QJsonDocument(root).toJson());
+    sec.ok(kSpyDocJune, nport_xml(spy_2026_06()));
+    sec.ok(kSpyDocMarch, nport_xml(spy_2026_03()));
+    SecNportRequest r = request("884394");
+    r.report_period_from = QDate(2026, 6, 1);
+    const SecNportRunSummary s = run_sec(sec, r, "2026-09-26T10:00:00.000Z");
+    QCOMPARE(s.filings_stored, 1);
+    QCOMPARE(s.filings_skipped, 1);
+    QCOMPARE(count("etf_observations", "measure = 'nport_net_assets' AND effective_date = '2026-06-30'"), 1);
+    QCOMPARE(count("etf_observations", "source_document = '0001410368-26-055357'"), 0);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'report_period_outside_request' AND state = 'NOT_APPLICABLE'"), 1);
+    QCOMPARE(count("etf_retrieval_issues", "code = 'submissions_array_missing'"), 1);
 }
 
 void TstEtfIngest::sec_listing_metadata_disagreement_keeps_the_document() {

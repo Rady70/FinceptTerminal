@@ -411,9 +411,12 @@ void EtfSecNportIngestor::select_next_candidate() {
                          QStringLiteral("%1 acceptanceDateTime '%2'").arg(ref.accession, ref.accepted_at_raw));
             continue;
         }
+        // A listed report date outside the requested period is not asked for.
+        // A filing the listing gives no report date is selected: the document
+        // carries its own report period, which is checked once it is read.
         const QDate report = QDate::fromString(ref.report_date, Qt::ISODate);
-        if ((request_.report_period_from.isValid() && (!report.isValid() || report < request_.report_period_from)) ||
-            (request_.report_period_to.isValid() && (!report.isValid() || report > request_.report_period_to)))
+        if (report.isValid() && ((request_.report_period_from.isValid() && report < request_.report_period_from) ||
+                                 (request_.report_period_to.isValid() && report > request_.report_period_to)))
             continue;
         selected_.append(ref);
     }
@@ -511,6 +514,20 @@ void EtfSecNportIngestor::fetch_next_document() {
             refusal = QStringLiteral("series_id_invalid: '%1'").arg(doc.series_id);
         else if (!doc.rep_pd_date.isValid())
             refusal = QStringLiteral("report_period_invalid: repPdDate '%1'").arg(doc.rep_pd_date_raw);
+        if (refusal.isEmpty() &&
+            ((request_.report_period_from.isValid() && doc.rep_pd_date < request_.report_period_from) ||
+             (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
+            // Selected without a listed report date; the document's own period
+            // is outside the request: not asked for, so not stored (recorded).
+            ++summary_.filings_skipped;
+            record_issue(first_retrieval_id_, QualityState::NotApplicable,
+                         QStringLiteral("report_period_outside_request"),
+                         QStringLiteral("%1 reports %2, outside the requested period; listed without a report "
+                                        "date, so it was read to find out")
+                             .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)));
+            fetch_next_document();
+            return;
+        }
         NportDocument kept = doc;
         SecFilingRef kept_ref = ref;
         if (refusal.isEmpty()) {
