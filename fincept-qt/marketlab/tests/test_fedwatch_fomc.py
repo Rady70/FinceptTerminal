@@ -153,6 +153,10 @@ class FomcParseTests(unittest.TestCase):
 
 
 class FallbackSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
+
     def test_tracked_fallback_snapshot_loads_with_metadata(self):
         rows, snapshot_retrieved_at = fomc.load_fallback_snapshot()
         self.assertEqual(len(rows), 57)
@@ -188,18 +192,19 @@ class FallbackSnapshotTests(unittest.TestCase):
         self.assertEqual(len(result["meetings"]), 57)
         self.assertTrue(result["parse_report"]["structurally_complete"])
 
-    def test_incomplete_live_parse_falls_back_to_tracked_snapshot(self):
-        # One malformed official row must not become an authoritative partial
-        # scrape: the tracked fallback supplies the complete calendar.
+    def test_incomplete_live_parse_retains_live_rows_and_reports_coverage(self):
         transport = FakeTransport().add_text(
             "fomccalendars",
             corrupt_fomc_calendar_december_row(fixture_text(FIXTURE_FOMC_CALENDAR)),
         )
         result = fomc.fetch_calendar(transport, clock=FixedClock(utc(2026, 9, 28, 12)))
-        self.assertEqual(result["source_status"], "FALLBACK_SNAPSHOT")
+        self.assertEqual(result["source_status"], "SCRAPED_WITH_FALLBACK")
         self.assertEqual(result["fallback_snapshot_retrieved_at"], "2026-09-28T00:00:00Z")
         self.assertEqual(len(result["meetings"]), 57)
-        self.assertIn(date(2026, 12, 9), {row["end_date"] for row in result["meetings"]})
+        by_date = {row["end_date"]: row for row in result["meetings"]}
+        self.assertEqual(by_date[date(2026, 12, 9)]["source"], "fallback_snapshot")
+        self.assertEqual(by_date[date(2026, 10, 28)]["source"], "scrape")
+        self.assertTrue(result["coverage_complete"])
         self.assertFalse(result["parse_report"]["structurally_complete"])
         self.assertTrue(
             any("structurally incomplete" in warning for warning in result["warnings"])

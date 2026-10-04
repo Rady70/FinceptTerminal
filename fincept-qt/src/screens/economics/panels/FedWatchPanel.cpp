@@ -885,6 +885,15 @@ void FedWatchPanel::render() {
         if (show_current && target["lower"].isDouble() && target["upper"].isDouble())
             header += tr("\nTarget %1–%2")
                           .arg(fedwatch::number(target["lower"], "%"), fedwatch::number(target["upper"], "%"));
+        if (show_current && target["status"].toString() == "STALE")
+            header += tr(" · STALE · observed %1").arg(target["latest_observation_date"].toString());
+        else if (show_current && target["carried_forward"].toBool())
+            header += tr(" · carried forward from %1 · no intervening FOMC decision")
+                          .arg(target["latest_observation_date"].toString());
+        if (show_current && fed["copy_conflict"].toBool())
+            header += tr("\nInvesting copy conflict · first intact distribution retained");
+        if (show_current && fed["target_range_unverified"].toBool())
+            header += tr("\nTarget range unverified · pair date %1").arg(fed["target_range_pair_date"].toString());
         summary_->setText(header);
     }
     previous_meeting_->setEnabled(meetings_->currentIndex() > 0);
@@ -929,6 +938,16 @@ void FedWatchPanel::render() {
                           poly["data_status"].toString(tr("UNAVAILABLE")),
                           poly["freshness"].toObject()["status"].toString(tr("UNAVAILABLE")));
     }
+    if (show_current && fed["copy_conflict"].toBool())
+        state << tr(
+            "Investing copies disagree for this meeting; displayed probabilities retain the first intact copy.");
+    if (show_current && fed["target_range_unverified"].toBool())
+        state << tr("target_range_unverified: first local step uses the latest readable FRED pair from %1; "
+                    "no intervening decision is known, but calendar/range freshness is unverified.")
+                     .arg(fed["target_range_pair_date"].toString());
+    if (show_current && target["carried_forward"].toBool())
+        state << tr("FRED target carried forward from %1 using complete official calendar coverage.")
+                     .arg(target["latest_observation_date"].toString());
     if (analytics_.isEmpty())
         state << tr("Historical analytics unavailable or loading; no values inferred.");
     else

@@ -27,6 +27,8 @@ CLI = Path(__file__).resolve().parents[2] / "scripts" / "fedwatch_data.py"
 
 class AcquisitionTests(unittest.TestCase):
     def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -248,8 +250,9 @@ class AcquisitionTests(unittest.TestCase):
         directory = self.monthly_files()
         path = directory / "ZQV26.csv"
         path.write_text(path.read_text().replace("Symbol: ZQV26", "Symbol: FFc1"))
-        with self.assertRaises(FedwatchError):
-            monthly_csv.load_contracts(directory)
+        rows, report = monthly_csv.load_contracts(directory)
+        self.assertEqual({r["contract_symbol"] for r in rows}, {"ZQU26", "ZQX26"})
+        self.assertEqual(report["errors"][0]["detail"]["file"], "ZQV26.csv")
 
     def test_direct_and_reconstructed_objects_are_distinct_and_comparison_is_local(self):
         self.import_monthly(self.monthly_files())
@@ -404,7 +407,8 @@ class AcquisitionTests(unittest.TestCase):
                 # A missing local fallback makes the injected calendar outage
                 # genuinely global without changing the freshness policy.
                 if route == "fomccalendars":
-                    with patch("fedwatch.fomc.FALLBACK_PATH", self.root / "missing-calendar.csv"):
+                    with patch("fedwatch.fomc.FALLBACK_PATH", self.root / "missing-calendar.csv"), \
+                         patch("fedwatch.fomc.profile_calendar_path", return_value=self.root / "missing-profile.csv"):
                         result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)
                 else:
                     result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)

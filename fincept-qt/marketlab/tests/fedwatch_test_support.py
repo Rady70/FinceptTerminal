@@ -45,6 +45,26 @@ def fixture_json(name: str):
     return json.loads(fixture_text(name))
 
 
+def frozen_calendar(testcase):
+    """Keep September-clock tests independent of the operational backup refresh.
+
+    Uses captured official HTML rows and their fixture capture time, in a temp
+    directory only; the bundled file and owner's profile are never written.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from fedwatch import fomc
+    tmp = tempfile.TemporaryDirectory()
+    testcase.addCleanup(tmp.cleanup)
+    path = Path(tmp.name) / "calendar.csv"
+    rows = fomc.parse_fomc_calendar(fixture_text(FIXTURE_FOMC_CALENDAR))[0]
+    path.write_text(fomc.snapshot_csv(rows, "2026-09-28T00:00:00Z"), encoding="utf-8")
+    patched = patch.object(fomc, "FALLBACK_PATH", path)
+    patched.start()
+    testcase.addCleanup(patched.stop)
+    return path
+
+
 def utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0, second: int = 0):
     return datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
 

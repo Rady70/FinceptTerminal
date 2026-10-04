@@ -199,7 +199,7 @@ class InvestingParseTests(unittest.TestCase):
             caught.exception.detail["parse_report"]["unmatched_bucket_item_count"], 1
         )
 
-    def test_unparseable_meeting_block_fails_provider_closed(self):
+    def test_unparseable_meeting_block_preserves_valid_meeting(self):
         html = synthetic_html(
             [
                 ("not a date", [(3.75, 4.00, 50.0), (4.00, 4.25, 50.0)]),
@@ -207,10 +207,10 @@ class InvestingParseTests(unittest.TestCase):
             ]
         )
         transport = FakeTransport().add_text("fed-rate-monitor", html)
-        with self.assertRaises(FedwatchError) as caught:
-            investing.fetch_distributions(transport)
-        self.assertEqual(caught.exception.provider, "investing")
-        self.assertEqual(caught.exception.code, "INVESTING_PARSE_PARTIAL")
+        result = investing.fetch_distributions(transport)
+        self.assertEqual([m["meeting_date"] for m in result["meetings"]], ["2026-11-18"])
+        self.assertEqual(result["errors"][0]["code"], "INVESTING_PARSE_PARTIAL")
+        self.assertIsNone(investing.with_local_probabilities(result, 4, 3.75)[0]["local_probabilities"])
 
 
 class NormalizationRegressionTests(unittest.TestCase):

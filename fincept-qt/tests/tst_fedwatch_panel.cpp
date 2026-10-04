@@ -283,6 +283,58 @@ class TestFedWatchPanel : public QObject {
         QVERIFY(std::any_of(sent_.begin(), sent_.end(), [](const auto& r) { return r.command == "local_snapshot"; }));
         QVERIFY(std::none_of(sent_.begin(), sent_.end(), [](const auto& r) { return r.command == "collect"; }));
     }
+    void carriedForwardAndCopyConflictAreVisibleAndMeetingScoped() {
+        const auto original = snapshot_;
+        auto data = snapshot_["data"].toObject();
+        auto target = data["current_target_range"].toObject();
+        target["carried_forward"] = true;
+        target["latest_observation_date"] = "2026-09-22";
+        data["current_target_range"] = target;
+        auto meetings = data["meetings"].toArray();
+        auto october = meetings[0].toObject();
+        auto fed = october["fed_side"].toObject();
+        fed["copy_conflict"] = true;
+        october["fed_side"] = fed;
+        meetings[0] = october;
+        data["meetings"] = meetings;
+        snapshot_["data"] = data;
+        openUpcoming();
+        QVERIFY(text("fedwatchSummary").contains("carried forward from 2026-09-22"));
+        QVERIFY(text("fedwatchSummary").contains("Investing copy conflict"));
+        QVERIFY(text("fedwatchSourceStatus").contains("copies disagree for this meeting"));
+        QVERIFY(!currentChart()->isHidden());
+        control("fedwatchMeeting")->selectIndex(control("fedwatchMeeting")->findData("2026-12-09"));
+        flush();
+        snapshot_ = original;
+        QVERIFY(!text("fedwatchSummary").contains("Investing copy conflict"));
+        QVERIFY(text("fedwatchSummary").contains("carried forward"));
+    }
+    void unverifiedTargetIsVisibleAndFirstMeetingScoped() {
+        const auto original = snapshot_;
+        auto data = snapshot_["data"].toObject();
+        auto target = data["current_target_range"].toObject();
+        target["status"] = "STALE";
+        target["carried_forward"] = false;
+        data["current_target_range"] = target;
+        auto meetings = data["meetings"].toArray();
+        auto october = meetings[0].toObject();
+        auto fed = october["fed_side"].toObject();
+        fed["target_range_unverified"] = true;
+        fed["target_range_pair_date"] = "2026-09-22";
+        october["fed_side"] = fed;
+        meetings[0] = october;
+        data["meetings"] = meetings;
+        snapshot_["data"] = data;
+        openUpcoming();
+        QVERIFY(text("fedwatchSummary").contains("Target range unverified · pair date 2026-09-22"));
+        QVERIFY(text("fedwatchSourceStatus").contains("target_range_unverified"));
+        QVERIFY(!currentChart()->isHidden());
+        control("fedwatchMeeting")->selectIndex(control("fedwatchMeeting")->findData("2026-12-09"));
+        flush();
+        snapshot_ = original;
+        QVERIFY(!text("fedwatchSummary").contains("Target range unverified"));
+        QVERIFY(!text("fedwatchSourceStatus").contains("target_range_unverified"));
+    }
     void activationAndNavigationReadDurableCurrentWithoutAcquisition() {
         durable_current_reads_ = true;
         openUpcoming();

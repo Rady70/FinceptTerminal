@@ -133,6 +133,10 @@ def _record_fed_side(
         "normalization": fed.get("normalization"),
         "local_probabilities": local_rows,
         "freshness": freshness,
+        "copy_conflict": fed.get("copy_conflict", False),
+        "copy_conflicts": fed.get("copy_conflicts", []),
+        "target_range_unverified": fed.get("target_range_unverified", False),
+        "target_range_pair_date": fed.get("target_range_pair_date"),
     }
     for row in local_rows:
         probability = _finite_number(row.get("probability_pct"))
@@ -155,6 +159,8 @@ def _record_fed_side(
                 "raw_probabilities": fed.get("raw_probabilities"),
                 "normalized_probabilities": fed.get("normalized_probabilities"),
                 "normalization": fed.get("normalization"),
+                "target_range_unverified": fed.get("target_range_unverified", False),
+                "target_range_pair_date": fed.get("target_range_pair_date"),
             }
         )
         result = store.record_observation(
@@ -226,6 +232,11 @@ def _record_polymarket(
     for outcome in outcomes:
         outcome_bp = outcome.get("outcome_bp")
         open_ended = bool(outcome.get("open_ended"))
+        if outcome.get("binary_outcomes_valid") is False:
+            report["skipped"].append({"meeting_date": meeting_date, "source": POLY_SOURCE,
+                "reason": "INVALID_BINARY_OUTCOMES", "detail": {"outcome_bp": outcome_bp,
+                "market_id": outcome.get("market_id")}})
+            continue
         if isinstance(outcome_bp, bool) or not isinstance(outcome_bp, int):
             report["skipped"].append(
                 {
@@ -450,6 +461,7 @@ def resolve_actual_outcome(
     upper_rows: list[dict],
     lower_rows: list[dict],
     lookahead_days: int = RESOLUTION_LOOKAHEAD_DAYS,
+    rejected_dates: list[date] | None = None,
 ) -> dict:
     """Establish a meeting's actual target-rate decision from FRED, or refuse.
 
@@ -484,8 +496,6 @@ def resolve_actual_outcome(
             "reason": "FRED_COVERAGE_INSUFFICIENT",
             "detail": {"upper_rows": len(upper), "lower_rows": len(lower)},
         }
-    if any(not math.isfinite(row["value"]) for row in upper + lower):
-        return {"resolvable": False, "reason": "FRED_VALUE_INVALID", "detail": {}}
 
     def pair(day: date) -> dict | None:
         if day in upper_by_date and day in lower_by_date:
@@ -513,6 +523,11 @@ def resolve_actual_outcome(
     # observation (a genuine paired range), exactly like the ZQ import.
     paired_dates = sorted(set(upper_by_date) & set(lower_by_date))
     suffix_end = end_date + timedelta(days=lookahead_days)
+    before = [day for day in paired_dates if day < end_date]
+    post = [day for day in paired_dates if end_date < day <= suffix_end]
+    if before and post and any(before[-1] <= day <= post[0] for day in (rejected_dates or [])):
+        return {"resolvable": False, "reason": "FRED_REJECTED_OBSERVATION_IN_WINDOW",
+                "detail": {"rejected_dates": [d.isoformat() for d in rejected_dates]}}
 
     def convention(before_day: date | None, strict: bool) -> dict:
         if before_day is None:
@@ -719,7 +734,9 @@ def evaluate_lifecycle(
         meeting_date = meeting["meeting_date"]
         result["evaluated"] += 1
         verdict = resolve_actual_outcome(
-            timeutil.parse_date(meeting_date), upper_rows, lower_rows
+            timeutil.parse_date(meeting_date), upper_rows, lower_rows,
+            rejected_dates=[timeutil.parse_date(day) for report in (fred_history.get("parse_reports") or {}).values()
+                            for day in report.get("rejected_dates", [])],
         )
         if verdict["resolvable"]:
             store.mark_resolved(
@@ -765,13 +782,21 @@ def collect(
         fred_history = None
         try:
             fred_history = fred.fetch_target_history(transport, clock=clock)
+            errors.extend(fred_history.get("errors", []))
         except FedwatchError as exc:
             errors.append(exc.to_dict())
         lifecycle = evaluate_lifecycle(store, fred_history, clock=clock, meeting_date=meeting_date)
         errors.extend(lifecycle.get("errors", []))
     report = record_snapshot(store, data, clock=clock)
+    try:
+        calendar_copy = fomc.save_profile_calendar(data.get("calendar_snapshot"), fomc.profile_calendar_path(store.path))
+    except (OSError, ValueError, KeyError, FedwatchError) as exc:
+        calendar_copy = {"status": "WRITE_FAILED"}
+        errors.append(FedwatchError("fomc_calendar", "FOMC_CALENDAR_COPY_WRITE_FAILED",
+                                   "complete calendar could not be retained: " + str(exc)).to_dict())
     return {
         "db_path": str(store.path),
+        "calendar_copy": calendar_copy,
         "recorded": report,
         "lifecycle": lifecycle,
         "errors": errors,
@@ -790,36 +815,9 @@ def normalize_backfill_points(points: list, now: datetime) -> tuple[list[dict], 
     same rule the qualified implementation used for the daily series.
     """
     by_day: dict[str, dict] = {}
-    counts = {"malformed": 0, "future": 0, "out_of_range": 0}
-    for point in points if isinstance(points, list) else []:
-        if not isinstance(point, dict):
-            counts["malformed"] += 1
-            continue
-        raw_t = point.get("t")
-        raw_p = point.get("p")
-        if isinstance(raw_t, bool) or isinstance(raw_p, bool):
-            counts["malformed"] += 1
-            continue
-        try:
-            timestamp = float(raw_t)
-            probability = float(raw_p)
-        except (TypeError, ValueError):
-            counts["malformed"] += 1
-            continue
-        if not math.isfinite(timestamp) or not math.isfinite(probability) or timestamp < 0:
-            counts["malformed"] += 1
-            continue
-        try:
-            instant = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            counts["malformed"] += 1
-            continue
-        if instant > now + timedelta(seconds=FUTURE_TOLERANCE_SECONDS):
-            counts["future"] += 1
-            continue
-        if not 0.0 <= probability <= 1.0:
-            counts["out_of_range"] += 1
-            continue
+    valid, counts = polymarket.normalize_price_points(points if isinstance(points, list) else [], now)
+    for point in valid:
+        instant, probability = point["instant"], point["probability"]
         day = instant.date().isoformat()
         previous = by_day.get(day)
         if previous is None or instant > previous["instant"]:
@@ -1170,7 +1168,7 @@ def import_zq(
         }
         if all(day.isoformat() in retained_days for day in watch_dates):
             return {"db_path": str(store.path), "contract_report": contract_report,
-                    "status": "REUSED_LOCAL", "network_requests": 0, "errors": [],
+                    "status": "REUSED_LOCAL", "network_requests": 0, "errors": list(contract_report.get("errors", [])),
                     "watch_dates": [{"watch_date": day.isoformat(), "status": "REUSED_LOCAL"} for day in sorted(set(watch_dates))]}
     fomc_result = fomc.fetch_calendar(transport, clock=clock)
     if fomc_result.get("fallback_stale"):
@@ -1186,6 +1184,9 @@ def import_zq(
                 )
             },
         )
+    if not fomc_result.get("coverage_complete", True):
+        raise FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_CALENDAR_PARSE_PARTIAL",
+                            "ZQ reconstruction requires complete meeting coverage; valid calendar rows remain available")
     meeting_end_dates = sorted(row["end_date"] for row in fomc_result["meetings"])
     if meeting_date:
         selected = timeutil.parse_date(meeting_date)
@@ -1196,7 +1197,7 @@ def import_zq(
     upper_rows = fred_history["upper"]
     lower_rows = fred_history["lower"]
 
-    errors: list[dict] = []
+    errors: list[dict] = list(contract_report.get("errors", [])) + list(fred_history.get("errors", []))
     watch_results = []
     for watch_date in sorted(set(watch_dates)):
         # The target range must be a genuine paired observation: the latest

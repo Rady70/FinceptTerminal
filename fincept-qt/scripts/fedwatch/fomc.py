@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import tempfile
 from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -36,6 +38,7 @@ SOURCE_LABEL_SCRAPE = CALENDAR_URL
 SOURCE_LABEL_FALLBACK = "federalreserve.gov FOMC calendar tracked fallback snapshot"
 
 FALLBACK_PATH = Path(__file__).resolve().parent / "fomc_dates_fallback.csv"
+PROFILE_CALENDAR_FILENAME = "fomc_dates_fallback.csv"
 FALLBACK_METADATA_PREFIX = "#"
 # The tracked snapshot is a point-in-time capture. Once it is older than this
 # many days it no longer establishes which meeting dates are officially
@@ -61,7 +64,7 @@ NOTATION_VOTE_RE = re.compile(r"^(\d+)\s*\(notation vote\)$", re.IGNORECASE)
 DAY_RANGE_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
 # A meeting row container class token; excludes fomc-meeting__month/date/minutes
 # and the fomc-meeting--shaded modifier.
-_ROW_MARKER_RE = re.compile(r'class="[^"]*(?<![\w-])fomc-meeting(?![\w-])[^"]*"')
+_CLASS_ATTRIBUTE_RE = re.compile(r'\bclass\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))', re.I)
 
 VOID_ELEMENTS = {
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
@@ -166,9 +169,12 @@ class _FomcCalendarParser(HTMLParser):
             and "fomc-meeting__month" not in classes
             and "fomc-meeting__date" not in classes
         ):
-            if self.meeting is None:
-                self.meeting = {"month": "", "date": "", "hrefs": [], "year": self.current_year}
-                self.meeting_index = len(self.stack) - 1
+            if self.meeting is not None:
+                self.skipped_rows += 1
+                self.warnings.append("FOMC incomplete meeting row skipped at next meeting boundary")
+                self.capture_stack = []
+            self.meeting = {"month": "", "date": "", "hrefs": [], "year": self.current_year}
+            self.meeting_index = len(self.stack) - 1
             return
 
         if self.meeting is not None:
@@ -236,9 +242,19 @@ class _FomcCalendarParser(HTMLParser):
         for href in meeting["hrefs"]:
             link_match = STATEMENT_LINK_RE.search(href)
             if link_match:
-                link_date = datetime.strptime(link_match.group(1), "%Y%m%d").date()
+                try:
+                    link_date = datetime.strptime(link_match.group(1), "%Y%m%d").date()
+                except ValueError:
+                    self.skipped_rows += 1
+                    self.warnings.append("FOMC meeting row skipped: invalid statement-link date")
+                    return
                 parsed["end_date"] = link_date
                 break
+
+        if parsed["end_date"] < parsed["start_date"]:
+            self.skipped_rows += 1
+            self.warnings.append("FOMC meeting row skipped: end precedes start")
+            return
 
         parsed["source"] = "scrape"
         self.rows.append(parsed)
@@ -255,9 +271,8 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
     of ``fomc-meeting`` row markers found in the raw HTML must equal the rows
     that were parsed plus the rows that were explicitly skipped, no row may be
     left open at end of document, and at least one row must have parsed. Since
-    the calendar is the authoritative meeting identity, an incomplete parse
-    must not be treated as a live scrape; the provider layer falls back to the
-    tracked snapshot instead.
+    the calendar is the authoritative meeting identity, incomplete coverage
+    cannot disprove absent dates. Successfully parsed rows remain live evidence.
     """
     parser = _FomcCalendarParser()
     parser.feed(html)
@@ -275,7 +290,18 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
         seen.add(key)
         deduplicated.append(row)
 
-    row_marker_count = len(_ROW_MARKER_RE.findall(html))
+    row_marker_count = sum("fomc-meeting" in next((group for group in match.groups() if group is not None), "").split()
+                           for match in _CLASS_ATTRIBUTE_RE.finditer(html))
+    by_end = {}
+    conflicts = set()
+    for row in deduplicated:
+        prior = by_end.get(row["end_date"])
+        if prior is not None and prior != row:
+            conflicts.add(row["end_date"])
+        by_end[row["end_date"]] = row
+    if conflicts:
+        parser.warnings.append("FOMC conflicting meeting identities rejected: " + ", ".join(d.isoformat() for d in sorted(conflicts)))
+        deduplicated = [row for row in deduplicated if row["end_date"] not in conflicts]
     accounted_rows = len(parser.rows) + parser.skipped_rows
     document_closed = bool(re.search(r"</html\s*>", html, re.IGNORECASE))
     report = {
@@ -284,6 +310,7 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
         "skipped_row_count": parser.skipped_rows,
         "open_meeting_at_eof": parser.meeting is not None or bool(parser.capture_stack),
         "document_closed": document_closed,
+        "conflicting_end_dates": sorted(day.isoformat() for day in conflicts),
         "structurally_complete": bool(
             row_marker_count == accounted_rows
             and parser.skipped_rows == 0
@@ -291,18 +318,20 @@ def parse_fomc_calendar(html: str) -> tuple[list[dict], list[str], dict]:
             and not parser.capture_stack
             and document_closed
             and parser.rows
+            and not conflicts
         ),
     }
     return deduplicated, parser.warnings, report
 
 
-def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str | None]:
+def load_fallback_snapshot(path: Path | None = None) -> tuple[list[dict], str | None]:
     """Load the tracked fallback snapshot.
 
     The file may carry a leading ``# snapshot_retrieved_at=...`` metadata line
     recording when the snapshot was captured; it is returned so callers can
     report the fallback's age truthfully.
     """
+    path = path if path is not None else FALLBACK_PATH
     if not path.exists():
         raise FedwatchError(
             PROVIDER_FOMC_CALENDAR,
@@ -314,7 +343,7 @@ def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str 
     data_lines: list[str] = []
     try:
         fallback_text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise FedwatchError(
             PROVIDER_FOMC_CALENDAR,
             "FOMC_CALENDAR_UNAVAILABLE",
@@ -356,7 +385,7 @@ def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str 
                     "source": "fallback_snapshot",
                 }
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
             raise FedwatchError(
                 PROVIDER_FOMC_CALENDAR,
                 "FOMC_CALENDAR_UNAVAILABLE",
@@ -369,11 +398,99 @@ def load_fallback_snapshot(path: Path = FALLBACK_PATH) -> tuple[list[dict], str 
             "FOMC_CALENDAR_UNAVAILABLE",
             f"FOMC fallback snapshot at {path} contains no meeting rows",
         )
+    identities = {}
+    for row in rows:
+        key = row["end_date"]
+        identity = (row["start_date"], row["meeting_type"], row["has_projection_materials"])
+        if row["start_date"] > key or (key in identities and identities[key] != identity):
+            raise FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_CALENDAR_UNAVAILABLE",
+                                "fallback snapshot contains reversed or conflicting meeting identities")
+        identities[key] = identity
     rows.sort(key=lambda item: (item["start_date"], item["end_date"]))
     return rows, snapshot_retrieved_at
 
 
-def fetch_calendar(transport: Transport, fallback_path: Path | None = None, clock=timeutil.utc_now) -> dict:
+def profile_calendar_path(db_path: Path | None = None) -> Path | None:
+    """Resolve beside the history DB without opening it or creating folders."""
+    if db_path is None:
+        from fedwatch.store import default_db_path, HistoryStoreError
+        try:
+            db_path = default_db_path()
+        except HistoryStoreError:
+            return None
+    return Path(db_path).parent / PROFILE_CALENDAR_FILENAME
+
+
+def snapshot_csv(rows: list[dict], captured_at: str) -> str:
+    timeutil.parse_iso_z(captured_at)
+    stream = io.StringIO()
+    stream.write("# snapshot_retrieved_at=" + captured_at + "\n")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(["start_date", "end_date", "meeting_type", "has_projection_materials"])
+    for row in rows:
+        serialized = serialize_meeting(row)
+        writer.writerow([serialized["start_date"], serialized["end_date"], serialized["meeting_type"],
+                         str(serialized["has_projection_materials"]).lower()])
+    return stream.getvalue()
+
+
+def save_profile_calendar(calendar: dict | None, path: Path) -> dict:
+    """Durable collect only: atomically save a complete live capture, never a merge."""
+    if not calendar or calendar.get("source_status") != "SCRAPED" or not calendar.get("coverage_complete") or not (
+            calendar.get("parse_report") or {}).get("structurally_complete"):
+        return {"status": "NOT_WRITTEN", "reason": "NO_COMPLETE_LIVE_CAPTURE"}
+    captured_at = calendar["retrieved_at"]
+    capture = timeutil.parse_iso_z(captured_at)
+    if path.exists():
+        try:
+            _, previous = load_fallback_snapshot(path)
+            if previous and timeutil.parse_iso_z(previous) >= capture:
+                return {"status": "NOT_WRITTEN", "reason": "EXISTING_CAPTURE_AS_NEW_OR_NEWER"}
+        except FedwatchError:
+            pass
+    contents = snapshot_csv(calendar["meetings"], captured_at)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent,
+                                         prefix="fomc-calendar-", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(contents)
+        load_fallback_snapshot(temporary)
+        os.replace(temporary, path)
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+    return {"status": "WRITTEN", "captured_at": captured_at, "meeting_rows": len(calendar["meetings"])}
+
+
+def _newest_fallback(path, profile_path, clock, warnings):
+    candidates, failure = [], None
+    for candidate, profile in ((path, False), (profile_path, True)):
+        if candidate is None or (profile and not candidate.exists()):
+            continue
+        try:
+            rows, captured = load_fallback_snapshot(candidate)
+            instant = timeutil.parse_iso_z(captured) if captured else None
+            if profile and (instant is None or (instant - clock()).total_seconds() > FALLBACK_MAX_FUTURE_DAYS * 86400):
+                raise FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_CALENDAR_UNAVAILABLE",
+                                    "profile calendar capture time is missing, invalid or future-dated")
+            candidates.append((instant or datetime.min.replace(tzinfo=clock().tzinfo), rows, captured, profile))
+        except FedwatchError as exc:
+            if profile:
+                warnings.append("Unreadable profile calendar copy ignored: " + exc.message)
+            else:
+                failure = exc
+    if not candidates:
+        raise failure or FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_CALENDAR_UNAVAILABLE", "no readable calendar backup")
+    _, rows, captured, profile = max(candidates, key=lambda candidate: candidate[0])
+    if profile:
+        warnings.append("Newest readable fallback is the profile calendar copy")
+    return rows, captured, profile
+
+
+def fetch_calendar(transport: Transport, fallback_path: Path | None = None, clock=timeutil.utc_now,
+                   profile_path: Path | None = None) -> dict:
     """Retrieve the FOMC calendar: scrape first, tracked fallback snapshot second.
 
     The returned payload states which path produced the data
@@ -381,15 +498,16 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
     fallback snapshot's capture time when it was used, and carries the live
     parse report. A fallback is never reported as a live scrape.
 
-    A structurally incomplete parse (rows skipped or lost because the provider
-    HTML was malformed/truncated) is not authoritative and is treated like a
-    failed scrape: the tracked fallback snapshot is used instead, with the
-    parse warnings preserved. This keeps the official calendar from silently
-    omitting a real meeting and mis-blaming another provider.
+    A partial live parse is supplemented by readable tracked snapshot rows.
+    Live identities win; replacements and per-row provenance remain explicit.
+    Stale/unknown-age backup rows are labelled and cannot grant complete
+    coverage. An unreadable snapshot leaves live rows as SCRAPED_PARTIAL.
     """
     path = fallback_path or FALLBACK_PATH
+    profile_path = profile_path if profile_path is not None else profile_calendar_path()
     warnings: list[str] = []
     live_parse_report: dict | None = None
+    live_rows = []
     try:
         html = transport.get_text(CALENDAR_URL, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT)
     except TransportError as exc:
@@ -398,30 +516,39 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
 
     if html is not None:
         try:
-            rows, parse_warnings, live_parse_report = parse_fomc_calendar(html)
+            live_rows, parse_warnings, live_parse_report = parse_fomc_calendar(html)
             warnings.extend(parse_warnings)
-            if live_parse_report["structurally_complete"]:
+            if live_rows:
                 retrieved_at = clock()
-                return {
+                complete = live_parse_report["structurally_complete"]
+                if not complete:
+                    warnings.append("FOMC calendar live coverage is structurally incomplete; valid live rows retained")
+                live_result = {
                     "retrieved_at": timeutil.iso_z(retrieved_at),
                     "source": SOURCE_LABEL_SCRAPE,
-                    "source_status": "SCRAPED",
+                    "source_status": "SCRAPED" if complete else "SCRAPED_PARTIAL",
+                    "coverage_complete": complete,
                     "fallback_snapshot_retrieved_at": None,
                     "fallback_age_days": None,
                     "fallback_stale": False,
-                    "meetings": rows,
+                    "meetings": live_rows,
                     "parse_report": live_parse_report,
                     "warnings": warnings,
+                    "fallback_used": False,
+                    "merge_conflicts": [],
                 }
-            warnings.append(
-                "FOMC calendar live parse was structurally incomplete "
-                f"({live_parse_report['skipped_row_count']} skipped row(s)); using the "
-                "tracked fallback snapshot instead of an authoritative partial scrape"
-            )
+                if complete:
+                    return live_result
         except ValueError as exc:
             warnings.append(f"FOMC calendar parse failed: {exc}")
 
-    rows, snapshot_retrieved_at = load_fallback_snapshot(path)
+    try:
+        rows, snapshot_retrieved_at, profile_used = _newest_fallback(path, profile_path, clock, warnings)
+    except FedwatchError as exc:
+        if not live_rows:
+            raise
+        warnings.append(f"FOMC partial live coverage could not be supplemented: {exc}")
+        return live_result
     retrieved_at = clock()
     fallback_age_days = None
     if snapshot_retrieved_at:
@@ -443,16 +570,58 @@ def fetch_calendar(transport: Transport, fallback_path: Path | None = None, cloc
             f"{FALLBACK_MAX_AGE_DAYS} days); the calendar is not authoritative "
             "for meeting-date alignment"
         )
+    if live_rows:
+        conflicts = []
+        ambiguous_dates = set(live_parse_report["conflicting_end_dates"])
+        merged = []
+        identity_fields = ("start_date", "end_date", "meeting_type", "has_projection_materials")
+        for backup in rows:
+            if backup["end_date"].isoformat() in ambiguous_dates:
+                # A fresh backup does not resolve contradictory live evidence.
+                continue
+            replacements = [live for live in live_rows if
+                            live["end_date"] == backup["end_date"] or
+                            (live["start_date"] <= backup["end_date"] and
+                             backup["start_date"] <= live["end_date"])]
+            if replacements:
+                for live in replacements:
+                    if any(live[key] != backup[key] for key in identity_fields):
+                        conflicts.append({"live": serialize_meeting(live),
+                                          "fallback": serialize_meeting(backup),
+                                          "resolution": "LIVE_ROW_WINS"})
+            else:
+                merged.append(dict(backup, stale=fallback_stale))
+        merged.extend(live_rows)
+        merged.sort(key=lambda row: (row["start_date"], row["end_date"]))
+        warnings.append("FOMC partial live calendar supplemented by " +
+                         ("stale/unknown-age" if fallback_stale else "fresh") +
+                         (" profile calendar copy" if profile_used else " bundled fallback snapshot") +
+                         "; per-row sources retained")
+        if conflicts:
+            warnings.append(f"FOMC live rows superseded {len(conflicts)} conflicting fallback identities")
+        live_result.update(source=SOURCE_LABEL_SCRAPE + (" + profile calendar copy" if profile_used else " + tracked fallback snapshot"),
+                           source_status="SCRAPED_WITH_STALE_FALLBACK" if fallback_stale else "SCRAPED_WITH_FALLBACK",
+                           coverage_complete=not ambiguous_dates and not fallback_stale,
+                           fallback_stale=fallback_stale,
+                           fallback_snapshot_retrieved_at=snapshot_retrieved_at,
+                           fallback_age_days=fallback_age_days, fallback_used=True,
+                            meetings=merged, merge_conflicts=conflicts)
+        live_result["fallback_origin"] = "PROFILE_COPY" if profile_used else "BUNDLED_FILE"
+        return live_result
     return {
         "retrieved_at": timeutil.iso_z(retrieved_at),
-        "source": SOURCE_LABEL_FALLBACK,
+        "source": "federalreserve.gov FOMC calendar profile fallback snapshot" if profile_used else SOURCE_LABEL_FALLBACK,
+        "fallback_origin": "PROFILE_COPY" if profile_used else "BUNDLED_FILE",
         "source_status": "FALLBACK_STALE" if fallback_stale else "FALLBACK_SNAPSHOT",
         "fallback_snapshot_retrieved_at": snapshot_retrieved_at,
         "fallback_age_days": fallback_age_days,
         "fallback_stale": fallback_stale,
-        "meetings": rows,
+        "coverage_complete": not fallback_stale,
+        "meetings": [dict(row, stale=fallback_stale) for row in rows],
         "parse_report": live_parse_report,
         "warnings": warnings,
+        "fallback_used": True,
+        "merge_conflicts": [],
     }
 
 
@@ -464,8 +633,17 @@ def serialize_meeting(row: dict) -> dict:
             "meeting_type": row["meeting_type"],
             "has_projection_materials": row["has_projection_materials"],
             "source": row["source"],
+            **({"stale": row["stale"]} if "stale" in row else {}),
         }
     return dict(row)
+
+
+def authoritative_upcoming(result: dict, as_of: date) -> list[dict]:
+    """Positive live identities survive an old supplement; old rows do not
+    gain authority from their neighbours or establish complete coverage.
+    """
+    return [row for row in upcoming_meetings(result["meetings"], as_of)
+            if not row.get("stale", result.get("fallback_stale", False) and row.get("source") != "scrape")]
 
 
 def upcoming_meetings(rows: list[dict], as_of: date) -> list[dict]:
