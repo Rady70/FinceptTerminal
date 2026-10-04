@@ -239,6 +239,40 @@ Result<EtfrWriteCounts> etfr_write_macro(const QString& source, const QString& s
     return Result<EtfrWriteCounts>::ok(c);
 }
 
+/// Why an item that was obtained is only partly usable ('' when it is whole):
+/// rows left out as unparseable, World Bank pages that failed, a fund whose
+/// quote summary failed while its holdings came, or corporate actions on rows
+/// without a close (kept as provenance, not applied).
+QString etfr_partial_reason(const QJsonObject& it) {
+    QStringList why;
+    if (const int n = it.value(QStringLiteral("unparseable_points")).toInt(); n > 0)
+        why << QStringLiteral("%1 unparseable row(s) left out").arg(n);
+    if (!it.value(QStringLiteral("pages_failed")).toArray().isEmpty())
+        why << QStringLiteral("%1 page(s) not read").arg(it.value(QStringLiteral("pages_failed")).toArray().size());
+    if (it.value(QStringLiteral("quote_status")).toString() == QLatin1String("FAILED"))
+        why << QStringLiteral("quote summary failed, holdings kept");
+    if (const int n = it.value(QStringLiteral("actions_without_close")).toArray().size(); n > 0)
+        why << QStringLiteral("%1 corporate action(s) on rows without a close").arg(n);
+    return why.join(QStringLiteral(", "));
+}
+
+/// The corporate actions of rows without a close, as text for the provenance.
+QString etfr_actions_text(const QJsonObject& it) {
+    QStringList a;
+    for (const auto& v : it.value(QStringLiteral("actions_without_close")).toArray()) {
+        const QJsonArray r = v.toArray();
+        if (r.size() >= 4)
+            a << QStringLiteral("%1 dividend %2 capital gain %3 split %4")
+                     .arg(r.at(0).toString())
+                     .arg(r.at(1).toDouble())
+                     .arg(r.at(2).toDouble())
+                     .arg(r.at(3).toDouble());
+    }
+    return a.isEmpty() ? QString()
+                       : QStringLiteral("corporate action(s) on rows without a close, kept here, not applied: ") +
+                             a.join(QStringLiteral("; "));
+}
+
 SourceStageStatus etfr_finish_status(SourceStageStatus st) {
     st.dependent_calculations = etfr_dependents(st.stage);
     if (st.items_requested == 0) {
@@ -383,17 +417,26 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         st.items_requested = items.size();
         const QString req_at = so.value(QStringLiteral("requested_at")).toString();
         QString latest_eff;
+        QStringList partly; // obtained items that are only partly usable
         QStringList keys = items.keys();
         std::sort(keys.begin(), keys.end());
         for (const QString& subject : keys) {
             const QJsonObject it = items.value(subject).toObject();
-            const QString status = it.value(QStringLiteral("status")).toString() == QLatin1String("OK")
-                                       ? QStringLiteral("OK")
-                                       : QStringLiteral("FAILED");
-            const QString detail = it.value(QStringLiteral("detail")).toString();
+            // An item obtained in part is PARTIAL, with what was left out named;
+            // what was obtained is stored (2026-10-04 data-preservation rule).
+            const QString partial = etfr_partial_reason(it);
+            const bool obtained = it.value(QStringLiteral("status")).toString() == QLatin1String("OK");
+            const QString status = !obtained           ? QStringLiteral("FAILED")
+                                   : partial.isEmpty() ? QStringLiteral("OK")
+                                                       : QStringLiteral("PARTIAL");
+            if (!partial.isEmpty())
+                partly << QStringLiteral("%1 (%2)").arg(subject, partial);
+            QString detail = it.value(QStringLiteral("detail")).toString();
+            if (const QString acts = etfr_actions_text(it); !acts.isEmpty())
+                detail = detail.isEmpty() ? acts : detail + QStringLiteral("; ") + acts;
             const QString ret_at =
                 it.value(QStringLiteral("retrieved_at")).toString(it.value(QStringLiteral("captured_at")).toString());
-            if (status != QLatin1String("OK")) {
+            if (status == QLatin1String("FAILED")) {
                 auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status, detail, QString(),
                                                  0, QString(), QString());
                 if (rid.is_err())
@@ -533,7 +576,8 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 auto rid =
                     etfr_insert_retrieval(run_id, stage, subject, req_at, etfr_iso(captured), status,
                                           it.value(QStringLiteral("holdings_status")).toString() + QLatin1Char(' ') +
-                                              it.value(QStringLiteral("holdings_detail")).toString(),
+                                              it.value(QStringLiteral("holdings_detail")).toString() +
+                                              (detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
                                           so.value(QStringLiteral("sha256")).toString(), 1, eff.toString(Qt::ISODate),
                                           eff.toString(Qt::ISODate));
                 if (rid.is_err())
@@ -545,19 +589,24 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 const QVariant aum = f.contains(QStringLiteral("totalAssets"))
                                          ? etfr_opt(f.value(QStringLiteral("totalAssets")))
                                          : etfr_opt(f.value(QStringLiteral("netAssets")));
-                auto ins = db().execute(
-                    QStringLiteral("INSERT INTO etf_research_fund_snapshots (retrieval_id, symbol, captured_at, "
-                                   "effective_session, effective_rule, total_assets, nav, previous_close, "
-                                   "shares_outstanding, market_time, fields_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
-                    {rid.value(), subject, etfr_iso(captured), etfr_text_or_null(eff.toString(Qt::ISODate)),
-                     eff.isValid() ? QStringLiteral("prior_completed_session_v1")
-                                   : QStringLiteral("prior_completed_session_v1:outside_calendar"),
-                     aum, etfr_opt(f.value(QStringLiteral("navPrice"))),
-                     etfr_opt(f.value(QStringLiteral("regularMarketPreviousClose"))),
-                     etfr_opt(f.value(QStringLiteral("sharesOutstanding"))), etfr_text_or_null(market_time),
-                     QString::fromUtf8(QJsonDocument(f).toJson(QJsonDocument::Compact))});
-                if (ins.is_err())
-                    return fail(ins.error());
+                // A fund whose quote summary failed while its holdings came keeps
+                // the holdings; no capture of empty fund facts is written.
+                const bool quote = !f.isEmpty();
+                if (quote) {
+                    auto ins = db().execute(
+                        QStringLiteral("INSERT INTO etf_research_fund_snapshots (retrieval_id, symbol, captured_at, "
+                                       "effective_session, effective_rule, total_assets, nav, previous_close, "
+                                       "shares_outstanding, market_time, fields_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
+                        {rid.value(), subject, etfr_iso(captured), etfr_text_or_null(eff.toString(Qt::ISODate)),
+                         eff.isValid() ? QStringLiteral("prior_completed_session_v1")
+                                       : QStringLiteral("prior_completed_session_v1:outside_calendar"),
+                         aum, etfr_opt(f.value(QStringLiteral("navPrice"))),
+                         etfr_opt(f.value(QStringLiteral("regularMarketPreviousClose"))),
+                         etfr_opt(f.value(QStringLiteral("sharesOutstanding"))), etfr_text_or_null(market_time),
+                         QString::fromUtf8(QJsonDocument(f).toJson(QJsonDocument::Compact))});
+                    if (ins.is_err())
+                        return fail(ins.error());
+                }
                 QVector<QVariantList> hrows;
                 for (const auto& hv : it.value(QStringLiteral("holdings")).toArray()) {
                     const QJsonArray h = hv.toArray();
@@ -583,9 +632,11 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                                       wrows);
                 if (ww.is_err())
                     return fail(ww.error());
-                ++st.rows_inserted; // every capture is a new observation of an undated snapshot
-                if (eff.toString(Qt::ISODate) > latest_eff)
-                    latest_eff = eff.toString(Qt::ISODate);
+                if (quote) {
+                    ++st.rows_inserted; // every capture is a new observation of an undated snapshot
+                    if (eff.toString(Qt::ISODate) > latest_eff)
+                        latest_eff = eff.toString(Qt::ISODate);
+                }
             } else if (stage == QLatin1String("yahoo_fundamentals")) {
                 const QString captured = it.value(QStringLiteral("captured_at")).toString();
                 auto rid =
@@ -612,11 +663,12 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     --st.items_ok;
                     continue;
                 }
-                auto rid = etfr_insert_retrieval(
-                    run_id, stage, subject, req_at, ret_at, status,
-                    QStringLiteral("missing_points=%1").arg(it.value(QStringLiteral("missing_points")).toInt()),
-                    it.value(QStringLiteral("response_sha256")).toString(), pts.size(), pts.first().first,
-                    pts.last().first);
+                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
+                                                 QStringLiteral("missing_points=%1%2")
+                                                     .arg(it.value(QStringLiteral("missing_points")).toInt())
+                                                     .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
+                                                 it.value(QStringLiteral("response_sha256")).toString(), pts.size(),
+                                                 pts.first().first, pts.last().first);
                 if (rid.is_err())
                     return fail(rid.error());
                 auto w = etfr_write_macro(QStringLiteral("fred"), subject, QString(), pts, rid.value(), ret_at);
@@ -690,14 +742,17 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     by_area[r.at(0).toString()].append(
                         {QStringLiteral("%1-12-31").arg(r.at(1).toInt()), etfr_opt(r.at(2))});
                 }
-                auto rid = etfr_insert_retrieval(
-                    run_id, stage, subject, req_at, ret_at, status, QStringLiteral("absent:%1").arg([&] {
-                        QStringList a;
-                        for (const auto& v : it.value(QStringLiteral("countries_absent")).toArray())
-                            a.append(v.toString());
-                        return a.join(QLatin1Char(','));
-                    }()),
-                    QString(), rows.size(), QString(), QString());
+                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
+                                                 QStringLiteral("absent:%1%2")
+                                                     .arg([&] {
+                                                         QStringList a;
+                                                         for (const auto& v :
+                                                              it.value(QStringLiteral("countries_absent")).toArray())
+                                                             a.append(v.toString());
+                                                         return a.join(QLatin1Char(','));
+                                                     }())
+                                                     .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
+                                                 QString(), rows.size(), QString(), QString());
                 if (rid.is_err())
                     return fail(rid.error());
                 QStringList areas = by_area.keys();
@@ -728,6 +783,12 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         }
         st.latest_effective = latest_eff;
         SourceStageStatus done = etfr_finish_status(st);
+        if (!partly.isEmpty()) {
+            if (done.status == QLatin1String("UPDATED") || done.status == QLatin1String("UNCHANGED") ||
+                done.status == QLatin1String("STALE"))
+                done.status = QStringLiteral("PARTIAL");
+            done.detail += QStringLiteral(" Partly usable: %1.").arg(partly.join(QStringLiteral("; ")));
+        }
         if (so.value(QStringLiteral("skipped_fresh")).toInt() > 0) {
             if (done.items_requested == 0)
                 done.status = QStringLiteral("UNCHANGED"); // everything reused, nothing was due

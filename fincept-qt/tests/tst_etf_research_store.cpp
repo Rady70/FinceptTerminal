@@ -488,6 +488,54 @@ void TstEtfResearchStore::stage_status_stale_and_partial() {
     QCOMPARE(f.value().first().status, QStringLiteral("PARTIAL"));
     QCOMPARE(f.value().first().items_ok, 0);
     QVERIFY(f.value().first().detail.contains(QStringLiteral("443")));
+    // What was obtained is stored and what was left out is named: a FRED series
+    // with an unreadable line, a fund whose quote failed while its holdings came,
+    // and a corporate action on a row without a close.
+    const QJsonObject fred_item{{"status", "OK"},
+                                {"retrieved_at", "2026-10-05T22:00:01.000Z"},
+                                {"rows", QJsonArray() << QJsonArray{"2026-10-02", 4.05}},
+                                {"missing_points", 0},
+                                {"unparseable_points", 1},
+                                {"detail", "1 unparseable line(s) left out, e.g. 2026-10-01,n/a"}};
+    const QJsonObject holdings_only{{"status", "OK"},
+                                    {"captured_at", "2026-10-05T22:00:02.000Z"},
+                                    {"fields", QJsonObject()},
+                                    {"quote_status", "FAILED"},
+                                    {"detail", "quote summary failed: 401"},
+                                    {"holdings", QJsonArray() << QJsonArray{1, "LIN", "Linde PLC", 0.13}},
+                                    {"sector_weights", QJsonObject{{"basic_materials", 0.8}}},
+                                    {"holdings_status", "OK"}};
+    QJsonObject acted = history_item("2026-10-05T22:00:03.000Z", QJsonArray() << bar("2026-10-02", 81, 1e6));
+    acted.insert("actions_without_close", QJsonArray() << QJsonArray{"2026-10-01", 0.25, 0.0, 0.0});
+    const int snapshots = count("etf_research_fund_snapshots");
+    auto mixed =
+        repo.persist_payload(QStringLiteral("r8"),
+                             payload({{"fred", stage("2026-10-05T22:00:00.000Z", {{"DGS10", fred_item}})},
+                                      {"yahoo_funds", stage("2026-10-05T22:00:00.000Z", {{"XLB", holdings_only}})},
+                                      {"yahoo_history", stage("2026-10-05T22:00:00.000Z", {{"XLE", acted}})}}),
+                             QDate(2026, 10, 5));
+    QVERIFY2(mixed.is_ok(), mixed.is_err() ? mixed.error().c_str() : "");
+    for (const auto& st : mixed.value()) {
+        QCOMPARE(st.status, QStringLiteral("PARTIAL"));
+        QVERIFY2(st.detail.contains(QStringLiteral("Partly usable")), qPrintable(st.detail));
+    }
+    QCOMPARE(count("etf_research_fund_snapshots"), snapshots); // no capture of empty fund facts
+    QCOMPARE(count("etf_research_holdings WHERE symbol = 'XLB' AND holding_symbol = 'LIN'"), 1);
+    auto q = Database::instance().execute(
+        QStringLiteral("SELECT stage, status, detail FROM etf_research_retrievals WHERE run_id = 'r8' AND stage IN "
+                       "('fred','yahoo_funds','yahoo_history') AND subject IN ('DGS10','XLB','XLE') ORDER BY stage"));
+    QVERIFY(q.is_ok());
+    int rows = 0;
+    while (q.value().next()) {
+        ++rows;
+        QCOMPARE(q.value().value(1).toString(), QStringLiteral("PARTIAL"));
+        const QString d = q.value().value(2).toString();
+        if (q.value().value(0).toString() == QLatin1String("yahoo_history"))
+            QVERIFY2(d.contains(QStringLiteral("2026-10-01 dividend 0.25")), qPrintable(d));
+        if (q.value().value(0).toString() == QLatin1String("fred"))
+            QVERIFY2(d.contains(QStringLiteral("unparseable")), qPrintable(d));
+    }
+    QCOMPARE(rows, 3);
 }
 
 void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failure() {

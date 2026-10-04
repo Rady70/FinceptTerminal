@@ -145,6 +145,22 @@ class FrameToBarsTests(unittest.TestCase):
         self.assertEqual([r[0] for r in out["rows"]], ["2026-10-02"])
         self.assertEqual(out["rows"][0][3:], [0.0, 0.0, 0.0])  # no event columns at all: no events
 
+    def test_corporate_action_on_a_row_without_a_close_is_kept_apart(self):
+        # No price is made up for the row, but its distribution and split are
+        # not dropped with it: they are returned apart, visible.
+        frame = _Frame([
+            (dt.date(2026, 9, 30), {"Close": NAN, "Volume": 5.0, "Dividends": 0.25, "Capital Gains": NAN,
+                                    "Stock Splits": 2.0}),
+            (dt.date(2026, 10, 1), {"Close": NAN, "Volume": 5.0, "Dividends": NAN, "Capital Gains": NAN,
+                                    "Stock Splits": NAN}),
+            (dt.date(2026, 10, 2), {"Close": 11.0, "Volume": 5.0, "Dividends": NAN, "Capital Gains": NAN,
+                                    "Stock Splits": NAN}),
+        ])
+        out = yahoo.frame_to_bars("XLB", frame, self.AT)
+        self.assertEqual(out["dropped_no_close"], 2)
+        self.assertEqual([r[0] for r in out["rows"]], ["2026-10-02"])
+        self.assertEqual(out["actions_without_close"], [["2026-09-30", 0.25, 0.0, 2.0]])
+
     def test_in_progress_session_is_dropped_and_counted(self):
         at = dt.datetime(2026, 10, 2, 17, 8, tzinfo=UTC)  # before the U.S. close
         frame = _Frame([(dt.date(2026, 10, 1), {"Close": 10.0}), (dt.date(2026, 10, 2), {"Close": 10.2})],
@@ -262,10 +278,24 @@ class FundSnapshotTests(unittest.TestCase):
         self.assertIn("404", out["holdings_detail"])
 
     def test_quote_failure_and_empty_quote(self):
+        # Nothing obtained from either surface: the fund fails.
         failed = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker(fail=True))
-        self.assertEqual((failed["status"], failed["holdings_status"]), ("FAILED", "FAILED"))
+        self.assertEqual((failed["status"], failed["quote_status"]), ("FAILED", "FAILED"))
+        self.assertEqual(failed["holdings_status"], "UNAVAILABLE")  # attempted, not assumed
         empty = yahoo.fund_snapshot("X", ticker_factory=lambda s: _Ticker({}))
         self.assertEqual(empty["status"], "FAILED")
+
+    def test_quote_failure_does_not_hide_available_holdings(self):
+        # The quote summary and the holdings are separate Yahoo surfaces: a
+        # failed quote no longer prevents the holdings request.
+        funds = _FundsData(_Holdings([("LIN", {"Name": "Linde PLC", "Holding Percent": 0.13})]), {"energy": 0.2})
+        out = yahoo.fund_snapshot("XLB", ticker_factory=lambda s: _Ticker(funds=funds, fail=True))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["quote_status"], "FAILED")
+        self.assertIn("401", out["detail"])
+        self.assertEqual(out["fields"], {})
+        self.assertEqual(out["holdings"], [[1, "LIN", "Linde PLC", 0.13]])
+        self.assertEqual(out["holdings_status"], "OK")
 
     def test_fundamentals(self):
         ok = yahoo.fundamentals("LIN", ticker_factory=lambda s: _Ticker({"trailingPE": 30.8, "currency": "USD"}))
@@ -281,6 +311,23 @@ class MacroTests(unittest.TestCase):
         self.assertEqual(out["rows"], [["2026-09-30", 16.1], ["2026-10-02", 15.8]])
         self.assertEqual(out["missing_points"], 1)
         self.assertTrue(out["url"].endswith("id=VIXCLS"))
+
+    def test_fred_bad_line_is_left_out_not_the_series(self):
+        # One unreadable value and one unreadable date no longer cost the series:
+        # each is counted, kept as an example and left out.
+        text = ("observation_date,DGS10\n2026-09-29,4.10\n2026-09-30,n/a\nnot-a-date,4.2\n"
+                "2026-10-01,.\n2026-10-02,4.05\n")
+        out = macro.fred_series("DGS10", transport=_FakeTransport(text=text))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["2026-09-29", 4.1], ["2026-10-02", 4.05]])
+        self.assertEqual(out["missing_points"], 1)
+        self.assertEqual(out["unparseable_points"], 2)
+        self.assertEqual(out["unparseable_examples"], ["2026-09-30,n/a", "not-a-date,4.2"])
+        self.assertIn("2 unparseable", out["detail"])
+        # Nothing numeric at all is still a failure, and says how many lines were unreadable.
+        none = macro.fred_series("X", transport=_FakeTransport(text="observation_date,X\n2026-09-30,bad\n"))
+        self.assertEqual(none["status"], "FAILED")
+        self.assertEqual(none["unparseable_points"], 1)
 
     def test_fred_transport_and_parse_failures(self):
         failed = macro.fred_series("X", transport=_FakeTransport(error=TransportError("HTTP 503")))
@@ -299,10 +346,37 @@ class MacroTests(unittest.TestCase):
         self.assertEqual(out["countries_absent"], ["TW"])
         self.assertEqual(out["source_last_updated"], "2026-07-13")
 
-    def test_world_bank_refuses_partial_and_error_responses(self):
-        paged = [{"page": 1, "pages": 2}, [{"country": {"id": "TH"}, "date": "2025", "value": 1.0}]]
-        self.assertEqual(macro.world_bank_indicator("I", ["TH"], transport=_FakeTransport(payload=paged))["status"],
-                         "FAILED")
+    def test_world_bank_bad_value_is_left_out_not_the_indicator(self):
+        payload = [{"page": 1, "pages": 1, "lastupdated": "2026-07-13"},
+                   [{"country": {"id": "TH"}, "date": "2025", "value": 2.5},
+                    {"country": {"id": "TH"}, "date": "2024", "value": "n/a"},
+                    {"country": {"id": "KR"}, "date": "2025", "value": None}]]
+        out = macro.world_bank_indicator("I", ["TH", "KR"], transport=_FakeTransport(payload=payload))
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual(out["rows"], [["TH", 2025, 2.5], ["KR", 2025, None]])  # null stays the source's null
+        self.assertEqual(out["unparseable_points"], 1)
+        self.assertIn("TH 2024", out["unparseable_examples"][0])
+
+    def test_world_bank_pages_are_followed(self):
+        class Paged(_FakeTransport):
+            def get_json(self, url, params=None, timeout=20):
+                self.urls.append((url, (params or {}).get("page", 1)))
+                page = (params or {}).get("page", 1)
+                if page == 3:
+                    raise TransportError("HTTP 502")
+                return [{"page": page, "pages": 3, "lastupdated": "2026-07-13"},
+                        [{"country": {"id": "TH"}, "date": str(2020 + page), "value": float(page)}]]
+
+        t = Paged()
+        out = macro.world_bank_indicator("I", ["TH"], transport=t)
+        self.assertEqual(out["status"], "OK")
+        self.assertEqual([p for _u, p in t.urls], [1, 2, 3])
+        self.assertEqual(out["rows"], [["TH", 2021, 1.0], ["TH", 2022, 2.0]])  # pages 1 and 2 kept
+        self.assertEqual(out["pages"], 3)
+        self.assertEqual(len(out["pages_failed"]), 1)
+        self.assertIn("page 3", out["detail"])
+
+    def test_world_bank_refuses_error_responses(self):
         err = [{"message": [{"id": "120", "value": "Invalid value"}]}]
         self.assertEqual(macro.world_bank_indicator("I", ["TH"], transport=_FakeTransport(payload=err))["status"],
                          "FAILED")

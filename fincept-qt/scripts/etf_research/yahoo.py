@@ -63,22 +63,32 @@ def frame_to_bars(symbol: str, frame, retrieved_at_utc: _dt.datetime) -> dict:
     """Convert one symbol's yfinance OHLCV/actions frame to stored bar rows.
 
     Rows: [session_date, close, volume|None, dividend, capital_gain, split_ratio].
-    A NaN close is not a bar (counted in ``dropped_no_close``). A NaN volume
-    stays None (unknown), never 0. Dividend / capital-gain / split columns are
-    event columns: an absent event is 0 (no distribution, no split), which is
-    what Yahoo's event list means. In-progress sessions are dropped.
+    A NaN close is not a bar (counted in ``dropped_no_close``); no price is
+    ever made up for it. A corporate action on such a row (a distribution or a
+    split) is not dropped with it: it is returned in ``actions_without_close``
+    [session_date, dividend, capital_gain, split_ratio] so it stays visible,
+    though it is not applied to a return without a close. A NaN volume stays
+    None (unknown), never 0. Dividend / capital-gain / split columns are event
+    columns: an absent event is 0 (no distribution, no split), which is what
+    Yahoo's event list means. In-progress sessions are dropped.
     """
     rows = []
+    actions_without_close = []
     dropped_no_close = 0
     in_progress = 0
     if frame is None or len(frame) == 0:
-        return {"rows": rows, "dropped_no_close": 0, "in_progress_excluded": 0}
+        return {"rows": rows, "dropped_no_close": 0, "in_progress_excluded": 0, "actions_without_close": []}
     cols = set(frame.columns)
     for ts, rec in frame.iterrows():
         session = ts.date() if hasattr(ts, "date") else _dt.date.fromisoformat(str(ts)[:10])
         close = _finite(rec.get("Close")) if "Close" in cols else None
         if close is None or close <= 0:
             dropped_no_close += 1
+            div = _finite(rec.get("Dividends")) if "Dividends" in cols else None
+            cg = _finite(rec.get("Capital Gains")) if "Capital Gains" in cols else None
+            split = _finite(rec.get("Stock Splits")) if "Stock Splits" in cols else None
+            if any(x for x in (div, cg, split)):
+                actions_without_close.append([session.isoformat(), div or 0.0, cg or 0.0, split or 0.0])
             continue
         if not sessions.is_completed_session(symbol, session, retrieved_at_utc):
             in_progress += 1
@@ -88,7 +98,8 @@ def frame_to_bars(symbol: str, frame, retrieved_at_utc: _dt.datetime) -> dict:
         cg = _finite(rec.get("Capital Gains")) if "Capital Gains" in cols else None
         split = _finite(rec.get("Stock Splits")) if "Stock Splits" in cols else None
         rows.append([session.isoformat(), close, volume, div or 0.0, cg or 0.0, split or 0.0])
-    return {"rows": rows, "dropped_no_close": dropped_no_close, "in_progress_excluded": in_progress}
+    return {"rows": rows, "dropped_no_close": dropped_no_close, "in_progress_excluded": in_progress,
+            "actions_without_close": actions_without_close}
 
 
 def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int = 40, yf_module=None,
@@ -136,7 +147,8 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
                 why = errors.get(s) or "no completed session with a close was returned"
                 out[s] = {"status": "FAILED", "detail": str(why), "rows": [],
                           "dropped_no_close": conv["dropped_no_close"],
-                          "in_progress_excluded": conv["in_progress_excluded"]}
+                          "in_progress_excluded": conv["in_progress_excluded"],
+                          "actions_without_close": conv["actions_without_close"]}
                 continue
             out[s] = {"status": "OK", "detail": "", "period": period, **conv}
             if start:
@@ -151,20 +163,26 @@ def fund_snapshot(symbol: str, ticker_factory=None) -> dict:
         import yfinance as yf
 
         ticker_factory = yf.Ticker
+    # The quote summary (``info``) and the fund holdings (``funds_data``) are
+    # separate Yahoo surfaces: each is attempted and classified on its own, so
+    # a failed quote never hides holdings that are available, and vice versa.
     out = {"status": "OK", "detail": "", "fields": {}, "holdings": [], "sector_weights": {},
-           "holdings_status": "UNAVAILABLE", "holdings_detail": ""}
+           "holdings_status": "UNAVAILABLE", "holdings_detail": "", "quote_status": "OK"}
     try:
         tk = ticker_factory(symbol)
+    except Exception as exc:
+        return {"status": "FAILED", "detail": f"ticker unavailable: {exc}", "fields": {}, "holdings": [],
+                "sector_weights": {}, "holdings_status": "FAILED", "holdings_detail": "", "quote_status": "FAILED"}
+    try:
         info = tk.info or {}
     except Exception as exc:
-        return {"status": "FAILED", "detail": f"quote summary failed: {exc}", "fields": {}, "holdings": [],
-                "sector_weights": {}, "holdings_status": "FAILED", "holdings_detail": ""}
+        info = {}
+        out["detail"] = f"quote summary failed: {exc}"
     fields = {k: _clean_field(info.get(k)) for k in FUND_FIELDS if info.get(k) is not None}
     out["fields"] = fields
     if not fields:
-        out["status"] = "FAILED"
-        out["detail"] = "no quote-summary fields returned"
-        return out
+        out["quote_status"] = "FAILED"
+        out["detail"] = out["detail"] or "no quote-summary fields returned"
     try:
         fd = tk.funds_data
         th = fd.top_holdings
@@ -182,6 +200,8 @@ def fund_snapshot(symbol: str, ticker_factory=None) -> dict:
     except Exception as exc:
         out["holdings_status"] = "UNAVAILABLE"
         out["holdings_detail"] = f"fund holdings unavailable: {exc}"
+    if out["quote_status"] == "FAILED" and out["holdings_status"] != "OK":
+        out["status"] = "FAILED"  # nothing of the fund was obtained
     return out
 
 
