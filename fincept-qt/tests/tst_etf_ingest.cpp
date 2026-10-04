@@ -605,6 +605,10 @@ void TstEtfIngest::sec_listing_without_report_dates_still_honours_a_period() {
         const SecNportRunSummary t = run_sec(sec2, one, "2026-09-27T10:00:00.000Z");
         QCOMPARE(t.status, RetrievalStatus::Ok); // an out-of-period read is not a failure
         QCOMPARE(t.filings_outside_period, 1);
+        // The document read to learn its period is recorded as a retrieval.
+        QCOMPARE(count("etf_retrievals", "endpoint = 'nport_primary_doc' AND detail_code = "
+                                         "'report_period_outside_request' AND status = 'OK'"),
+                 1);
         QCOMPARE(t.filings_skipped, 0);
         QCOMPARE(count("etf_retrieval_issues", "code = 'report_period_outside_request' AND state = 'NOT_APPLICABLE'"),
                  1);

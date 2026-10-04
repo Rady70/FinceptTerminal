@@ -469,8 +469,18 @@ void EtfSecNportIngestor::select_next_candidate() {
                 if (doc.ok && doc.rep_pd_date.isValid() &&
                     ((request_.report_period_from.isValid() && doc.rep_pd_date < request_.report_period_from) ||
                      (request_.report_period_to.isValid() && doc.rep_pd_date > request_.report_period_to))) {
-                    // Outside the request: not selected, not a failure (recorded).
+                    // Outside the request: not selected, not a failure. The
+                    // document request is recorded like any other SEC read
+                    // (OK: it was read; nothing of it is stored), and an issue
+                    // says why it was not used.
                     ++summary_.filings_outside_period;
+                    record_response(SourceType::SecNport, QStringLiteral("nport_primary_doc"), url, c.response,
+                                    c.requested_at, c.retrieved_at, RetrievalStatus::Ok,
+                                    QStringLiteral("report_period_outside_request"),
+                                    QStringLiteral("%1 reports %2, outside the requested period; read only to learn "
+                                                   "its report period, nothing of it is stored")
+                                        .arg(ref.accession, doc.rep_pd_date.toString(Qt::ISODate)),
+                                    QLatin1String(kSecNportInterpretation));
                     record_issue(first_retrieval_id_, QualityState::NotApplicable,
                                  QStringLiteral("report_period_outside_request"),
                                  QStringLiteral("%1 reports %2, outside the requested period; listed without a "
