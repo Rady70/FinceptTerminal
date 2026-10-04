@@ -471,8 +471,8 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
                 if (r.inst.has_role("us_sector"))
                     r.turnover_share = r.turnover_delta_bp = r.turnover_z = s.tilt.tilt_bp;
         }
-        for (const QString q : {QStringLiteral("Leading"), QStringLiteral("Improving"), QStringLiteral("Weakening"),
-                                QStringLiteral("Lagging")})
+        for (const QString& q : {QStringLiteral("Leading"), QStringLiteral("Improving"), QStringLiteral("Weakening"),
+                                 QStringLiteral("Lagging")})
             s.tilt.quadrants.insert(q, 0);
         for (const auto& r : s.rows) {
             if (!r.inst.has_role("us_sector"))

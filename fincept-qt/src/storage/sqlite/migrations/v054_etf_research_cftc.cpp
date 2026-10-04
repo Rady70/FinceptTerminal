@@ -81,8 +81,10 @@ const char* const kV054Statements[] = {
     "  seen_count         INTEGER NOT NULL DEFAULT 1 CHECK (seen_count >= 1),"
     "  PRIMARY KEY (source, series_id, area, obs_date, revision)"
     ") WITHOUT ROWID",
-    "INSERT INTO etf_research_macro SELECT source, series_id, area, obs_date, revision, value, first_seen_at, "
-    "last_seen_at, first_retrieval_id, last_retrieval_id, seen_count FROM etf_research_macro_v054_copy",
+    // One statement over two lines: the parentheses mark the concatenation as
+    // intended (bugprone-suspicious-missing-comma).
+    ("INSERT INTO etf_research_macro SELECT source, series_id, area, obs_date, revision, value, first_seen_at, "
+     "last_seen_at, first_retrieval_id, last_retrieval_id, seen_count FROM etf_research_macro_v054_copy"),
     "DROP TABLE etf_research_macro_v054_copy",
 };
 
