@@ -365,39 +365,39 @@ inline IbkrDailyAssessment assess_ibkr_daily(const IbkrDailyEnvelope& e, const Q
     // One date, one bar. An identical repeat is kept once. When the bars of one
     // date differ, which one is right is unknown: every bar of that date is
     // left out and recorded, and the other dates are kept.
-    QVector<IbkrDailyBarRow> unique;
-    QHash<QDate, int> seen;
-    QSet<QDate> conflicting;
+    QVector<QDate> order;
+    QHash<QDate, QVector<IbkrDailyBarRow>> by_date;
     for (const IbkrDailyBarRow& b : e.bars) {
-        const auto it = seen.constFind(b.session_date);
-        if (it == seen.constEnd()) {
-            seen.insert(b.session_date, unique.size());
-            unique.append(b);
-            continue;
-        }
-        const IbkrDailyBarRow& first = unique[*it];
-        if (!(first.open.same_value(b.open) && first.high.same_value(b.high) && first.low.same_value(b.low) &&
-              first.close.same_value(b.close) && first.volume.same_value(b.volume))) {
-            conflicting.insert(b.session_date);
-            continue;
-        }
-        a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_row_duplicated"),
-                         QStringLiteral("an identical bar for %1 was delivered again and kept once").arg(b.date_text)});
-        ++excluded;
+        if (!by_date.contains(b.session_date))
+            order.append(b.session_date);
+        by_date[b.session_date].append(b);
     }
-    if (!conflicting.isEmpty()) {
-        QVector<IbkrDailyBarRow> kept;
-        for (const IbkrDailyBarRow& b : unique) {
-            if (!conflicting.contains(b.session_date)) {
-                kept.append(b);
-                continue;
+    const auto same_bar = [](const IbkrDailyBarRow& x, const IbkrDailyBarRow& y) {
+        return x.open.same_value(y.open) && x.high.same_value(y.high) && x.low.same_value(y.low) &&
+               x.close.same_value(y.close) && x.volume.same_value(y.volume);
+    };
+    QVector<IbkrDailyBarRow> unique;
+    for (const QDate& d : order) {
+        const QVector<IbkrDailyBarRow>& group = by_date[d];
+        bool identical = true;
+        for (const IbkrDailyBarRow& b : group)
+            identical = identical && same_bar(group.first(), b);
+        if (identical) {
+            unique.append(group.first());
+            for (qsizetype i = 1; i < group.size(); ++i) {
+                a.issues.append({d, QualityState::SourceError, QStringLiteral("bar_row_duplicated"),
+                                 QStringLiteral("an identical bar for %1 was delivered again and kept once")
+                                     .arg(group[i].date_text)});
+                ++excluded;
             }
-            a.issues.append({b.session_date, QualityState::SourceError, QStringLiteral("bar_dates_conflicting"),
-                             QStringLiteral("%1 was delivered with different values; no bar of that date is used")
-                                 .arg(b.date_text)});
-            ++excluded;
+            continue;
         }
-        unique = kept;
+        // Every bar of the date is left out, and each one is counted.
+        a.issues.append({d, QualityState::SourceError, QStringLiteral("bar_dates_conflicting"),
+                         QStringLiteral("%1 was delivered %2 times with different values; no bar of that date is used")
+                             .arg(group.first().date_text)
+                             .arg(group.size())});
+        excluded += static_cast<int>(group.size());
     }
     if (!requested_last_session.isValid() || !requested_at_utc.isValid())
         return fail(RetrievalStatus::SourceError, QStringLiteral("request_window_unknown"),

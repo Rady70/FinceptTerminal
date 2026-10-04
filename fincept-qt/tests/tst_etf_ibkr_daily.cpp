@@ -388,6 +388,13 @@ void TstEtfIbkrDaily::conflicting_bars_drop_only_their_date() {
     for (const auto& b : a.accepted)
         QVERIFY(b.session_date != dropped);
     QCOMPARE(count_state(a, QualityState::Missing), 1);
+    // Both bars of the date are counted as excluded.
+    QVERIFY2(a.detail.contains(QStringLiteral("2 row(s) excluded")), qPrintable(a.detail));
+    // Delivered A, B, A: all three are left out and counted.
+    bars.append(bars_for_sessions(QDate(2026, 9, 14), kLast)[3]);
+    const auto aba = assess(ibkr_history_envelope("SPY", 756733, bars, kEnd));
+    QCOMPARE(aba.accepted.size(), 8);
+    QVERIFY2(aba.detail.contains(QStringLiteral("3 row(s) excluded")), qPrintable(aba.detail));
 }
 
 void TstEtfIbkrDaily::withheld_series_keeps_its_valid_rows() {
