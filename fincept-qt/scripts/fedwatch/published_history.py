@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fedwatch import fomc, history, timeutil
 from fedwatch.errors import FedwatchError, PROVIDER_HISTORY
 from fedwatch.store import content_digest
+from fedwatch.row_dates import uncertainty_windows
 
 METHOD = "HISTORICAL_CME_PUBLISHED_TARGET_RANGE"
 SOURCE = "cme_published"
@@ -61,6 +62,7 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
         raise invalid(f"expected columns {COLUMNS!r}; native XLS/XLSX is not accepted")
     days, rejected_days, errors = {}, set(), []
     undated_rejections = []
+    row_dates = []
     for index, line in enumerate(lines[1:]):
         if index >= MAX_ROWS:
             raise invalid("CSV exceeds the bounded row count")
@@ -73,20 +75,24 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
             # Recover a separately parseable date prefix to quarantine its day.
             prefix = next(csv.reader([",".join(line.split(",")[:2])]), [])
             try:
-                bad_day = timeutil.parse_date(prefix[1])
+                bad_day = timeutil.parse_date(prefix[1].strip())
                 rejected_days.add(bad_day.isoformat())
             except (ValueError, IndexError):
                 bad_day = None
             if bad_day is None:
                 undated_rejections.append(index + 2)
+            row_dates.append((index + 2, bad_day))
             errors.append(FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_INVALID",
                 f"row {index + 2}: {exc}", detail={"row": index + 2,
                 "reporting_date": bad_day.isoformat() if bad_day else None}).to_dict())
             continue
-        row = dict(zip(COLUMNS, fields))
+        if not any(field.strip() for field in fields):
+            continue
+        row = dict(zip(COLUMNS, (field.strip() for field in fields)))
         day = None
         try:
             day = timeutil.parse_date(row["observation_date"])
+            row_dates.append((index + 2, day))
             low, high = int(row["rate_low_bp"]), int(row["rate_high_bp"])
             probability = float(row["probability_pct"])
             if (row["meeting_date"] != meeting_date or len(fields) != len(COLUMNS) or
@@ -98,9 +104,11 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
                 rejected_days.add(day.isoformat())
             else:
                 undated_rejections.append(index + 2)
+                row_dates.append((index + 2, None))
             errors.append(FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_INVALID",
                                        f"row {index + 2}: {exc}",
-                                       detail={"row": index + 2, "reporting_date": day.isoformat() if day else None}).to_dict())
+                                        detail={"row": index + 2, "reporting_date": day.isoformat() if day else None,
+                                                **({"source_fields": fields} if day is None else {})}).to_dict())
             continue
         by_band = days.setdefault(day.isoformat(), {})
         if high in by_band and by_band[high] != (low, probability):
@@ -108,12 +116,19 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
             errors.append(invalid(f"{day}: conflicting duplicate date/band").to_dict())
         by_band[high] = (low, probability)
     if undated_rejections:
-        # The lost bucket can belong to any date, including a total inside the
-        # rounding tolerance. Neither input order nor totals establish identity.
-        raise FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN",
-                            "undated rejected rows prevent certification of complete reporting dates; retained history preserved",
-                            detail={"rows": undated_rejections, "errors": errors,
-                                    "input_sha256": hashlib.sha256(raw).hexdigest()})
+        ordered, windows = uncertainty_windows(row_dates)
+        if not ordered:
+            raise FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN",
+                "unordered reporting dates cannot bound undated rows; retained history preserved",
+                detail={"rows": undated_rejections, "errors": errors,
+                        "input_sha256": hashlib.sha256(raw).hexdigest()})
+        # Grouped date-ordered rows can lose buckets only in neighbour groups.
+        neighbours = {day for window in windows for day in window["neighbour_dates"]}
+        rejected_days.update(neighbours)
+        errors.append(FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN",
+            "undated rows quarantined to their neighbouring reporting dates",
+            detail={"rows": undated_rejections, "rejected_reporting_dates": sorted(neighbours),
+                    "date_uncertainty_windows": windows}).to_dict())
     if not days:
         raise invalid("CSV contains no observations; history remains missing")
     for day, bands in days.items():

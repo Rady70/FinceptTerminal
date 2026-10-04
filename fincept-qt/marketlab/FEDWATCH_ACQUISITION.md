@@ -159,9 +159,12 @@ Observation dates cannot exceed the meeting or import date. Bands are exact
 retains raw values and factors. Invalid rows quarantine their identifiable
 reporting date, including when the remaining buckets would sum to 100.
 Complete independently valid dates are imported and rejected dates/errors are
-reported explicitly. An unreadable reporting date cannot identify which
-distribution lost a bucket, including a bucket inside the rounding tolerance:
+reported explicitly. For date-ordered files (ascending or descending, with
+date groups together), an unreadable reporting date quarantines only its
+dated neighbours' reporting groups, including a bucket inside the rounding
+tolerance. Other complete dates import normally. For unordered files,
 `FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN` refuses the import before writes.
+Blank/all-empty rows are not observations. Dates and values are trimmed.
 Invalid headers/source identity/size bounds or no usable dates remain
 whole-import failures. Values are never zero-filled.
 
@@ -209,10 +212,15 @@ rows carry `close_status: OBSERVED`, `SOURCE_MISSING` or `REJECTED`; file report
 retain separate missing/rejected counts and dated `close_quality` entries in
 stored reconstructed-observation detail. A rejected dated close remains an
 explicit unknown, preventing earlier-price carryover across it. An undated
-rejection preserves good observations but marks the contract `DATE_UNCERTAIN`:
-its price lookup is blocked, and `FEDWATCH_ZQ_DATE_UNCERTAIN` blocks a watch-date
-reconstruction requiring that contract. Unneeded contracts do not block an
-independent selected-meeting reconstruction. No website collection is
+rejection preserves good observations and readable rejected source fields.
+Date-ordered files bound each undated row inclusively between its older/newer
+dated neighbours, open-ended at file ends. `date_uncertainty_windows` and
+`date_ordered` are retained in file reports and reconstructed detail. Lookup
+and `run_deconvolution` use the same guard: block only when the latest close
+on/before the effective cutoff falls inside an uncertainty window. Unordered
+files retain the whole-contract guard; a single distinct date cannot establish
+an open-ended window's direction. Blank/all-empty rows are skipped. Unneeded
+contracts do not block an independent selected-meeting reconstruction. No website collection is
 implemented. Input is bounded to 60
 files, 5 MB and 20,000 rows per file.
 
@@ -242,8 +250,17 @@ The natural financial unit is the rejection boundary:
   conflicting duplicate buckets, overlapping ranges or invalid totals reject
   their meeting. The first complete usable block wins as a whole; an intact
   later copy of the exact meeting can recover a broken main copy, reported in
-  `recovered_meeting_dates`. Copies are never blended. Each bucket is bounded
-  by its own closing div and must match exactly one complete row; unrelated
+  `recovered_meeting_dates`. Before using that copy, compare every previously
+  parsed bucket. Disagreements or omitted previously readable buckets retain
+  the intact distribution with `copy_conflict: true`, `copy_conflicts` and a
+  meeting-scoped `INVESTING_COPY_CONFLICT`; local conversion, comparisons and
+  stored history retain it and its label. Agreeing recovery is unlabelled.
+  Later sidebar copies are also inspected for disagreement without replacing
+  the first complete main distribution. Duplicates inside a single copy are
+  structural parse failures, not falsely labelled as disagreement between copies.
+  Copies are never blended. Each bucket is bounded by its own closing div and
+  must contain exactly one extraction match; decorative elements before the
+  label/after the percentage and inter-tag whitespace are harmless. Unrelated
   trailing markup cannot replace a missing bucket. Meeting blocks are bounded
   before extraction, and cosmetic width styles/HTML attributes do not determine
   probability identity. Payloads carry `errors` and `parse_report`.
@@ -272,7 +289,11 @@ The natural financial unit is the rejection boundary:
   question identities, unique outcomes/tokens and binary Yes/No structure
   remain required. Case/whitespace normalization of binary labels preserves
   the exact Yes-token index, including reversed Yes/No order; duplicate or
-  nonbinary labels remain invalid. A failed later discovery page preserves earlier candidates,
+  nonbinary labels invalidate only that market. Exact neighbouring mappings
+  and quotes survive; the rejected market has no probability/token route,
+  `POLYMARKET_INVALID_BINARY_OUTCOMES` explains it, and meeting data stays
+  `PARTIAL` without current comparison. Rejected binary mappings are not
+  stored as validated tokens. A failed later discovery page preserves earlier candidates,
   with `page_error` and `coverage_complete: false` rather than exhaustive absence.
 - **FRED:** malformed rows, non-finite values and conflicting dates are
   excluded individually, sorted observations survive, and `parse_reports`
@@ -282,9 +303,25 @@ The natural financial unit is the rejection boundary:
   shapes and duplicate requested-series columns remain invalid. `.` remains
   ordinary source missingness.
   The latest valid non-future common-date range survives lagging/rejected
-  bounds as `STALE`; ranges older than three days are also stale. Current
-  conversion/comparison never use a stale pair, and the panel labels its
-  observation date. Lifecycle resolution refuses a rejected identifiable date
+  bounds as `STALE`. With complete non-stale official calendar coverage, the
+  latest valid pair carries forward until a meeting ended on/after the pair's
+  date and before today (`carried_forward`,
+  `CARRIED_FORWARD_NO_FOMC_DECISION`). This restores the six-day-old fixture's
+  10 local distributions and two comparisons. Without complete calendar
+  coverage the three-day limit remains. Standalone `fed_side` also retrieves
+  calendar context for this carry-forward rule, retaining its Investing sequence;
+  calendar failure leaves the conservative age rule and explicit diagnostics.
+  Leading blank lines before the CSV
+  header are skipped while physical rejection line numbers are preserved. Current
+   conversion depends on the pair only for the first meeting. A stale pair
+   without any known intervening decision seeds that meeting with
+   `local_status: OK`, `target_range_unverified: true` and `target_range_pair_date`;
+   comparisons and stored detail keep the label. A readable live or backup row
+   ending on/after the pair date and before today withholds only that first
+   local (`FIRST_MEETING_AFTER_DECISION`). Unavailable FRED withholds only the
+   first local. Later locals use adjacent Investing cumulative expectations
+   irrespective of FRED status; predecessor/identity guards remain. The panel
+   visibly labels the first meeting's unverified seed. Lifecycle resolution refuses a rejected identifiable date
   inside the required before/first-post window, rather than skipping to a
   later hold. Unrelated old rejected dates do not block that decision.
 - **FOMC:** a partial live page uses a fresh tracked calendar backup to recover
@@ -292,20 +329,38 @@ The natural financial unit is the rejection boundary:
   `parse_report` and per-row sources remain explicit. Live rows replace
   same-date/overlapping fallback identities, with `merge_conflicts` reporting
   both identities and `LIVE_ROW_WINS`. Contradictory live identities remain
-  quarantined with incomplete coverage. Unavailable, malformed or stale backups
-  leave valid live rows as `SCRAPED_PARTIAL`, `coverage_complete: false`, without
-  treating those live observations as stale. Positive live identities may
+  quarantined with incomplete coverage. Readable stale/unknown-age backups
+  retain their rows labelled `stale`, as `SCRAPED_WITH_STALE_FALLBACK` with
+  `coverage_complete: false` and capture/age evidence. They cannot grant ZQ
+  coverage, establish absent dates, or permit calendar-based FRED carry-forward.
+  Snapshot and standalone Polymarket mapping use authoritative rows individually:
+  live-confirmed meetings remain usable alongside stale supplements; stale
+  backup-only dates cannot drive mapping/comparison. Unavailable/malformed backups leave valid live rows as `SCRAPED_PARTIAL`,
+  without treating those live observations as stale. Positive live identities may
   anchor mapping/comparison; incomplete coverage cannot disprove absent dates.
   Invalid statement dates, reversed ranges, conflicting identities and
   unfinished rows are isolated. ZQ reconstruction still requires complete
-  calendar coverage because it needs the entire intervening schedule.
+   calendar coverage because it needs the entire intervening schedule.
+   The bundled 57-row file was refreshed from one complete official capture at
+   `2026-10-04T21:51:54Z`; no existing row changed/disappeared and no row was added.
+   `fetch_calendar` reads the newest readable profile/bundled copy when fallback
+   is needed; invalid profile contents or missing/invalid/future capture metadata
+   are ignored with a warning. Only durable `collect`, after a structurally
+   complete live scrape (`SCRAPED`), atomically saves the same CSV format beside
+   the history DB as `fomc_dates_fallback.csv`. Partial/merged scrapes never
+   overwrite it, and older captures do not replace newer ones. Read-only
+   commands neither create folders nor write a calendar copy. Explicit `--db`
+   selects its own adjacent copy; normal profile resolution uses
+   `FINCEPT_DATA_DIR/fedwatch/`. Copy failures remain explicit collection errors.
 - **CSV imports:** files and complete reporting dates are independent.
   Malformed quote rows cannot consume subsequent valid rows. Supported
   numeric/date fields occupy one physical line; multiline cells are invalid.
   Rejected dated monthly closes stay unknown; CME distributions with any
   identifiable bad row are rejected as a whole date. Undated monthly rejection
-  blocks the affected required contract's reconstruction; undated published
-  rows block certification of any reporting distribution in that input.
+  uses the latest-close neighbour windows above; undated published rows
+  quarantine only neighbouring reporting groups in ordered files. Unordered
+  files retain their conservative whole-contract/whole-import rule. Empty rows
+  are not observations and do not create date uncertainty.
   Retained history is preserved when a date revision changes its bucket set.
 
 Aggregate errors remain available. Explicit meeting-scoped errors are excluded
@@ -316,7 +371,8 @@ distribution becomes current merely because its remaining values sum to 100.
 
 Regressions: `marketlab/tests/test_fedwatch_failure_isolation.py`,
 `marketlab/tests/test_fedwatch_review_corrections.py` and the existing
-provider/acquisition suites. Run from `fincept-qt`:
+provider/acquisition suites, plus `test_fedwatch_round3.py` and the permanent
+`test_fedwatch_acceptance.py` no-loss gate. Run from `fincept-qt`:
 
 ```text
 python -m unittest discover -s marketlab/tests
@@ -329,13 +385,172 @@ checks. They do not qualify live endpoints or native CME/Investing exports.
 The control record is `docs/FEDWATCH_FAILURE_ISOLATION.md` in Market_Lab.
 
 The review corrections are isolated on `codex/fedwatch-failure-isolation-review`
-in `C:\Users\non_s\AppData\Local\Temp\opencode\MarketLab-FedWatch-Review`.
-The final correction run passed **496 Python tests** (60.303 s), including
-25 additional reviewer regressions, and **3/3 Qt gates** (352.03 s). Qt targets
-were rebuilt from this worktree into
-`C:\Users\non_s\AppData\Local\Temp\opencode\fedwatch-review-build` using
+in `%LOCALAPPDATA%\Temp\opencode\MarketLab-FedWatch-Review`.
+Round 2 passed **496 Python tests** (60.303 s) and **3/3 Qt gates** (352.03 s).
+The final round-3 run passed **523 Python tests** (71.471 s), including 27
+original isolation, 33 review-correction, 14 round-3 and five acceptance tests,
+and **3/3 Qt gates** (330.02 s: view model 0.03 s, panel 329.86 s, dispatch
+0.10 s). The isolated target build reported no work to do; its tests execute
+the current worktree backend. An earlier panel rerun exceeded a 480 s shell
+timeout; subsequent full runs passed with an explicit 1100 s test timeout.
+The Qt build is
+`%LOCALAPPDATA%\Temp\opencode\fedwatch-review-build` using
 MSVC 19.44/Qt 6.8.3 and existing unchanged dependency sources. These corrections
 have not been synchronized into the shared checkout's application executable.
+The authorized shared cleanup restored only the superseded FedWatch edits and
+removed the two superseded untracked tests after backup. Rebuilding
+`FinceptTerminal` in `E:\MarketLab-Terminal` succeeded and synchronized baseline
+`65cc9b35683d740b4eab798b10a59072a5d5e533` scripts into
+`build/win-dev/timeline-qualification`; the shared source checkout is clean.
+Round 3/4 were validated as uncommitted changes; round 5 authorizes publication
+of the combined corrections to the existing draft review PRs.
+
+### Permanent original-acceptance contract
+
+Rule A: accept every financial unit accepted by original `65cc9b356`, with the
+same values, except these owner-approved reductions:
+
+1. Investing buckets captured across a meeting boundary.
+2. Conflicting duplicate buckets inside one Investing copy; overlapping ranges.
+3. A local change whose predecessor meeting has no usable distribution.
+4. FOMC rows ending before their start; contradictory identities for one end date.
+5. Conflicting duplicate FRED observations for a date; future FRED history rows.
+6. Polymarket markets without exactly one Yes and one No (only that market).
+7. CLOB points with conflicting values at the same instant (only that instant).
+8. `FIRST_MEETING_AFTER_DECISION`: only the first local meeting when a readable
+   calendar row establishes a decision between the FRED pair date (inclusive)
+   and today (exclusive). The gate proves the original seeded it from the
+   pre-decision midpoint; all later units must survive unchanged.
+
+Any other reduction is a defect. Adding an exception requires owner approval.
+Rule B: harmless HTML attributes/class tokens/quoting/whitespace/decorations,
+CSV BOM/CRLF/blank or all-empty rows/field whitespace, and JSON Yes/No
+case/spacing/order or unknown fields must preserve units and values.
+
+`marketlab/tests/generate_fedwatch_acceptance_manifest.py` runs
+`git archive 65cc9b356 fincept-qt/scripts/fedwatch`, extracts the unchanged
+package into a temporary directory, verifies the subprocess imported that
+archive, and records **97 cases / 783 original interface-accepted units** in
+`marketlab/tests/fixtures/fedwatch/acceptance_manifest_65cc9b356.json`. It covers
+all eight captured fixtures, harmless variations, every table scenario below,
+synthetic monthly/qualified ZQ rows and reconstruction dates, CME dates/values,
+FRED observations/range, local probabilities/comparisons, and validated
+Polymarket event/market/token mappings and quotes. The follow-up extends the
+87-case/689-unit round-3 manifest with standalone `fed_side` and downstream
+partial-calendar snapshots for fresh/stale/unknown backup ages. Round 5 adds
+six first-only dependency cases for snapshot and standalone `fed_side`; the
+existing 91 round-4 cases still match round 4 exactly. Fixture hashes
+normalize CRLF/CR to LF before SHA-256 (schema v2); payload input hashes already
+use newline-normalized text reads. LF/CRLF checkout probes must preserve hash
+identity while changed content must fail. Commit, archive, normalized fixture
+and scenario input identities are recorded. The boundary exception separately
+exercises the original public parser/normalizer's wrong attribution; its
+original provider coverage guard rejected that page, which is not represented
+as provider-accepted evidence.
+
+The permanent unit test reads this supplied manifest and never invokes git.
+Exception allowances name specific unit identities; unaffected neighbouring
+units must still pass Rule A. Every approved exception has a check demonstrating
+the original wrong result. The gate also found and corrected whole-event loss
+after one nonbinary market, rather than exempting valid neighbouring markets.
+Generate deliberately with
+`python marketlab/tests/generate_fedwatch_acceptance_manifest.py`; run with
+`python -m unittest discover -s marketlab/tests -p test_fedwatch_acceptance.py`.
+
+| Scenario | Original `65cc9b356` | Round 2 (independent review) | Required / observed round 3 |
+|---|---|---|---|
+| Element after every bucket percentage | 10/10 meetings | 1/10 | 10/10 |
+| `sr-only` span before every bucket label | 0; provider fails | 0 | 10/10 |
+| FRED leading blank line | Parsed | Rejected | Parsed |
+| `,,,,,,` after monthly ZQ rows | Whole file rejected | Contract blocked | Contract usable |
+| `,,,,` after CME rows | Whole import refused | Whole import refused | Complete date imported |
+| Six-day-old FRED pair, no decision since | Locals 10/10; comparisons 2 | 0; 0 | 10/10; 2, carried-forward label |
+| Partial calendar + stale backup | 10 upcoming, stale | 2 | 10; backup rows labelled stale, coverage incomplete |
+| Partial calendar + fresh backup | 10 | 10 | 10 |
+| Broken December bucket hidden by look-alike markup | Provider rejects | Caught | Still caught; independent October survives |
+
+Validation is offline unit/injected-transport/temporary-SQLite and native
+hidden Qt widget/CLI/service testing, plus static whitespace checks. No new
+live endpoint observation, native CME/Investing export qualification, or owner
+manual/device acceptance was performed. Imports remain `PROVISIONAL_FIXTURE_ONLY`.
+
+### Follow-up review and publication state
+
+Confirmed and corrected locally: partial-calendar/stale-backup loss of two
+live-confirmed Polymarket mappings, standalone `fed_side` loss of ten locals,
+platform-dependent fixture hashes, single-copy duplicate misdiagnostics,
+unlabelled main/sidebar disagreements, invisible panel labels, and a tautological
+hard-coded future-date assertion. The panel now displays carried-forward target
+date/basis and meeting-scoped copy-conflict text while retaining plotted values.
+The future-history exception checks dates from original accepted observations
+against the scenario clock and verifies those future units are absent today.
+`test_fedwatch_round4.py` reproduces the downstream/command/diagnostic failures;
+the native panel gate tests visible labels and meeting navigation scope.
+
+Final follow-up validation: **528 Python tests passed** (68.013 s), including
+**6/6 acceptance checks**, and **3/3 rebuilt native Qt gates passed** (348.48 s:
+view model 0.03 s, panel 348.37 s, dispatch 0.08 s). The panel target was rebuilt
+from the changed C++ source/test; no dependency changes/downloads were needed.
+Whitespace checks in both correction worktrees cover tracked and untracked
+additions. Local documentation content searches found no username-bearing
+profile path in the changed FedWatch documents. No live endpoint, native
+provider export, Linux/macOS/WSL runtime or owner manual validation was run.
+
+### Round 5: first-only dependencies, refreshed backup and review publication
+
+The owner authorized commits/pushes to existing PRs
+[#44](https://github.com/Rady70/FinceptTerminal/pull/44) and
+[#50](https://github.com/Rady70/Market_Lab/pull/50), both converted to draft
+before round-5 work. Application publication stays on
+`codex/fedwatch-failure-isolation-review`; final records use the existing
+`codex/fedwatch-failure-isolation-pr-record` after merging current control
+`origin/main`. The prior local `codex/fedwatch-failure-isolation-record` is
+superseded and left in place. Exact published application/check identities are
+in the control record (a commit cannot embed its own resulting SHA).
+
+| Scenario | Original `65cc9b356` | Round 4 | Round 5 |
+|---|---|---|---|
+| Partial calendar + stale backup + six-day-old FRED pair | 10 locals | 0 | 10; first `target_range_unverified`, pair date 2026-09-28 |
+| FRED provider failure | 0 | 0 | 9; first unavailable |
+| Readable calendar decision after last pair | 10; first seeded by pre-decision range | 0 | 9; first `FIRST_MEETING_AFTER_DECISION` |
+| Bundled fallback capture | 2026-09-28 | Same | 2026-10-04T21:51:54Z; all 57 rows unchanged, additions none |
+| Profile calendar copy | None | None | Complete collect writes; partial/merged scrape and read-only commands never write; newest readable copy wins |
+| Native exports | Provisional | Provisional | `PROVISIONAL_FIXTURE_ONLY`; `E:\MarketLab-Exports\fedwatch\` missing |
+| All previous acceptance/table cases | Original manifest evidence | 91 cases | All 91 results (units, values, errors) identical to round 4 |
+
+The first three rows were measured for **both** snapshot and standalone
+`fed_side` by separate processes importing unchanged original, saved round-4,
+and current packages. The new exception exercises a readable 2026-09-30
+decision after the 2026-09-28 FRED pair. Profile-copy tests use temporary
+folders/databases only, including explicit-DB refresh, corrupt/missing/future
+metadata, newest-selection and read-only preservation. September-clock tests
+use the captured September calendar in temporary files instead of asserting
+current metadata from the operational bundled backup. Production age/future
+guards were retained.
+
+Validation: **534 Python tests passed** (69.963 s final run), including **7/7 acceptance
+checks**; the unchanged-original generator produced **97 cases / 783 units**.
+Rebuilt native Qt gates: **3/3 passed**, 469.47 s final run (view model 0.02 s,
+panel 469.36 s, dispatch 0.08 s), including the visible first-meeting-only unverified
+target label while keeping the plot usable. A first Python attempt exposed old
+all-meeting veto assertions and September clocks coupled to the operational
+fallback metadata; tests now exercise the revised rule with frozen inputs.
+
+One read-only live snapshot at **2026-10-04T22:05:58Z** captured **41 request
+identities** (the already-captured official calendar was reused). All requests
+were replayed offline against original, round 4 and current code at the same
+clock: **62 financial interface units each, no value differences, no provider
+errors**, with 10 meetings. Responses/replay evidence stay outside Git in
+`%LOCALAPPDATA%\Temp\opencode\fedwatch-round5-evidence`; no profile/database
+writes were made. This is single-capture live-use evidence, not native-export
+qualification or a claim of continuing source quality.
+
+Both PRs remain draft for independent review. No merge, shared deployment or
+branch/worktree deletion is authorized until the owner says **merge** in a new
+message. Local docs use profile placeholders; this does not remove published
+round-2 content/history. The later authorized squash-merge is intended to keep
+that intermediate commit out of main's ancestry. No new dependency or CI-policy
+change was introduced; existing workflows have no automatic PR check trigger.
 
 ## Finalized Batch C consumer wiring
 

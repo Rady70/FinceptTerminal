@@ -53,8 +53,8 @@ REQUEST_TIMEOUT = 20
 
 # One bucket row: interval label + displayed percentage.
 _BUCKET_ITEM_RE = re.compile(
-    r'<span[^>]*>([^<]+)</span>\s*(?:<i[^>]*></i>\s*)?'
-    r'<div[^>]*></div>\s*<span[^>]*>([0-9.]+)%</span>'
+    r'<span[^>]*>([^<]+)</span>\s*(?:<i[^>]*>\s*</i>\s*)?'
+    r'<div[^>]*>\s*</div>\s*<span[^>]*>([0-9.]+)%</span>'
 )
 _MEETING_TIME_FORMAT = "%b %d, %Y %I:%M%p ET"
 
@@ -118,7 +118,8 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
     Deduplication matches the qualified behavior: the sidebar "Fed Rate Monitor
     Tool" repeats the nearest meeting, the main table appears first, so the
     first complete usable meeting block wins as a whole. A later intact copy
-    may recover a broken main copy of that exact meeting, with diagnostics.
+    may recover a broken main copy. Readable disagreements with every earlier
+    broken copy are retained as meeting-scoped quality labels and diagnostics.
     Rows are then sorted by
     (meeting_date, rate_low); conflicting duplicates within that block reject
     the meeting instead of merging independent copies.
@@ -132,13 +133,16 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
     recovered_meeting_dates: set[str] = set()
     chosen_blocks: dict[str, list[dict]] = {}
     complete_dates: set[str] = set()
+    parsed_buckets: dict[str, dict[tuple, set[float]]] = {}
+    conflicting_copy_dates: set[str] = set()
+    copy_conflicts: list[dict] = []
 
     # Split BEFORE parsing: a missing Future Price in one block must not let a
     # regex consume the next meeting's buckets under the wrong date.
     fragments = _class_fragments(html, "infoFed")
     blocks = []
     for fragment in fragments:
-        match = re.search(r'Meeting Time:</span>\s*<i>([^<]+)</i>', fragment)
+        match = re.search(r'Meeting Time:\s*</span>\s*<i\b[^>]*>([^<]+)</i>', fragment)
         if match:
             blocks.append((match.group(1), None, fragment[match.end():]))
         else:
@@ -164,20 +168,18 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
 
         day = meeting_date.isoformat()
         reported_meeting_dates.add(day)
-        if day in complete_dates:
-            # Never blend independent copies or poison a usable earlier copy.
-            continue
+        already_complete = day in complete_dates
         bucket_fragments = _class_fragments(rest, "percfedRateItem", bounded=True)
         items = []
         block_partial = False
         for fragment in bucket_fragments:
-            match = _BUCKET_ITEM_RE.fullmatch(fragment.strip())
-            if match is None:
+            matches = list(_BUCKET_ITEM_RE.finditer(fragment))
+            if len(matches) != 1:
                 unmatched_bucket_items += 1
                 block_partial = True
                 warnings.append(f"bucket marker for meeting {day} did not match the bucket row structure exactly once")
             else:
-                items.append(match.groups())
+                items.append(matches[0].groups())
         marker_count = len(bucket_fragments)
         if not items:
             warnings.append(
@@ -187,6 +189,8 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
                 {"meeting_time": meeting_time_raw, "meeting_date": meeting_date.isoformat(),
                  "reason": "no_parseable_bucket_rows"}
             )
+            if already_complete:
+                continue
             partial_meeting_dates.add(meeting_date.isoformat())
             chosen_blocks.setdefault(day, [])
             continue
@@ -222,11 +226,19 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
             )
 
         unique = {}
+        constraints = parsed_buckets.setdefault(day, {})
         for row in block_rows:
             key = (row["rate_low"], row["rate_high"])
             if key in unique and unique[key]["probability_pct"] != row["probability_pct"]:
                 block_partial = True
                 warnings.append(f"conflicting duplicate bucket for meeting {day}")
+            for probability in sorted(constraints.get(key, set())):
+                if probability != row["probability_pct"]:
+                    conflicting_copy_dates.add(day)
+                    copy_conflicts.append({"meeting_date": day, "rate_low": key[0], "rate_high": key[1],
+                                           "earlier_probability_pct": probability,
+                                           "copy_probability_pct": row["probability_pct"],
+                                           "reason": "CONTRADICTORY_PARSED_BUCKET"})
             unique.setdefault(key, row)
         block_rows = list(unique.values())
         complete = not block_partial and bool(marker_count)
@@ -235,6 +247,31 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
                 _normalize_complete_meetings(block_rows)
             except InvestingDistributionError:
                 complete = False
+        if complete:
+            for key, probabilities in constraints.items():
+                if key not in unique:
+                    conflicting_copy_dates.add(day)
+                    for probability in sorted(probabilities):
+                        copy_conflicts.append({"meeting_date": day, "rate_low": key[0], "rate_high": key[1],
+                                               "earlier_probability_pct": probability,
+                                               "copy_probability_pct": None,
+                                               "reason": "MISSING_PREVIOUSLY_PARSED_BUCKET"})
+            if already_complete:
+                for key in set(unique) - set(constraints):
+                    conflicting_copy_dates.add(day)
+                    copy_conflicts.append({"meeting_date": day, "rate_low": key[0], "rate_high": key[1],
+                                           "earlier_probability_pct": None,
+                                           "copy_probability_pct": unique[key]["probability_pct"],
+                                           "reason": "EXTRA_COPY_BUCKET"})
+        # Compare only against earlier copies; conflicting duplicates within
+        # this one copy are a separate structural rejection, never copy labels.
+        for row in block_rows:
+            constraints.setdefault((row["rate_low"], row["rate_high"]), set()).add(row["probability_pct"])
+        if day in conflicting_copy_dates:
+            warnings.append(f"readable copy disagreement retained for meeting {day}")
+        if already_complete:
+            # Parse for diagnostics, but never replace/blend the first usable copy.
+            continue
         if complete:
             if day in chosen_blocks:
                 recovered_meeting_dates.add(day)
@@ -273,6 +310,8 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
         "dropped_meeting_blocks": dropped_meeting_blocks[:10],
         "partial_meeting_dates": sorted(partial_meeting_dates),
         "recovered_meeting_dates": sorted(recovered_meeting_dates),
+        "conflicting_copy_meeting_dates": sorted(conflicting_copy_dates),
+        "copy_conflicts": copy_conflicts,
         "reported_meeting_dates": sorted(reported_meeting_dates),
         "unknown_meeting_identity": any("meeting_date" not in block for block in dropped_meeting_blocks),
         "structurally_complete": bool(
@@ -521,14 +560,20 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     for day in sorted({row["meeting_date"] for row in raw_rows}):
         group = [row for row in raw_rows if row["meeting_date"] == day]
         if day in parse_report["partial_meeting_dates"]:
-            rejected.append(FedwatchError(PROVIDER_INVESTING, "INVESTING_PARSE_PARTIAL",
+            conflict = day in parse_report["conflicting_copy_meeting_dates"]
+            rejected.append(FedwatchError(PROVIDER_INVESTING,
+                                         "INVESTING_COPY_CONFLICT" if conflict else "INVESTING_PARSE_PARTIAL",
+                                         f"contradictory Investing copies for meeting {day}" if conflict else
                                          f"incomplete Investing distribution for meeting {day}",
-                                         detail={"meeting_date": day, "parse_report": parse_report}).to_dict())
+                                         detail={"meeting_date": day, "parse_report": parse_report,
+                                                 "parsed_probabilities": group}).to_dict())
             continue
         try:
             normalized, meeting_records = normalize_cumulative(group)
         except InvestingDistributionError as exc:
-            rejected.append(exc.to_dict())
+            error = exc.to_dict()
+            error.setdefault("detail", {})["parsed_probabilities"] = group
+            rejected.append(error)
             continue
         normalized_rows.extend(normalized)
         records.extend(meeting_records)
@@ -543,6 +588,11 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
         error = rejected[0]
         raise InvestingDistributionError(error["code"], error["error"], detail=error.get("detail"))
     record_by_date = {record["meeting_date"]: record for record in records}
+    for day in sorted(set(record_by_date) & set(parse_report["conflicting_copy_meeting_dates"])):
+        rejected.append(FedwatchError(PROVIDER_INVESTING, "INVESTING_COPY_CONFLICT",
+            "first intact same-meeting distribution retained despite readable disagreement between copies",
+            detail={"meeting_date": day, "copy_conflicts": [item for item in parse_report["copy_conflicts"]
+                    if item["meeting_date"] == day]}).to_dict())
 
     raw_by_date: dict[str, list[dict]] = {}
     for row in raw_rows:
@@ -582,6 +632,8 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
                     "normalized_expected_rate": record["normalized_expected_rate"],
                     "expected_rate_difference": record["expected_rate_difference"],
                 },
+                "copy_conflict": meeting_date in parse_report["conflicting_copy_meeting_dates"],
+                "copy_conflicts": [item for item in parse_report["copy_conflicts"] if item["meeting_date"] == meeting_date],
             }
         )
 
@@ -608,8 +660,10 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     }
 
 
-def with_local_probabilities(distributions: dict, upper: float, lower: float,
-                             meeting_dates: list[str] | None = None) -> list[dict]:
+def with_local_probabilities(distributions: dict, upper: float | None, lower: float | None,
+                             meeting_dates: list[str] | None = None,
+                             first_error: dict | None = None,
+                             unverified_pair_date: str | None = None) -> list[dict]:
     """Merge the local-step conversion into the per-meeting fed-side sections.
 
     Returns a new list of meeting sections with ``local_probabilities``,
@@ -633,6 +687,8 @@ def with_local_probabilities(distributions: dict, upper: float, lower: float,
             continue
         if meeting_dates is None and report.get("unknown_meeting_identity"):
             continue
+        if previous is None and (upper is None or lower is None or first_error):
+            continue
         prior = expected[previous] if previous else (upper + lower) / 2
         local_by_date[day] = _local_probabilities(expected[day], prior)
         ordinal_by_meeting[day] = index + 1
@@ -641,6 +697,8 @@ def with_local_probabilities(distributions: dict, upper: float, lower: float,
     for meeting in distributions["meetings"]:
         meeting_date = meeting["meeting_date"]
         mismatch = meeting_dates is not None and meeting_date not in ordinal_by_meeting
+        first = ordinal_by_meeting.get(meeting_date) == 1
+        unavailable_target = first and (upper is None or lower is None or first_error)
         sections.append(
             {
                 "meeting_date": meeting_date,
@@ -649,14 +707,21 @@ def with_local_probabilities(distributions: dict, upper: float, lower: float,
                 "raw_probabilities": meeting["raw_probabilities"],
                 "normalized_probabilities": meeting["normalized_probabilities"],
                 "normalization": meeting["normalization"],
+                "copy_conflict": meeting.get("copy_conflict", False),
+                "copy_conflicts": meeting.get("copy_conflicts", []),
+                "target_range_unverified": bool(first and unverified_pair_date and meeting_date in local_by_date),
+                "target_range_pair_date": unverified_pair_date if first and meeting_date in local_by_date else None,
                 "local_probabilities": local_by_date.get(meeting_date),
                 "meeting_ordinal": ordinal_by_meeting.get(meeting_date),
                 "local_status": "OK" if meeting_date in local_by_date else
-                                "MEETING_DATE_MISMATCH" if mismatch else "PREVIOUS_MEETING_UNAVAILABLE",
-                "local_error": None if meeting_date in local_by_date else FedwatchError(
-                    PROVIDER_INVESTING, "INVESTING_MEETING_DATE_MISMATCH" if mismatch else
-                    "INVESTING_LOCAL_DEPENDENCY_UNAVAILABLE",
+                                "MEETING_DATE_MISMATCH" if mismatch else
+                                first_error["code"] if unavailable_target and first_error else
+                                "CURRENT_TARGET_RANGE_UNAVAILABLE" if unavailable_target else "PREVIOUS_MEETING_UNAVAILABLE",
+                "local_error": None if meeting_date in local_by_date else first_error if unavailable_target and first_error else FedwatchError(
+                    "fred" if unavailable_target else PROVIDER_INVESTING, "INVESTING_MEETING_DATE_MISMATCH" if mismatch else
+                    "CURRENT_TARGET_RANGE_UNAVAILABLE" if unavailable_target else "INVESTING_LOCAL_DEPENDENCY_UNAVAILABLE",
                     f"meeting {meeting_date} is absent from the supplied official schedule" if mismatch else
+                    f"first meeting {meeting_date} requires a readable FRED target pair" if unavailable_target else
                     f"local change for meeting {meeting_date} requires an established adjacent predecessor",
                     detail={"meeting_date": meeting_date}).to_dict(),
                 "source_timestamp": None,
@@ -688,6 +753,8 @@ def without_local_probabilities(distributions: dict) -> list[dict]:
             "raw_probabilities": meeting["raw_probabilities"],
             "normalized_probabilities": meeting["normalized_probabilities"],
             "normalization": meeting["normalization"],
+            "copy_conflict": meeting.get("copy_conflict", False),
+            "copy_conflicts": meeting.get("copy_conflicts", []),
             "local_probabilities": None,
             "meeting_ordinal": None,
             "local_status": "CURRENT_TARGET_RANGE_UNAVAILABLE",

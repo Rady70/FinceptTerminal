@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs
 
 from fedwatch import zq
 from fedwatch.errors import ZqDataError
+from fedwatch.row_dates import uncertainty_windows
 
 
 def _observation_date(raw):
@@ -63,6 +64,7 @@ def load_contracts(directory):
             by_day = {}
             rejected_days = set()
             row_errors = []
+            row_dates = []
             for index, line in enumerate(lines[3:]):
                 if index >= 20_000:
                     raise ValueError("too many daily rows")
@@ -75,13 +77,18 @@ def load_contracts(directory):
                     parsed_date = _observation_date(next(csv.reader([prefix.group(1)]))[0]) if prefix else None
                     if parsed_date:
                         rejected_days.add(parsed_date)
+                    row_dates.append((index + 4, parsed_date))
                     row_errors.append({"row": index + 4, "date": parsed_date.isoformat() if parsed_date else None,
                                        "reason": str(exc)})
                     continue
+                if not any(field.strip() for field in fields):
+                    continue
                 row = dict(zip(columns, fields))
                 parsed_date = _observation_date(row.get("Date", ""))
+                row_dates.append((index + 4, parsed_date))
                 if parsed_date is None:
-                    row_errors.append({"row": index + 4, "date": None, "reason": "invalid observation date"})
+                    row_errors.append({"row": index + 4, "date": None, "reason": "invalid observation date",
+                                       "source_fields": fields})
                     continue
                 try:
                     if len(fields) != len(columns):
@@ -113,6 +120,7 @@ def load_contracts(directory):
             errors.append(ZqDataError("FEDWATCH_ZQ_DATA_PARTIAL", f"{path.name}: daily rows rejected",
                                       detail={"file": path.name, "rejected_rows": row_errors}).to_dict())
         undated_count = sum(error.get("date") is None for error in row_errors)
+        date_ordered, windows = uncertainty_windows(row_dates)
         close_quality = []
         for day, close in sorted(by_day.items()):
             close_status = "REJECTED" if day in rejected_days else "SOURCE_MISSING" if close is None else "OBSERVED"
@@ -121,7 +129,8 @@ def load_contracts(directory):
             contracts.append({"contract_symbol": symbol, "contract_month": month, "contract_year": year,
                               "date": day, "close_price": close, "volume": None, "open_interest": None,
                               "low_confidence": True, "close_status": close_status,
-                              "undated_rejected_row_count": undated_count})
+                              "undated_rejected_row_count": undated_count,
+                              "date_ordered": date_ordered, "date_uncertainty_windows": windows})
         reports.append({"file": path.name, "symbol": symbol, "source_url": source,
                         "status": "PARTIAL" if row_errors else "OK", "rejected_rows": row_errors,
                         "input_sha256": hashlib.sha256(raw).hexdigest(), "rows": len(by_day),
@@ -129,6 +138,7 @@ def load_contracts(directory):
                         "missing_close_rows": sum(p is None and day not in rejected_days for day, p in by_day.items()),
                         "rejected_close_rows": len(rejected_days), "close_quality": close_quality,
                         "undated_rejected_row_count": undated_count,
+                        "date_ordered": date_ordered, "date_uncertainty_windows": windows,
                         "reconstruction_status": "DATE_UNCERTAIN" if undated_count else "DATE_IDENTIFIED",
                         "identity_status": "USER_DECLARED_MONTHLY_CONTRACT",
                         "price_type": "INVESTING_INDICATIVE_DAILY_CLOSE", "open_interest": "NOT_PROVIDED"})

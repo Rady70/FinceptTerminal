@@ -216,6 +216,29 @@ def _add_months(year: int, month: int, delta: int) -> tuple[int, int]:
     return index // 12, index % 12 + 1
 
 
+def close_date_uncertain(subset: list[dict], watch_date: date) -> bool:
+    """Use the same latest-close window for lookup and deconvolution guards."""
+    if not subset or not any(row.get("undated_rejected_row_count", 0) for row in subset):
+        return False
+    year, month = subset[0]["contract_year"], subset[0]["contract_month"]
+    cutoff = watch_date if (year, month) >= (watch_date.year, watch_date.month) else date(
+        year, month, calendar.monthrange(year, month)[1])
+    eligible = [row for row in subset if row["date"] <= cutoff]
+    if not eligible:
+        return False
+    latest = max(row["date"] for row in eligible).isoformat()
+    for row in subset:
+        if not row.get("undated_rejected_row_count", 0):
+            continue
+        if not row.get("date_ordered", False) or "date_uncertainty_windows" not in row:
+            return True
+        for window in row["date_uncertainty_windows"]:
+            if ((window["older_date"] is None or window["older_date"] <= latest) and
+                    (window["newer_date"] is None or latest <= window["newer_date"])):
+                return True
+    return False
+
+
 def month_avg_price(contracts: list[dict], year: int, month: int, watch_date: date) -> float:
     """Average-priced close for one contract month as of ``watch_date``.
 
@@ -228,7 +251,7 @@ def month_avg_price(contracts: list[dict], year: int, month: int, watch_date: da
     ]
     if not subset:
         raise ValueError(f"no contract data for {year}-{month:02d}")
-    if any(row.get("undated_rejected_row_count", 0) for row in subset):
+    if close_date_uncertain(subset, watch_date):
         raise ValueError(f"contract {year}-{month:02d} has an undated rejected observation; close timing is uncertain")
 
     watch_period_start = date(watch_date.year, watch_date.month, 1)
@@ -474,9 +497,10 @@ def run_deconvolution(
     # The original all-meeting path and the propagation formula are unchanged.
     final_month = _add_months(selected_meeting.year, selected_meeting.month, 1) if selected_meeting else None
     required_end = final_month or (horizon[-1].year, horizon[-1].month)
-    uncertain_contracts = sorted({row["contract_symbol"] for row in contracts
-        if row.get("undated_rejected_row_count", 0) and
-        (watch_date.year, watch_date.month) <= (row["contract_year"], row["contract_month"]) <= required_end})
+    required_symbols = {row["contract_symbol"] for row in contracts
+        if (watch_date.year, watch_date.month) <= (row["contract_year"], row["contract_month"]) <= required_end}
+    uncertain_contracts = sorted(symbol for symbol in required_symbols if close_date_uncertain(
+        [row for row in contracts if row["contract_symbol"] == symbol], watch_date))
     if uncertain_contracts:
         raise ZqDataError("FEDWATCH_ZQ_DATE_UNCERTAIN",
                           "required monthly contract has undated rejected observations; reconstruction timing is uncertain",

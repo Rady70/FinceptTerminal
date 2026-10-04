@@ -5,7 +5,7 @@ import copy
 import time
 from datetime import timedelta
 
-from fedwatch import analytics, history, snapshot, timeutil
+from fedwatch import analytics, fomc, history, snapshot, timeutil
 
 CURRENT_REUSE_HOURS = 6
 
@@ -149,6 +149,7 @@ def refresh_current(store, meeting_date=None, force=False, transport=None, clock
         data["acquisition"]["reason"] = "RECENT_VALID_ACQUISITION"
         return local
     result = snapshot.build_snapshot(transport, clock=clock, sleep=sleep,
+                                     profile_calendar_path=fomc.profile_calendar_path(store.path),
                                      selected_meeting_dates=[timeutil.parse_date(meeting_date)] if meeting_date else None)
     data = result["data"]
     recorded = history.collect(store, data, transport=transport, clock=clock)

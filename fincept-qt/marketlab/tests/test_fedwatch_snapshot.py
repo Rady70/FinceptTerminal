@@ -190,6 +190,10 @@ class SnapshotContractTests(unittest.TestCase):
 
 
 class SnapshotFailureTests(unittest.TestCase):
+    def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
+
     def test_investing_failure_blames_investing_only(self):
         transport = build_snapshot_transport()
         transport.add_text("fed-rate-monitor", TransportError("HTTP 503", status_code=503))
@@ -206,7 +210,7 @@ class SnapshotFailureTests(unittest.TestCase):
         self.assertEqual(sources["fred"]["status"], "OK")
         self.assertEqual(sources["polymarket"]["status"], "OK")
 
-    def test_fred_failure_keeps_raw_fed_side_without_local_conversion(self):
+    def test_fred_failure_withholds_first_local_only(self):
         transport = build_snapshot_transport()
         transport.add_text("DFEDTARU", TransportError("HTTP 500"))
         snapshot = fedwatch_snapshot.build_snapshot(transport, clock=FixedClock(NOW), sleep=NO_SLEEP)
@@ -219,6 +223,7 @@ class SnapshotFailureTests(unittest.TestCase):
         self.assertEqual([row["probability_pct"] for row in october["raw_probabilities"]],
                          [30.0, 70.0])
         self.assertEqual(meetings["2026-10-28"]["comparison"], [])
+        self.assertEqual(meetings["2026-12-09"]["fed_side"]["local_status"], "OK")
         sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
         self.assertEqual(sources["investing"]["status"], "OK")
 
@@ -281,6 +286,10 @@ def event_token_points(event: dict, age_days: float = 1.0, empty: set | None = N
 
 
 class FomcAuthorityTests(unittest.TestCase):
+    def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
+
     """The official FOMC calendar is authoritative for meeting identity."""
 
     def test_investing_only_date_cannot_produce_a_comparison(self):

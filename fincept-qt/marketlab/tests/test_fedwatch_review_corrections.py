@@ -19,6 +19,10 @@ CLOCK = FixedClock(NOW)
 
 
 class CalendarReviewTests(unittest.TestCase):
+    def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
+
     def test_partial_live_uses_fresh_backup_to_preserve_all_upcoming_dates(self):
         html = fixture_text(FIXTURE_FOMC_CALENDAR)
         html = html[:html.index("2027 FOMC Meetings")]
@@ -57,11 +61,13 @@ class CalendarReviewTests(unittest.TestCase):
                         "2026-12-08,2026-12-09,regular,false\n", encoding="utf-8")
                     result = fomc.fetch_calendar(FakeTransport().add_text("fomccalendars", html),
                                                  fallback_path=path, clock=CLOCK)
-                    self.assertEqual(result["source_status"], "SCRAPED_PARTIAL")
-                    self.assertFalse(result["fallback_used"])
+                    self.assertEqual(result["source_status"], "SCRAPED_WITH_STALE_FALLBACK")
+                    self.assertTrue(result["fallback_used"])
                     self.assertFalse(result["coverage_complete"])
-                    self.assertFalse(result["fallback_stale"])
-                    self.assertEqual([r["end_date"] for r in result["meetings"]], [date(2026, 10, 28)])
+                    self.assertTrue(result["fallback_stale"])
+                    self.assertEqual([r["end_date"] for r in result["meetings"]], [date(2026, 10, 28), date(2026, 12, 9)])
+                    self.assertTrue(result["meetings"][1]["stale"])
+                    self.assertEqual(result["meetings"][0]["source"], "scrape")
             path.write_text("invalid calendar", encoding="utf-8")
             result = fomc.fetch_calendar(FakeTransport().add_text("fomccalendars", html), fallback_path=path, clock=CLOCK)
             self.assertEqual(result["source_status"], "SCRAPED_PARTIAL")
@@ -86,6 +92,19 @@ class CalendarReviewTests(unittest.TestCase):
 
 
 class InvestingReviewTests(unittest.TestCase):
+    def test_decorative_bucket_markup_preserves_all_captured_meetings(self):
+        html = fixture_text(FIXTURE_INVESTING_LIVE)
+        bucket_count = len(investing._class_fragments(html, "percfedRateItem"))
+        for decoration in ('<i class="trend-icon"></i>', '<span class="note">rounded display</span>'):
+            with self.subTest(decoration=decoration):
+                # Edit every copy, so an untouched sidebar cannot hide loss.
+                decorated = html.replace('%</span>', '%</span>' + decoration)
+                self.assertEqual(decorated.count(decoration), bucket_count)
+                result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", decorated), clock=CLOCK)
+                self.assertEqual(len(result["meetings"]), 10)
+                self.assertTrue(result["parse_report"]["structurally_complete"])
+                self.assertFalse(result["errors"])
+
     def test_missing_bucket_cannot_be_hidden_by_second_match_in_last_fragment(self):
         html = make_investing_html([
             ("Oct 28, 2026 02:00PM ET", [(3.75, 4, 100)]),
@@ -127,13 +146,56 @@ class InvestingReviewTests(unittest.TestCase):
         result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
         self.assertEqual([r["probability_pct"] for r in result["meetings"][0]["raw_probabilities"]], [30, 70])
         self.assertIn("2026-10-28", result["parse_report"]["recovered_meeting_dates"])
+        self.assertFalse(result["meetings"][0]["copy_conflict"])
 
     def test_numerically_invalid_copy_can_be_replaced_without_blending(self):
         html = make_investing_html([("Oct 28, 2026 02:00PM ET", [(3.75, 4, 97)]),
             ("Oct 28, 2026 02:00PM ET", [(3.5, 3.75, 60), (3.75, 4, 40)])])
         result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
         self.assertEqual([r["probability_pct"] for r in result["meetings"][0]["raw_probabilities"]], [60, 40])
+        self.assertTrue(result["meetings"][0]["copy_conflict"])
+        self.assertEqual(result["errors"][0]["code"], "INVESTING_COPY_CONFLICT")
+        self.assertEqual(result["errors"][0]["detail"]["meeting_date"], "2026-10-28")
+
+    def test_numerically_incomplete_copy_can_recover_when_parsed_buckets_agree(self):
+        html = make_investing_html([("Oct 28, 2026 02:00PM ET", [(3.75, 4, 97)]),
+            ("Oct 28, 2026 02:00PM ET", [(3.5, 3.75, 3), (3.75, 4, 97)])])
+        result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
+        self.assertEqual([r["probability_pct"] for r in result["meetings"][0]["raw_probabilities"]], [3, 97])
         self.assertIn("2026-10-28", result["parse_report"]["recovered_meeting_dates"])
+
+    def test_conflicting_recovery_preserves_meeting_and_adjacency_with_label(self):
+        html = make_investing_html([
+            ("Oct 28, 2026 02:00PM ET", [(3.75, 4, 100)]),
+            ("Dec 09, 2026 02:00PM ET", [(3.75, 4, "bad"), (4, 4.25, 70)]),
+            ("Dec 09, 2026 02:00PM ET", [(3.75, 4, 40), (4, 4.25, 60)]),
+            ("Jan 27, 2027 02:00PM ET", [(4, 4.25, 100)])])
+        result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
+        self.assertEqual([m["meeting_date"] for m in result["meetings"]], ["2026-10-28", "2026-12-09", "2027-01-27"])
+        self.assertEqual(result["errors"][0]["code"], "INVESTING_COPY_CONFLICT")
+        self.assertEqual(result["errors"][0]["detail"]["meeting_date"], "2026-12-09")
+        sections = investing.with_local_probabilities(result, 4, 3.75)
+        self.assertEqual([s["local_status"] for s in sections], ["OK", "OK", "OK"])
+        self.assertEqual([s["copy_conflict"] for s in sections], [False, True, False])
+
+    def test_recovery_labels_a_previously_parsed_bucket_missing_from_intact_copy(self):
+        html = make_investing_html([("Oct 28, 2026 02:00PM ET", [(3.75, 4, 97)]),
+            ("Oct 28, 2026 02:00PM ET", [(3.5, 3.75, 100)])])
+        result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
+        self.assertTrue(result["meetings"][0]["copy_conflict"])
+        self.assertEqual(result["meetings"][0]["copy_conflicts"][0]["earlier_probability_pct"], 97)
+
+    def test_all_prior_broken_copies_label_first_intact_recovery(self):
+        for second_pct in (40, 41):
+            with self.subTest(second_pct=second_pct):
+                html = make_investing_html([
+                    ("Oct 28, 2026 02:00PM ET", [(3.75, 4, 30), (4, 4.25, "bad")]),
+                    ("Oct 28, 2026 02:00PM ET", [(3.5, 3.75, "bad"), (4, 4.25, second_pct)]),
+                    ("Oct 28, 2026 02:00PM ET", [(3.75, 4, 30), (4, 4.25, 70)]),
+                    ("Oct 28, 2026 02:00PM ET", [(3.5, 3.75, 30), (3.75, 4, 30), (4, 4.25, 40)])])
+                result = investing.fetch_distributions(FakeTransport().add_text("fed-rate-monitor", html), clock=CLOCK)
+                self.assertTrue(result["meetings"][0]["copy_conflict"])
+                self.assertEqual([r["probability_pct"] for r in result["meetings"][0]["raw_probabilities"]], [30, 70])
 
     def test_default_normalizer_is_strict_and_partial_mode_separates_records(self):
         rows = [{"meeting_date": day, "rate_low": 3.75, "rate_high": 4, "probability_pct": p}
@@ -179,6 +241,13 @@ class InvestingReviewTests(unittest.TestCase):
 
 
 class FieldIdentityReviewTests(unittest.TestCase):
+    def test_fred_leading_blank_lines_keep_original_physical_error_line_numbers(self):
+        report = {}
+        rows = fred.parse_fred_csv('\ufeff\n \nDATE,DFEDTARU\n2026-10-02,4\n2026-10-03,bad\n',
+                                  report=report, series_id="DFEDTARU")
+        self.assertEqual(rows, [{"date": date(2026, 10, 2), "value": 4}])
+        self.assertEqual(report["rejected_rows"][0]["row"], 5)
+
     def test_fred_uses_named_requested_series_despite_unrelated_extra_column(self):
         rows, _ = fred.fetch_series(FakeTransport().add_text("DFEDTARU",
             "DATE,UNRELATED,DFEDTARU\n2026-10-02,bad,4\n"), "DFEDTARU")
@@ -220,6 +289,25 @@ class ImportReviewTests(unittest.TestCase):
         rows, report = self.monthly([("10/02/2026", 96.1), ("10/03/2026 ", 96.2)])
         self.assertEqual(zq.month_avg_price(rows, 2026, 10, date(2026, 10, 3)), 96.2)
         self.assertFalse(report["errors"])
+
+    def test_monthly_all_empty_rows_do_not_make_close_timing_uncertain(self):
+        self.monthly([("10/03/2026", 96.2)])
+        path = self.root / "ZQV26.csv"
+        path.write_text(path.read_text() + '\n,,,,,,\n"", ,"", , ,"", \n', encoding="utf-8")
+        rows, report = monthly_csv.load_contracts(self.root)
+        self.assertFalse(report["errors"])
+        self.assertEqual(report["files"][0]["undated_rejected_row_count"], 0)
+        self.assertEqual(zq.month_avg_price(rows, 2026, 10, date(2026, 10, 3)), 96.2)
+
+    def test_published_all_empty_rows_do_not_refuse_a_valid_distribution(self):
+        path = self.root / "published.csv"
+        path.write_text(",".join(published_history.COLUMNS) +
+            '\n2026-10-28,2026-10-02,375,400,100\n,,,,\n"", ,"", , \n', encoding="utf-8")
+        store = FedwatchHistoryStore(self.root / "history.db")
+        result = published_history.import_file(store, path, "2026-10-28", "https://www.cmegroup.com/fedwatch", clock=CLOCK)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["reporting_dates"], 1)
+        self.assertEqual(store.count_observations(), 1)
 
     def test_undated_row_preserves_source_values_but_blocks_ambiguous_contract_lookup(self):
         rows, report = self.monthly([("10/02/2026", 96.1), ("BROKEN", 96.2), ("10/04/2026", 96.3)])
@@ -283,7 +371,8 @@ class ImportReviewTests(unittest.TestCase):
         store = FedwatchHistoryStore(self.root / "history.db")
         with self.assertRaises(FedwatchError) as caught:
             published_history.import_file(store, path, meeting, "https://www.cmegroup.com/fedwatch", clock=CLOCK)
-        self.assertEqual(caught.exception.code, "FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN")
+        self.assertEqual(caught.exception.code, "FEDWATCH_PUBLISHED_HISTORY_INVALID")
+        self.assertIn("FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN", {e["code"] for e in caught.exception.detail["errors"]})
         self.assertEqual(store.count_observations(), 0)
 
     def test_undated_cme_import_preserves_existing_history_exactly(self):

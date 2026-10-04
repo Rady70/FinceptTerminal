@@ -153,6 +153,10 @@ class FomcParseTests(unittest.TestCase):
 
 
 class FallbackSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
+
     def test_tracked_fallback_snapshot_loads_with_metadata(self):
         rows, snapshot_retrieved_at = fomc.load_fallback_snapshot()
         self.assertEqual(len(rows), 57)

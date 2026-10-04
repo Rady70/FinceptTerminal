@@ -27,6 +27,8 @@ CLI = Path(__file__).resolve().parents[2] / "scripts" / "fedwatch_data.py"
 
 class AcquisitionTests(unittest.TestCase):
     def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -405,7 +407,8 @@ class AcquisitionTests(unittest.TestCase):
                 # A missing local fallback makes the injected calendar outage
                 # genuinely global without changing the freshness policy.
                 if route == "fomccalendars":
-                    with patch("fedwatch.fomc.FALLBACK_PATH", self.root / "missing-calendar.csv"):
+                    with patch("fedwatch.fomc.FALLBACK_PATH", self.root / "missing-calendar.csv"), \
+                         patch("fedwatch.fomc.profile_calendar_path", return_value=self.root / "missing-profile.csv"):
                         result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)
                 else:
                     result = acquisition.refresh_current(self.store, force=True, transport=transport, clock=self.clock, sleep=lambda _: None)

@@ -35,7 +35,8 @@ def parse_fred_csv(text: str, report: dict | None = None, series_id: str | None 
     Invalid document identity or no usable rows raises ``ValueError``.
     """
     lines = text.lstrip("\ufeff").splitlines()
-    header = next(csv.reader(lines[:1]), [])
+    header_index = next((index for index, line in enumerate(lines) if line.strip()), len(lines))
+    header = next(csv.reader(lines[header_index:header_index + 1]), [])
     header = [column.strip() for column in header]
     if len(header) < 2 or header[0].lower() not in ("date", "observation_date"):
         raise ValueError("FRED response has an invalid date/series header")
@@ -49,7 +50,7 @@ def parse_fred_csv(text: str, report: dict | None = None, series_id: str | None 
     quality.update(missing_row_count=0, rejected_rows=[], rejected_dates=[], latest_source_date=None,
                    trailing_undated_rejection=False)
     by_date, conflicts = {}, set()
-    for line_number, line in enumerate(lines[1:], start=2):
+    for line_number, line in enumerate(lines[header_index + 1:], start=header_index + 2):
         if not line.strip():
             continue
         quality["trailing_undated_rejection"] = False
@@ -212,12 +213,15 @@ def _parse_errors(reports: dict) -> list[dict]:
             for bound, report in reports.items() if report.get("rejected_row_count")]
 
 
-def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
+def fetch_target_range(transport: Transport, clock=timeutil.utc_now, calendar: dict | None = None) -> dict:
     """Fetch the current target range from DFEDTARU/DFEDTARL.
 
     Return the latest valid non-future common-date pair. Newer unpaired or
-    rejected bounds, or a pair older than three days, leave this pair STALE.
-    Consumers must not seed current local probabilities from a stale pair.
+    rejected bounds leave this pair STALE. With a complete official calendar,
+    a valid pair carries forward until the next decision. Otherwise the
+    conservative three-day age limit applies.
+    Consumers label an unverified stale seed and withhold the first local step
+    if any readable calendar row establishes an intervening decision.
     """
     reports = {"upper": {}, "lower": {}}
     upper_rows, upper_url = fetch_series(transport, "DFEDTARU", reports["upper"])
@@ -239,8 +243,13 @@ def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
 
     same_latest = upper_rows[-1]["date"] == lower_rows[-1]["date"]
     age_days = (retrieved_at.date() - latest_day).days
+    calendar_complete = bool(calendar and calendar.get("coverage_complete", False) and
+                             not calendar.get("fallback_stale", False))
+    decision_since_pair = bool(calendar_complete and any(
+        latest_day <= row["end_date"] < retrieved_at.date() for row in calendar["meetings"]))
+    age_current = not decision_since_pair if calendar_complete else age_days <= FRESHNESS_MAX_AGE_DAYS
     status = "CURRENT" if (same_latest and latest_day == upper_rows[-1]["date"] and
-                           age_days <= FRESHNESS_MAX_AGE_DAYS and
+                           age_current and
                            not any(r["trailing_undated_rejection"] for r in reports.values()) and
                            all(not r["latest_source_date"] or r["latest_source_date"] <= latest_day.isoformat()
                                for r in reports.values())) else "STALE"
@@ -265,8 +274,11 @@ def fetch_target_range(transport: Transport, clock=timeutil.utc_now) -> dict:
         "latest_observation_date": latest_upper["date"].isoformat(),
         "same_latest_date": same_latest,
         "status": status,
-        "status_reason": None if status == "CURRENT" else
-                         "PAIR_TOO_OLD" if age_days > FRESHNESS_MAX_AGE_DAYS else "LAGGING_OR_REJECTED_BOUND",
+        "carried_forward": status == "CURRENT" and calendar_complete and age_days > 0,
+        "calendar_coverage_complete": calendar_complete,
+        "status_reason": ("CARRIED_FORWARD_NO_FOMC_DECISION" if calendar_complete and age_days > 0 else None)
+                          if status == "CURRENT" else "FOMC_DECISION_SINCE_PAIR" if decision_since_pair else
+                          "PAIR_TOO_OLD" if not age_current else "LAGGING_OR_REJECTED_BOUND",
         "age_days": age_days,
         "latest_available_bounds": {
             "upper": {"date": upper_rows[-1]["date"].isoformat(), "value": upper_rows[-1]["value"]},

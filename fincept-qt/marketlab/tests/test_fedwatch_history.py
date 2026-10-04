@@ -274,18 +274,19 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(fed_rows, [])
         self.assertGreater(report["polymarket_observations"], 0)
 
-    def test_fred_failure_keeps_raw_truth_without_local_observations(self):
+    def test_fred_failure_records_later_adjacent_locals_only(self):
         transport = make_snapshot_transport(NOW)
         transport.add_text("DFEDTARU", TransportError("HTTP 500"))
         snapshot = build_snapshot_at(NOW, transport)
         report = fedwatch_history.record_snapshot(
             self.store, snapshot["data"], clock=FixedClock(NOW)
         )
-        self.assertEqual(report["fed_side_observations"], 0)
+        self.assertGreater(report["fed_side_observations"], 0)
         reasons = {skip["reason"] for skip in report["skipped"]}
         self.assertIn("FED_SIDE_LOCAL_PROBABILITY_UNAVAILABLE", reasons)
         self.assertEqual(
-            [row for row in self.store.observations(method="LIVE_INVESTING_DERIVED")],
+            [row for row in self.store.observations(method="LIVE_INVESTING_DERIVED")
+             if row["meeting_date"] == "2026-10-28"],
             [],
         )
 

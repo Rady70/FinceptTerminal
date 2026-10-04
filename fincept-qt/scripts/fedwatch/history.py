@@ -133,6 +133,10 @@ def _record_fed_side(
         "normalization": fed.get("normalization"),
         "local_probabilities": local_rows,
         "freshness": freshness,
+        "copy_conflict": fed.get("copy_conflict", False),
+        "copy_conflicts": fed.get("copy_conflicts", []),
+        "target_range_unverified": fed.get("target_range_unverified", False),
+        "target_range_pair_date": fed.get("target_range_pair_date"),
     }
     for row in local_rows:
         probability = _finite_number(row.get("probability_pct"))
@@ -155,6 +159,8 @@ def _record_fed_side(
                 "raw_probabilities": fed.get("raw_probabilities"),
                 "normalized_probabilities": fed.get("normalized_probabilities"),
                 "normalization": fed.get("normalization"),
+                "target_range_unverified": fed.get("target_range_unverified", False),
+                "target_range_pair_date": fed.get("target_range_pair_date"),
             }
         )
         result = store.record_observation(
@@ -226,6 +232,11 @@ def _record_polymarket(
     for outcome in outcomes:
         outcome_bp = outcome.get("outcome_bp")
         open_ended = bool(outcome.get("open_ended"))
+        if outcome.get("binary_outcomes_valid") is False:
+            report["skipped"].append({"meeting_date": meeting_date, "source": POLY_SOURCE,
+                "reason": "INVALID_BINARY_OUTCOMES", "detail": {"outcome_bp": outcome_bp,
+                "market_id": outcome.get("market_id")}})
+            continue
         if isinstance(outcome_bp, bool) or not isinstance(outcome_bp, int):
             report["skipped"].append(
                 {
@@ -777,8 +788,15 @@ def collect(
         lifecycle = evaluate_lifecycle(store, fred_history, clock=clock, meeting_date=meeting_date)
         errors.extend(lifecycle.get("errors", []))
     report = record_snapshot(store, data, clock=clock)
+    try:
+        calendar_copy = fomc.save_profile_calendar(data.get("calendar_snapshot"), fomc.profile_calendar_path(store.path))
+    except (OSError, ValueError, KeyError, FedwatchError) as exc:
+        calendar_copy = {"status": "WRITE_FAILED"}
+        errors.append(FedwatchError("fomc_calendar", "FOMC_CALENDAR_COPY_WRITE_FAILED",
+                                   "complete calendar could not be retained: " + str(exc)).to_dict())
     return {
         "db_path": str(store.path),
+        "calendar_copy": calendar_copy,
         "recorded": report,
         "lifecycle": lifecycle,
         "errors": errors,

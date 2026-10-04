@@ -589,7 +589,9 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
 
     Returns ``(evidence, None)`` when the candidate passes every check, or
     ``(None, reason_code)`` when it does not. The checks are deliberately
-    conservative: no approximate title, no adjacent date, no partial structure.
+    conservative: no approximate title or adjacent date. An invalid binary
+    submarket is quarantined independently; it cannot invalidate otherwise
+    exact meeting identities and readable validated neighbouring markets.
     """
     if event.get("active") is not True or event.get("closed") is not False:
         return None, "EVENT_NOT_ACTIVE_AND_OPEN"
@@ -635,23 +637,30 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
 
     seen_outcomes: set[tuple] = set()
     seen_tokens: set[str] = set()
+    rejected_binary_markets = []
     for market in rate_markets:
         key = (market["bp_delta"], market["open_ended"])
-        if not market["binary_outcomes_valid"]:
-            return None, "INVALID_BINARY_OUTCOMES"
         if key in seen_outcomes:
             return None, "DUPLICATE_OUTCOMES"
         seen_outcomes.add(key)
-        if not market["yes_clob_token_id"]:
-            return None, "MISSING_TOKEN_ID"
-        if market["yes_clob_token_id"] in seen_tokens:
-            return None, "DUPLICATE_TOKEN_IDS"
-        seen_tokens.add(market["yes_clob_token_id"])
+        if market["binary_outcomes_valid"]:
+            if not market["yes_clob_token_id"]:
+                return None, "MISSING_TOKEN_ID"
+            if market["yes_clob_token_id"] in seen_tokens:
+                return None, "DUPLICATE_TOKEN_IDS"
+            seen_tokens.add(market["yes_clob_token_id"])
+        else:
+            rejected_binary_markets.append({"market_id": market["market_id"],
+                "outcome_bp": market["bp_delta"], "open_ended": market["open_ended"],
+                "reason": "INVALID_BINARY_OUTCOMES"})
         if _months_mentioned(market["question"]) != {meeting_date.month}:
             return None, "QUESTION_MEETING_MISMATCH"
         mentioned_years = _years_mentioned(market["question"])
         if mentioned_years and mentioned_years != {meeting_date.year}:
             return None, "QUESTION_MEETING_MISMATCH"
+
+    if len(rejected_binary_markets) == len(rate_markets):
+        return None, "INVALID_BINARY_OUTCOMES"
 
     # Gamma's embedded prices are advisory snapshots, not meeting identity.
     # The authoritative CLOB observations are validated after token mapping.
@@ -674,7 +683,9 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
         "outcome_bp_values": sorted(market["bp_delta"] for market in rate_markets),
         "outcome_probability_sum": round(outcome_sum, 6) if outcome_sum is not None else None,
         "gamma_price_status": "OK" if outcome_sum is not None and OUTCOME_SUM_MIN <= outcome_sum <= OUTCOME_SUM_MAX else "INVALID_OR_INCOMPLETE",
-        "yes_token_ids_present": True,
+        "yes_token_ids_present": not rejected_binary_markets,
+        "rejected_binary_markets": rejected_binary_markets,
+        "validated_binary_market_count": len(rate_markets) - len(rejected_binary_markets),
     }
     return evidence, None
 
@@ -799,6 +810,14 @@ def fetch_current_outcomes(
             "token_id": market["yes_clob_token_id"],
             "question": market["question"],
         }
+        if not market["binary_outcomes_valid"]:
+            errors.append(FedwatchError(PROVIDER_POLYMARKET, "POLYMARKET_INVALID_BINARY_OUTCOMES",
+                "rate market does not contain exactly one Yes and one No; neighbouring mappings retained",
+                detail={"meeting_date": mapping["meeting_date"], "market_id": market["market_id"],
+                        "outcome_bp": market["bp_delta"]}))
+            outcomes.append({**base, "binary_outcomes_valid": False,
+                             "probability_pct": None, "source_timestamp": None})
+            continue
         try:
             history = fetch_price_history(
                 transport, market["yes_clob_token_id"], interval="1d", fidelity=1440, sleep=sleep

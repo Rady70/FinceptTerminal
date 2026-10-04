@@ -88,7 +88,7 @@ class LiveIsolationTests(unittest.TestCase):
         self.assertEqual([r["date"] for r in result], [date(2026, 9, 25), date(2026, 9, 28)])
         self.assertEqual(report["rejected_row_count"], 1)
 
-    def test_rejected_latest_fred_and_lagging_bound_preserve_stale_context_only(self):
+    def test_rejected_latest_fred_and_lagging_bound_retains_labelled_first_step(self):
         for upper_tail in ("2026-09-28,4", "2026-09-28,NaN", "2026-10-01,4"):
             with self.subTest(tail=upper_tail):
                 transport = make_snapshot_transport(NOW)
@@ -99,8 +99,9 @@ class LiveIsolationTests(unittest.TestCase):
                 self.assertEqual(result["data"]["current_target_range"]["latest_observation_date"], "2026-09-25")
                 for meeting in result["data"]["meetings"]:
                     if meeting.get("fed_side"):
-                        self.assertIsNone(meeting["fed_side"]["local_probabilities"])
-                    self.assertFalse(meeting["comparison"])
+                        self.assertTrue(meeting["fed_side"]["local_probabilities"])
+                        self.assertEqual(meeting["fed_side"]["target_range_unverified"],
+                                         meeting["fed_side"]["meeting_ordinal"] == 1)
 
     def test_old_or_unidentifiable_latest_fred_row_does_not_become_current(self):
         for upper, lower in (("2026-09-25,4\nBROKEN,abc", "2026-09-25,3.75"),
@@ -226,6 +227,8 @@ class LiveIsolationTests(unittest.TestCase):
 
 class ImportIsolationTests(unittest.TestCase):
     def setUp(self):
+        from fedwatch_test_support import frozen_calendar
+        frozen_calendar(self)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
