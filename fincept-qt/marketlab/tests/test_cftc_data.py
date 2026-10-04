@@ -1046,15 +1046,22 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         # the 157 valid Net %OI points the engine's reference needs.
         self.assertTrue(len(recent) == 1000 or len(valid_points) >= 157)
 
-    def test_duplicate_provider_rows_fail_the_market_not_the_scan(self):
+    def test_conflicting_provider_rows_drop_only_their_date(self):
+        # Two different rows for one report date: which is right is unknown, so
+        # that date is left out and named; the market's other dates are stored,
+        # and the read is not marked as the complete history.
         duplicate = raw_legacy_row(report_date="2026-09-01")
         second = raw_legacy_row(report_date="2026-09-01", oi="2000")
-        self._serve_monitor([duplicate, second])
+        other = raw_legacy_row(report_date="2026-09-08")
+        self._serve_monitor([duplicate, other, second])
         result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
         self.assertTrue(result.get("success"), result)
         market = result["data"]["markets"][0]
-        self.assertIn(market["status"], ("unavailable", "archive_only"))
-        self.assertIn("two rows for the same report date", market["refresh_error"])
+        self.assertEqual(market["status"], "updated")
+        self.assertIn("1 report date(s) with two different rows left out (2026-09-01)", market["refresh_error"])
+        self.assertEqual([row["report_date"] for row in self._archive_rows()], ["2026-09-08"])
+        archive = self.wrapper._open_archive()
+        self.assertIsNone(archive.full_history_at("legacy", "futures_only", "088691"))
 
     def test_archive_upsert_collapses_identical_duplicates_and_rejects_conflicts(self):
         archive = self.wrapper._open_archive()
@@ -1102,21 +1109,30 @@ class CftcBackfillMonitorTest(unittest.TestCase):
             self.assertIn(expected, result["data"]["years"][0]["error"])
             self.assertEqual(self._archive_rows(), [])
 
-    def test_conflicting_annual_duplicates_fail_the_year_without_writing(self):
+    def test_conflicting_annual_duplicates_drop_only_their_report(self):
+        # Two contradictory rows for one report: neither is stored (never the
+        # first one silently), both count as rejected and the report is named;
+        # the year's other reports are stored.
         first = legacy_annual_record(report_date="2024-06-25", oi="452190")
         conflicting = legacy_annual_record(report_date="2024-06-25", oi="999999")
-        self._serve_annual(annual_zip("legacy", [first, conflicting]))
+        other = legacy_annual_record(report_date="2024-06-18")
+        self._serve_annual(annual_zip("legacy", [first, other, conflicting]))
         result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
 
         self.assertTrue(result.get("success"), result)
         year = result["data"]["years"][0]
-        self.assertEqual(year["status"], "malformed")
-        self.assertIn("conflicting duplicate rows", year["error"])
-        self.assertEqual(self._archive_rows(), [])
+        self.assertEqual(year["status"], "ok")
+        self.assertEqual(year["rows_rejected"], 2)
+        self.assertEqual(year["conflicting_reports"], ["2024-06-25 contract 088691"])
+        self.assertEqual([row["report_date"] for row in self._archive_rows()], ["2024-06-18"])
+        runs = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"]
+        run = next(item for item in runs if item["years"] == "2024")
+        self.assertEqual(run["detail"]["conflicting_reports"], ["2024-06-25 contract 088691"])
 
     def test_conflicting_duplicate_run_keeps_earlier_counters(self):
-        # An early terminal exit must keep the rejected/filtered counts already
-        # accumulated in that file rather than recording zeros.
+        # The durable run keeps every count: one rejected gold row, one filtered
+        # unrequested row, and corn's two contradictory rows rejected. Nothing
+        # usable remains, so the year is malformed and nothing is written.
         bad_gold = legacy_annual_record(report_date="not-a-date")
         unrequested = legacy_annual_record(report_date="2024-06-25", code="073732",
                                            market="COCOA - ICE FUTURES U.S.")
@@ -1128,15 +1144,16 @@ class CftcBackfillMonitorTest(unittest.TestCase):
 
         year = result["data"]["years"][0]
         self.assertEqual(year["status"], "malformed")
-        self.assertIn("conflicting duplicate rows", year["error"])
-        self.assertEqual(year["rows_rejected"], 1)
+        self.assertIn("could not be ingested", year["error"])
+        self.assertEqual(year["rows_rejected"], 3)
         self.assertEqual(year["rows_filtered"], 1)
         self.assertEqual(self._archive_rows(), [])
         runs = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"]
         run = next(item for item in runs if item["years"] == "2024")
         self.assertEqual(run["status"], "malformed")
-        self.assertEqual(run["rows_rejected"], 1)
+        self.assertEqual(run["rows_rejected"], 3)
         self.assertEqual(run["detail"]["rows_filtered"], 1)
+        self.assertEqual(run["detail"]["conflicting_reports"], ["2024-06-25 contract 002602"])
 
     def test_identical_annual_duplicates_collapse_and_are_counted(self):
         duplicate = legacy_annual_record(report_date="2024-06-25")

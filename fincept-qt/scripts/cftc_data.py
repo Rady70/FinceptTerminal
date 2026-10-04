@@ -1529,6 +1529,7 @@ class CFTCDataWrapper:
             "year": year, "url": None, "entry": None,
             "rows_inserted": 0, "rows_updated": 0, "rows_rejected": 0,
             "rows_filtered": 0, "rows_unchanged": 0, "rows_collapsed": 0,
+            "conflicting_reports": [],
             "status": "failed", "error": None,
         }
 
@@ -1546,7 +1547,8 @@ class CFTCDataWrapper:
                 rows_inserted=outcome["rows_inserted"], rows_updated=outcome["rows_updated"],
                 rows_rejected=outcome["rows_rejected"],
                 detail={"entry": outcome["entry"], "rows_filtered": outcome["rows_filtered"],
-                        "rows_collapsed": outcome["rows_collapsed"], "error": error},
+                        "rows_collapsed": outcome["rows_collapsed"],
+                        "conflicting_reports": outcome["conflicting_reports"], "error": error},
                 started_at=started_at)
             return outcome
 
@@ -1591,6 +1593,7 @@ class CFTCDataWrapper:
                     if header_error:
                         return finish("malformed", header_error)
                     rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
+                    rows_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
                     for fields in reader:
                         if not fields or all(not str(field).strip() for field in fields):
                             continue
@@ -1617,25 +1620,27 @@ class CFTCDataWrapper:
                             outcome["rows_rejected"] += 1
                             continue
                         key = (row["report_date_as_yyyy_mm_dd"], row["cftc_contract_market_code"])
-                        previous = rows.get(key)
-                        if previous is not None:
-                            if CftcCotArchive._comparison_key(previous) != CftcCotArchive._comparison_key(row):
-                                # Two contradictory official observations for
-                                # one report: fail closed for the year instead
-                                # of storing whichever row happened to appear
-                                # first while reporting success. The counts so
-                                # far already live in `outcome`, so the durable
-                                # run keeps them.
-                                return finish(
-                                    "malformed",
-                                    "conflicting duplicate rows for report {0} contract {1}".format(*key))
+                        group = rows_by_key.setdefault(key, [])
+                        if group and all(CftcCotArchive._comparison_key(seen) == CftcCotArchive._comparison_key(row)
+                                         for seen in group):
                             outcome["rows_collapsed"] += 1
                             continue
-                        rows[key] = row
+                        group.append(row)
         except zipfile.BadZipFile:
             return finish("malformed", "the annual ZIP could not be read")
         except Exception as exc:
             return finish("malformed", f"the annual file could not be parsed: {exc}")
+
+        # Two contradictory official observations for one report: which is right
+        # is unknown, so neither is stored (never whichever came first). Every
+        # row of that report is counted as rejected and the report is named in
+        # the durable run; the year's other reports are stored.
+        for key, group in rows_by_key.items():
+            if len(group) == 1:
+                rows[key] = group[0]
+                continue
+            outcome["rows_rejected"] += len(group)
+            outcome["conflicting_reports"].append("{0} contract {1}".format(*key))
 
         if not rows:
             if outcome["rows_rejected"]:
@@ -1864,23 +1869,33 @@ class CFTCDataWrapper:
                     "the provider returned a row for contract {0} while {1} was requested".format(
                         identity, code))
         rows.sort(key=lambda item: item["report_date_as_yyyy_mm_dd"])
-        # An identical repeated row is kept once (as the annual path does); two
-        # different rows for one report date still fail the market.
+        # An identical repeated row is kept once (as the annual path does). When
+        # the rows of one report date differ, which one is right is unknown:
+        # every row of that date is left out and named, and the market's other
+        # dates are kept. Such a read is not complete (see `complete`).
+        by_date: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            by_date.setdefault(row["report_date_as_yyyy_mm_dd"], []).append(row)
         kept: List[Dict[str, Any]] = []
         repeated = 0
-        for row in rows:
-            if kept and kept[-1]["report_date_as_yyyy_mm_dd"] == row["report_date_as_yyyy_mm_dd"]:
-                if CftcCotArchive._comparison_key(kept[-1]) != CftcCotArchive._comparison_key(row):
-                    raise Exception("the provider returned two rows for the same report date, with different values")
-                repeated += 1
+        conflicting: List[str] = []
+        for day in sorted(by_date):
+            group = by_date[day]
+            keys = {CftcCotArchive._comparison_key(row) for row in group}
+            if len(keys) > 1:
+                conflicting.append(day)
                 continue
-            kept.append(row)
+            kept.append(group[0])
+            repeated += len(group) - 1
         notes = []
         if undated:
             notes.append(f"{undated} provider row(s) without a report date left out")
         if repeated:
             notes.append(f"{repeated} identical repeated row(s) kept once")
-        return kept, "; ".join(notes)
+        if conflicting:
+            notes.append(f"{len(conflicting)} report date(s) with two different rows left out "
+                         f"({', '.join(conflicting[:5])})")
+        return kept, "; ".join(notes), not (undated or conflicting)
 
     @staticmethod
     def _monitor_weekly_step(previous: Optional[str], current: Optional[str]) -> bool:
@@ -2021,12 +2036,12 @@ class CFTCDataWrapper:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": None}
         try:
-            fetched, row_note = self._monitor_fetch_rows(
+            fetched, row_note, complete = self._monitor_fetch_rows(
                 code, family, resource_id, max_rows,
                 since_date=None if full_required else since_date)
             return {"market_key": key, "contract_code": code, "fetched": fetched,
                     "fetch_ok": True, "fetch_error": None, "full_history": full_required,
-                    "row_note": row_note}
+                    "row_note": row_note, "complete": complete}
         except Exception as exc:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": str(exc), "full_history": full_required}
@@ -2106,7 +2121,9 @@ class CFTCDataWrapper:
                         inserted, updated, _unchanged = archive.upsert_observations(
                             fetched, family, basis_code, source=f"socrata:{resource_id}",
                             retrieval_time=retrieved_at)
-                        if fetch_ok and result.get("full_history"):
+                        # A full read that left rows out is not the complete
+                        # history: the next scan reads the contract in full again.
+                        if fetch_ok and result.get("full_history") and result.get("complete", True):
                             archive.mark_full_history(family, basis_code, code)
                     except Exception as exc:
                         fetch_error = f"the fetched rows were not stored: {exc}"
