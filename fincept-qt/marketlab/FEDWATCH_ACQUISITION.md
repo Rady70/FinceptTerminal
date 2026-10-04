@@ -134,7 +134,8 @@ Investing current parser is preserved, not newly licensed by this work.
 Yahoo is a reference-only route: one individual contract working once does not
 prove a full monthly ladder or historical depth. FRED target/EFFR series and
 the Fed calendar are official contextual inputs, not probability histories.
-Polymarket's current mapping/quality rules and daily CLOB backfill remain intact.
+Polymarket's identity, freshness and daily backfill semantics are retained;
+the failure-isolation corrections below separate identity from Gamma prices.
 
 ## Published probability import
 
@@ -155,8 +156,14 @@ calendar entry. Future calendar fallback identity requires its existing freshnes
 window; historical entries may be checked against the retained dated calendar.
 Observation dates cannot exceed the meeting or import date. Bands are exact
 25 bp targets, with complete totals within 0.5 pp of 100. Rounding normalization
-retains raw values and factors. Missing/empty/invalid input is rejected before
-writing, never zero-filled.
+retains raw values and factors. Invalid rows quarantine their identifiable
+reporting date, including when the remaining buckets would sum to 100.
+Complete independently valid dates are imported and rejected dates/errors are
+reported explicitly. An unreadable reporting date cannot identify which
+distribution lost a bucket, including a bucket inside the rounding tolerance:
+`FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN` refuses the import before writes.
+Invalid headers/source identity/size bounds or no usable dates remain
+whole-import failures. Values are never zero-filled.
 
 The method is `HISTORICAL_CME_PUBLISHED_TARGET_RANGE`, source `cme_published`,
 quality `PUBLISHED_USER_IMPORT`, provenance `USER_DECLARED_CME_PUBLISHED`.
@@ -196,7 +203,17 @@ alone do not establish a fixed month. The adapter retains user-declared identity
 URL, digest, span and price type. `Price` is an indicative daily close, not CME
 settlement. Missing close is `None`; absent OI/volume remain `None` and confidence
 is flagged. Conflicting duplicates, malformed input and generic-symbol declarations
-are rejected. No website collection is implemented. Input is bounded to 60
+are rejected at the daily-observation or file-identity boundary. Good rows and
+other valid contracts survive. Dates are whitespace-normalized. Standardized
+rows carry `close_status: OBSERVED`, `SOURCE_MISSING` or `REJECTED`; file reports
+retain separate missing/rejected counts and dated `close_quality` entries in
+stored reconstructed-observation detail. A rejected dated close remains an
+explicit unknown, preventing earlier-price carryover across it. An undated
+rejection preserves good observations but marks the contract `DATE_UNCERTAIN`:
+its price lookup is blocked, and `FEDWATCH_ZQ_DATE_UNCERTAIN` blocks a watch-date
+reconstruction requiring that contract. Unneeded contracts do not block an
+independent selected-meeting reconstruction. No website collection is
+implemented. Input is bounded to 60
 files, 5 MB and 20,000 rows per file.
 
 For a watch date in September 2026, the 28 October meeting requires the
@@ -215,6 +232,110 @@ bands; missing bands are `null`. Differences are **ZQ minus published** in pp,
 not evidence of equivalence. Timing is date matched, not necessarily simultaneous.
 The existing current Fed-side/Polymarket difference remains Polymarket minus
 Fed-side. No history is interpolated or created by polling current quotes.
+
+## Acquisition/parser failure isolation — 2026-10-04
+
+Audited application baseline: `65cc9b35683d740b4eab798b10a59072a5d5e533`.
+The natural financial unit is the rejection boundary:
+
+- **Investing:** complete meetings normalize independently; dropped buckets,
+  conflicting duplicate buckets, overlapping ranges or invalid totals reject
+  their meeting. The first complete usable block wins as a whole; an intact
+  later copy of the exact meeting can recover a broken main copy, reported in
+  `recovered_meeting_dates`. Copies are never blended. Each bucket is bounded
+  by its own closing div and must match exactly one complete row; unrelated
+  trailing markup cannot replace a missing bucket. Meeting blocks are bounded
+  before extraction, and cosmetic width styles/HTML attributes do not determine
+  probability identity. Payloads carry `errors` and `parse_report`.
+  `normalize_cumulative` returns only successful normalization metadata;
+  supplying its optional `rejected` list explicitly enables partial acceptance
+  and receives separate errors. Its default is strict. No usable meetings
+  always raises. A local change requires the adjacent predecessor:
+  `PREVIOUS_MEETING_UNAVAILABLE` and
+  `INVESTING_LOCAL_DEPENDENCY_UNAVAILABLE` keep cumulative values inspectable
+  without producing a multi-meeting change. A complete official schedule
+  establishes the sequence; unknown source identities cannot establish it.
+  Off-schedule dates report `MEETING_DATE_MISMATCH`/
+  `INVESTING_MEETING_DATE_MISMATCH`, separately from predecessor failure. The
+  production path and qualified helper share the integer/mantissa conversion
+  and six-decimal rounding boundary, with direct production numerical tests.
+- **CLOB:** current and backfill share individual point validation, including
+  numeric timestamp ordering, boolean/non-finite/negative-epoch rejection,
+  future tolerance and `[0,1]` probabilities. Conflicting values at the same
+  instant quarantine that instant. Current reads use the latest valid point
+  and expose per-outcome `point_quality`; they retain its real timestamp and
+  freshness. A bad probability sum leaves individually valid quotes readable
+  as `PARTIAL`, without current comparison. Invalid document shapes are
+  explicit retryable errors, distinct from a genuine empty history.
+- **Gamma/discovery:** embedded prices are advisory mapping evidence
+  (`gamma_price_status`), not meeting identity. Exact event dates/titles,
+  question identities, unique outcomes/tokens and binary Yes/No structure
+  remain required. Case/whitespace normalization of binary labels preserves
+  the exact Yes-token index, including reversed Yes/No order; duplicate or
+  nonbinary labels remain invalid. A failed later discovery page preserves earlier candidates,
+  with `page_error` and `coverage_complete: false` rather than exhaustive absence.
+- **FRED:** malformed rows, non-finite values and conflicting dates are
+  excluded individually, sorted observations survive, and `parse_reports`
+  plus `FRED_PARSE_PARTIAL` expose rejection evidence. Headers must identify a
+  date and one unambiguous requested series. Extra declared columns are allowed
+  when the named requested series identifies its column; unnamed extra-column
+  shapes and duplicate requested-series columns remain invalid. `.` remains
+  ordinary source missingness.
+  The latest valid non-future common-date range survives lagging/rejected
+  bounds as `STALE`; ranges older than three days are also stale. Current
+  conversion/comparison never use a stale pair, and the panel labels its
+  observation date. Lifecycle resolution refuses a rejected identifiable date
+  inside the required before/first-post window, rather than skipping to a
+  later hold. Unrelated old rejected dates do not block that decision.
+- **FOMC:** a partial live page uses a fresh tracked calendar backup to recover
+  coverage as `SCRAPED_WITH_FALLBACK`. Capture time, `fallback_used`, live
+  `parse_report` and per-row sources remain explicit. Live rows replace
+  same-date/overlapping fallback identities, with `merge_conflicts` reporting
+  both identities and `LIVE_ROW_WINS`. Contradictory live identities remain
+  quarantined with incomplete coverage. Unavailable, malformed or stale backups
+  leave valid live rows as `SCRAPED_PARTIAL`, `coverage_complete: false`, without
+  treating those live observations as stale. Positive live identities may
+  anchor mapping/comparison; incomplete coverage cannot disprove absent dates.
+  Invalid statement dates, reversed ranges, conflicting identities and
+  unfinished rows are isolated. ZQ reconstruction still requires complete
+  calendar coverage because it needs the entire intervening schedule.
+- **CSV imports:** files and complete reporting dates are independent.
+  Malformed quote rows cannot consume subsequent valid rows. Supported
+  numeric/date fields occupy one physical line; multiline cells are invalid.
+  Rejected dated monthly closes stay unknown; CME distributions with any
+  identifiable bad row are rejected as a whole date. Undated monthly rejection
+  blocks the affected required contract's reconstruction; undated published
+  rows block certification of any reporting distribution in that input.
+  Retained history is preserved when a date revision changes its bucket set.
+
+Aggregate errors remain available. Explicit meeting-scoped errors are excluded
+from unrelated selected refreshes/retained attempts; dependency errors belong
+to the meeting whose local change is unavailable. Calendar/FRED/discovery
+coverage errors remain global. No missing data becomes zero and no partial
+distribution becomes current merely because its remaining values sum to 100.
+
+Regressions: `marketlab/tests/test_fedwatch_failure_isolation.py`,
+`marketlab/tests/test_fedwatch_review_corrections.py` and the existing
+provider/acquisition suites. Run from `fincept-qt`:
+
+```text
+python -m unittest discover -s marketlab/tests
+cmake --build build/win-dev --target tst_fedwatch_panel tst_fedwatch_view_model tst_fedwatch_dispatch
+ctest --test-dir build/win-dev -R "^tst_fedwatch_(panel|view_model|dispatch)$" --output-on-failure
+```
+
+These are offline injected-transport/store regressions and hidden Qt widget
+checks. They do not qualify live endpoints or native CME/Investing exports.
+The control record is `docs/FEDWATCH_FAILURE_ISOLATION.md` in Market_Lab.
+
+The review corrections are isolated on `codex/fedwatch-failure-isolation-review`
+in `C:\Users\non_s\AppData\Local\Temp\opencode\MarketLab-FedWatch-Review`.
+The final correction run passed **496 Python tests** (60.303 s), including
+25 additional reviewer regressions, and **3/3 Qt gates** (352.03 s). Qt targets
+were rebuilt from this worktree into
+`C:\Users\non_s\AppData\Local\Temp\opencode\fedwatch-review-build` using
+MSVC 19.44/Qt 6.8.3 and existing unchanged dependency sources. These corrections
+have not been synchronized into the shared checkout's application executable.
 
 ## Finalized Batch C consumer wiring
 

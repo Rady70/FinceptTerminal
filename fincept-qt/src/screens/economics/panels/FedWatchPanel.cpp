@@ -885,6 +885,8 @@ void FedWatchPanel::render() {
         if (show_current && target["lower"].isDouble() && target["upper"].isDouble())
             header += tr("\nTarget %1–%2")
                           .arg(fedwatch::number(target["lower"], "%"), fedwatch::number(target["upper"], "%"));
+        if (show_current && target["status"].toString() == "STALE")
+            header += tr(" · STALE · observed %1").arg(target["latest_observation_date"].toString());
         summary_->setText(header);
     }
     previous_meeting_->setEnabled(meetings_->currentIndex() > 0);

@@ -86,6 +86,11 @@ def build_snapshot(
     errors: list[dict] = []
     warnings: list[str] = []
     sources: list[dict] = []
+    selected_days = {day.isoformat() for day in selected_meeting_dates} if selected_meeting_dates is not None else None
+
+    def selected_error(error):
+        day = (error.get("detail") or {}).get("meeting_date")
+        return selected_days is None or day is None or day in selected_days
 
     fred_target = None
     try:
@@ -94,11 +99,12 @@ def build_snapshot(
             _source_entry(
                 PROVIDER_FRED,
                 fred.SOURCE_LABEL,
-                "OK",
+                "OK" if fred_target.get("status", "CURRENT") == "CURRENT" and not fred_target.get("errors") else "PARTIAL",
                 fred_target["retrieved_at"],
                 latest_observation_date=fred_target["latest_observation_date"],
             )
         )
+        errors.extend(fred_target.get("errors", []))
     except FedwatchError as exc:
         errors.append(_error_entry(exc))
         sources.append(
@@ -125,9 +131,17 @@ def build_snapshot(
                 status,
                 fomc_result["retrieved_at"],
                 fallback_snapshot_retrieved_at=fomc_result["fallback_snapshot_retrieved_at"],
+                fallback_used=fomc_result.get("fallback_used", False),
+                coverage_complete=fomc_result.get("coverage_complete", True),
+                merge_conflicts=fomc_result.get("merge_conflicts", []),
+                parse_report=fomc_result.get("parse_report"),
             )
         )
         warnings.extend(fomc_result["warnings"])
+        if not fomc_result.get("coverage_complete", True) and not fomc_result.get("fallback_stale"):
+            errors.append(FedwatchError(PROVIDER_FOMC_CALENDAR, "FOMC_CALENDAR_PARSE_PARTIAL",
+                                       "valid live calendar rows retained; coverage incomplete",
+                                       detail={"parse_report": fomc_result["parse_report"]}).to_dict())
     except FedwatchError as exc:
         errors.append(_error_entry(exc))
         sources.append(
@@ -144,6 +158,7 @@ def build_snapshot(
     try:
         distributions = investing.fetch_distributions(transport, clock=clock)
         warnings.extend(distributions["warnings"])
+        errors.extend(error for error in distributions.get("errors", []) if selected_error(error))
     except FedwatchError as exc:
         errors.append(_error_entry(exc))
         sources.append(
@@ -158,11 +173,14 @@ def build_snapshot(
 
     fed_sections: dict[str, dict] = {}
     if distributions is not None:
-        if fred_target is not None:
+        if fred_target is not None and fred_target.get("status", "CURRENT") == "CURRENT":
             sections = investing.with_local_probabilities(
                 distributions,
                 upper=fred_target["target_range"]["upper"],
                 lower=fred_target["target_range"]["lower"],
+                meeting_dates=sorted({row["end_date"].isoformat() for row in
+                    fomc.upcoming_meetings(fomc_result["meetings"], _as_of_date(clock))})
+                    if fomc_result and fomc_result.get("coverage_complete", True) and not fomc_result.get("fallback_stale") else None,
             )
         else:
             sections = investing.without_local_probabilities(distributions)
@@ -172,6 +190,9 @@ def build_snapshot(
                 "could not be produced."
             )
         fed_sections = {section["meeting_date"]: section for section in sections}
+        errors.extend(section["local_error"] for section in sections
+                      if section.get("local_error") and selected_error(section["local_error"])
+                      and section["local_error"]["code"] != "INVESTING_MEETING_DATE_MISMATCH")
 
     fomc_meetings = fomc_result["meetings"] if fomc_result is not None else []
     upcoming = fomc.upcoming_meetings(fomc_meetings, as_of=_as_of_date(clock)) if fomc_result else []
@@ -189,6 +210,7 @@ def build_snapshot(
     # calendar uncertainty instead and treats the calendar like unavailable for
     # alignment purposes.
     calendar_uncertain = bool(fomc_result is not None and fomc_result.get("fallback_stale"))
+    calendar_coverage_complete = bool(fomc_result and fomc_result.get("coverage_complete", True))
     if calendar_uncertain:
         errors.append(
             FedwatchError(
@@ -214,7 +236,7 @@ def build_snapshot(
         investing_dates &= set(selected_meeting_dates)
     investing_only_dates = (
         sorted(investing_dates - official_upcoming_dates)
-        if fomc_result is not None and not calendar_uncertain
+        if fomc_result is not None and not calendar_uncertain and calendar_coverage_complete
         else []
     )
 
@@ -254,7 +276,8 @@ def build_snapshot(
             _source_entry(
                 PROVIDER_INVESTING,
                 distributions["source"],
-                "PARTIAL" if investing_only_dates or selected_missing_dates else "OK",
+                "PARTIAL" if investing_only_dates or selected_missing_dates or
+                any(e["provider"] == PROVIDER_INVESTING for e in errors) else "OK",
                 distributions["retrieved_at"],
                 method=distributions["method"],
                 detail=(
@@ -343,7 +366,7 @@ def build_snapshot(
         }
 
     meeting_dates_all = set(fomc_by_end)
-    if fomc_result is None or calendar_uncertain:
+    if fomc_result is None or calendar_uncertain or not calendar_coverage_complete:
         # With no authoritative calendar the composite can only follow
         # Investing, and the FOMC provider error already marks the snapshot
         # partial. Fed-only dates stay visible with no calendar row and no
@@ -393,6 +416,8 @@ def build_snapshot(
             "upper": fred_target["target_range"]["upper"],
             "latest_observation_date": fred_target["latest_observation_date"],
             "source": fred_target["source"],
+            "status": fred_target.get("status", "CURRENT"),
+            "status_reason": fred_target.get("status_reason"),
         }
 
     # Aggregate diagnostics remain in the full response. Retained meetings
@@ -449,7 +474,7 @@ def build_fed_side_command(transport: Transport | None = None, clock=timeutil.ut
         distributions,
         upper=fred_target["target_range"]["upper"],
         lower=fred_target["target_range"]["lower"],
-    )
+    ) if fred_target.get("status", "CURRENT") == "CURRENT" else investing.without_local_probabilities(distributions)
     return {
         "retrieved_at": distributions["retrieved_at"],
         "source": distributions["source"],
@@ -459,9 +484,12 @@ def build_fed_side_command(transport: Transport | None = None, clock=timeutil.ut
             "upper": fred_target["target_range"]["upper"],
             "latest_observation_date": fred_target["latest_observation_date"],
             "source": fred_target["source"],
+            "status": fred_target.get("status", "CURRENT"),
         },
         "meetings": sections,
         "quality": distributions["quality"],
+        "errors": distributions.get("errors", []) + fred_target.get("errors", []) +
+                  [section["local_error"] for section in sections if section.get("local_error")],
         "warnings": list(distributions["warnings"]),
     }
 
@@ -484,6 +512,9 @@ def build_fomc_meetings_command(
         "fallback_age_days": result.get("fallback_age_days"),
         "fallback_stale": result.get("fallback_stale"),
         "parse_report": result.get("parse_report"),
+        "coverage_complete": result.get("coverage_complete"),
+        "fallback_used": result.get("fallback_used", False),
+        "merge_conflicts": result.get("merge_conflicts", []),
         "meetings": [fomc.serialize_meeting(row) for row in result["meetings"]],
         "warnings": list(result["warnings"]),
     }

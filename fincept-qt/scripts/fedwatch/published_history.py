@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import math
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,7 +32,7 @@ def invalid(message):
 
 
 def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
-    """Validate the entire input before writing. Reimports use store revision rules."""
+    """Validate independently by reporting date; retain complete valid dates."""
     now = clock()
     meeting_day = timeutil.parse_date(meeting_date)
     url = urlparse(source_url)
@@ -57,40 +56,84 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
         text = raw.decode("utf-8-sig")
     except (OSError, UnicodeError) as exc:
         raise invalid(f"cannot read UTF-8 CSV: {exc}") from exc
-    reader = csv.DictReader(io.StringIO(text))
-    if reader.fieldnames != COLUMNS:
+    lines = text.splitlines()
+    if next(csv.reader(lines[:1]), []) != COLUMNS:
         raise invalid(f"expected columns {COLUMNS!r}; native XLS/XLSX is not accepted")
-    days = {}
-    for index, row in enumerate(reader):
+    days, rejected_days, errors = {}, set(), []
+    undated_rejections = []
+    for index, line in enumerate(lines[1:]):
         if index >= MAX_ROWS:
             raise invalid("CSV exceeds the bounded row count")
+        if not line.strip():
+            continue
+        try:
+            fields = next(csv.reader([line], strict=True))
+        except csv.Error as exc:
+            # These date-only numeric rows have no supported multiline fields.
+            # Recover a separately parseable date prefix to quarantine its day.
+            prefix = next(csv.reader([",".join(line.split(",")[:2])]), [])
+            try:
+                bad_day = timeutil.parse_date(prefix[1])
+                rejected_days.add(bad_day.isoformat())
+            except (ValueError, IndexError):
+                bad_day = None
+            if bad_day is None:
+                undated_rejections.append(index + 2)
+            errors.append(FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_INVALID",
+                f"row {index + 2}: {exc}", detail={"row": index + 2,
+                "reporting_date": bad_day.isoformat() if bad_day else None}).to_dict())
+            continue
+        row = dict(zip(COLUMNS, fields))
+        day = None
         try:
             day = timeutil.parse_date(row["observation_date"])
             low, high = int(row["rate_low_bp"]), int(row["rate_high_bp"])
             probability = float(row["probability_pct"])
-            if (row["meeting_date"] != meeting_date or None in row or
+            if (row["meeting_date"] != meeting_date or len(fields) != len(COLUMNS) or
                     day > min(meeting_day, now.date()) or low < 0 or high - low != 25 or low % 25 or
                     not math.isfinite(probability) or not 0 <= probability <= 100):
                 raise ValueError("invalid identity, date, target band or percent probability")
         except (ValueError, TypeError, KeyError) as exc:
-            raise invalid(f"row {index + 2}: {exc}") from exc
+            if day is not None:
+                rejected_days.add(day.isoformat())
+            else:
+                undated_rejections.append(index + 2)
+            errors.append(FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_INVALID",
+                                       f"row {index + 2}: {exc}",
+                                       detail={"row": index + 2, "reporting_date": day.isoformat() if day else None}).to_dict())
+            continue
         by_band = days.setdefault(day.isoformat(), {})
         if high in by_band and by_band[high] != (low, probability):
-            raise invalid("conflicting duplicate date/band inside one input; supply an unambiguous revision")
+            rejected_days.add(day.isoformat())
+            errors.append(invalid(f"{day}: conflicting duplicate date/band").to_dict())
         by_band[high] = (low, probability)
+    if undated_rejections:
+        # The lost bucket can belong to any date, including a total inside the
+        # rounding tolerance. Neither input order nor totals establish identity.
+        raise FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_DATE_UNCERTAIN",
+                            "undated rejected rows prevent certification of complete reporting dates; retained history preserved",
+                            detail={"rows": undated_rejections, "errors": errors,
+                                    "input_sha256": hashlib.sha256(raw).hexdigest()})
     if not days:
         raise invalid("CSV contains no observations; history remains missing")
     for day, bands in days.items():
         total = sum(p for _, p in bands.values())
         if abs(total - 100) > TOTAL_TOLERANCE_PP:
-            raise invalid(f"{day}: incomplete or invalid distribution (total {total} percent)")
+            rejected_days.add(day)
+            errors.append(invalid(f"{day}: incomplete or invalid distribution (total {total} percent)").to_dict())
     retained = store.observations(meeting_date=meeting_date, method=METHOD, source=SOURCE)
     retained_bands = {}
     for row in retained:
         retained_bands.setdefault(row["observed_at"][:10], set()).add(row["outcome_bp"])
     for day, bands in days.items():
         if day in retained_bands and retained_bands[day] != set(bands):
-            raise invalid(f"{day}: revision changes the bucket set; retained history preserved for review")
+            rejected_days.add(day)
+            errors.append(invalid(f"{day}: revision changes the bucket set; retained history preserved for review").to_dict())
+    days = {day: bands for day, bands in days.items() if day not in rejected_days}
+    if not days:
+        raise FedwatchError(PROVIDER_HISTORY, "FEDWATCH_PUBLISHED_HISTORY_INVALID",
+                            "no complete valid reporting dates; retained history preserved",
+                            detail={"errors": errors})
     # Every accepted source row retains its raw percent; only documented
     # rounding correction (<= 0.5 pp) produces the normalized plotting value.
     imported = timeutil.iso_z(now)
@@ -123,7 +166,8 @@ def import_file(store, path, meeting_date, source_url, clock=timeutil.utc_now):
     return {"meeting_date": meeting_date, "method": METHOD, "source": SOURCE,
             "financial_object": OBJECT, "input_sha256": input_digest,
             "reporting_dates": len(days), "first_date": min(days), "last_date": max(days),
-            "counts": counts, "network_requests": 0, "errors": []}
+            "counts": counts, "network_requests": 0, "errors": errors,
+            "rejected_reporting_dates": sorted(rejected_days), "partial": bool(errors)}
 
 
 def compare_reconstruction(store, meeting_date):

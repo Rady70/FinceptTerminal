@@ -228,6 +228,8 @@ def month_avg_price(contracts: list[dict], year: int, month: int, watch_date: da
     ]
     if not subset:
         raise ValueError(f"no contract data for {year}-{month:02d}")
+    if any(row.get("undated_rejected_row_count", 0) for row in subset):
+        raise ValueError(f"contract {year}-{month:02d} has an undated rejected observation; close timing is uncertain")
 
     watch_period_start = date(watch_date.year, watch_date.month, 1)
     contract_period_start = date(year, month, 1)
@@ -241,6 +243,8 @@ def month_avg_price(contracts: list[dict], year: int, month: int, watch_date: da
         raise ValueError(f"no contract data for {year}-{month:02d} on or before {cutoff}")
     eligible.sort(key=lambda row: row["date"])
     close_price = eligible[-1].get("close_price")
+    if eligible[-1].get("close_status") == "REJECTED":
+        raise ValueError(f"latest close for {year}-{month:02d} on or before {cutoff} was rejected")
     if close_price is None or not math.isfinite(close_price):
         raise ValueError(
             f"latest close for {year}-{month:02d} on or before {cutoff} is missing"
@@ -469,6 +473,14 @@ def run_deconvolution(
     # as a propagation anchor while retaining the full calendar classification.
     # The original all-meeting path and the propagation formula are unchanged.
     final_month = _add_months(selected_meeting.year, selected_meeting.month, 1) if selected_meeting else None
+    required_end = final_month or (horizon[-1].year, horizon[-1].month)
+    uncertain_contracts = sorted({row["contract_symbol"] for row in contracts
+        if row.get("undated_rejected_row_count", 0) and
+        (watch_date.year, watch_date.month) <= (row["contract_year"], row["contract_month"]) <= required_end})
+    if uncertain_contracts:
+        raise ZqDataError("FEDWATCH_ZQ_DATE_UNCERTAIN",
+                          "required monthly contract has undated rejected observations; reconstruction timing is uncertain",
+                          detail={"watch_date": watch_date.isoformat(), "contracts": uncertain_contracts})
     months, build_warnings = build_month_frame(watch_date, meeting_end_dates, contracts, final_month=final_month)
     months, propagate_warnings = propagate_prices(months)
     month_lookup = {(record.year, record.month): record for record in months}

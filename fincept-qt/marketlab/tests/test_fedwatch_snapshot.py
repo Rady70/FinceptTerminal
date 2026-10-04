@@ -352,11 +352,7 @@ class FomcAuthorityTests(unittest.TestCase):
             )
         )
 
-    def test_incomplete_fomc_parse_falls_back_and_does_not_blame_investing(self):
-        # A malformed live calendar row drops the real 2026-12-09 meeting from
-        # the scrape, but Investing still reports it. The incomplete parse must
-        # fall back to the tracked snapshot, so the composite must not emit
-        # INVESTING_MEETING_DATE_MISMATCH and must still compare December.
+    def test_incomplete_fomc_parse_uses_fresh_fallback_without_losing_comparisons(self):
         transport = build_snapshot_transport()
         transport.add_text(
             "fomccalendars",
@@ -366,7 +362,8 @@ class FomcAuthorityTests(unittest.TestCase):
             transport, clock=FixedClock(NOW), sleep=NO_SLEEP
         )
         sources = {entry["provider"]: entry for entry in snapshot["data"]["sources"]}
-        self.assertEqual(sources["fomc_calendar"]["status"], "FALLBACK_SNAPSHOT")
+        self.assertEqual(sources["fomc_calendar"]["status"], "SCRAPED_WITH_FALLBACK")
+        self.assertTrue(sources["fomc_calendar"]["fallback_used"])
         self.assertNotIn(
             "INVESTING_MEETING_DATE_MISMATCH",
             {error["code"] for error in snapshot["data"]["errors"]},
@@ -375,9 +372,11 @@ class FomcAuthorityTests(unittest.TestCase):
         self.assertIn("2026-12-09", meetings)
         december = meetings["2026-12-09"]
         self.assertEqual(december["fed_side"]["local_status"], "OK")
+        self.assertEqual(december["fomc_calendar"]["source"], "fallback_snapshot")
         self.assertEqual(december["polymarket"]["mapping_status"], "VALIDATED")
         self.assertTrue(december["comparison"])
-        self.assertFalse(snapshot["partial"])
+        self.assertTrue(meetings["2026-10-28"]["comparison"])
+        self.assertFalse(snapshot["partial"], snapshot["data"]["errors"])
 
 
     def test_stale_fallback_marks_calendar_uncertain_and_does_not_blame_investing(self):

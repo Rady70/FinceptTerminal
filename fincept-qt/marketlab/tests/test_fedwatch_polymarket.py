@@ -259,25 +259,27 @@ class MappingValidationTests(unittest.TestCase):
         )
         self.assertEqual(reason, "MISSING_TOKEN_ID")
 
-    def test_invalid_yes_price_is_rejected(self):
+    def test_invalid_gamma_price_does_not_reject_identity(self):
         def corrupt_price(event):
             for market in event["markets"]:
                 market["outcomePrices"] = json.dumps(["not-a-number", "0.5"])
 
-        _, reason = polymarket.validate_candidate_event(
+        evidence, reason = polymarket.validate_candidate_event(
             event_with_market_mutation(corrupt_price), MEETING_OCTOBER
         )
-        self.assertEqual(reason, "INVALID_YES_PRICE")
+        self.assertIsNone(reason)
+        self.assertEqual(evidence["gamma_price_status"], "INVALID_OR_INCOMPLETE")
 
-    def test_outcome_sum_out_of_range_is_rejected(self):
+    def test_gamma_sum_out_of_range_is_advisory(self):
         def scale_prices(event):
             for market in event["markets"]:
                 market["outcomePrices"] = json.dumps(["0.9", "0.1"])
 
-        _, reason = polymarket.validate_candidate_event(
+        evidence, reason = polymarket.validate_candidate_event(
             event_with_market_mutation(scale_prices), MEETING_OCTOBER
         )
-        self.assertEqual(reason, "OUTCOME_SUM_OUT_OF_RANGE")
+        self.assertIsNone(reason)
+        self.assertEqual(evidence["gamma_price_status"], "INVALID_OR_INCOMPLETE")
 
     def test_question_month_mismatch_is_rejected(self):
         def retitle_question(event):
@@ -863,7 +865,7 @@ class PriceRetrievalTests(unittest.TestCase):
         entry = section["meetings"][0]
         self.assertEqual(entry["data_status"], "UNAVAILABLE")
         self.assertTrue(
-            any("malformed CLOB price point" in warning for warning in section["warnings"])
+            any("rejected CLOB points" in warning for warning in section["warnings"])
         )
 
     def test_missing_outcome_price_is_partial_with_null(self):

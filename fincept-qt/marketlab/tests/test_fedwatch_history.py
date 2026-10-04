@@ -851,7 +851,7 @@ class BackfillTests(unittest.TestCase):
         entry = result["backfills"][0]
         self.assertEqual(entry["status"], "PARTIAL")
         self.assertEqual(entry["points_accepted"], 1)
-        self.assertEqual(entry["malformed_counts"], {"malformed": 1, "future": 1, "out_of_range": 1})
+        self.assertEqual(entry["malformed_counts"], {"malformed": 1, "future": 1, "out_of_range": 1, "conflicting": 0})
         self.assertTrue(result["warnings"])
 
     def test_missing_token_and_no_mappings_are_reported(self):

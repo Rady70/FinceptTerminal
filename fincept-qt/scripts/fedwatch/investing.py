@@ -19,7 +19,8 @@ Semantics that must not drift:
   rate through the previous meeting; a later meeting can legitimately shift
   even when its own displayed sum is exactly 100.
 * A malformed distribution (sum outside the band, negative, non-finite) rejects
-  the current conversion; it is never silently repaired or replaced.
+  that meeting. Other cumulative distributions survive; a local change requires
+  both adjacent expectations, so a missing predecessor is never skipped.
 * The derived meeting-level ("local") distribution reuses the unchanged CME
   integer+mantissa split: at most two adjacent 25 bp outcomes. This binary
   local shape is intentional; Polymarket may price broader tails.
@@ -50,29 +51,43 @@ USER_AGENT = (
 )
 REQUEST_TIMEOUT = 20
 
-# One meeting block: "Meeting Time: <date>" ... "Future Price: <price>" followed
-# by the bucket rows before the next infoFed block (or end of document).
-_MEETING_BLOCK_RE = re.compile(
-    r"Meeting Time:</span>\s*<i>([^<]+)</i>.*?"
-    r"Future Price:</span>\s*<i>([^<]+)</i>(.*?)(?=<div class=\"infoFed\">|\Z)",
-    re.S,
-)
 # One bucket row: interval label + displayed percentage.
 _BUCKET_ITEM_RE = re.compile(
-    r'percfedRateItem">\s*<span>([^<]+)</span>\s*<i></i>\s*'
-    r'<div[^>]*style="width: [0-9.]+%"></div>\s*<span>([0-9.]+)%</span>'
+    r'<span[^>]*>([^<]+)</span>\s*(?:<i[^>]*></i>\s*)?'
+    r'<div[^>]*></div>\s*<span[^>]*>([0-9.]+)%</span>'
 )
 _MEETING_TIME_FORMAT = "%b %d, %Y %I:%M%p ET"
 
 # Structural markers used to detect rows the bucket regex did not match.
-_INFO_FED_MARKER_RE = re.compile(r'class="infoFed"')
-_BUCKET_MARKER_RE = re.compile(r'percfedRateItem"')
+_DIV_CLASS_RE = re.compile(r'<div\b[^>]*\bclass\s*=\s*([\"\'])([^\"\']*)\1[^>]*>', re.I)
 
 BP_STEP = 25
 NORMALIZATION_MIN_SUM = 99.5
 NORMALIZATION_MAX_SUM = 100.5
 MAX_PROBABILITY_PCT = 100.0
 MAX_PLAUSIBLE_RATE_HIGH = 10.0
+
+
+def _class_fragments(html: str, class_name: str, *, bounded: bool = False) -> list[str]:
+    markers = [match for match in _DIV_CLASS_RE.finditer(html) if class_name in match.group(2).split()]
+    fragments = []
+    for index, match in enumerate(markers):
+        fragment = html[match.end():markers[index + 1].start() if index + 1 < len(markers) else len(html)]
+        if bounded:
+            # Bucket contents end at their own closing div, including nested
+            # bar divs. The last bucket must not consume unrelated page markup.
+            depth = 1
+            closed = False
+            for tag in re.finditer(r'</?div\b[^>]*>', fragment, re.I):
+                depth += -1 if tag.group().startswith("</") else 1
+                if depth == 0:
+                    fragment = fragment[:tag.start()]
+                    closed = True
+                    break
+            if not closed:
+                fragment = ""
+        fragments.append(fragment)
+    return fragments
 
 
 def fetch_fed_rate_monitor_html(transport: Transport, url: str = FED_RATE_MONITOR_URL) -> str:
@@ -87,7 +102,7 @@ def fetch_fed_rate_monitor_html(transport: Transport, url: str = FED_RATE_MONITO
         ) from exc
 
 
-def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
+def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
     """Parse the page's embedded Fed Rate Monitor table.
 
     Returns ``(rows, warnings, report)`` where each row is
@@ -95,16 +110,18 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
     is an ISO date string. Rows that cannot be parsed are skipped with a
     warning, and the report records every structural loss (dropped meeting
     blocks, dropped bucket rows, and bucket markers that did not match the row
-    structure). The provider layer fails closed whenever the report is not
-    structurally complete, so a distribution is never normalized after source
-    buckets disappeared. An empty result is reported as an empty list; the
+    structure). The provider excludes affected meetings, so a distribution is
+    never normalized after source buckets disappeared. An empty result is reported as an empty list; the
     provider layer turns that into an explicit ``INVESTING_PARSE_EMPTY``
     failure.
 
     Deduplication matches the qualified behavior: the sidebar "Fed Rate Monitor
     Tool" repeats the nearest meeting, the main table appears first, so the
-    first occurrence of a (meeting, bucket) pair wins. Rows are then sorted by
-    (meeting_date, rate_low).
+    first complete usable meeting block wins as a whole. A later intact copy
+    may recover a broken main copy of that exact meeting, with diagnostics.
+    Rows are then sorted by
+    (meeting_date, rate_low); conflicting duplicates within that block reject
+    the meeting instead of merging independent copies.
     """
     rows: list[dict] = []
     warnings: list[str] = []
@@ -112,9 +129,22 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
     dropped_bucket_rows: list[dict] = []
     partial_meeting_dates: set[str] = set()
     unmatched_bucket_items = 0
+    recovered_meeting_dates: set[str] = set()
+    chosen_blocks: dict[str, list[dict]] = {}
+    complete_dates: set[str] = set()
 
-    blocks = _MEETING_BLOCK_RE.findall(html)
-    info_fed_marker_count = len(_INFO_FED_MARKER_RE.findall(html))
+    # Split BEFORE parsing: a missing Future Price in one block must not let a
+    # regex consume the next meeting's buckets under the wrong date.
+    fragments = _class_fragments(html, "infoFed")
+    blocks = []
+    for fragment in fragments:
+        match = re.search(r'Meeting Time:</span>\s*<i>([^<]+)</i>', fragment)
+        if match:
+            blocks.append((match.group(1), None, fragment[match.end():]))
+        else:
+            dropped_meeting_blocks.append({"reason": "missing_meeting_time"})
+    info_fed_marker_count = len(fragments)
+    reported_meeting_dates: set[str] = set()
     if not blocks:
         warnings.append(
             "no meeting blocks found in the Investing.com page; the HTML structure may have changed"
@@ -132,24 +162,36 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
             )
             continue
 
-        items = _BUCKET_ITEM_RE.findall(rest)
-        marker_count = len(_BUCKET_MARKER_RE.findall(rest))
+        day = meeting_date.isoformat()
+        reported_meeting_dates.add(day)
+        if day in complete_dates:
+            # Never blend independent copies or poison a usable earlier copy.
+            continue
+        bucket_fragments = _class_fragments(rest, "percfedRateItem", bounded=True)
+        items = []
+        block_partial = False
+        for fragment in bucket_fragments:
+            match = _BUCKET_ITEM_RE.fullmatch(fragment.strip())
+            if match is None:
+                unmatched_bucket_items += 1
+                block_partial = True
+                warnings.append(f"bucket marker for meeting {day} did not match the bucket row structure exactly once")
+            else:
+                items.append(match.groups())
+        marker_count = len(bucket_fragments)
         if not items:
             warnings.append(
                 f"no parseable bucket rows for meeting {meeting_date.isoformat()}; meeting skipped"
             )
             dropped_meeting_blocks.append(
-                {"meeting_time": meeting_time_raw, "reason": "no_parseable_bucket_rows"}
+                {"meeting_time": meeting_time_raw, "meeting_date": meeting_date.isoformat(),
+                 "reason": "no_parseable_bucket_rows"}
             )
-            continue
-        if marker_count > len(items):
-            unmatched_bucket_items += marker_count - len(items)
             partial_meeting_dates.add(meeting_date.isoformat())
-            warnings.append(
-                f"{marker_count - len(items)} bucket marker(s) for meeting "
-                f"{meeting_date.isoformat()} did not match the bucket row structure"
-            )
+            chosen_blocks.setdefault(day, [])
+            continue
 
+        block_rows = []
         for bucket_label, pct_raw in items:
             try:
                 low_raw, high_raw = bucket_label.split("-")
@@ -167,10 +209,10 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
                         "percentage": pct_raw,
                     }
                 )
-                partial_meeting_dates.add(meeting_date.isoformat())
+                block_partial = True
                 continue
 
-            rows.append(
+            block_rows.append(
                 {
                     "meeting_date": meeting_date.isoformat(),
                     "rate_low": rate_low,
@@ -179,13 +221,46 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
                 }
             )
 
+        unique = {}
+        for row in block_rows:
+            key = (row["rate_low"], row["rate_high"])
+            if key in unique and unique[key]["probability_pct"] != row["probability_pct"]:
+                block_partial = True
+                warnings.append(f"conflicting duplicate bucket for meeting {day}")
+            unique.setdefault(key, row)
+        block_rows = list(unique.values())
+        complete = not block_partial and bool(marker_count)
+        if complete:
+            try:
+                _normalize_complete_meetings(block_rows)
+            except InvestingDistributionError:
+                complete = False
+        if complete:
+            if day in chosen_blocks:
+                recovered_meeting_dates.add(day)
+                warnings.append(f"meeting {day} recovered from an intact later copy; whole distribution replaced")
+            chosen_blocks[day] = block_rows
+            complete_dates.add(day)
+            partial_meeting_dates.discard(day)
+        else:
+            chosen_blocks.setdefault(day, block_rows)
+            if block_partial:
+                partial_meeting_dates.add(day)
+
+    rows = [row for block_rows in chosen_blocks.values() for row in block_rows]
+
     deduplicated: list[dict] = []
     seen: set[tuple] = set()
+    first_by_key = {}
     for row in rows:
         key = (row["meeting_date"], row["rate_low"], row["rate_high"])
         if key in seen:
+            if first_by_key[key]["probability_pct"] != row["probability_pct"]:
+                partial_meeting_dates.add(row["meeting_date"])
+                warnings.append(f"conflicting duplicate bucket for meeting {row['meeting_date']}")
             continue
         seen.add(key)
+        first_by_key[key] = row
         deduplicated.append(row)
     deduplicated.sort(key=lambda row: (row["meeting_date"], row["rate_low"]))
 
@@ -197,18 +272,49 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str]]:
         "dropped_bucket_rows": dropped_bucket_rows[:10],
         "dropped_meeting_blocks": dropped_meeting_blocks[:10],
         "partial_meeting_dates": sorted(partial_meeting_dates),
+        "recovered_meeting_dates": sorted(recovered_meeting_dates),
+        "reported_meeting_dates": sorted(reported_meeting_dates),
+        "unknown_meeting_identity": any("meeting_date" not in block for block in dropped_meeting_blocks),
         "structurally_complete": bool(
             blocks
             and info_fed_marker_count == len(blocks)
             and not dropped_meeting_blocks
             and not dropped_bucket_rows
             and unmatched_bucket_items == 0
+            and not partial_meeting_dates
         ),
     }
     return deduplicated, warnings, report
 
 
-def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+def normalize_cumulative(rows: list[dict], rejected: list | None = None) -> tuple[list[dict], list[dict]]:
+    """Keep independently valid meetings; report invalid meetings explicitly.
+
+    Returns accepted rows and successful normalization records only. Supplying
+    ``rejected`` explicitly enables partial acceptance and receives error
+    records separately. Without it, any rejected meeting raises. No usable
+    meetings remains a provider failure in either mode.
+    """
+    if not rows:
+        raise InvestingDistributionError("INVESTING_DISTRIBUTION_INVALID", "Investing cumulative table is empty")
+    accepted, records, failures = [], [], []
+    for day in sorted({row["meeting_date"] for row in rows}):
+        try:
+            values, details = _normalize_complete_meetings([r for r in rows if r["meeting_date"] == day])
+            accepted.extend(values)
+            records.extend(details)
+        except InvestingDistributionError as exc:
+            failures.append(exc)
+    if rejected is not None:
+        rejected.extend(exc.to_dict() for exc in failures)
+    elif failures:
+        raise failures[0]
+    if not accepted:
+        raise failures[0]
+    return accepted, records
+
+
+def _normalize_complete_meetings(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """Validate and normalize each Investing cumulative meeting independently.
 
     Returns ``(normalized_rows, records)``. The input is never mutated. The
@@ -234,7 +340,7 @@ def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
             values = [float(row["probability_pct"]) for row in group]
             rate_lows = [float(row["rate_low"]) for row in group]
             rate_highs = [float(row["rate_high"]) for row in group]
-        except (TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise InvestingDistributionError(
                 "INVESTING_DISTRIBUTION_INVALID",
                 f"invalid Investing rate range or probability for meeting {meeting_date}",
@@ -257,7 +363,9 @@ def normalize_cumulative(rows: list[dict]) -> tuple[list[dict], list[dict]]:
             not math.isfinite(value) or value < 0 or value > MAX_PROBABILITY_PCT
             for value in values
         )
-        if invalid_ranges or invalid_probabilities:
+        bands = sorted(zip(rate_lows, rate_highs))
+        overlap = any(high > next_low for (_, high), (next_low, _) in zip(bands, bands[1:]))
+        if invalid_ranges or invalid_probabilities or overlap:
             raise InvestingDistributionError(
                 "INVESTING_DISTRIBUTION_INVALID",
                 f"invalid Investing rate range or probability for meeting {meeting_date}",
@@ -371,21 +479,19 @@ def local_steps_from_cumulative(
                 for row in group
             )
         )
-        change = (expected_rate - previous_expected) / BP_STEP * 100.0
-        distribution = local_step_distribution(change)
-
-        for bp, probability in sorted(distribution.items()):
-            rows.append(
-                {
-                    "meeting_date": meeting_date,
-                    "meeting_ordinal": ordinal,
-                    "local_bp_change": bp,
-                    "probability_pct": round(probability * 100.0, 6),
-                }
-            )
+        rows.extend({"meeting_date": meeting_date, "meeting_ordinal": ordinal,
+                     "local_bp_change": row["outcome_bp"], "probability_pct": row["probability_pct"]}
+                    for row in _local_probabilities(expected_rate, previous_expected))
         previous_expected = expected_rate
 
     return rows
+
+
+def _local_probabilities(expected_rate: float, previous_expected: float) -> list[dict]:
+    """Shared qualified integer/mantissa conversion and six-decimal boundary."""
+    change = (expected_rate - previous_expected) / BP_STEP * 100.0
+    return [{"outcome_bp": bp, "probability_pct": round(probability * 100.0, 6)}
+            for bp, probability in sorted(local_step_distribution(change).items())]
 
 
 def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
@@ -394,8 +500,8 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     Returns a JSON-ready provider payload with both the raw displayed values and
     the validated/normalized values kept distinct, plus the per-meeting
     normalization records. Raises :class:`FedwatchError` (provider
-    ``investing``) for transport, empty-parse, partially parsed and
-    malformed-distribution failures.
+    ``investing``) when no meeting is usable. Partial responses preserve
+    complete independently normalized meetings and explicit rejection errors.
     """
     html = fetch_fed_rate_monitor_html(transport)
     retrieved_at = clock()
@@ -410,19 +516,32 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
                 "parse_report": parse_report,
             },
         )
-    if not parse_report["structurally_complete"]:
-        raise FedwatchError(
-            PROVIDER_INVESTING,
-            "INVESTING_PARSE_PARTIAL",
-            "Investing.com Fed Rate Monitor page contained malformed meeting blocks "
-            "or bucket rows; refusing to normalize a partially parsed distribution",
-            detail={
-                "retrieved_at": timeutil.iso_z(retrieved_at),
-                "parse_report": parse_report,
-            },
-        )
-
-    normalized_rows, records = normalize_cumulative(raw_rows)
+    rejected = []
+    normalized_rows, records = [], []
+    for day in sorted({row["meeting_date"] for row in raw_rows}):
+        group = [row for row in raw_rows if row["meeting_date"] == day]
+        if day in parse_report["partial_meeting_dates"]:
+            rejected.append(FedwatchError(PROVIDER_INVESTING, "INVESTING_PARSE_PARTIAL",
+                                         f"incomplete Investing distribution for meeting {day}",
+                                         detail={"meeting_date": day, "parse_report": parse_report}).to_dict())
+            continue
+        try:
+            normalized, meeting_records = normalize_cumulative(group)
+        except InvestingDistributionError as exc:
+            rejected.append(exc.to_dict())
+            continue
+        normalized_rows.extend(normalized)
+        records.extend(meeting_records)
+    for day in set(parse_report["partial_meeting_dates"]) - {r["meeting_date"] for r in raw_rows}:
+        rejected.append(FedwatchError(PROVIDER_INVESTING, "INVESTING_PARSE_PARTIAL",
+                                     f"no usable buckets for meeting {day}", detail={"meeting_date": day}).to_dict())
+    if parse_report["unknown_meeting_identity"]:
+        rejected.append(FedwatchError(PROVIDER_INVESTING, "INVESTING_PARSE_PARTIAL",
+                                     "Investing meeting block identity could not be parsed",
+                                     detail={"parse_report": parse_report}).to_dict())
+    if not records:
+        error = rejected[0]
+        raise InvestingDistributionError(error["code"], error["error"], detail=error.get("detail"))
     record_by_date = {record["meeting_date"]: record for record in records}
 
     raw_by_date: dict[str, list[dict]] = {}
@@ -430,7 +549,7 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
         raw_by_date.setdefault(row["meeting_date"], []).append(row)
 
     meetings = []
-    for meeting_date in sorted(raw_by_date):
+    for meeting_date in sorted(record_by_date):
         record = record_by_date[meeting_date]
         meetings.append(
             {
@@ -473,6 +592,8 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
         "method": "LIVE_INVESTING_DERIVED",
         "meetings": meetings,
         "normalized_rows": normalized_rows,
+        "parse_report": parse_report,
+        "errors": rejected,
         "quality": {
             "parsed_meeting_count": len(meetings),
             "parsed_row_count": len(raw_rows),
@@ -487,27 +608,39 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     }
 
 
-def with_local_probabilities(distributions: dict, upper: float, lower: float) -> list[dict]:
+def with_local_probabilities(distributions: dict, upper: float, lower: float,
+                             meeting_dates: list[str] | None = None) -> list[dict]:
     """Merge the local-step conversion into the per-meeting fed-side sections.
 
     Returns a new list of meeting sections with ``local_probabilities``,
     ``meeting_ordinal`` and ``local_status: "OK"``. The normalized table is
-    converted as a whole so the chained expected-rate semantics are preserved.
+    converted only when its adjacent predecessor is available. The official
+    complete schedule, when supplied, establishes adjacency across parse gaps.
     """
-    local_rows = local_steps_from_cumulative(
-        distributions["normalized_rows"], current_rate_upper=upper, current_rate_lower=lower
-    )
-    by_meeting: dict[str, list[dict]] = {}
-    for row in local_rows:
-        by_meeting.setdefault(row["meeting_date"], []).append(row)
-
-    ordinal_by_meeting: dict[str, int] = {}
-    for row in local_rows:
-        ordinal_by_meeting.setdefault(row["meeting_date"], row["meeting_ordinal"])
+    report = distributions.get("parse_report") or {}
+    sequence = sorted(set(meeting_dates if meeting_dates is not None else
+                          report.get("reported_meeting_dates", [m["meeting_date"] for m in distributions["meetings"]])))
+    ordinal_by_meeting = {day: index + 1 for index, day in enumerate(sequence)}
+    expected = {m["meeting_date"]: m["normalization"]["normalized_expected_rate"]
+                for m in distributions["meetings"]}
+    local_by_date = {}
+    for index, day in enumerate(sequence):
+        previous = sequence[index - 1] if index else None
+        # An unknown block leaves adjacency uncertain unless an official full
+        # schedule supplies the sequence. Resume after a known rejected meeting
+        # only when both adjacent cumulative expectations are available.
+        if day not in expected or (previous is not None and previous not in expected):
+            continue
+        if meeting_dates is None and report.get("unknown_meeting_identity"):
+            continue
+        prior = expected[previous] if previous else (upper + lower) / 2
+        local_by_date[day] = _local_probabilities(expected[day], prior)
+        ordinal_by_meeting[day] = index + 1
 
     sections = []
     for meeting in distributions["meetings"]:
         meeting_date = meeting["meeting_date"]
+        mismatch = meeting_dates is not None and meeting_date not in ordinal_by_meeting
         sections.append(
             {
                 "meeting_date": meeting_date,
@@ -516,15 +649,16 @@ def with_local_probabilities(distributions: dict, upper: float, lower: float) ->
                 "raw_probabilities": meeting["raw_probabilities"],
                 "normalized_probabilities": meeting["normalized_probabilities"],
                 "normalization": meeting["normalization"],
-                "local_probabilities": [
-                    {
-                        "outcome_bp": row["local_bp_change"],
-                        "probability_pct": row["probability_pct"],
-                    }
-                    for row in by_meeting.get(meeting_date, [])
-                ],
+                "local_probabilities": local_by_date.get(meeting_date),
                 "meeting_ordinal": ordinal_by_meeting.get(meeting_date),
-                "local_status": "OK",
+                "local_status": "OK" if meeting_date in local_by_date else
+                                "MEETING_DATE_MISMATCH" if mismatch else "PREVIOUS_MEETING_UNAVAILABLE",
+                "local_error": None if meeting_date in local_by_date else FedwatchError(
+                    PROVIDER_INVESTING, "INVESTING_MEETING_DATE_MISMATCH" if mismatch else
+                    "INVESTING_LOCAL_DEPENDENCY_UNAVAILABLE",
+                    f"meeting {meeting_date} is absent from the supplied official schedule" if mismatch else
+                    f"local change for meeting {meeting_date} requires an established adjacent predecessor",
+                    detail={"meeting_date": meeting_date}).to_dict(),
                 "source_timestamp": None,
                 "freshness": {
                     "status": "SOURCE_TIMESTAMP_UNAVAILABLE",

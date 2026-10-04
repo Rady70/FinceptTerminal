@@ -160,16 +160,18 @@ def extract_markets(event: dict) -> list[dict]:
 
         yes_price = None
         yes_token_id = None
-        if "Yes" in outcomes:
-            index = outcomes.index("Yes")
+        labels = [outcome.strip().casefold() for outcome in outcomes if isinstance(outcome, str)]
+        binary_valid = len(outcomes) == 2 and len(labels) == 2 and set(labels) == {"yes", "no"}
+        if binary_valid:
+            index = labels.index("yes")
             if index < len(prices):
                 try:
                     yes_price = float(prices[index])
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     yes_price = None
             if index < len(clob_token_ids):
                 token = clob_token_ids[index]
-                yes_token_id = str(token) if token not in (None, "") else None
+                yes_token_id = _usable_event_id(token)
 
         rows.append(
             {
@@ -180,6 +182,7 @@ def extract_markets(event: dict) -> list[dict]:
                 "parse_failed": parsed is None,
                 "yes_probability": yes_price,
                 "yes_clob_token_id": yes_token_id,
+                "binary_outcomes_valid": binary_valid,
                 "market_end_date": market.get("endDate"),
             }
         )
@@ -233,14 +236,25 @@ def search_events(
     malformed_item_count = 0
     received_count = 0
     metadata_inconsistent = False
+    page_error = None
     while pages < max_pages:
-        data = _get_json(
-            transport,
-            f"{GAMMA_BASE_URL}/public-search",
-            {"q": query, "limit_per_type": limit_per_type, "page": page},
-            context=f"search ({query!r}) page {page}",
-        )
+        try:
+            data = _get_json(
+                transport,
+                f"{GAMMA_BASE_URL}/public-search",
+                {"q": query, "limit_per_type": limit_per_type, "page": page},
+                context=f"search ({query!r}) page {page}",
+            )
+        except FedwatchError as exc:
+            if not pages:
+                raise
+            page_error = exc.to_dict()
+            complete = False
+            break
         if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+            if pages:
+                page_error = {"error": "search response did not contain an events list", "page": page}
+                break
             raise FedwatchError(
                 PROVIDER_POLYMARKET,
                 "POLYMARKET_DISCOVERY_UNAVAILABLE",
@@ -301,6 +315,7 @@ def search_events(
         "malformed_item_count": malformed_item_count,
         "metadata_inconsistent": metadata_inconsistent,
         "complete": complete,
+        "page_error": page_error,
     }
 
 
@@ -323,17 +338,27 @@ def events_by_tag(
     pages = 0
     complete = False
     malformed_item_count = 0
+    page_error = None
     while pages < max_pages:
         params = {"tag_slug": tag_slug, "limit": page_size, "offset": offset}
         if closed is not None:
             params["closed"] = str(closed).lower()
-        data = _get_json(
-            transport,
-            f"{GAMMA_BASE_URL}/events",
-            params,
-            context=f"tag listing ({tag_slug!r}) page {pages + 1}",
-        )
+        try:
+            data = _get_json(
+                transport,
+                f"{GAMMA_BASE_URL}/events",
+                params,
+                context=f"tag listing ({tag_slug!r}) page {pages + 1}",
+            )
+        except FedwatchError as exc:
+            if not pages:
+                raise
+            page_error = exc.to_dict()
+            break
         if not isinstance(data, list):
+            if pages:
+                page_error = {"error": "tag response was not a list", "page": pages + 1}
+                break
             raise FedwatchError(
                 PROVIDER_POLYMARKET,
                 "POLYMARKET_DISCOVERY_UNAVAILABLE",
@@ -358,6 +383,7 @@ def events_by_tag(
         "malformed_item_count": malformed_item_count,
         "complete": complete,
         "closed_filter": closed,
+        "page_error": page_error,
     }
 
 
@@ -383,8 +409,10 @@ def fetch_price_history(
         ) from exc
     finally:
         sleep(RATE_LIMIT_SLEEP_SECONDS)
-    history = data.get("history", []) if isinstance(data, dict) else []
-    return history if isinstance(history, list) else []
+    if not isinstance(data, dict) or not isinstance(data.get("history"), list):
+        raise FedwatchError(PROVIDER_POLYMARKET, "POLYMARKET_MARKET_DATA_INVALID",
+                            "CLOB response did not contain a history list", detail={"token_id": clob_token_id})
+    return data["history"]
 
 
 def discover_candidate_events(
@@ -609,6 +637,8 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
     seen_tokens: set[str] = set()
     for market in rate_markets:
         key = (market["bp_delta"], market["open_ended"])
+        if not market["binary_outcomes_valid"]:
+            return None, "INVALID_BINARY_OUTCOMES"
         if key in seen_outcomes:
             return None, "DUPLICATE_OUTCOMES"
         seen_outcomes.add(key)
@@ -617,18 +647,17 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
         if market["yes_clob_token_id"] in seen_tokens:
             return None, "DUPLICATE_TOKEN_IDS"
         seen_tokens.add(market["yes_clob_token_id"])
-        price = market["yes_probability"]
-        if price is None or not math.isfinite(price) or not 0.0 <= price <= 1.0:
-            return None, "INVALID_YES_PRICE"
         if _months_mentioned(market["question"]) != {meeting_date.month}:
             return None, "QUESTION_MEETING_MISMATCH"
         mentioned_years = _years_mentioned(market["question"])
         if mentioned_years and mentioned_years != {meeting_date.year}:
             return None, "QUESTION_MEETING_MISMATCH"
 
-    outcome_sum = float(sum(market["yes_probability"] for market in rate_markets))
-    if not OUTCOME_SUM_MIN <= outcome_sum <= OUTCOME_SUM_MAX:
-        return None, "OUTCOME_SUM_OUT_OF_RANGE"
+    # Gamma's embedded prices are advisory snapshots, not meeting identity.
+    # The authoritative CLOB observations are validated after token mapping.
+    valid_prices = all(m["yes_probability"] is not None and math.isfinite(m["yes_probability"])
+                       and 0 <= m["yes_probability"] <= 1 for m in rate_markets)
+    outcome_sum = sum(m["yes_probability"] for m in rate_markets) if valid_prices else None
 
     evidence = {
         "validation_method": (
@@ -643,7 +672,8 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
         "title_year": title_year,
         "rate_submarket_count": len(rate_markets),
         "outcome_bp_values": sorted(market["bp_delta"] for market in rate_markets),
-        "outcome_probability_sum": round(outcome_sum, 6),
+        "outcome_probability_sum": round(outcome_sum, 6) if outcome_sum is not None else None,
+        "gamma_price_status": "OK" if outcome_sum is not None and OUTCOME_SUM_MIN <= outcome_sum <= OUTCOME_SUM_MAX else "INVALID_OR_INCOMPLETE",
         "yes_token_ids_present": True,
     }
     return evidence, None
@@ -711,6 +741,34 @@ def resolve_mapping(events: list[dict], meeting_date: date) -> dict:
     return result
 
 
+def normalize_price_points(points: list, now: datetime) -> tuple[list[dict], dict]:
+    """Validate points independently; conflicting same-instant values are unknown."""
+    accepted, conflicts = {}, set()
+    counts = {"malformed": 0, "future": 0, "out_of_range": 0, "conflicting": 0}
+    for point in points:
+        try:
+            if not isinstance(point, dict) or isinstance(point.get("t"), bool) or isinstance(point.get("p"), bool):
+                raise ValueError("invalid point")
+            timestamp, probability = float(point["t"]), float(point["p"])
+            if not math.isfinite(timestamp) or not math.isfinite(probability) or timestamp < 0:
+                raise ValueError("invalid number")
+            instant = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            counts["malformed"] += 1
+            continue
+        if instant > now + timedelta(seconds=FUTURE_TOLERANCE_SECONDS):
+            counts["future"] += 1
+            continue
+        if not 0 <= probability <= 1:
+            counts["out_of_range"] += 1
+            continue
+        if instant in accepted and accepted[instant] != probability:
+            conflicts.add(instant)
+            counts["conflicting"] += 1
+        accepted[instant] = probability
+    return [{"instant": t, "probability": p} for t, p in sorted(accepted.items()) if t not in conflicts], counts
+
+
 def fetch_current_outcomes(
     transport: Transport,
     mapping: dict,
@@ -719,9 +777,9 @@ def fetch_current_outcomes(
 ) -> tuple[list[dict], list[str], list[FedwatchError]]:
     """Fetch the current CLOB probability for every rate outcome of a mapping.
 
-    One row per rate submarket. A submarket whose latest point is missing,
-    malformed, future-dated beyond tolerance or outside [0, 1] keeps its
-    place with ``probability_pct=None`` and a warning; nothing is fabricated.
+    One row per rate submarket using its latest individually valid point. Bad,
+    future or conflicting points are counted and rejected; only an outcome
+    with no valid points keeps ``probability_pct=None``. Nothing is fabricated.
     Stale points (older than the freshness window) are returned but the meeting
     is reported STALE, never current.
     """
@@ -762,33 +820,15 @@ def fetch_current_outcomes(
             outcomes.append({**base, "probability_pct": None, "source_timestamp": None})
             continue
 
-        try:
-            latest = max(history, key=lambda point: point["t"])
-            instant = datetime.fromtimestamp(float(latest["t"]), tz=timezone.utc)
-            probability = float(latest["p"])
-        except (KeyError, TypeError, ValueError, OverflowError, OSError):
-            warnings.append(
-                f"event {mapping['mapping_evidence']['event_id']} outcome "
-                f"{market['bp_delta']}bp: malformed CLOB price point"
-            )
+        valid, rejected = normalize_price_points(history, now)
+        base["point_quality"] = {"accepted": len(valid), "rejected": rejected}
+        if any(rejected.values()):
+            warnings.append(f"event {mapping['mapping_evidence']['event_id']} outcome {market['bp_delta']}bp: "
+                            f"rejected CLOB points {rejected}; latest valid point retained if available")
+        if not valid:
             outcomes.append({**base, "probability_pct": None, "source_timestamp": None})
             continue
-
-        if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
-            warnings.append(
-                f"event {mapping['mapping_evidence']['event_id']} outcome "
-                f"{market['bp_delta']}bp: CLOB probability outside [0, 1]"
-            )
-            outcomes.append({**base, "probability_pct": None, "source_timestamp": None})
-            continue
-
-        if instant > now + timedelta(seconds=FUTURE_TOLERANCE_SECONDS):
-            warnings.append(
-                f"event {mapping['mapping_evidence']['event_id']} outcome "
-                f"{market['bp_delta']}bp: CLOB timestamp is in the future"
-            )
-            outcomes.append({**base, "probability_pct": None, "source_timestamp": None})
-            continue
+        instant, probability = valid[-1]["instant"], valid[-1]["probability"]
 
         outcomes.append(
             {
@@ -812,6 +852,9 @@ def _data_status(outcomes: list[dict], latest_instants: list[datetime], now: dat
     if not any(outcome["probability_pct"] is not None for outcome in outcomes):
         return "UNAVAILABLE"
     if any(outcome["probability_pct"] is None for outcome in outcomes):
+        return "PARTIAL"
+    total = sum(outcome["probability_pct"] for outcome in outcomes) / 100
+    if not OUTCOME_SUM_MIN <= total <= OUTCOME_SUM_MAX:
         return "PARTIAL"
     oldest = min(latest_instants)
     age_days = (now - oldest).total_seconds() / 86400.0

@@ -248,8 +248,9 @@ class AcquisitionTests(unittest.TestCase):
         directory = self.monthly_files()
         path = directory / "ZQV26.csv"
         path.write_text(path.read_text().replace("Symbol: ZQV26", "Symbol: FFc1"))
-        with self.assertRaises(FedwatchError):
-            monthly_csv.load_contracts(directory)
+        rows, report = monthly_csv.load_contracts(directory)
+        self.assertEqual({r["contract_symbol"] for r in rows}, {"ZQU26", "ZQX26"})
+        self.assertEqual(report["errors"][0]["detail"]["file"], "ZQV26.csv")
 
     def test_direct_and_reconstructed_objects_are_distinct_and_comparison_is_local(self):
         self.import_monthly(self.monthly_files())
