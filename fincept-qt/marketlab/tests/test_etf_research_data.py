@@ -234,17 +234,36 @@ class DownloadHistoryTests(unittest.TestCase):
         self.assertIn("retried alone", out["A"]["detail"])
         self.assertIn("not retried alone", out["D"]["detail"])
 
-    def test_no_data_errors_are_not_retried_and_do_not_stop_the_retries(self):
+    def test_no_data_errors_are_retried_once_but_do_not_stop_the_retries(self):
         # Two symbols Yahoo has no prices for sort ahead of a rate-limited one.
-        # Asking again cannot cure "possibly delisted": they are not retried and
-        # not counted, so the rate-limited symbol is still retried and delivered.
+        # "Possibly delisted" is retried once (yfinance also reports a timed-out
+        # time-zone lookup that way) but not counted toward the stop, so the
+        # rate-limited symbol is still retried and delivered.
         fake = self._YfLike({"CCC": 1}, no_data=("AAA.BK", "BBB.BK"))
         out = yahoo.download_history(["AAA.BK", "BBB.BK", "CCC"], "2y", self.AT, yf_module=fake)
         self.assertEqual({k: v["status"] for k, v in out.items()},
                          {"AAA.BK": "FAILED", "BBB.BK": "FAILED", "CCC": "OK"})
-        self.assertEqual(fake.calls, [["AAA.BK", "BBB.BK", "CCC"], ["CCC"]])
+        self.assertEqual(fake.calls, [["AAA.BK", "BBB.BK", "CCC"], ["AAA.BK"], ["BBB.BK"], ["CCC"]])
         self.assertIn("possibly delisted", out["AAA.BK"]["detail"])
-        self.assertNotIn("retried", out["AAA.BK"]["detail"])
+        self.assertIn("retried alone", out["AAA.BK"]["detail"])
+
+    def test_no_data_that_was_a_timeout_is_delivered_on_retry(self):
+        # A timed-out time-zone lookup surfaces as "no timezone found"; the
+        # retry delivers the symbol.
+        class TzTimeout(self._YfLike):
+            def download(self, batch, **kwargs):
+                frame = super().download(batch, **kwargs)
+                if "NEW1" in batch and not self.tz_failed:
+                    self.tz_failed = True
+                    self.shared._ERRORS["NEW1"] = "YFTzMissingError('$NEW1: possibly delisted; no timezone found')"
+                    frame[("Close", "NEW1")] = float("nan")
+                return frame
+
+        fake = TzTimeout({})
+        fake.tz_failed = False
+        out = yahoo.download_history(["NEW1", "XLB"], "2y", self.AT, yf_module=fake)
+        self.assertEqual(out["NEW1"]["status"], "OK")
+        self.assertEqual(fake.calls, [["NEW1", "XLB"], ["NEW1"]])
 
     def test_symbol_without_bars_and_without_error_is_not_retried(self):
         fake = self._YfLike({})
@@ -571,18 +590,26 @@ class CftcStageTests(unittest.TestCase):
         self.assertEqual(items["silver"]["unparseable_points"], 1)
         self.assertEqual(items["copper"]["status"], "FAILED")
 
-    def test_failed_refresh_with_stored_history_is_not_obtained(self):
+    def test_failed_refresh_keeps_the_stored_archive_marked_not_read(self):
         # The provider request failed (HTTP 503); the tool returned its stored
-        # history (`archive_only`). This refresh obtained nothing: FAILED, with
-        # the reason, never UNCHANGED.
+        # archive (`archive_only`). Its rows are kept (the research store may
+        # not have them yet), marked as not read from the provider: the store
+        # makes the item PARTIAL, never UNCHANGED. A market with no stored rows
+        # either is FAILED.
         answer = {"success": True, "data": {"markets": [
             {"market_key": "gold", "status": "archive_only", "refresh_error": "HTTP 503", "rows": [
                 {"report_date_as_yyyy_mm_dd": "2026-09-22", "open_interest_all": 500000,
                  "non_commercial_long": 250000, "non_commercial_short": 90000}]}]}}
-        items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(answer))
-        self.assertEqual(items["gold"]["status"], "FAILED")
-        self.assertIn("archive_only", items["gold"]["detail"])
+        answer["data"]["markets"].append({"market_key": "silver", "status": "unavailable",
+                                           "refresh_error": "HTTP 503", "rows": []})
+        items = etf_research_data.fetch_cftc(["gold", "silver"], "legacy", True, wrapper=_FakeCftc(answer))
+        self.assertEqual(items["gold"]["status"], "OK")
+        self.assertTrue(items["gold"]["provider_not_read"])
+        self.assertEqual(len(items["gold"]["rows"]), 1)
         self.assertIn("503", items["gold"]["detail"])
+        self.assertIn("stored archive is used", items["gold"]["detail"])
+        self.assertEqual(items["silver"]["status"], "FAILED")
+        self.assertFalse(items["silver"]["provider_not_read"])
 
     def test_tool_failure_fails_every_market(self):
         items = etf_research_data.fetch_cftc(["gold"], "legacy", True, wrapper=_FakeCftc(error=RuntimeError("boom")))

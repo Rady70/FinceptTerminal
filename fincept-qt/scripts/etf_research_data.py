@@ -107,14 +107,20 @@ def fetch_cftc(markets, report: str, futures_only: bool, wrapper=None) -> dict:
                          _num(r.get("non_commercial_short"))])
         # Each field stands on its own: a market is usable when any of open
         # interest and the non-commercial long/short positions has a value.
-        # Only a refresh that read the provider (`updated`, `current`) is
-        # obtained: `archive_only` means the request failed and the tool fell
-        # back to its stored history, which this refresh did not obtain.
+        # A refresh that read the provider (`updated`, `current`) is obtained.
+        # `archive_only` means the request failed and the tool returned its
+        # stored archive (earlier monitor reads, annual files): those rows are
+        # kept, since the research store may not have them yet, and the item is
+        # marked as not read from the provider (PARTIAL), never as current.
         has_values = any(v is not None for row in rows for v in row[1:])
         refreshed = mk.get("status") in ("updated", "current")
-        ok = has_values and refreshed
-        if ok:
+        archive_used = mk.get("status") == "archive_only" and has_values
+        ok = has_values and (refreshed or archive_used)
+        if refreshed and ok:
             why = mk.get("refresh_error") or ""
+        elif archive_used:
+            why = (f"CFTC provider not read ({mk.get('refresh_error') or 'archive_only'}); "
+                   "the CFTC tool's stored archive is used")
         elif not refreshed:
             why = (f"CFTC refresh {mk.get('status') or 'failed'}: "
                    f"{mk.get('refresh_error') or 'the provider was not read'}")
@@ -123,6 +129,7 @@ def fetch_cftc(markets, report: str, futures_only: bool, wrapper=None) -> dict:
         items[mk.get("market_key")] = {
             "status": "OK" if ok else "FAILED",
             "detail": why,
+            "provider_not_read": archive_used,
             "source_status": mk.get("status", ""),
             "rows": rows,
             "unparseable_points": undated,

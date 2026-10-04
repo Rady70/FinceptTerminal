@@ -102,8 +102,11 @@ def frame_to_bars(symbol: str, frame, retrieved_at_utc: _dt.datetime) -> dict:
             "actions_without_close": actions_without_close}
 
 
-# yfinance errors (as ``repr`` in ``shared._ERRORS``) that mean the provider
-# answered "no data for this symbol": asking again cannot cure them.
+# yfinance errors (as ``repr`` in ``shared._ERRORS``) that say "no data for this
+# symbol". Usually asking again cannot cure them, but not always: yfinance first
+# looks up the symbol's time zone and, when that request times out or the
+# connection drops, hides the cause and reports "possibly delisted; no timezone
+# found". So they are retried once, but never counted as provider-wide failures.
 _NO_DATA_ERRORS = ("YFPricesMissingError", "YFTzMissingError", "YFTickerMissingError", "YFInvalidPeriodError")
 
 
@@ -121,11 +124,12 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
     transient error (throttling, a timeout, a connection error) does not cost it
     this refresh. An error that says the symbol has no data (yfinance's
     ``YFPricesMissingError`` / ``YFTzMissingError`` family, "possibly delisted",
-    or an invalid period) cannot be cured by asking again: it is neither retried
-    nor counted below. Two retried symbols failing in a row are taken as a
-    provider-wide failure: the retries stop, and the symbols not retried keep
-    their first error. A symbol that answered without a completed bar and
-    without an error is not retried.
+    or an invalid period) is retried too, because yfinance also reports a timed-
+    out time-zone lookup that way, but it is not counted below: delisted symbols
+    must not stop the retries of others. Two retried symbols failing in a row
+    with any other error are taken as a provider-wide failure: the retries stop,
+    and the symbols not retried keep their first error. A symbol that answered
+    without a completed bar and without an error is not retried.
     """
     import pandas as pd  # noqa: F401  (yfinance returns pandas frames)
 
@@ -146,8 +150,8 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
     def provider_error(s, errors):
         return errors.get(s) or errors.get(s.upper())
 
-    def retryable(s, errors):
-        """A provider error that asking again might cure (not "no data")."""
+    def counts_as_provider_failure(s, errors):
+        """A provider error other than "no data for this symbol"."""
         why = str(provider_error(s, errors) or "")
         return bool(why) and not why.startswith(_NO_DATA_ERRORS)
 
@@ -192,7 +196,7 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
                 fail(s, exc)
             retry = list(batch)
         else:
-            retry = [s for s in batch if not convert(s, raw, errors) and retryable(s, errors)]
+            retry = [s for s in batch if not convert(s, raw, errors) and provider_error(s, errors)]
         failed_in_row = 0
         for i, s in enumerate(retry):
             if failed_in_row == 2:
@@ -207,11 +211,12 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
                 continue
             if convert(s, raw, errors):
                 failed_in_row = 0
-            elif retryable(s, errors):
+            elif counts_as_provider_failure(s, errors):
                 failed_in_row += 1
                 out[s]["detail"] += " (retried alone)"
             else:
-                failed_in_row = 0  # it answered: no completed bar, or no data for it
+                # "No data" again, or an answer without a completed bar: not
+                # counted toward the stop (and not taken as a sign of health).
                 out[s]["detail"] += " (retried alone)"
     return out
 
