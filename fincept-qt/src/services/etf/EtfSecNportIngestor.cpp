@@ -300,10 +300,14 @@ void EtfSecNportIngestor::start_submissions() {
             finish(RetrievalStatus::SourceError, code, detail);
             return;
         }
-        record_response(SourceType::SecSubmissions, QStringLiteral("submissions_json"), url, r, requested_at,
-                        retrieved_at, RetrievalStatus::Ok, QString(),
-                        QStringLiteral("%1 recent filings").arg(subs.filings.size()),
-                        QLatin1String(kSecSubmissionsInterpretation));
+        const qint64 subs_retrieval = record_response(
+            SourceType::SecSubmissions, QStringLiteral("submissions_json"), url, r, requested_at, retrieved_at,
+            RetrievalStatus::Ok, QString(), QStringLiteral("%1 recent filings").arg(subs.filings.size()),
+            QLatin1String(kSecSubmissionsInterpretation));
+        if (!subs.missing_arrays.isEmpty())
+            record_issue(subs_retrieval, QualityState::Missing, QStringLiteral("submissions_array_missing"),
+                         QStringLiteral("the listing has no %1 array; those fields are empty")
+                             .arg(subs.missing_arrays.join(QStringLiteral(", "))));
         on_submissions(subs);
     });
 }
