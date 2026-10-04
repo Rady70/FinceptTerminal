@@ -1141,6 +1141,31 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
                 in.bars[sym].currency = c.fields.value(QStringLiteral("currency")).toString();
         }
     }
+    // ── Latest holdings read per fund, as of the frame ───────────────────────
+    // A read whose holdings could not be read (the retrieval's detail starts with
+    // the holdings status FAILED, or the whole item failed) is named, so the
+    // HOLDINGS view does not explain it as "none published". A failed item has
+    // no retrieved_at; its request time places it.
+    {
+        auto q = db().execute(
+            QStringLiteral(
+                "SELECT subject, status, detail FROM etf_research_retrievals WHERE stage = 'yahoo_funds' "
+                "AND COALESCE(retrieved_at, requested_at) <= ? AND COALESCE(retrieved_at, requested_at) <= ? "
+                "ORDER BY subject, COALESCE(retrieved_at, requested_at), retrieval_id"),
+            {k, etfr_iso(in.as_of)});
+        if (q.is_err())
+            return R::err(q.error());
+        QHash<QString, QString> latest;
+        while (q.value().next()) {
+            const QString status = q.value().value(1).toString();
+            const QString detail = q.value().value(2).toString();
+            const bool failed = status == QLatin1String("FAILED") || detail.startsWith(QLatin1String("FAILED "));
+            latest.insert(q.value().value(0).toString(), failed ? (detail.isEmpty() ? status : detail) : QString());
+        }
+        for (auto it = latest.constBegin(); it != latest.constEnd(); ++it)
+            if (!it.value().isEmpty())
+                in.holdings_read_failed.insert(it.key(), it.value());
+    }
     // ── Holdings (every capture; the latest with rows is the current one) ───
     // The capture time is the retrieval's: holdings captured while the quote
     // summary failed have no fund snapshot, and they are still read.

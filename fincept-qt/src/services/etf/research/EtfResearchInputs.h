@@ -183,12 +183,15 @@ struct ResearchInputs {
     QHash<QString, QVector<FundCapture>> funds;                ///< ascending by captured_at
     QHash<QString, HoldingsCapture> holdings;                  ///< latest capture per parent
     QHash<QString, QVector<HoldingsCapture>> holdings_history; ///< every capture, ascending
-    QHash<QString, Fundamentals> fundamentals;                 ///< latest capture per constituent
-    QHash<QString, MacroSeries> fred;                          ///< series id ->
-    QHash<QString, QHash<QString, MacroSeries>> cftc;          ///< CFTC market -> field -> weekly series
-    QHash<QString, QHash<QString, MacroSeries>> world_bank;    ///< indicator -> iso2 ->
-    QHash<QString, QVector<MeasuredMonth>> measured;           ///< universe symbol -> months
-    QHash<QString, QVector<QPair<QDate, double>>> ibkr_close;  ///< universe symbol -> stored IBKR closes
+    /// Fund -> why its latest holdings read (as of the frame) failed; absent
+    /// when that read succeeded or found none published.
+    QHash<QString, QString> holdings_read_failed;
+    QHash<QString, Fundamentals> fundamentals;                ///< latest capture per constituent
+    QHash<QString, MacroSeries> fred;                         ///< series id ->
+    QHash<QString, QHash<QString, MacroSeries>> cftc;         ///< CFTC market -> field -> weekly series
+    QHash<QString, QHash<QString, MacroSeries>> world_bank;   ///< indicator -> iso2 ->
+    QHash<QString, QVector<MeasuredMonth>> measured;          ///< universe symbol -> months
+    QHash<QString, QVector<QPair<QDate, double>>> ibkr_close; ///< universe symbol -> stored IBKR closes
     QVector<GroupFlowRow> group_flows;
     bool group_flows_loaded = true; ///< false when the caller deferred the Batch D groups
     QVector<SourceStageStatus> last_refresh;

@@ -276,6 +276,22 @@ void TstEtfResearchUi::detail_opens_on_selection_only() {
     // Unknown keys never open a detail.
     s.select_symbol(QStringLiteral("NOPE"));
     QVERIFY(!s.detail_visible());
+    // A failed holdings read is named in HOLDINGS, not explained as "none published".
+    ResearchSnapshot failed = g_snapshot;
+    for (auto& row : failed.rows)
+        if (row.inst.symbol == QLatin1String("XLK"))
+            row.fund.holdings_read_failed =
+                QStringLiteral("FAILED fund holdings could not be read: No Fund data found.");
+    s.set_snapshot(failed);
+    s.select_symbol(QStringLiteral("XLK"));
+    bool named = false, none_published = false;
+    for (auto* l : s.findChildren<QLabel*>()) {
+        named = named || l->text().contains(QStringLiteral("The latest holdings read failed"));
+        none_published = none_published || (l->text().contains(QStringLiteral("Yahoo publishes none")) &&
+                                            l->text().contains(QStringLiteral("holdings read failed")));
+    }
+    QVERIFY(named);
+    QVERIFY(!none_published);
 }
 
 void TstEtfResearchUi::views_populate_lazily_with_heatmaps_and_rrg() {

@@ -229,13 +229,21 @@ void EtfResearchScreen::populate_detail() {
 
     // HOLDINGS
     QString h;
-    if (r->fund.holdings.isEmpty()) {
+    // A failed read is not "none published": say so, and when older holdings
+    // are shown below, that they are not the latest read.
+    if (!r->fund.holdings_read_failed.isEmpty())
+        h = tr("<p style='color:%1'>The latest holdings read failed: %2</p>")
+                .arg(QLatin1String(t.warning), r->fund.holdings_read_failed.toHtmlEscaped());
+    if (r->fund.holdings.isEmpty() && !r->fund.holdings_read_failed.isEmpty()) {
+        h += tr("<span style='color:%1'>No earlier holdings were captured for this fund.</span>")
+                 .arg(QLatin1String(t.text_tertiary));
+    } else if (r->fund.holdings.isEmpty()) {
         h = tr("<span style='color:%1'>No holdings captured for this fund (Yahoo publishes none, or no manual refresh "
                "has captured them).</span>")
                 .arg(QLatin1String(t.text_tertiary));
     } else {
-        h = tr("<b>Top holdings</b> (captured %1)")
-                .arg(r->fund.holdings_captured.toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+        h += tr("<b>Top holdings</b> (captured %1)")
+                 .arg(r->fund.holdings_captured.toString(QStringLiteral("yyyy-MM-dd HH:mm")));
         h += QStringLiteral(
                  "<table cellspacing='0' cellpadding='4'><tr style='color:%1'><td>#</td><td>%2</td><td>%3</td>"
                  "<td>%4</td><td>%5</td><td>%6</td><td>%7</td><td>%8</td></tr>")

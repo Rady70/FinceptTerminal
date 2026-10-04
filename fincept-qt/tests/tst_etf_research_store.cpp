@@ -713,6 +713,21 @@ void TstEtfResearchStore::persist_isolates_items_and_repeated_dates() {
              QStringLiteral("0"));
     QCOMPARE(scalar(QStringLiteral("SELECT GROUP_CONCAT(obs_date) FROM etf_research_macro WHERE series_id = 'T10YIE'")),
              QStringLiteral("2026-10-06"));
+    // The failed holdings read reaches the snapshot (the HOLDINGS view names it
+    // instead of "none published"), as of the frame only.
+    auto after = repo.load_inputs(universe_, utc("2026-10-08T00:00:00.000Z"), utc("2026-10-08T00:00:00.000Z"));
+    QVERIFY(after.is_ok());
+    QVERIFY(after.value().holdings_read_failed.value(QStringLiteral("XLU")).contains(QLatin1String("No Fund data")));
+    const auto snap = compute_snapshot(after.value());
+    bool seen = false;
+    for (const auto& row : snap.rows)
+        if (row.inst.symbol == QLatin1String("XLU")) {
+            seen = true;
+            QVERIFY(row.fund.holdings_read_failed.contains(QLatin1String("could not be read")));
+        }
+    QVERIFY(seen);
+    auto before = repo.load_inputs(universe_, utc("2026-10-07T12:00:00.000Z"), utc("2026-10-07T12:00:00.000Z"));
+    QVERIFY(!before.value().holdings_read_failed.contains(QStringLiteral("XLU")));
 }
 
 void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failure() {

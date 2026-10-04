@@ -94,6 +94,7 @@ struct FundFacts {
     QVector<Holding> holdings;
     QHash<QString, double> sector_weights;
     QDateTime holdings_captured;
+    QString holdings_read_failed; ///< the latest holdings read failed (why); empty otherwise
     int captures = 0;
 };
 

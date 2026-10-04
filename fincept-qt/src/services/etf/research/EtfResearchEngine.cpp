@@ -355,6 +355,7 @@ ResearchSnapshot compute_snapshot(const ResearchInputs& in) {
             const auto hit = in.holdings.constFind(inst.symbol);
             const HoldingsCapture* h = hit == in.holdings.constEnd() ? nullptr : &hit.value();
             row.fund = fund_facts_from_captures(caps, bars, h, in.expected_us_session);
+            row.fund.holdings_read_failed = in.holdings_read_failed.value(inst.symbol);
             row.est =
                 estimate_flow(caps, bars ? *bars : BarSeries{}, in.measured.value(inst.symbol), in.expected_us_session);
         } else {
@@ -1303,6 +1304,8 @@ QJsonObject snapshot_to_json(const ResearchSnapshot& s, bool include_series) {
                          {QStringLiteral("holdings"), r.fund.holdings.size()},
                          {QStringLiteral("assumed_session"), r.fund.assumed_session.toString(Qt::ISODate)},
                          {QStringLiteral("session_rule"), r.fund.session_rule}};
+        if (!r.fund.holdings_read_failed.isEmpty())
+            fund.insert(QStringLiteral("holdings_read_failed"), r.fund.holdings_read_failed);
         o.insert(QStringLiteral("fund"), fund);
         o.insert(QStringLiteral("estimated_flow"), etfr_flow_json(r.est, include_series));
         o.insert(QStringLiteral("measured_flow"),
