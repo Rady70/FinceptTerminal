@@ -241,6 +241,48 @@ Result<EtfrWriteCounts> etfr_write_macro(const QString& source, const QString& s
     return Result<EtfrWriteCounts>::ok(c);
 }
 
+/// Repeated keys (dates) within one delivery. An identical repeat is kept once;
+/// when the repeats of a key differ, every row of that key is left out (which
+/// one is right is unknown), never the item. Order is kept; `repeated` counts
+/// the identical repeats dropped, `conflicting` the keys left out.
+template <typename Row, typename KeyOf, typename Same>
+QVector<Row> etfr_unique_rows(const QVector<Row>& rows, KeyOf key_of, Same same, int* repeated, int* conflicting) {
+    QHash<QString, qsizetype> first;
+    QSet<QString> conflict;
+    QVector<Row> kept;
+    for (const Row& r : rows) {
+        const QString k = key_of(r);
+        const auto f = first.constFind(k);
+        if (f == first.constEnd()) {
+            first.insert(k, kept.size());
+            kept.append(r);
+        } else if (same(kept.at(*f), r)) {
+            ++*repeated;
+        } else {
+            conflict.insert(k);
+        }
+    }
+    *conflicting += static_cast<int>(conflict.size());
+    if (conflict.isEmpty())
+        return kept;
+    QVector<Row> out;
+    for (const Row& r : kept)
+        if (!conflict.contains(key_of(r)))
+            out.append(r);
+    return out;
+}
+
+using EtfrPoints = QVector<QPair<QString, QVariant>>;
+
+EtfrPoints etfr_unique_points(const EtfrPoints& pts, int* repeated, int* conflicting) {
+    return etfr_unique_rows(
+        pts, [](const QPair<QString, QVariant>& x) { return x.first; },
+        [](const QPair<QString, QVariant>& a, const QPair<QString, QVariant>& b) {
+            return etfr_same_opt(a.second, b.second);
+        },
+        repeated, conflicting);
+}
+
 /// Why an item that was obtained is only partly usable ('' when it is whole):
 /// rows left out as unparseable, World Bank pages that failed, a fund whose
 /// quote summary failed while its holdings came, or corporate actions on rows
@@ -251,6 +293,10 @@ QString etfr_partial_reason(const QJsonObject& it) {
         why << QStringLiteral("%1 unparseable row(s) left out").arg(n);
     if (!it.value(QStringLiteral("pages_failed")).toArray().isEmpty())
         why << QStringLiteral("%1 page(s) not read").arg(it.value(QStringLiteral("pages_failed")).toArray().size());
+    if (it.value(QStringLiteral("holdings_status")).toString() == QLatin1String("FAILED"))
+        why << QStringLiteral("holdings could not be read");
+    if (const int n = it.value(QStringLiteral("sector_weights_unparseable")).toInt(); n > 0)
+        why << QStringLiteral("%1 non-numeric sector weight(s) left out").arg(n);
     if (it.value(QStringLiteral("quote_status")).toString() == QLatin1String("FAILED"))
         why << QStringLiteral("quote summary failed, holdings kept");
     if (const int n = it.value(QStringLiteral("actions_without_close")).toArray().size(); n > 0)
@@ -423,443 +469,528 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
         QStringList keys = items.keys();
         std::sort(keys.begin(), keys.end());
         for (const QString& subject : keys) {
-            const QJsonObject it = items.value(subject).toObject();
-            // An item obtained in part is PARTIAL, with what was left out named;
-            // what was obtained is stored (2026-10-04 data-preservation rule).
-            QString partial = etfr_partial_reason(it);
-            const bool obtained = it.value(QStringLiteral("status")).toString() == QLatin1String("OK");
-            QString status = !obtained           ? QStringLiteral("FAILED")
-                             : partial.isEmpty() ? QStringLiteral("OK")
-                                                 : QStringLiteral("PARTIAL");
-            QString detail = it.value(QStringLiteral("detail")).toString();
-            if (const QString acts = etfr_actions_text(it); !acts.isEmpty())
-                detail = detail.isEmpty() ? acts : detail + QStringLiteral("; ") + acts;
-            // Rows this store cannot read are left out on their own, counted and
-            // named; the item is then PARTIAL. Never silently dropped.
-            auto left_out = [&](int n, const QString& what) {
-                if (n <= 0)
-                    return;
-                const QString note = QStringLiteral("%1 %2 left out").arg(n).arg(what);
-                partial = partial.isEmpty() ? note : partial + QStringLiteral(", ") + note;
-                detail = detail.isEmpty() ? note : detail + QStringLiteral("; ") + note;
-                status = QStringLiteral("PARTIAL");
-            };
-            // `partly` is filled when the item is done, once every exclusion is known.
-            const auto note_partly = qScopeGuard([&] {
-                if (!partial.isEmpty() && status != QLatin1String("FAILED"))
-                    partly << QStringLiteral("%1 (%2)").arg(subject, partial);
-            });
-            const QString ret_at =
-                it.value(QStringLiteral("retrieved_at")).toString(it.value(QStringLiteral("captured_at")).toString());
-            // An item reported as obtained whose rows are all unusable here is a
-            // failed item, recorded with its reason (never left without a retrieval).
-            auto fail_item = [&](const QString& why) -> Result<void> {
-                status = QStringLiteral("FAILED");
-                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status,
-                                                 detail.isEmpty() ? why : why + QStringLiteral("; ") + detail,
-                                                 QString(), 0, QString(), QString());
-                if (rid.is_err())
-                    return Result<void>::err(rid.error());
-                --st.items_ok;
-                st.failed_subjects.append(subject);
-                return Result<void>::ok();
-            };
-            if (status == QLatin1String("FAILED")) {
-                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status, detail, QString(),
-                                                 0, QString(), QString());
-                if (rid.is_err())
-                    return fail(rid.error());
-                st.failed_subjects.append(subject);
-                continue;
-            }
-            ++st.items_ok;
-            if (stage == QLatin1String("yahoo_history") || stage == QLatin1String("yahoo_constituent_history")) {
-                QJsonArray rows;
-                int malformed = 0;
-                for (const QJsonValue& rv : it.value(QStringLiteral("rows")).toArray()) {
-                    const QJsonArray r = rv.toArray();
-                    if (r.size() >= 6 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
-                        r.at(1).toDouble() > 0.0)
+            // Each item is stored behind its own savepoint: an item that cannot be
+            // stored is rolled back alone and recorded FAILED with the reason,
+            // and the stage's other items are kept (one bad row or item never
+            // undoes the rest of the delivery).
+            const SourceStageStatus st_before = st;
+            const QString latest_before = latest_eff;
+            const qsizetype partly_before = partly.size();
+            if (auto sp = db().execute(QStringLiteral("SAVEPOINT etfr_item")); sp.is_err())
+                return fail(sp.error());
+            const Result<void> item = [&]() -> Result<void> {
+                const QJsonObject it = items.value(subject).toObject();
+                // An item obtained in part is PARTIAL, with what was left out named;
+                // what was obtained is stored (2026-10-04 data-preservation rule).
+                QString partial = etfr_partial_reason(it);
+                const bool obtained = it.value(QStringLiteral("status")).toString() == QLatin1String("OK");
+                QString status = !obtained           ? QStringLiteral("FAILED")
+                                 : partial.isEmpty() ? QStringLiteral("OK")
+                                                     : QStringLiteral("PARTIAL");
+                QString detail = it.value(QStringLiteral("detail")).toString();
+                if (const QString acts = etfr_actions_text(it); !acts.isEmpty())
+                    detail = detail.isEmpty() ? acts : detail + QStringLiteral("; ") + acts;
+                // Rows this store cannot read are left out on their own, counted and
+                // named; the item is then PARTIAL. Never silently dropped.
+                // `lost`: something received is not stored, so the item is PARTIAL;
+                // an identical repeat kept once loses nothing and is only noted.
+                auto noted = [&](int n, const QString& what, bool lost = true) {
+                    if (n <= 0)
+                        return;
+                    const QString note = QStringLiteral("%1 %2").arg(n).arg(what);
+                    detail = detail.isEmpty() ? note : detail + QStringLiteral("; ") + note;
+                    if (!lost)
+                        return;
+                    partial = partial.isEmpty() ? note : partial + QStringLiteral(", ") + note;
+                    status = QStringLiteral("PARTIAL");
+                };
+                auto left_out = [&](int n, const QString& what) { noted(n, what + QStringLiteral(" left out")); };
+                // `partly` is filled when the item is done, once every exclusion is known.
+                const auto note_partly = qScopeGuard([&] {
+                    if (!partial.isEmpty() && status != QLatin1String("FAILED"))
+                        partly << QStringLiteral("%1 (%2)").arg(subject, partial);
+                });
+                const QString ret_at = it.value(QStringLiteral("retrieved_at"))
+                                           .toString(it.value(QStringLiteral("captured_at")).toString());
+                // An item reported as obtained whose rows are all unusable here is a
+                // failed item, recorded with its reason (never left without a retrieval).
+                auto fail_item = [&](const QString& why) -> Result<void> {
+                    status = QStringLiteral("FAILED");
+                    auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status,
+                                                     detail.isEmpty() ? why : why + QStringLiteral("; ") + detail,
+                                                     QString(), 0, QString(), QString());
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    --st.items_ok;
+                    st.failed_subjects.append(subject);
+                    return Result<void>::ok();
+                };
+                if (status == QLatin1String("FAILED")) {
+                    auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status, detail,
+                                                     QString(), 0, QString(), QString());
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    st.failed_subjects.append(subject);
+                    return Result<void>::ok();
+                }
+                ++st.items_ok;
+                if (stage == QLatin1String("yahoo_history") || stage == QLatin1String("yahoo_constituent_history")) {
+                    QVector<QJsonArray> parsed;
+                    int malformed = 0, bad_volume = 0;
+                    for (const QJsonValue& rv : it.value(QStringLiteral("rows")).toArray()) {
+                        QJsonArray r = rv.toArray();
+                        if (!(r.size() >= 6 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
+                              r.at(1).toDouble() > 0.0)) {
+                            ++malformed;
+                            continue;
+                        }
+                        // A volume that is not a non-negative number is unusable: the
+                        // bar is kept with its volume unknown (NULL), never 0.
+                        if (!r.at(2).isNull() && !(r.at(2).isDouble() && r.at(2).toDouble() >= 0.0)) {
+                            r[2] = QJsonValue();
+                            ++bad_volume;
+                        }
+                        parsed.append(r);
+                    }
+                    int repeated = 0, conflicting = 0;
+                    parsed = etfr_unique_rows(
+                        parsed, [](const QJsonArray& r) { return r.at(0).toString(); },
+                        [](const QJsonArray& a, const QJsonArray& b) { return a == b; }, &repeated, &conflicting);
+                    std::sort(parsed.begin(), parsed.end(), [](const QJsonArray& a, const QJsonArray& b) {
+                        return a.at(0).toString() < b.at(0).toString();
+                    });
+                    QJsonArray rows;
+                    for (const QJsonArray& r : parsed)
                         rows.append(r);
-                    else
-                        ++malformed;
-                }
-                left_out(malformed, QStringLiteral("malformed bar row(s)"));
-                if (rows.isEmpty()) {
-                    // A delivery without one well-formed completed bar is a failed item.
-                    if (auto f = fail_item(QStringLiteral("no well-formed bar in the response")); f.is_err())
-                        return fail(f.error());
-                    continue;
-                }
-                const QString first = rows.first().toArray().at(0).toString();
-                const QString last = rows.last().toArray().at(0).toString();
-                // An incremental delivery (recent sessions only) extends the
-                // symbol's latest coverage window back to its start when its
-                // overlap with the stored closes is consistent. A split, or most
-                // overlapping closes moved by one common factor, is a restatement
-                // of the whole history: the window stays this delivery's range,
-                // so no restated close is ever joined to unrestated ones, and the
-                // next refresh fetches the full history again.
-                QString window_first = first;
-                QString stitch_note;
-                if (it.value(QStringLiteral("incremental")).toBool()) {
-                    auto pw = db().execute(QStringLiteral("SELECT first_session, last_session FROM "
-                                                          "etf_research_bar_coverage WHERE symbol = ? ORDER BY "
-                                                          "retrieved_at DESC, retrieval_id DESC LIMIT 1"),
-                                           {subject});
-                    if (pw.is_err())
-                        return fail(pw.error());
-                    QString prev_first, prev_last;
-                    if (pw.value().next()) {
-                        prev_first = pw.value().value(0).toString();
-                        prev_last = pw.value().value(1).toString();
+                    left_out(malformed, QStringLiteral("malformed bar row(s)"));
+                    noted(bad_volume, QStringLiteral("unusable volume(s) stored as unknown"));
+                    noted(repeated, QStringLiteral("identical repeated bar(s) kept once"), false);
+                    left_out(conflicting, QStringLiteral("date(s) with conflicting bars"));
+                    if (rows.isEmpty()) {
+                        // A delivery without one well-formed completed bar is a failed item.
+                        if (auto f = fail_item(QStringLiteral("no well-formed bar in the response")); f.is_err())
+                            return Result<void>::err(f.error());
+                        return Result<void>::ok();
                     }
-                    bool split = false;
-                    QHash<QString, double> fetched;
-                    for (const QJsonValue& rv : rows) {
-                        const QJsonArray r = rv.toArray();
-                        fetched.insert(r.at(0).toString(), r.at(1).toDouble());
-                        split = split || r.at(5).toDouble() > 0.0;
-                    }
-                    int overlap = 0, moved = 0;
-                    QVector<double> ratios;
-                    if (!prev_last.isEmpty()) {
-                        auto ov = db().execute(
-                            QStringLiteral("SELECT b.session_date, b.close FROM etf_research_bars b WHERE b.symbol = ? "
-                                           "AND b.session_date >= ? AND b.session_date <= ? AND b.revision = (SELECT "
-                                           "MAX(x.revision) FROM etf_research_bars x WHERE x.symbol = b.symbol AND "
-                                           "x.session_date = b.session_date)"),
-                            {subject, first, prev_last});
-                        if (ov.is_err())
-                            return fail(ov.error());
-                        while (ov.value().next()) {
-                            const auto f = fetched.constFind(ov.value().value(0).toString());
-                            if (f == fetched.constEnd())
-                                continue;
-                            ++overlap;
-                            const double ratio = *f / ov.value().value(1).toDouble();
-                            if (std::abs(ratio - 1.0) > 1e-6) {
-                                ++moved;
-                                ratios.append(ratio);
+                    const QString first = rows.first().toArray().at(0).toString();
+                    const QString last = rows.last().toArray().at(0).toString();
+                    // An incremental delivery (recent sessions only) extends the
+                    // symbol's latest coverage window back to its start when its
+                    // overlap with the stored closes is consistent. A split, or most
+                    // overlapping closes moved by one common factor, is a restatement
+                    // of the whole history: the window stays this delivery's range,
+                    // so no restated close is ever joined to unrestated ones, and the
+                    // next refresh fetches the full history again.
+                    QString window_first = first;
+                    QString stitch_note;
+                    if (it.value(QStringLiteral("incremental")).toBool()) {
+                        auto pw = db().execute(QStringLiteral("SELECT first_session, last_session FROM "
+                                                              "etf_research_bar_coverage WHERE symbol = ? ORDER BY "
+                                                              "retrieved_at DESC, retrieval_id DESC LIMIT 1"),
+                                               {subject});
+                        if (pw.is_err())
+                            return Result<void>::err(pw.error());
+                        QString prev_first, prev_last;
+                        if (pw.value().next()) {
+                            prev_first = pw.value().value(0).toString();
+                            prev_last = pw.value().value(1).toString();
+                        }
+                        bool split = false;
+                        QHash<QString, double> fetched;
+                        for (const QJsonValue& rv : rows) {
+                            const QJsonArray r = rv.toArray();
+                            fetched.insert(r.at(0).toString(), r.at(1).toDouble());
+                            split = split || r.at(5).toDouble() > 0.0;
+                        }
+                        int overlap = 0, moved = 0;
+                        QVector<double> ratios;
+                        if (!prev_last.isEmpty()) {
+                            auto ov = db().execute(
+                                QStringLiteral(
+                                    "SELECT b.session_date, b.close FROM etf_research_bars b WHERE b.symbol = ? "
+                                    "AND b.session_date >= ? AND b.session_date <= ? AND b.revision = (SELECT "
+                                    "MAX(x.revision) FROM etf_research_bars x WHERE x.symbol = b.symbol AND "
+                                    "x.session_date = b.session_date)"),
+                                {subject, first, prev_last});
+                            if (ov.is_err())
+                                return Result<void>::err(ov.error());
+                            while (ov.value().next()) {
+                                const auto f = fetched.constFind(ov.value().value(0).toString());
+                                if (f == fetched.constEnd())
+                                    continue;
+                                ++overlap;
+                                const double ratio = *f / ov.value().value(1).toDouble();
+                                if (std::abs(ratio - 1.0) > 1e-6) {
+                                    ++moved;
+                                    ratios.append(ratio);
+                                }
                             }
                         }
+                        bool common_factor = false;
+                        if (moved >= 2 && moved * 2 >= overlap) {
+                            std::sort(ratios.begin(), ratios.end());
+                            const double median = ratios[ratios.size() / 2];
+                            int near = 0;
+                            for (double r : ratios)
+                                near += std::abs(r / median - 1.0) < 1e-3 ? 1 : 0;
+                            common_factor = near * 2 >= moved;
+                        }
+                        if (!prev_first.isEmpty() && overlap >= 3 && !split && !common_factor) {
+                            window_first = prev_first;
+                            stitch_note = QStringLiteral("incremental; joined to the stored history from %1 (%2 of %3 "
+                                                         "overlapping closes revised)")
+                                              .arg(prev_first)
+                                              .arg(moved)
+                                              .arg(overlap);
+                        } else {
+                            stitch_note =
+                                QStringLiteral("incremental; NOT joined (%1): this delivery's range only, full "
+                                               "history on the next refresh")
+                                    .arg(split                 ? QStringLiteral("split in the delivery")
+                                         : common_factor       ? QStringLiteral("history restated")
+                                         : prev_last.isEmpty() ? QStringLiteral("no stored window")
+                                                               : QStringLiteral("overlap too short"));
+                        }
                     }
-                    bool common_factor = false;
-                    if (moved >= 2 && moved * 2 >= overlap) {
-                        std::sort(ratios.begin(), ratios.end());
-                        const double median = ratios[ratios.size() / 2];
-                        int near = 0;
-                        for (double r : ratios)
-                            near += std::abs(r / median - 1.0) < 1e-3 ? 1 : 0;
-                        common_factor = near * 2 >= moved;
+                    auto rid = etfr_insert_retrieval(
+                        run_id, stage, subject, req_at, ret_at, status,
+                        stitch_note.isEmpty()
+                            ? detail
+                            : (detail.isEmpty() ? stitch_note : detail + QStringLiteral("; ") + stitch_note),
+                        so.value(QStringLiteral("sha256")).toString(), rows.size(), first, last);
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    auto w = etfr_write_bars(subject, rows, rid.value(), ret_at);
+                    if (w.is_err())
+                        return Result<void>::err(w.error());
+                    st.rows_inserted += w.value().inserted;
+                    st.rows_revised += w.value().revised;
+                    st.rows_confirmed += w.value().confirmed;
+                    auto cov = db().execute(
+                        QStringLiteral(
+                            "INSERT INTO etf_research_bar_coverage (retrieval_id, symbol, first_session, "
+                            "last_session, bars, retrieved_at, in_progress_excluded) VALUES (?,?,?,?,?,?,?)"),
+                        {rid.value(), subject, window_first, last, static_cast<int>(rows.size()), ret_at,
+                         it.value(QStringLiteral("in_progress_excluded")).toInt()});
+                    if (cov.is_err())
+                        return Result<void>::err(cov.error());
+                    const bool us = !subject.contains(QLatin1Char('.')) && !subject.startsWith(QLatin1Char('^'));
+                    const QDate ld = QDate::fromString(last, Qt::ISODate);
+                    if (us && expected_us_session.isValid() && ld < expected_us_session)
+                        ++st.stale_items;
+                    if (us && last > latest_eff)
+                        latest_eff = last;
+                } else if (stage == QLatin1String("yahoo_funds")) {
+                    const QJsonObject f = it.value(QStringLiteral("fields")).toObject();
+                    const QDateTime captured = etfr_parse_time(it.value(QStringLiteral("captured_at")).toString());
+                    const QDate eff = prior_completed_session(captured);
+                    // A holding Yahoo lists without a ticker but with its name is kept
+                    // (empty symbol); one without a rank, with a repeated rank, or
+                    // without symbol and name cannot be identified and is left out,
+                    // counted. A sector weight that is not a number is left out alone.
+                    QVector<QVariantList> hrows;
+                    int unidentified = 0;
+                    QSet<int> ranks;
+                    for (const auto& hv : it.value(QStringLiteral("holdings")).toArray()) {
+                        const QJsonArray h = hv.toArray();
+                        const int rank = h.size() >= 4 && h[0].isDouble() ? h[0].toInt() : 0;
+                        if (rank < 1 || ranks.contains(rank) ||
+                            (h[1].toString().isEmpty() && h[2].toString().isEmpty())) {
+                            ++unidentified;
+                            continue;
+                        }
+                        ranks.insert(rank);
+                        hrows.append({subject, rank, h[1].toString(), etfr_text(h[2].toString()), etfr_opt(h[3])});
                     }
-                    if (!prev_first.isEmpty() && overlap >= 3 && !split && !common_factor) {
-                        window_first = prev_first;
-                        stitch_note = QStringLiteral("incremental; joined to the stored history from %1 (%2 of %3 "
-                                                     "overlapping closes revised)")
-                                          .arg(prev_first)
-                                          .arg(moved)
-                                          .arg(overlap);
-                    } else {
-                        stitch_note = QStringLiteral("incremental; NOT joined (%1): this delivery's range only, full "
-                                                     "history on the next refresh")
-                                          .arg(split                 ? QStringLiteral("split in the delivery")
-                                               : common_factor       ? QStringLiteral("history restated")
-                                               : prev_last.isEmpty() ? QStringLiteral("no stored window")
-                                                                     : QStringLiteral("overlap too short"));
+                    QVector<QVariantList> wrows;
+                    int bad_weights = 0;
+                    const QJsonObject sw = it.value(QStringLiteral("sector_weights")).toObject();
+                    for (auto k = sw.begin(); k != sw.end(); ++k) {
+                        if (k.value().isDouble())
+                            wrows.append({subject, k.key(), k.value().toDouble()});
+                        else
+                            ++bad_weights;
                     }
-                }
-                auto rid = etfr_insert_retrieval(
-                    run_id, stage, subject, req_at, ret_at, status,
-                    stitch_note.isEmpty()
-                        ? detail
-                        : (detail.isEmpty() ? stitch_note : detail + QStringLiteral("; ") + stitch_note),
-                    so.value(QStringLiteral("sha256")).toString(), rows.size(), first, last);
-                if (rid.is_err())
-                    return fail(rid.error());
-                auto w = etfr_write_bars(subject, rows, rid.value(), ret_at);
-                if (w.is_err())
-                    return fail(w.error());
-                st.rows_inserted += w.value().inserted;
-                st.rows_revised += w.value().revised;
-                st.rows_confirmed += w.value().confirmed;
-                auto cov = db().execute(
-                    QStringLiteral("INSERT INTO etf_research_bar_coverage (retrieval_id, symbol, first_session, "
-                                   "last_session, bars, retrieved_at, in_progress_excluded) VALUES (?,?,?,?,?,?,?)"),
-                    {rid.value(), subject, window_first, last, static_cast<int>(rows.size()), ret_at,
-                     it.value(QStringLiteral("in_progress_excluded")).toInt()});
-                if (cov.is_err())
-                    return fail(cov.error());
-                const bool us = !subject.contains(QLatin1Char('.')) && !subject.startsWith(QLatin1Char('^'));
-                const QDate ld = QDate::fromString(last, Qt::ISODate);
-                if (us && expected_us_session.isValid() && ld < expected_us_session)
-                    ++st.stale_items;
-                if (us && last > latest_eff)
-                    latest_eff = last;
-            } else if (stage == QLatin1String("yahoo_funds")) {
-                const QJsonObject f = it.value(QStringLiteral("fields")).toObject();
-                const QDateTime captured = etfr_parse_time(it.value(QStringLiteral("captured_at")).toString());
-                const QDate eff = prior_completed_session(captured);
-                // A holding Yahoo lists without a ticker but with its name is kept
-                // (empty symbol); one without a rank, with a repeated rank, or
-                // without symbol and name cannot be identified and is left out,
-                // counted. A sector weight that is not a number is left out alone.
-                QVector<QVariantList> hrows;
-                int unidentified = 0;
-                QSet<int> ranks;
-                for (const auto& hv : it.value(QStringLiteral("holdings")).toArray()) {
-                    const QJsonArray h = hv.toArray();
-                    const int rank = h.size() >= 4 && h[0].isDouble() ? h[0].toInt() : 0;
-                    if (rank < 1 || ranks.contains(rank) || (h[1].toString().isEmpty() && h[2].toString().isEmpty())) {
-                        ++unidentified;
-                        continue;
+                    left_out(unidentified, QStringLiteral("unidentifiable holding(s)"));
+                    left_out(bad_weights, QStringLiteral("non-numeric sector weight(s)"));
+                    auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, etfr_iso(captured), status,
+                                                     it.value(QStringLiteral("holdings_status")).toString() +
+                                                         QLatin1Char(' ') +
+                                                         it.value(QStringLiteral("holdings_detail")).toString() +
+                                                         (detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
+                                                     so.value(QStringLiteral("sha256")).toString(), 1,
+                                                     eff.toString(Qt::ISODate), eff.toString(Qt::ISODate));
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    QString market_time;
+                    if (f.value(QStringLiteral("regularMarketTime")).isDouble())
+                        market_time = etfr_iso(QDateTime::fromSecsSinceEpoch(
+                            static_cast<qint64>(f.value(QStringLiteral("regularMarketTime")).toDouble()),
+                            QTimeZone::UTC));
+                    const QVariant aum = f.contains(QStringLiteral("totalAssets"))
+                                             ? etfr_opt(f.value(QStringLiteral("totalAssets")))
+                                             : etfr_opt(f.value(QStringLiteral("netAssets")));
+                    // A fund whose quote summary failed while its holdings came keeps
+                    // the holdings; no capture of empty fund facts is written.
+                    const bool quote = !f.isEmpty();
+                    if (quote) {
+                        auto ins = db().execute(
+                            QStringLiteral(
+                                "INSERT INTO etf_research_fund_snapshots (retrieval_id, symbol, captured_at, "
+                                "effective_session, effective_rule, total_assets, nav, previous_close, "
+                                "shares_outstanding, market_time, fields_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
+                            {rid.value(), subject, etfr_iso(captured), etfr_text_or_null(eff.toString(Qt::ISODate)),
+                             eff.isValid() ? QStringLiteral("prior_completed_session_v1")
+                                           : QStringLiteral("prior_completed_session_v1:outside_calendar"),
+                             aum, etfr_opt(f.value(QStringLiteral("navPrice"))),
+                             etfr_opt(f.value(QStringLiteral("regularMarketPreviousClose"))),
+                             etfr_opt(f.value(QStringLiteral("sharesOutstanding"))), etfr_text_or_null(market_time),
+                             QString::fromUtf8(QJsonDocument(f).toJson(QJsonDocument::Compact))});
+                        if (ins.is_err())
+                            return Result<void>::err(ins.error());
                     }
-                    ranks.insert(rank);
-                    hrows.append({subject, rank, h[1].toString(), etfr_text(h[2].toString()), etfr_opt(h[3])});
-                }
-                QVector<QVariantList> wrows;
-                int bad_weights = 0;
-                const QJsonObject sw = it.value(QStringLiteral("sector_weights")).toObject();
-                for (auto k = sw.begin(); k != sw.end(); ++k) {
-                    if (k.value().isDouble())
-                        wrows.append({subject, k.key(), k.value().toDouble()});
-                    else
-                        ++bad_weights;
-                }
-                left_out(unidentified, QStringLiteral("unidentifiable holding(s)"));
-                left_out(bad_weights, QStringLiteral("non-numeric sector weight(s)"));
-                auto rid =
-                    etfr_insert_retrieval(run_id, stage, subject, req_at, etfr_iso(captured), status,
-                                          it.value(QStringLiteral("holdings_status")).toString() + QLatin1Char(' ') +
-                                              it.value(QStringLiteral("holdings_detail")).toString() +
-                                              (detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
-                                          so.value(QStringLiteral("sha256")).toString(), 1, eff.toString(Qt::ISODate),
-                                          eff.toString(Qt::ISODate));
-                if (rid.is_err())
-                    return fail(rid.error());
-                QString market_time;
-                if (f.value(QStringLiteral("regularMarketTime")).isDouble())
-                    market_time = etfr_iso(QDateTime::fromSecsSinceEpoch(
-                        static_cast<qint64>(f.value(QStringLiteral("regularMarketTime")).toDouble()), QTimeZone::UTC));
-                const QVariant aum = f.contains(QStringLiteral("totalAssets"))
-                                         ? etfr_opt(f.value(QStringLiteral("totalAssets")))
-                                         : etfr_opt(f.value(QStringLiteral("netAssets")));
-                // A fund whose quote summary failed while its holdings came keeps
-                // the holdings; no capture of empty fund facts is written.
-                const bool quote = !f.isEmpty();
-                if (quote) {
-                    auto ins = db().execute(
-                        QStringLiteral("INSERT INTO etf_research_fund_snapshots (retrieval_id, symbol, captured_at, "
-                                       "effective_session, effective_rule, total_assets, nav, previous_close, "
-                                       "shares_outstanding, market_time, fields_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
-                        {rid.value(), subject, etfr_iso(captured), etfr_text_or_null(eff.toString(Qt::ISODate)),
-                         eff.isValid() ? QStringLiteral("prior_completed_session_v1")
-                                       : QStringLiteral("prior_completed_session_v1:outside_calendar"),
-                         aum, etfr_opt(f.value(QStringLiteral("navPrice"))),
-                         etfr_opt(f.value(QStringLiteral("regularMarketPreviousClose"))),
-                         etfr_opt(f.value(QStringLiteral("sharesOutstanding"))), etfr_text_or_null(market_time),
-                         QString::fromUtf8(QJsonDocument(f).toJson(QJsonDocument::Compact))});
+                    for (auto& row : hrows)
+                        row.prepend(rid.value());
+                    for (auto& row : wrows)
+                        row.prepend(rid.value());
+                    auto hw = db().execute_many(
+                        QStringLiteral("INSERT INTO etf_research_holdings (retrieval_id, symbol, rank, "
+                                       "holding_symbol, holding_name, weight) VALUES (?,?,?,?,?,?)"),
+                        hrows);
+                    if (hw.is_err())
+                        return Result<void>::err(hw.error());
+                    auto ww = db().execute_many(
+                        QStringLiteral("INSERT INTO etf_research_sector_weights (retrieval_id, symbol, "
+                                       "sector_key, weight) VALUES (?,?,?,?)"),
+                        wrows);
+                    if (ww.is_err())
+                        return Result<void>::err(ww.error());
+                    if (quote) {
+                        ++st.rows_inserted; // every capture is a new observation of an undated snapshot
+                        if (eff.toString(Qt::ISODate) > latest_eff)
+                            latest_eff = eff.toString(Qt::ISODate);
+                    }
+                } else if (stage == QLatin1String("yahoo_fundamentals")) {
+                    const QString captured = it.value(QStringLiteral("captured_at")).toString();
+                    auto rid =
+                        etfr_insert_retrieval(run_id, stage, subject, req_at, captured, status, detail,
+                                              so.value(QStringLiteral("sha256")).toString(), 1, QString(), QString());
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    auto ins =
+                        db().execute(QStringLiteral("INSERT INTO etf_research_fundamentals (retrieval_id, symbol, "
+                                                    "captured_at, fields_json) VALUES (?,?,?,?)"),
+                                     {rid.value(), subject, captured,
+                                      QString::fromUtf8(QJsonDocument(it.value(QStringLiteral("fields")).toObject())
+                                                            .toJson(QJsonDocument::Compact))});
                     if (ins.is_err())
-                        return fail(ins.error());
-                }
-                for (auto& row : hrows)
-                    row.prepend(rid.value());
-                for (auto& row : wrows)
-                    row.prepend(rid.value());
-                auto hw =
-                    db().execute_many(QStringLiteral("INSERT INTO etf_research_holdings (retrieval_id, symbol, rank, "
-                                                     "holding_symbol, holding_name, weight) VALUES (?,?,?,?,?,?)"),
-                                      hrows);
-                if (hw.is_err())
-                    return fail(hw.error());
-                auto ww =
-                    db().execute_many(QStringLiteral("INSERT INTO etf_research_sector_weights (retrieval_id, symbol, "
-                                                     "sector_key, weight) VALUES (?,?,?,?)"),
-                                      wrows);
-                if (ww.is_err())
-                    return fail(ww.error());
-                if (quote) {
-                    ++st.rows_inserted; // every capture is a new observation of an undated snapshot
-                    if (eff.toString(Qt::ISODate) > latest_eff)
-                        latest_eff = eff.toString(Qt::ISODate);
-                }
-            } else if (stage == QLatin1String("yahoo_fundamentals")) {
-                const QString captured = it.value(QStringLiteral("captured_at")).toString();
-                auto rid =
-                    etfr_insert_retrieval(run_id, stage, subject, req_at, captured, status, detail,
-                                          so.value(QStringLiteral("sha256")).toString(), 1, QString(), QString());
-                if (rid.is_err())
-                    return fail(rid.error());
-                auto ins = db().execute(
-                    QStringLiteral("INSERT INTO etf_research_fundamentals (retrieval_id, symbol, "
-                                   "captured_at, fields_json) VALUES (?,?,?,?)"),
-                    {rid.value(), subject, captured,
-                     QString::fromUtf8(
-                         QJsonDocument(it.value(QStringLiteral("fields")).toObject()).toJson(QJsonDocument::Compact))});
-                if (ins.is_err())
-                    return fail(ins.error());
-                ++st.rows_inserted;
-            } else if (stage == QLatin1String("fred")) {
-                // A row without a valid date or a numeric value is left out alone
-                // (never read as 0); the source's missing points are already apart.
-                const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
-                QVector<QPair<QString, QVariant>> pts;
-                int malformed = 0;
-                for (const auto& rv : rows) {
-                    const QJsonArray r = rv.toArray();
-                    if (r.size() >= 2 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
-                        r.at(1).isDouble())
-                        pts.append({r.at(0).toString(), QVariant(r.at(1).toDouble())});
-                    else
-                        ++malformed;
-                }
-                left_out(malformed, QStringLiteral("malformed row(s)"));
-                if (pts.isEmpty()) {
-                    if (auto f = fail_item(QStringLiteral("no well-formed observation in the response")); f.is_err())
-                        return fail(f.error());
-                    continue;
-                }
-                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
-                                                 QStringLiteral("missing_points=%1%2")
-                                                     .arg(it.value(QStringLiteral("missing_points")).toInt())
-                                                     .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
-                                                 it.value(QStringLiteral("response_sha256")).toString(), pts.size(),
-                                                 pts.first().first, pts.last().first);
-                if (rid.is_err())
-                    return fail(rid.error());
-                auto w = etfr_write_macro(QStringLiteral("fred"), subject, QString(), pts, rid.value(), ret_at);
-                if (w.is_err())
-                    return fail(w.error());
-                st.rows_inserted += w.value().inserted;
-                st.rows_revised += w.value().revised;
-                st.rows_confirmed += w.value().confirmed;
-                auto cov = db().execute(
-                    QStringLiteral("INSERT INTO etf_research_macro_coverage (retrieval_id, source, "
-                                   "series_id, area, first_date, last_date, points, retrieved_at) "
-                                   "VALUES (?,'fred',?,'',?,?,?,?)"),
-                    {rid.value(), subject, pts.first().first, pts.last().first, static_cast<int>(pts.size()), ret_at});
-                if (cov.is_err())
-                    return fail(cov.error());
-                if (pts.last().first > latest_eff)
-                    latest_eff = pts.last().first;
-            } else if (stage == QLatin1String("cftc")) {
-                // One weekly series per field of the market: open interest and the
-                // non-commercial long/short positions (a missing cell is no observation).
-                const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
-                const char* fields[] = {"open_interest", "non_commercial_long", "non_commercial_short"};
-                // Each field stands on its own: a market whose open interest is
-                // missing keeps its positions. A row without a valid date is left
-                // out, counted.
-                QVector<QPair<QString, QVariant>> pts[3];
-                int malformed = 0;
-                for (const auto& rv : rows) {
-                    const QJsonArray r = rv.toArray();
-                    if (r.size() < 4 || !QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid()) {
-                        ++malformed;
-                        continue;
+                        return Result<void>::err(ins.error());
+                    ++st.rows_inserted;
+                } else if (stage == QLatin1String("fred")) {
+                    // A row without a valid date or a numeric value is left out alone
+                    // (never read as 0); the source's missing points are already apart.
+                    const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
+                    QVector<QPair<QString, QVariant>> pts;
+                    int malformed = 0;
+                    for (const auto& rv : rows) {
+                        const QJsonArray r = rv.toArray();
+                        if (r.size() >= 2 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
+                            r.at(1).isDouble())
+                            pts.append({r.at(0).toString(), QVariant(r.at(1).toDouble())});
+                        else
+                            ++malformed;
                     }
-                    for (int f = 0; f < 3; ++f)
-                        if (r.at(f + 1).isDouble())
-                            pts[f].append({r.at(0).toString(), QVariant(r.at(f + 1).toDouble())});
-                }
-                left_out(malformed, QStringLiteral("undated row(s)"));
-                QString first_report, last_report;
-                for (int f = 0; f < 3; ++f) {
-                    if (pts[f].isEmpty())
-                        continue;
-                    if (first_report.isEmpty() || pts[f].first().first < first_report)
-                        first_report = pts[f].first().first;
-                    if (pts[f].last().first > last_report)
-                        last_report = pts[f].last().first;
-                }
-                if (last_report.isEmpty()) {
-                    if (auto f = fail_item(QStringLiteral("no reported position in the response")); f.is_err())
-                        return fail(f.error());
-                    continue;
-                }
-                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
-                                                 QStringLiteral("cftc_tool_status=%1 %2")
-                                                     .arg(it.value(QStringLiteral("source_status")).toString(), detail)
-                                                     .trimmed(),
-                                                 QString(), static_cast<int>(rows.size()) - malformed, first_report,
-                                                 last_report);
-                if (rid.is_err())
-                    return fail(rid.error());
-                for (int f = 0; f < 3; ++f) {
-                    if (pts[f].isEmpty())
-                        continue;
-                    const QString area = QLatin1String(fields[f]);
-                    auto w = etfr_write_macro(QStringLiteral("cftc"), subject, area, pts[f], rid.value(), ret_at);
+                    int repeated = 0, conflicting = 0;
+                    pts = etfr_unique_points(pts, &repeated, &conflicting);
+                    left_out(malformed, QStringLiteral("malformed row(s)"));
+                    noted(repeated, QStringLiteral("identical repeated observation(s) kept once"), false);
+                    left_out(conflicting, QStringLiteral("date(s) with conflicting observations"));
+                    if (pts.isEmpty()) {
+                        if (auto f = fail_item(QStringLiteral("no well-formed observation in the response"));
+                            f.is_err())
+                            return Result<void>::err(f.error());
+                        return Result<void>::ok();
+                    }
+                    auto rid =
+                        etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
+                                              QStringLiteral("missing_points=%1%2")
+                                                  .arg(it.value(QStringLiteral("missing_points")).toInt())
+                                                  .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
+                                              it.value(QStringLiteral("response_sha256")).toString(), pts.size(),
+                                              pts.first().first, pts.last().first);
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    auto w = etfr_write_macro(QStringLiteral("fred"), subject, QString(), pts, rid.value(), ret_at);
                     if (w.is_err())
-                        return fail(w.error());
+                        return Result<void>::err(w.error());
                     st.rows_inserted += w.value().inserted;
                     st.rows_revised += w.value().revised;
                     st.rows_confirmed += w.value().confirmed;
-                    auto cov = db().execute(
-                        QStringLiteral(
-                            "INSERT INTO etf_research_macro_coverage (retrieval_id, source, series_id, "
-                            "area, first_date, last_date, points, retrieved_at) VALUES (?,'cftc',?,?,?,?,?,?)"),
-                        {rid.value(), subject, area, pts[f].first().first, pts[f].last().first,
-                         static_cast<int>(pts[f].size()), ret_at});
+                    auto cov =
+                        db().execute(QStringLiteral("INSERT INTO etf_research_macro_coverage (retrieval_id, source, "
+                                                    "series_id, area, first_date, last_date, points, retrieved_at) "
+                                                    "VALUES (?,'fred',?,'',?,?,?,?)"),
+                                     {rid.value(), subject, pts.first().first, pts.last().first,
+                                      static_cast<int>(pts.size()), ret_at});
                     if (cov.is_err())
-                        return fail(cov.error());
-                }
-                if (last_report > latest_eff)
-                    latest_eff = last_report;
-            } else if (stage == QLatin1String("world_bank")) {
-                const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
-                // A row without an area or a year is left out alone, counted; a null
-                // value stays the source's null (missing, never 0).
-                QHash<QString, QVector<QPair<QString, QVariant>>> by_area;
-                int malformed = 0;
-                for (const auto& rv : rows) {
-                    const QJsonArray r = rv.toArray();
-                    if (r.size() < 3 || r.at(0).toString().isEmpty() || !r.at(1).isDouble() || r.at(1).toInt() < 1000) {
-                        ++malformed;
-                        continue;
+                        return Result<void>::err(cov.error());
+                    if (pts.last().first > latest_eff)
+                        latest_eff = pts.last().first;
+                } else if (stage == QLatin1String("cftc")) {
+                    // One weekly series per field of the market: open interest and the
+                    // non-commercial long/short positions (a missing cell is no observation).
+                    const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
+                    const char* fields[] = {"open_interest", "non_commercial_long", "non_commercial_short"};
+                    // Each field stands on its own: a market whose open interest is
+                    // missing keeps its positions. A row without a valid date is left
+                    // out, counted.
+                    QVector<QPair<QString, QVariant>> pts[3];
+                    int malformed = 0;
+                    for (const auto& rv : rows) {
+                        const QJsonArray r = rv.toArray();
+                        if (r.size() < 4 || !QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid()) {
+                            ++malformed;
+                            continue;
+                        }
+                        for (int f = 0; f < 3; ++f)
+                            if (r.at(f + 1).isDouble())
+                                pts[f].append({r.at(0).toString(), QVariant(r.at(f + 1).toDouble())});
                     }
-                    by_area[r.at(0).toString()].append(
-                        {QStringLiteral("%1-12-31").arg(r.at(1).toInt()), etfr_opt(r.at(2))});
+                    int repeated = 0, conflicting = 0;
+                    for (auto& series : pts) {
+                        series = etfr_unique_points(series, &repeated, &conflicting);
+                        std::sort(series.begin(), series.end(),
+                                  [](const auto& a, const auto& b) { return a.first < b.first; });
+                    }
+                    left_out(malformed, QStringLiteral("undated row(s)"));
+                    noted(repeated, QStringLiteral("identical repeated value(s) kept once"), false);
+                    left_out(conflicting, QStringLiteral("report date(s) with conflicting values, per field"));
+                    QString first_report, last_report;
+                    for (int f = 0; f < 3; ++f) {
+                        if (pts[f].isEmpty())
+                            continue;
+                        if (first_report.isEmpty() || pts[f].first().first < first_report)
+                            first_report = pts[f].first().first;
+                        if (pts[f].last().first > last_report)
+                            last_report = pts[f].last().first;
+                    }
+                    if (last_report.isEmpty()) {
+                        if (auto f = fail_item(QStringLiteral("no reported position in the response")); f.is_err())
+                            return Result<void>::err(f.error());
+                        return Result<void>::ok();
+                    }
+                    auto rid = etfr_insert_retrieval(
+                        run_id, stage, subject, req_at, ret_at, status,
+                        QStringLiteral("cftc_tool_status=%1 %2")
+                            .arg(it.value(QStringLiteral("source_status")).toString(), detail)
+                            .trimmed(),
+                        QString(), static_cast<int>(rows.size()) - malformed, first_report, last_report);
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    for (int f = 0; f < 3; ++f) {
+                        if (pts[f].isEmpty())
+                            continue;
+                        const QString area = QLatin1String(fields[f]);
+                        auto w = etfr_write_macro(QStringLiteral("cftc"), subject, area, pts[f], rid.value(), ret_at);
+                        if (w.is_err())
+                            return Result<void>::err(w.error());
+                        st.rows_inserted += w.value().inserted;
+                        st.rows_revised += w.value().revised;
+                        st.rows_confirmed += w.value().confirmed;
+                        auto cov = db().execute(
+                            QStringLiteral(
+                                "INSERT INTO etf_research_macro_coverage (retrieval_id, source, series_id, "
+                                "area, first_date, last_date, points, retrieved_at) VALUES (?,'cftc',?,?,?,?,?,?)"),
+                            {rid.value(), subject, area, pts[f].first().first, pts[f].last().first,
+                             static_cast<int>(pts[f].size()), ret_at});
+                        if (cov.is_err())
+                            return Result<void>::err(cov.error());
+                    }
+                    if (last_report > latest_eff)
+                        latest_eff = last_report;
+                } else if (stage == QLatin1String("world_bank")) {
+                    const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
+                    // A row without an area or a year is left out alone, counted; a null
+                    // value stays the source's null (missing, never 0).
+                    QHash<QString, QVector<QPair<QString, QVariant>>> by_area;
+                    int malformed = 0;
+                    for (const auto& rv : rows) {
+                        const QJsonArray r = rv.toArray();
+                        if (r.size() < 3 || r.at(0).toString().isEmpty() || !r.at(1).isDouble() ||
+                            r.at(1).toInt() < 1000) {
+                            ++malformed;
+                            continue;
+                        }
+                        by_area[r.at(0).toString()].append(
+                            {QStringLiteral("%1-12-31").arg(r.at(1).toInt()), etfr_opt(r.at(2))});
+                    }
+                    int repeated = 0, conflicting = 0;
+                    for (auto a = by_area.begin(); a != by_area.end(); ++a)
+                        a.value() = etfr_unique_points(a.value(), &repeated, &conflicting);
+                    left_out(malformed, QStringLiteral("malformed row(s)"));
+                    noted(repeated, QStringLiteral("identical repeated value(s) kept once"), false);
+                    left_out(conflicting, QStringLiteral("year(s) with conflicting values"));
+                    auto rid = etfr_insert_retrieval(
+                        run_id, stage, subject, req_at, ret_at, status,
+                        QStringLiteral("absent:%1%2")
+                            .arg([&] {
+                                QStringList a;
+                                for (const auto& v : it.value(QStringLiteral("countries_absent")).toArray())
+                                    a.append(v.toString());
+                                return a.join(QLatin1Char(','));
+                            }())
+                            .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
+                        QString(), rows.size() - malformed, QString(), QString());
+                    if (rid.is_err())
+                        return Result<void>::err(rid.error());
+                    QStringList areas = by_area.keys();
+                    std::sort(areas.begin(), areas.end());
+                    for (const QString& area : areas) {
+                        auto& pts = by_area[area];
+                        std::sort(pts.begin(), pts.end(),
+                                  [](const auto& a, const auto& b) { return a.first < b.first; });
+                        auto w =
+                            etfr_write_macro(QStringLiteral("world_bank"), subject, area, pts, rid.value(), ret_at);
+                        if (w.is_err())
+                            return Result<void>::err(w.error());
+                        st.rows_inserted += w.value().inserted;
+                        st.rows_revised += w.value().revised;
+                        st.rows_confirmed += w.value().confirmed;
+                        auto cov = db().execute(
+                            QStringLiteral(
+                                "INSERT INTO etf_research_macro_coverage (retrieval_id, source, series_id, area, "
+                                "first_date, last_date, points, retrieved_at, source_updated) "
+                                "VALUES (?,'world_bank',?,?,?,?,?,?,?)"),
+                            {rid.value(), subject, area, pts.first().first, pts.last().first,
+                             static_cast<int>(pts.size()), ret_at,
+                             etfr_text(it.value(QStringLiteral("source_last_updated")).toString())});
+                        if (cov.is_err())
+                            return Result<void>::err(cov.error());
+                    }
+                    const QString upd = it.value(QStringLiteral("source_last_updated")).toString();
+                    if (upd > latest_eff)
+                        latest_eff = upd;
                 }
-                left_out(malformed, QStringLiteral("malformed row(s)"));
-                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
-                                                 QStringLiteral("absent:%1%2")
-                                                     .arg([&] {
-                                                         QStringList a;
-                                                         for (const auto& v :
-                                                              it.value(QStringLiteral("countries_absent")).toArray())
-                                                             a.append(v.toString());
-                                                         return a.join(QLatin1Char(','));
-                                                     }())
-                                                     .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
-                                                 QString(), rows.size() - malformed, QString(), QString());
-                if (rid.is_err())
-                    return fail(rid.error());
-                QStringList areas = by_area.keys();
-                std::sort(areas.begin(), areas.end());
-                for (const QString& area : areas) {
-                    auto& pts = by_area[area];
-                    std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-                    auto w = etfr_write_macro(QStringLiteral("world_bank"), subject, area, pts, rid.value(), ret_at);
-                    if (w.is_err())
-                        return fail(w.error());
-                    st.rows_inserted += w.value().inserted;
-                    st.rows_revised += w.value().revised;
-                    st.rows_confirmed += w.value().confirmed;
-                    auto cov = db().execute(
-                        QStringLiteral(
-                            "INSERT INTO etf_research_macro_coverage (retrieval_id, source, series_id, area, "
-                            "first_date, last_date, points, retrieved_at, source_updated) "
-                            "VALUES (?,'world_bank',?,?,?,?,?,?,?)"),
-                        {rid.value(), subject, area, pts.first().first, pts.last().first, static_cast<int>(pts.size()),
-                         ret_at, etfr_text(it.value(QStringLiteral("source_last_updated")).toString())});
-                    if (cov.is_err())
-                        return fail(cov.error());
-                }
-                const QString upd = it.value(QStringLiteral("source_last_updated")).toString();
-                if (upd > latest_eff)
-                    latest_eff = upd;
+                return Result<void>::ok();
+            }();
+            if (item.is_ok()) {
+                if (auto rel = db().execute(QStringLiteral("RELEASE etfr_item")); rel.is_err())
+                    return fail(rel.error());
+                continue;
             }
+            if (auto rb = db().execute(QStringLiteral("ROLLBACK TO etfr_item")); rb.is_err())
+                return fail(rb.error());
+            if (auto rel = db().execute(QStringLiteral("RELEASE etfr_item")); rel.is_err())
+                return fail(rel.error());
+            st = st_before;
+            latest_eff = latest_before;
+            partly.resize(partly_before);
+            auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), QStringLiteral("FAILED"),
+                                             QStringLiteral("not stored: %1").arg(QString::fromStdString(item.error())),
+                                             QString(), 0, QString(), QString());
+            if (rid.is_err())
+                return fail(rid.error());
+            st.failed_subjects.append(subject);
         }
         st.latest_effective = latest_eff;
         SourceStageStatus done = etfr_finish_status(st);

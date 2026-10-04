@@ -87,6 +87,7 @@ class TstEtfResearchStore : public QObject {
     void sec_refresh_catches_up_missed_months();
     void cftc_positioning_is_stored_per_field();
     void persist_keeps_valid_rows_and_names_the_rest();
+    void persist_isolates_items_and_repeated_dates();
     void pipeline_records_every_stage_and_survives_fetch_failure();
     void snapshot_replay_is_byte_identical_after_growth();
 };
@@ -626,6 +627,94 @@ void TstEtfResearchStore::persist_keeps_valid_rows_and_names_the_rest() {
     QVERIFY(!ag.contains(QStringLiteral("open_interest")));
 }
 
+void TstEtfResearchStore::persist_isolates_items_and_repeated_dates() {
+    // A repeated date inside one delivery once broke the table's uniqueness
+    // rule and rolled back the whole stage. Now an identical repeat is kept
+    // once, a date whose repeats differ is left out alone, and an item that
+    // cannot be stored is rolled back alone (its savepoint) and recorded FAILED.
+    auto& repo = EtfResearchRepository::instance();
+    QVERIFY(repo.begin_run(QStringLiteral("r8c"), QStringLiteral("manual_cli"), utc("2026-10-07T22:00:00.000Z"),
+                           universe_.version)
+                .is_ok());
+    // Injected store failure for one symbol only.
+    QVERIFY(Database::instance()
+                .execute(QStringLiteral("CREATE TEMP TRIGGER etfr_test_boom BEFORE INSERT ON etf_research_bars WHEN "
+                                        "NEW.symbol = 'BOOM' BEGIN SELECT RAISE(ABORT, 'injected store failure'); END"))
+                .is_ok());
+    const QJsonObject xli = history_item("2026-10-07T22:00:01.000Z", QJsonArray() << bar("2026-10-06", 120, 1e6)
+                                                                                  << bar("2026-10-06", 120, 1e6)
+                                                                                  << bar("2026-10-07", 121, 1e6));
+    const QJsonObject xly = history_item("2026-10-07T22:00:02.000Z", QJsonArray() << bar("2026-10-06", 210, 1e6)
+                                                                                  << bar("2026-10-06", 211, 1e6)
+                                                                                  << bar("2026-10-07", 212, -5.0));
+    const QJsonObject boom = history_item("2026-10-07T22:00:03.000Z", QJsonArray() << bar("2026-10-07", 9, 1e6));
+    const QJsonObject dgs{{"status", "OK"},
+                          {"retrieved_at", "2026-10-07T22:00:04.000Z"},
+                          {"rows", QJsonArray() << QJsonArray{"2026-10-06", 4.0} << QJsonArray{"2026-10-06", 4.0}
+                                                << QJsonArray{"2026-10-07", 4.1} << QJsonArray{"2026-10-07", 4.2}},
+                          {"missing_points", 0}};
+    const QJsonObject fund{{"status", "OK"},
+                           {"captured_at", "2026-10-07T22:00:05.000Z"},
+                           {"fields", QJsonObject{{"totalAssets", 1e9}}},
+                           {"holdings_status", "FAILED"},
+                           {"holdings_detail", "fund holdings could not be read: No Fund data found."},
+                           {"sector_weights_unparseable", 0}};
+    auto p = repo.persist_payload(
+        QStringLiteral("r8c"),
+        payload({{"yahoo_history", stage("2026-10-07T22:00:00.000Z", {{"XLI", xli}, {"XLY", xly}, {"BOOM", boom}})},
+                 {"fred", stage("2026-10-07T22:00:00.000Z", {{"T10YIE", dgs}})},
+                 {"yahoo_funds", stage("2026-10-07T22:00:00.000Z", {{"XLU", fund}})}}),
+        QDate(2026, 10, 7));
+    QVERIFY(Database::instance().execute(QStringLiteral("DROP TRIGGER etfr_test_boom")).is_ok());
+    QVERIFY2(p.is_ok(), p.is_err() ? p.error().c_str() : "");
+    QHash<QString, SourceStageStatus> by_stage;
+    for (const auto& st : p.value())
+        by_stage.insert(st.stage, st);
+    QCOMPARE(by_stage.value(QStringLiteral("yahoo_history")).status, QStringLiteral("PARTIAL"));
+    QCOMPARE(by_stage.value(QStringLiteral("yahoo_history")).items_ok, 2);
+    QCOMPARE(by_stage.value(QStringLiteral("yahoo_history")).failed_subjects, QStringList{QStringLiteral("BOOM")});
+    QCOMPARE(by_stage.value(QStringLiteral("fred")).status, QStringLiteral("PARTIAL"));
+    QCOMPARE(by_stage.value(QStringLiteral("yahoo_funds")).status, QStringLiteral("PARTIAL"));
+    auto row_of = [](const char* stage, const char* subject) {
+        auto q = Database::instance().execute(
+            QStringLiteral("SELECT status || ' ' || detail FROM etf_research_retrievals WHERE run_id = 'r8c' AND "
+                           "stage = ? AND subject = ?"),
+            {QString::fromLatin1(stage), QString::fromLatin1(subject)});
+        return q.is_ok() && q.value().next() ? q.value().value(0).toString() : QString();
+    };
+    // XLI: an identical repeat is kept once; nothing lost, the item stays OK.
+    const QString xli_row = row_of("yahoo_history", "XLI");
+    QVERIFY2(xli_row.startsWith(QLatin1String("OK ")) &&
+                 xli_row.contains(QLatin1String("1 identical repeated bar(s) kept once")),
+             qPrintable(xli_row));
+    // XLY: the conflicting date is left out alone; the negative volume is
+    // stored as unknown beside its price.
+    const QString xly_row = row_of("yahoo_history", "XLY");
+    QVERIFY2(xly_row.startsWith(QLatin1String("PARTIAL")) &&
+                 xly_row.contains(QLatin1String("1 date(s) with conflicting bars left out")) &&
+                 xly_row.contains(QLatin1String("1 unusable volume(s) stored as unknown")),
+             qPrintable(xly_row));
+    QVERIFY2(row_of("yahoo_history", "BOOM").startsWith(QLatin1String("FAILED not stored: ")),
+             qPrintable(row_of("yahoo_history", "BOOM")));
+    QVERIFY2(row_of("fred", "T10YIE").contains(QLatin1String("1 date(s) with conflicting observations left out")),
+             qPrintable(row_of("fred", "T10YIE")));
+    QVERIFY2(row_of("yahoo_funds", "XLU").contains(QLatin1String("holdings could not be read")),
+             qPrintable(row_of("yahoo_funds", "XLU")));
+    auto scalar = [](const QString& sql) {
+        auto q = Database::instance().execute(sql);
+        return q.is_ok() && q.value().next() ? q.value().value(0).toString() : QStringLiteral("<none>");
+    };
+    QCOMPARE(scalar(QStringLiteral("SELECT COUNT(*) FROM etf_research_bars WHERE symbol = 'XLI'")),
+             QStringLiteral("2"));
+    QCOMPARE(scalar(QStringLiteral("SELECT GROUP_CONCAT(session_date || '/' || IFNULL(volume, 'null')) FROM "
+                                   "etf_research_bars WHERE symbol = 'XLY'")),
+             QStringLiteral("2026-10-07/null"));
+    QCOMPARE(scalar(QStringLiteral("SELECT COUNT(*) FROM etf_research_bars WHERE symbol = 'BOOM'")),
+             QStringLiteral("0"));
+    QCOMPARE(scalar(QStringLiteral("SELECT GROUP_CONCAT(obs_date) FROM etf_research_macro WHERE series_id = 'T10YIE'")),
+             QStringLiteral("2026-10-06"));
+}
+
 void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failure() {
     auto not_configured = [](const char* name) {
         return RefreshStage([name](std::function<void(SourceStageStatus)> done) {
@@ -683,9 +772,10 @@ void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failur
         saw_failed_history =
             saw_failed_history || (s.stage == QLatin1String("yahoo_history") && s.status == QLatin1String("FAILED"));
     QVERIFY(saw_failed_history);
-    // A stage whose STORE write fails (here a negative volume violates the
-    // table's CHECK) is recorded FAILED; the other stages are still stored and
-    // the IBKR and SEC stages still run. The write runs through the executor:
+    // A stage whose STORE write fails (injected below: every retrieval insert
+    // of the stage aborts, so not even an item's FAILED row can be written) is
+    // recorded FAILED; the other stages are still stored and the IBKR and SEC
+    // stages still run. The write runs through the executor:
     // nothing completes until its continuation runs.
     int extra_stages = 0;
     auto counted = [&](const char* name) {
@@ -706,7 +796,7 @@ void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failur
         d(Result<QJsonObject>::ok(payload(
             {{"yahoo_history",
               stage("2026-10-08T22:00:00.000Z",
-                    {{"XLK", history_item("2026-10-08T22:00:01.000Z", QJsonArray() << bar("2026-10-08", 201, -5.0))}})},
+                    {{"XLK", history_item("2026-10-08T22:00:01.000Z", QJsonArray() << bar("2026-10-08", 201, 5.0))}})},
              {"fred", stage("2026-10-08T15:00:00.000Z", {{"DGS10", fred_ok}})}})));
     };
     std::function<void()> pending_work, pending_then;
@@ -727,7 +817,12 @@ void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failur
     QVERIFY(!finished);
     QVERIFY(pending_work && pending_then);
     QCOMPARE(extra_stages, 0);
+    QVERIFY(Database::instance()
+                .execute(QStringLiteral("CREATE TEMP TRIGGER etfr_test_stage BEFORE INSERT ON etf_research_retrievals "
+                                        "WHEN NEW.stage = 'yahoo_history' BEGIN SELECT RAISE(ABORT, 'injected'); END"))
+                .is_ok());
     pending_work();
+    QVERIFY(Database::instance().execute(QStringLiteral("DROP TRIGGER etfr_test_stage")).is_ok());
     QVERIFY(!finished); // the continuation runs on the caller's thread, after the write
     pending_then();
     QVERIFY(finished);
