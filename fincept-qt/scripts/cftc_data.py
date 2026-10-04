@@ -301,6 +301,21 @@ class CftcCotArchive:
         finally:
             conn.close()
 
+    def clear_full_history(self, report_family: str, report_basis: str, contract_code: str) -> None:
+        """Withdraw the completeness claim: the next monitor scan reads the
+        contract's full history again (used when a read left rows out)."""
+        conn = self._connect()
+        try:
+            # No state row is what "never read in full" already means.
+            conn.execute(
+                "DELETE FROM cot_contract_state "
+                "WHERE report_family = ? AND report_basis = ? AND contract_code = ?",
+                (report_family, report_basis, contract_code),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def coverage(self) -> Dict[str, Any]:
         """Per (family, basis) row counts and date ranges, plus the total."""
         conn = self._connect()
@@ -2121,9 +2136,15 @@ class CFTCDataWrapper:
                         inserted, updated, _unchanged = archive.upsert_observations(
                             fetched, family, basis_code, source=f"socrata:{resource_id}",
                             retrieval_time=retrieved_at)
-                        # A full read that left rows out is not the complete
-                        # history: the next scan reads the contract in full again.
-                        if fetch_ok and result.get("full_history") and result.get("complete", True):
+                        # A read that left rows out (a contradictory or undated
+                        # report) is not the complete history. An increment only
+                        # asks from the newest stored date, so a week it skipped
+                        # would never be asked for again: the completeness claim
+                        # is withdrawn and the next scan reads the contract in
+                        # full, full read or increment alike.
+                        if fetch_ok and not result.get("complete", True):
+                            archive.clear_full_history(family, basis_code, code)
+                        elif fetch_ok and result.get("full_history"):
                             archive.mark_full_history(family, basis_code, code)
                     except Exception as exc:
                         fetch_error = f"the fetched rows were not stored: {exc}"

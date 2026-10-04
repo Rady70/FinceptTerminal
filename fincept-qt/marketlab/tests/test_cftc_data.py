@@ -1063,6 +1063,25 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         archive = self.wrapper._open_archive()
         self.assertIsNone(archive.full_history_at("legacy", "futures_only", "088691"))
 
+    def test_week_skipped_by_an_increment_is_read_again_in_full(self):
+        # A full read, then an increment that skips a contradictory week and
+        # stores a newer one. An increment asks only from the newest stored
+        # date, so the skipped week would never be asked for again: the next
+        # scan must read the contract in full.
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
+        archive = self.wrapper._open_archive()
+        self.assertIsNotNone(archive.full_history_at("legacy", "futures_only", "088691"))
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01"),
+                            raw_legacy_row(report_date="2026-09-08", oi="1000"),
+                            raw_legacy_row(report_date="2026-09-08", oi="2000"),
+                            raw_legacy_row(report_date="2026-09-15")])
+        self.assertIn(">= '2026-09-01'", urllib.parse.unquote(self.captured_urls[-1]))  # it was an increment
+        self.assertIsNone(archive.full_history_at("legacy", "futures_only", "088691"))
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-08"), raw_legacy_row(report_date="2026-09-15")])
+        self.assertNotIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))  # a full read
+        self.assertEqual([row["report_date"] for row in self._archive_rows()],
+                         ["2026-09-01", "2026-09-08", "2026-09-15"])
+
     def test_archive_upsert_collapses_identical_duplicates_and_rejects_conflicts(self):
         archive = self.wrapper._open_archive()
         row = {
