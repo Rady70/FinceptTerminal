@@ -183,6 +183,31 @@ class DownloadHistoryTests(unittest.TestCase):
         self.assertEqual({k: v["status"] for k, v in out.items()}, {"XLB": "FAILED", "XLE": "FAILED"})
         self.assertIn("HTTP 429", out["XLB"]["detail"])
 
+    def test_failed_batch_is_retried_symbol_by_symbol(self):
+        # The batch request fails as a whole (here one symbol breaks it); retried
+        # alone, the other symbols are delivered and only the bad one fails.
+        class Picky(_FakeYf):
+            def download(self, batch, **kwargs):
+                self.calls.append((list(batch), kwargs))
+                if len(batch) > 1 or batch == ["BAD"]:
+                    raise RuntimeError("batch failed")
+                return _Frame([(dt.date(2026, 10, 1), {"Close": 10.0})], columns=("Close",))
+
+        fake = Picky()
+        out = yahoo.download_history(["XLE", "BAD", "XLB"], "2y", self.AT, yf_module=fake)
+        self.assertEqual({k: v["status"] for k, v in out.items()}, {"BAD": "FAILED", "XLB": "OK", "XLE": "OK"})
+        self.assertEqual([c[0] for c in fake.calls], [["BAD", "XLB", "XLE"], ["BAD"], ["XLB"], ["XLE"]])
+        self.assertIn("retried alone", out["BAD"]["detail"])
+
+    def test_provider_wide_failure_is_not_repeated_per_symbol(self):
+        # Two single retries failing in a row stop the retries: the rest keep
+        # the batch's error instead of one request per symbol.
+        fake = _FakeYf(error=RuntimeError("HTTP 429"))
+        out = yahoo.download_history(["A", "B", "C", "D"], "2y", self.AT, yf_module=fake)
+        self.assertTrue(all(v["status"] == "FAILED" for v in out.values()))
+        self.assertEqual([c[0] for c in fake.calls], [["A", "B", "C", "D"], ["A"], ["B"]])
+        self.assertIn("not retried alone", out["D"]["detail"])
+
     def test_requests_are_unadjusted_daily_with_actions(self):
         fake = _FakeYf(frame=_Frame([(dt.date(2026, 10, 1), {"Close": 10.0})], columns=("Close",)))
         out = yahoo.download_history(["XLB"], "max", self.AT, yf_module=fake)

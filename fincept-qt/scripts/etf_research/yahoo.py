@@ -108,52 +108,79 @@ def download_history(symbols, period, retrieved_at_utc: _dt.datetime, chunk: int
 
     ``start`` (an ISO date) requests only the sessions from that date: an
     incremental delivery, marked so the store can join it to stored history.
+
+    A batch request that fails as a whole does not fail every symbol in it: its
+    symbols are retried one at a time, so a transient error or one problem
+    symbol does not cost the others. Two single retries failing in a row are
+    taken as a provider-wide failure (e.g. throttling): the retries stop and the
+    symbols not retried keep the batch's error.
     """
     import pandas as pd  # noqa: F401  (yfinance returns pandas frames)
 
     if yf_module is None:
         import yfinance as yf_module  # type: ignore[no-redef]
 
-    out = {}
-    syms = sorted(set(symbols))
-    for offset in range(0, len(syms), chunk):
-        batch = syms[offset:offset + chunk]
-        try:
-            span = {"start": start} if start else {"period": period}
-            raw = yf_module.download(batch, interval="1d", auto_adjust=False, actions=True, progress=False,
-                                     threads=4, group_by="column", **span)
-        except Exception as exc:  # the whole request failed
-            for s in batch:
-                out[s] = {"status": "FAILED", "detail": f"download failed: {exc}", "rows": []}
-            continue
-        errors = {}
+    span = {"start": start} if start else {"period": period}
+
+    def fetch(batch):
+        raw = yf_module.download(batch, interval="1d", auto_adjust=False, actions=True, progress=False,
+                                 threads=4, group_by="column", **span)
         try:
             errors = dict(getattr(yf_module, "shared")._ERRORS)
         except Exception:
             errors = {}
-        for s in batch:
-            try:
-                if raw is None or len(raw) == 0:
-                    frame = None
-                elif hasattr(raw.columns, "levels"):
-                    frame = raw.xs(s, axis=1, level=1) if s in raw.columns.get_level_values(1) else None
-                else:
-                    frame = raw
-                conv = frame_to_bars(s, frame, retrieved_at_utc)
-            except Exception as exc:
-                out[s] = {"status": "FAILED", "detail": f"conversion failed: {exc}", "rows": []}
-                continue
-            if not conv["rows"]:
-                why = errors.get(s) or "no completed session with a close was returned"
-                out[s] = {"status": "FAILED", "detail": str(why), "rows": [],
-                          "dropped_no_close": conv["dropped_no_close"],
-                          "in_progress_excluded": conv["in_progress_excluded"],
-                          "actions_without_close": conv["actions_without_close"]}
-                continue
-            out[s] = {"status": "OK", "detail": "", "period": period, **conv}
-            if start:
-                out[s]["incremental"] = True
-                out[s]["requested_start"] = start
+        return batch, raw, errors
+
+    out = {}
+
+    def fail(s, exc, note=""):
+        out[s] = {"status": "FAILED", "detail": f"download failed: {exc}{note}", "rows": []}
+
+    syms = sorted(set(symbols))
+    for offset in range(0, len(syms), chunk):
+        batch = syms[offset:offset + chunk]
+        try:
+            fetched = [fetch(batch)]
+        except Exception as exc:  # the whole request failed
+            fetched = []
+            if len(batch) == 1:
+                fail(batch[0], exc)
+            failed_in_row = 0
+            for i, s in enumerate(batch if len(batch) > 1 else []):
+                if failed_in_row == 2:
+                    for rest in batch[i:]:
+                        fail(rest, exc, " (not retried alone: two single retries failed in a row)")
+                    break
+                try:
+                    fetched.append(fetch([s]))
+                    failed_in_row = 0
+                except Exception as single_exc:
+                    failed_in_row += 1
+                    fail(s, single_exc, " (retried alone after the batch request failed)")
+        for part, raw, errors in fetched:
+            for s in part:
+                try:
+                    if raw is None or len(raw) == 0:
+                        frame = None
+                    elif hasattr(raw.columns, "levels"):
+                        frame = raw.xs(s, axis=1, level=1) if s in raw.columns.get_level_values(1) else None
+                    else:
+                        frame = raw
+                    conv = frame_to_bars(s, frame, retrieved_at_utc)
+                except Exception as exc:
+                    out[s] = {"status": "FAILED", "detail": f"conversion failed: {exc}", "rows": []}
+                    continue
+                if not conv["rows"]:
+                    why = errors.get(s) or "no completed session with a close was returned"
+                    out[s] = {"status": "FAILED", "detail": str(why), "rows": [],
+                              "dropped_no_close": conv["dropped_no_close"],
+                              "in_progress_excluded": conv["in_progress_excluded"],
+                              "actions_without_close": conv["actions_without_close"]}
+                    continue
+                out[s] = {"status": "OK", "detail": "", "period": period, **conv}
+                if start:
+                    out[s]["incremental"] = True
+                    out[s]["requested_start"] = start
     return out
 
 

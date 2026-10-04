@@ -86,6 +86,7 @@ class TstEtfResearchStore : public QObject {
     void stage_status_stale_and_partial();
     void sec_refresh_catches_up_missed_months();
     void cftc_positioning_is_stored_per_field();
+    void persist_keeps_valid_rows_and_names_the_rest();
     void pipeline_records_every_stage_and_survives_fetch_failure();
     void snapshot_replay_is_byte_identical_after_growth();
 };
@@ -478,9 +479,10 @@ void TstEtfResearchStore::stage_status_stale_and_partial() {
     QVERIFY(p.value().first().dependent_calculations.contains(QStringLiteral("rrg")));
     // Fundamentals: 443 reused because they are fresh, the only two fetched failed.
     // The stage is PARTIAL (its data is current except those two), not FAILED.
-    QJsonObject fund = stage("2026-10-05T22:00:00.000Z",
-                             {{"KAP", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}},
-                              {"500034", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}}});
+    QJsonObject fund =
+        stage("2026-10-05T22:00:00.000Z",
+              {{"KAP", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}},
+               {"500034", QJsonObject{{"status", "FAILED"}, {"detail", "no quote-summary fields returned"}}}});
     fund.insert(QStringLiteral("skipped_fresh"), 443);
     fund.insert(QStringLiteral("fresh_days"), 3);
     auto f = repo.persist_payload(QStringLiteral("r8"), payload({{"yahoo_fundamentals", fund}}), QDate(2026, 10, 5));
@@ -536,6 +538,92 @@ void TstEtfResearchStore::stage_status_stale_and_partial() {
             QVERIFY2(d.contains(QStringLiteral("unparseable")), qPrintable(d));
     }
     QCOMPARE(rows, 3);
+}
+
+void TstEtfResearchStore::persist_keeps_valid_rows_and_names_the_rest() {
+    // The store's own checks reject a row or field it cannot read, not the item:
+    // what is left out is counted on the retrieval, the item is PARTIAL, and the
+    // rest is stored AND read back.
+    auto& repo = EtfResearchRepository::instance();
+    QVERIFY(repo.begin_run(QStringLiteral("r8b"), QStringLiteral("manual_cli"), utc("2026-10-06T22:00:00.000Z"),
+                           universe_.version)
+                .is_ok());
+    // A fund whose quote summary failed: its holdings have no fund snapshot to
+    // join and must still be read. A holding with a name but no ticker is kept.
+    const QJsonObject xlc{{"status", "OK"},
+                          {"captured_at", "2026-10-06T22:00:02.000Z"},
+                          {"fields", QJsonObject()},
+                          {"quote_status", "FAILED"},
+                          {"detail", "quote summary failed: 401"},
+                          {"holdings", QJsonArray() << QJsonArray{1, "META", "Meta Platforms", 0.2}
+                                                    << QJsonArray{2, "", "Cash & equivalents", 0.02}
+                                                    << QJsonArray{2, "DUP", "a repeated rank", 0.1}
+                                                    << QJsonArray{3, "", "", 0.1}},
+                          {"sector_weights", QJsonObject{{"communication_services", 0.9}, {"other", "n/a"}}},
+                          {"holdings_status", "OK"}};
+    // One malformed bar beside a good one.
+    const QJsonObject xlre =
+        history_item("2026-10-06T22:00:03.000Z",
+                     QJsonArray() << bar("2026-10-06", 41, 1e6) << QJsonArray{"2026-10-05", "n/a", 1e6, 0.0, 0.0, 0.0});
+    // A FRED item reported as obtained whose rows are all unreadable here.
+    const QJsonObject t10{
+        {"status", "OK"},
+        {"retrieved_at", "2026-10-06T22:00:04.000Z"},
+        {"rows", QJsonArray() << QJsonArray{"not-a-date", 1.0} << QJsonArray{"2026-10-02", QJsonValue()}},
+        {"missing_points", 0}};
+    // A CFTC market without open interest keeps its positions.
+    QJsonArray silver_rows;
+    silver_rows << QJsonArray{"2026-09-22", QJsonValue(), 40000.0, 30000.0}
+                << QJsonArray{"2026-09-29", QJsonValue(), 41000.0, 29000.0} << QJsonArray{"undated", 1.0, 1.0, 1.0};
+    const QJsonObject silver{{"status", "OK"},
+                             {"retrieved_at", "2026-10-06T22:00:05.000Z"},
+                             {"source_status", "current"},
+                             {"rows", silver_rows}};
+    auto p = repo.persist_payload(QStringLiteral("r8b"),
+                                  payload({{"yahoo_funds", stage("2026-10-06T22:00:00.000Z", {{"XLC", xlc}})},
+                                           {"yahoo_history", stage("2026-10-06T22:00:00.000Z", {{"XLRE", xlre}})},
+                                           {"fred", stage("2026-10-06T22:00:00.000Z", {{"T10Y2Y", t10}})},
+                                           {"cftc", stage("2026-10-06T22:00:00.000Z", {{"silver", silver}})}}),
+                                  QDate(2026, 10, 6));
+    QVERIFY2(p.is_ok(), p.is_err() ? p.error().c_str() : "");
+    QHash<QString, QString> stage_status;
+    for (const auto& st : p.value())
+        stage_status.insert(st.stage, st.status);
+    QCOMPARE(stage_status.value(QStringLiteral("yahoo_funds")), QStringLiteral("PARTIAL"));
+    QCOMPARE(stage_status.value(QStringLiteral("yahoo_history")), QStringLiteral("PARTIAL"));
+    QCOMPARE(stage_status.value(QStringLiteral("fred")), QStringLiteral("FAILED"));
+    QCOMPARE(stage_status.value(QStringLiteral("cftc")), QStringLiteral("PARTIAL"));
+    auto detail_of = [](const char* stage, const char* subject) {
+        auto q = Database::instance().execute(
+            QStringLiteral("SELECT status || ' ' || detail FROM etf_research_retrievals WHERE run_id = 'r8b' AND "
+                           "stage = ? AND subject = ?"),
+            {QString::fromLatin1(stage), QString::fromLatin1(subject)});
+        return q.is_ok() && q.value().next() ? q.value().value(0).toString() : QString();
+    };
+    const QString fd = detail_of("yahoo_funds", "XLC");
+    QVERIFY2(fd.startsWith(QLatin1String("PARTIAL")) && fd.contains(QLatin1String("2 unidentifiable holding(s)")) &&
+                 fd.contains(QLatin1String("1 non-numeric sector weight(s)")),
+             qPrintable(fd));
+    const QString hd = detail_of("yahoo_history", "XLRE");
+    QVERIFY2(hd.startsWith(QLatin1String("PARTIAL")) && hd.contains(QLatin1String("1 malformed bar row(s)")),
+             qPrintable(hd));
+    const QString rd = detail_of("fred", "T10Y2Y");
+    QVERIFY2(rd.startsWith(QLatin1String("FAILED")) && rd.contains(QLatin1String("no well-formed observation")),
+             qPrintable(rd));
+    const QString cd = detail_of("cftc", "silver");
+    QVERIFY2(cd.startsWith(QLatin1String("PARTIAL")) && cd.contains(QLatin1String("1 undated row(s)")), qPrintable(cd));
+    // Read back.
+    auto in = repo.load_inputs(universe_, utc("2026-10-07T00:00:00.000Z"), utc("2026-10-07T00:00:00.000Z"));
+    QVERIFY(in.is_ok());
+    const auto h = in.value().holdings.value(QStringLiteral("XLC"));
+    QCOMPARE(h.holdings.size(), 2);
+    QCOMPARE(h.holdings.at(1).name, QStringLiteral("Cash & equivalents"));
+    QVERIFY(h.holdings.at(1).symbol.isEmpty());
+    QCOMPARE(h.sector_weights.value(QStringLiteral("communication_services")), 0.9);
+    QCOMPARE(in.value().bars.value(QStringLiteral("XLRE")).bars.size(), 1);
+    const auto ag = in.value().cftc.value(QStringLiteral("silver"));
+    QCOMPARE(ag.value(QStringLiteral("non_commercial_long")).points.size(), 2);
+    QVERIFY(!ag.contains(QStringLiteral("open_interest")));
 }
 
 void TstEtfResearchStore::pipeline_records_every_stage_and_survives_fetch_failure() {

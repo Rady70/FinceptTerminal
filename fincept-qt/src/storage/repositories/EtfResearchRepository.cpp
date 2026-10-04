@@ -5,6 +5,8 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QScopeGuard>
+#include <QSet>
 #include <QSqlQuery>
 #include <QSqlRecord>
 #include <QVariant>
@@ -424,18 +426,44 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
             const QJsonObject it = items.value(subject).toObject();
             // An item obtained in part is PARTIAL, with what was left out named;
             // what was obtained is stored (2026-10-04 data-preservation rule).
-            const QString partial = etfr_partial_reason(it);
+            QString partial = etfr_partial_reason(it);
             const bool obtained = it.value(QStringLiteral("status")).toString() == QLatin1String("OK");
-            const QString status = !obtained           ? QStringLiteral("FAILED")
-                                   : partial.isEmpty() ? QStringLiteral("OK")
-                                                       : QStringLiteral("PARTIAL");
-            if (!partial.isEmpty())
-                partly << QStringLiteral("%1 (%2)").arg(subject, partial);
+            QString status = !obtained           ? QStringLiteral("FAILED")
+                             : partial.isEmpty() ? QStringLiteral("OK")
+                                                 : QStringLiteral("PARTIAL");
             QString detail = it.value(QStringLiteral("detail")).toString();
             if (const QString acts = etfr_actions_text(it); !acts.isEmpty())
                 detail = detail.isEmpty() ? acts : detail + QStringLiteral("; ") + acts;
+            // Rows this store cannot read are left out on their own, counted and
+            // named; the item is then PARTIAL. Never silently dropped.
+            auto left_out = [&](int n, const QString& what) {
+                if (n <= 0)
+                    return;
+                const QString note = QStringLiteral("%1 %2 left out").arg(n).arg(what);
+                partial = partial.isEmpty() ? note : partial + QStringLiteral(", ") + note;
+                detail = detail.isEmpty() ? note : detail + QStringLiteral("; ") + note;
+                status = QStringLiteral("PARTIAL");
+            };
+            // `partly` is filled when the item is done, once every exclusion is known.
+            const auto note_partly = qScopeGuard([&] {
+                if (!partial.isEmpty() && status != QLatin1String("FAILED"))
+                    partly << QStringLiteral("%1 (%2)").arg(subject, partial);
+            });
             const QString ret_at =
                 it.value(QStringLiteral("retrieved_at")).toString(it.value(QStringLiteral("captured_at")).toString());
+            // An item reported as obtained whose rows are all unusable here is a
+            // failed item, recorded with its reason (never left without a retrieval).
+            auto fail_item = [&](const QString& why) -> Result<void> {
+                status = QStringLiteral("FAILED");
+                auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status,
+                                                 detail.isEmpty() ? why : why + QStringLiteral("; ") + detail,
+                                                 QString(), 0, QString(), QString());
+                if (rid.is_err())
+                    return Result<void>::err(rid.error());
+                --st.items_ok;
+                st.failed_subjects.append(subject);
+                return Result<void>::ok();
+            };
             if (status == QLatin1String("FAILED")) {
                 auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, QString(), status, detail, QString(),
                                                  0, QString(), QString());
@@ -447,21 +475,20 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
             ++st.items_ok;
             if (stage == QLatin1String("yahoo_history") || stage == QLatin1String("yahoo_constituent_history")) {
                 QJsonArray rows;
+                int malformed = 0;
                 for (const QJsonValue& rv : it.value(QStringLiteral("rows")).toArray()) {
                     const QJsonArray r = rv.toArray();
                     if (r.size() >= 6 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
                         r.at(1).toDouble() > 0.0)
                         rows.append(r);
+                    else
+                        ++malformed;
                 }
+                left_out(malformed, QStringLiteral("malformed bar row(s)"));
                 if (rows.isEmpty()) {
                     // A delivery without one well-formed completed bar is a failed item.
-                    auto rid = etfr_insert_retrieval(
-                        run_id, stage, subject, req_at, QString(), QStringLiteral("FAILED"),
-                        QStringLiteral("no well-formed bar in the response"), QString(), 0, QString(), QString());
-                    if (rid.is_err())
-                        return fail(rid.error());
-                    --st.items_ok;
-                    st.failed_subjects.append(subject);
+                    if (auto f = fail_item(QStringLiteral("no well-formed bar in the response")); f.is_err())
+                        return fail(f.error());
                     continue;
                 }
                 const QString first = rows.first().toArray().at(0).toString();
@@ -573,6 +600,34 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 const QJsonObject f = it.value(QStringLiteral("fields")).toObject();
                 const QDateTime captured = etfr_parse_time(it.value(QStringLiteral("captured_at")).toString());
                 const QDate eff = prior_completed_session(captured);
+                // A holding Yahoo lists without a ticker but with its name is kept
+                // (empty symbol); one without a rank, with a repeated rank, or
+                // without symbol and name cannot be identified and is left out,
+                // counted. A sector weight that is not a number is left out alone.
+                QVector<QVariantList> hrows;
+                int unidentified = 0;
+                QSet<int> ranks;
+                for (const auto& hv : it.value(QStringLiteral("holdings")).toArray()) {
+                    const QJsonArray h = hv.toArray();
+                    const int rank = h.size() >= 4 && h[0].isDouble() ? h[0].toInt() : 0;
+                    if (rank < 1 || ranks.contains(rank) || (h[1].toString().isEmpty() && h[2].toString().isEmpty())) {
+                        ++unidentified;
+                        continue;
+                    }
+                    ranks.insert(rank);
+                    hrows.append({subject, rank, h[1].toString(), etfr_text(h[2].toString()), etfr_opt(h[3])});
+                }
+                QVector<QVariantList> wrows;
+                int bad_weights = 0;
+                const QJsonObject sw = it.value(QStringLiteral("sector_weights")).toObject();
+                for (auto k = sw.begin(); k != sw.end(); ++k) {
+                    if (k.value().isDouble())
+                        wrows.append({subject, k.key(), k.value().toDouble()});
+                    else
+                        ++bad_weights;
+                }
+                left_out(unidentified, QStringLiteral("unidentifiable holding(s)"));
+                left_out(bad_weights, QStringLiteral("non-numeric sector weight(s)"));
                 auto rid =
                     etfr_insert_retrieval(run_id, stage, subject, req_at, etfr_iso(captured), status,
                                           it.value(QStringLiteral("holdings_status")).toString() + QLatin1Char(' ') +
@@ -607,25 +662,16 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     if (ins.is_err())
                         return fail(ins.error());
                 }
-                QVector<QVariantList> hrows;
-                for (const auto& hv : it.value(QStringLiteral("holdings")).toArray()) {
-                    const QJsonArray h = hv.toArray();
-                    if (h.size() < 4 || h[1].toString().isEmpty())
-                        continue;
-                    hrows.append({rid.value(), subject, h[0].toInt(), h[1].toString(), etfr_text(h[2].toString()),
-                                  etfr_opt(h[3])});
-                }
+                for (auto& row : hrows)
+                    row.prepend(rid.value());
+                for (auto& row : wrows)
+                    row.prepend(rid.value());
                 auto hw =
                     db().execute_many(QStringLiteral("INSERT INTO etf_research_holdings (retrieval_id, symbol, rank, "
                                                      "holding_symbol, holding_name, weight) VALUES (?,?,?,?,?,?)"),
                                       hrows);
                 if (hw.is_err())
                     return fail(hw.error());
-                QVector<QVariantList> wrows;
-                const QJsonObject sw = it.value(QStringLiteral("sector_weights")).toObject();
-                for (auto k = sw.begin(); k != sw.end(); ++k)
-                    if (k.value().isDouble())
-                        wrows.append({rid.value(), subject, k.key(), k.value().toDouble()});
                 auto ww =
                     db().execute_many(QStringLiteral("INSERT INTO etf_research_sector_weights (retrieval_id, symbol, "
                                                      "sector_key, weight) VALUES (?,?,?,?)"),
@@ -654,13 +700,23 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     return fail(ins.error());
                 ++st.rows_inserted;
             } else if (stage == QLatin1String("fred")) {
+                // A row without a valid date or a numeric value is left out alone
+                // (never read as 0); the source's missing points are already apart.
                 const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
                 QVector<QPair<QString, QVariant>> pts;
-                for (const auto& rv : rows)
-                    pts.append({rv.toArray().at(0).toString(), QVariant(rv.toArray().at(1).toDouble())});
+                int malformed = 0;
+                for (const auto& rv : rows) {
+                    const QJsonArray r = rv.toArray();
+                    if (r.size() >= 2 && QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid() &&
+                        r.at(1).isDouble())
+                        pts.append({r.at(0).toString(), QVariant(r.at(1).toDouble())});
+                    else
+                        ++malformed;
+                }
+                left_out(malformed, QStringLiteral("malformed row(s)"));
                 if (pts.isEmpty()) {
-                    st.failed_subjects.append(subject);
-                    --st.items_ok;
+                    if (auto f = fail_item(QStringLiteral("no well-formed observation in the response")); f.is_err())
+                        return fail(f.error());
                     continue;
                 }
                 auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
@@ -691,26 +747,42 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                 // non-commercial long/short positions (a missing cell is no observation).
                 const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
                 const char* fields[] = {"open_interest", "non_commercial_long", "non_commercial_short"};
+                // Each field stands on its own: a market whose open interest is
+                // missing keeps its positions. A row without a valid date is left
+                // out, counted.
                 QVector<QPair<QString, QVariant>> pts[3];
+                int malformed = 0;
                 for (const auto& rv : rows) {
                     const QJsonArray r = rv.toArray();
-                    if (r.size() < 4 || !QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid())
+                    if (r.size() < 4 || !QDate::fromString(r.at(0).toString(), Qt::ISODate).isValid()) {
+                        ++malformed;
                         continue;
+                    }
                     for (int f = 0; f < 3; ++f)
                         if (r.at(f + 1).isDouble())
                             pts[f].append({r.at(0).toString(), QVariant(r.at(f + 1).toDouble())});
                 }
-                if (pts[0].isEmpty()) {
-                    st.failed_subjects.append(subject);
-                    --st.items_ok;
+                left_out(malformed, QStringLiteral("undated row(s)"));
+                QString first_report, last_report;
+                for (int f = 0; f < 3; ++f) {
+                    if (pts[f].isEmpty())
+                        continue;
+                    if (first_report.isEmpty() || pts[f].first().first < first_report)
+                        first_report = pts[f].first().first;
+                    if (pts[f].last().first > last_report)
+                        last_report = pts[f].last().first;
+                }
+                if (last_report.isEmpty()) {
+                    if (auto f = fail_item(QStringLiteral("no reported position in the response")); f.is_err())
+                        return fail(f.error());
                     continue;
                 }
                 auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
                                                  QStringLiteral("cftc_tool_status=%1 %2")
                                                      .arg(it.value(QStringLiteral("source_status")).toString(), detail)
                                                      .trimmed(),
-                                                 QString(), static_cast<int>(rows.size()), pts[0].first().first,
-                                                 pts[0].last().first);
+                                                 QString(), static_cast<int>(rows.size()) - malformed, first_report,
+                                                 last_report);
                 if (rid.is_err())
                     return fail(rid.error());
                 for (int f = 0; f < 3; ++f) {
@@ -732,16 +804,24 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                     if (cov.is_err())
                         return fail(cov.error());
                 }
-                if (pts[0].last().first > latest_eff)
-                    latest_eff = pts[0].last().first;
+                if (last_report > latest_eff)
+                    latest_eff = last_report;
             } else if (stage == QLatin1String("world_bank")) {
                 const QJsonArray rows = it.value(QStringLiteral("rows")).toArray();
+                // A row without an area or a year is left out alone, counted; a null
+                // value stays the source's null (missing, never 0).
                 QHash<QString, QVector<QPair<QString, QVariant>>> by_area;
+                int malformed = 0;
                 for (const auto& rv : rows) {
                     const QJsonArray r = rv.toArray();
+                    if (r.size() < 3 || r.at(0).toString().isEmpty() || !r.at(1).isDouble() || r.at(1).toInt() < 1000) {
+                        ++malformed;
+                        continue;
+                    }
                     by_area[r.at(0).toString()].append(
                         {QStringLiteral("%1-12-31").arg(r.at(1).toInt()), etfr_opt(r.at(2))});
                 }
+                left_out(malformed, QStringLiteral("malformed row(s)"));
                 auto rid = etfr_insert_retrieval(run_id, stage, subject, req_at, ret_at, status,
                                                  QStringLiteral("absent:%1%2")
                                                      .arg([&] {
@@ -752,7 +832,7 @@ Result<QVector<SourceStageStatus>> EtfResearchRepository::persist_payload(const 
                                                          return a.join(QLatin1Char(','));
                                                      }())
                                                      .arg(detail.isEmpty() ? QString() : QStringLiteral("; ") + detail),
-                                                 QString(), rows.size(), QString(), QString());
+                                                 QString(), rows.size() - malformed, QString(), QString());
                 if (rid.is_err())
                     return fail(rid.error());
                 QStringList areas = by_area.keys();
@@ -931,13 +1011,15 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
         }
     }
     // ── Holdings (every capture; the latest with rows is the current one) ───
+    // The capture time is the retrieval's: holdings captured while the quote
+    // summary failed have no fund snapshot, and they are still read.
     {
         auto q =
             db().execute(QStringLiteral("SELECT h.retrieval_id, h.symbol, h.rank, h.holding_symbol, h.holding_name, "
-                                        "h.weight, f.captured_at FROM etf_research_holdings h JOIN "
-                                        "etf_research_fund_snapshots f ON f.retrieval_id = h.retrieval_id WHERE "
-                                        "f.captured_at <= ? AND f.captured_at <= ? "
-                                        "ORDER BY h.symbol, f.captured_at, h.retrieval_id, h.rank"),
+                                        "h.weight, f.retrieved_at FROM etf_research_holdings h JOIN "
+                                        "etf_research_retrievals f ON f.retrieval_id = h.retrieval_id WHERE "
+                                        "f.retrieved_at <= ? AND f.retrieved_at <= ? "
+                                        "ORDER BY h.symbol, f.retrieved_at, h.retrieval_id, h.rank"),
                          {k, etfr_iso(in.as_of)});
         if (q.is_err())
             return R::err(q.error());
@@ -961,10 +1043,10 @@ Result<ResearchInputs> EtfResearchRepository::load_inputs(const ResearchUniverse
                 h.weight = s.value(5).toDouble();
             hist.last().holdings.append(h);
         }
-        auto w = db().execute(QStringLiteral("SELECT w.symbol, w.sector_key, w.weight, f.captured_at FROM "
-                                             "etf_research_sector_weights w JOIN etf_research_fund_snapshots f ON "
-                                             "f.retrieval_id = w.retrieval_id WHERE f.captured_at <= ? "
-                                             "AND f.captured_at <= ? ORDER BY w.symbol, f.captured_at"),
+        auto w = db().execute(QStringLiteral("SELECT w.symbol, w.sector_key, w.weight, f.retrieved_at FROM "
+                                             "etf_research_sector_weights w JOIN etf_research_retrievals f ON "
+                                             "f.retrieval_id = w.retrieval_id WHERE f.retrieved_at <= ? "
+                                             "AND f.retrieved_at <= ? ORDER BY w.symbol, f.retrieved_at"),
                               {k, etfr_iso(in.as_of)});
         if (w.is_err())
             return R::err(w.error());
