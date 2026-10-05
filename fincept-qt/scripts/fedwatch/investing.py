@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fedwatch import timeutil
 from fedwatch.errors import (
@@ -67,6 +67,26 @@ NORMALIZATION_MAX_SUM = 100.5
 MAX_PROBABILITY_PCT = 100.0
 MAX_PLAUSIBLE_RATE_HIGH = 10.0
 
+# Each meeting card also publishes context the distribution parser does not
+# need: an "Updated: <Eastern time>" stamp, the displayed 30-Day Fed Funds
+# futures price, and a table repeating the current probabilities beside the
+# Previous Day / Previous Week values. They are parsed separately so the
+# qualified distribution rows and normalization stay byte-for-byte unchanged.
+_FUTURE_PRICE_RE = re.compile(r'Future Price:\s*</span>\s*<i\b[^>]*>\s*([^<]*?)\s*</i>', re.I)
+_UPDATED_RE = re.compile(r'class\s*=\s*["\'][^"\']*\bfedUpdate\b[^"\']*["\'][^>]*>\s*Updated:\s*([^<]+?)\s*<', re.I)
+_CONTEXT_TABLE_RE = re.compile(r'<table\b[^>]*\bfedRateTbl\b[^>]*>(.*?)</table>', re.I | re.S)
+_TABLE_ROW_RE = re.compile(r'<tr\b[^>]*>(.*?)</tr>', re.I | re.S)
+_TABLE_CELL_RE = re.compile(r'<td\b[^>]*>(.*?)</td>', re.I | re.S)
+_TAG_RE = re.compile(r'<[^>]+>')
+_UPDATED_FORMAT = "%b %d, %Y %I:%M%p"
+_EASTERN_ABBREVIATIONS = {"EDT": -4, "EST": -5}
+# Futures do not trade at weekends, so the source is stale only after more
+# than this many U.S. weekdays pass without an update.
+SOURCE_STALE_AFTER_WEEKDAYS = 2
+# Bars and table both show one decimal; this only absorbs display rounding.
+PREVIOUS_TABLE_TOLERANCE_PP = 0.15
+SOURCE_FUTURE_TOLERANCE_SECONDS = 600
+
 
 def _class_fragments(html: str, class_name: str, *, bounded: bool = False) -> list[str]:
     markers = [match for match in _DIV_CLASS_RE.finditer(html) if class_name in match.group(2).split()]
@@ -88,6 +108,234 @@ def _class_fragments(html: str, class_name: str, *, bounded: bool = False) -> li
                 fragment = ""
         fragments.append(fragment)
     return fragments
+
+
+_MONTHS = {name: index for index, names in enumerate(
+    (("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
+     ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+     ("dec", "december")), start=1) for name in names}
+_TOLERANT_DATE_RE = re.compile(r'([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})')
+_TOLERANT_RANGE_RE = re.compile(r'(\d+(?:\.\d+)?)\s*%?\s*[-\u2013\u2014]\s*(\d+(?:\.\d+)?)\s*%?(?=\s|$)')
+_TOLERANT_PERCENT_RE = re.compile(r'(\d+(?:\.\d+)?)\s*%')
+
+
+def _text(fragment: str) -> str:
+    """Visible text with tags replaced by spaces (attribute values are dropped)."""
+    return re.sub(r'\s+', ' ', _TAG_RE.sub(" ", fragment).replace("&nbsp;", " ")).strip()
+
+
+def _tolerant_date(text: str):
+    """First ``Month D, YYYY`` in visible text, accepting short or full month names."""
+    match = _TOLERANT_DATE_RE.search(text or "")
+    if not match:
+        return None
+    month = _MONTHS.get(match.group(1).lower())
+    try:
+        return datetime(int(match.group(3)), month, int(match.group(2))).date() if month else None
+    except ValueError:
+        return None
+
+
+def _meeting_time(fragment: str):
+    """``(raw_text, rest)`` for a card's meeting time, tolerating markup changes.
+
+    The qualified exact markup is tried first; otherwise the visible text after
+    the "Meeting Time" caption is used. ``rest`` starts after the caption, so a
+    card's buckets can never be read from before its own date.
+    """
+    match = re.search(r'Meeting Time:\s*</span>\s*<i\b[^>]*>([^<]+)</i>', fragment)
+    if match:
+        return match.group(1), fragment[match.end():]
+    caption = re.search(r'Meeting\s+(?:Time|Date)\s*:?', fragment, re.I)
+    if not caption:
+        return None, None
+    head = _text(fragment[caption.end():caption.end() + 400])
+    found = _TOLERANT_DATE_RE.search(head)
+    return (found.group(0) if found else head[:40]), fragment[caption.end():]
+
+
+def _meeting_date(raw: str):
+    try:
+        return datetime.strptime(raw.strip(), _MEETING_TIME_FORMAT).date()
+    except ValueError:
+        return _tolerant_date(raw)
+
+
+def _bucket_item(fragment: str):
+    """``(label, percent)`` from one bucket row, read by meaning if the markup changed."""
+    matches = list(_BUCKET_ITEM_RE.finditer(fragment))
+    if len(matches) == 1:
+        return matches[0].groups()
+    text = _text(fragment)
+    ranges = _TOLERANT_RANGE_RE.findall(text)
+    percents = _TOLERANT_PERCENT_RE.findall(_TOLERANT_RANGE_RE.sub(" ", text))
+    if len(ranges) == 1 and len(percents) == 1:
+        return f"{ranges[0][0]} - {ranges[0][1]}", percents[0]
+    return None
+
+
+def _parse_updated(text: str):
+    """``"Oct 05, 2026 07:35AM EDT"`` -> UTC instant, or None when unrecognized."""
+    parts = text.strip().rsplit(" ", 1)
+    if len(parts) != 2:
+        return None
+    wall = None
+    for layout in (_UPDATED_FORMAT, "%B %d, %Y %I:%M%p", "%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p",
+                   "%b %d, %Y %H:%M", "%B %d, %Y %H:%M"):
+        try:
+            wall = datetime.strptime(parts[0].strip(), layout)
+            break
+        except ValueError:
+            continue
+    if wall is None:
+        return None
+    zone = parts[1].strip().upper()
+    if zone in _EASTERN_ABBREVIATIONS:
+        offset = _EASTERN_ABBREVIATIONS[zone]
+    elif zone == "ET":
+        offset = -4 if timeutil.is_us_dst_us_date(wall.date()) else -5
+    else:
+        return None
+    return (wall - timedelta(hours=offset)).replace(tzinfo=timezone.utc)
+
+
+_NOT_LISTED = {"&mdash;", "&ndash;", "—", "–", "-", "--"}
+
+
+def _parse_percent(cell: str):
+    """``(value, kind)``: kind is VALUE, NOT_LISTED (the page's dash) or INVALID."""
+    text = _TAG_RE.sub(" ", cell).replace("&nbsp;", " ").strip()
+    if text in _NOT_LISTED:
+        return None, "NOT_LISTED"
+    match = re.fullmatch(r'([0-9]+(?:\.[0-9]+)?)\s*%', text)
+    if not match:
+        return None, "INVALID"
+    value = float(match.group(1))
+    if not math.isfinite(value) or not 0 <= value <= MAX_PROBABILITY_PCT:
+        return None, "INVALID"
+    return value, "VALUE"
+
+
+def parse_displayed_context(html: str) -> dict:
+    """Per-meeting page context that accompanies each distribution.
+
+    Returns ``{meeting_date: {source_updated_at, source_updated_text,
+    futures_price, table}}`` using the first card for each meeting that carries
+    the table. Unreadable values stay ``None``; nothing is inferred.
+    """
+    result: dict[str, dict] = {}
+    for fragment in _class_fragments(html, "infoFed"):
+        raw_time, _ = _meeting_time(fragment)
+        meeting_day = _meeting_date(raw_time) if raw_time is not None else None
+        if meeting_day is None:
+            continue
+        day = meeting_day.isoformat()
+        table_match = _CONTEXT_TABLE_RE.search(fragment)
+        if day in result and (result[day]["table"] or not table_match):
+            continue
+        price = None
+        price_match = _FUTURE_PRICE_RE.search(fragment)
+        if price_match:
+            try:
+                value = float(price_match.group(1).replace(",", ""))
+                price = value if math.isfinite(value) and 0 < value <= 100 else None
+            except ValueError:
+                price = None
+        updated_match = _UPDATED_RE.search(fragment)
+        updated_text = updated_match.group(1).strip() if updated_match else None
+        table = []
+        if table_match:
+            headers = [_text(cell).lower() for cell in re.findall(r'<th\b[^>]*>(.*?)</th>', table_match.group(1),
+                                                                   re.I | re.S)]
+
+            def column(word, fallback):
+                found = [i for i, h in enumerate(headers) if word in h]
+                return found[0] if len(found) == 1 else fallback
+
+            columns = (column("current", 1), column("day", 2), column("week", 3))
+            for row in _TABLE_ROW_RE.findall(table_match.group(1)):
+                cells = _TABLE_CELL_RE.findall(row)
+                if len(cells) < 2:
+                    continue
+                found = _TOLERANT_RANGE_RE.search(_text(cells[0]))
+                if not found:
+                    continue
+                parsed = [_parse_percent(cells[i]) if i < len(cells) else (None, "NOT_LISTED") for i in columns]
+                table.append({"rate_low": float(found.group(1)), "rate_high": float(found.group(2)),
+                              "current_pct": parsed[0][0], "previous_day_pct": parsed[1][0],
+                              "previous_week_pct": parsed[2][0], "current_invalid": parsed[0][1] == "INVALID",
+                              "invalid_cells": sum(kind == "INVALID" for _, kind in parsed)})
+        result[day] = {"source_updated_text": updated_text,
+                       "source_updated_at": _parse_updated(updated_text) if updated_text else None,
+                       "futures_price": price, "table": table}
+    return result
+
+
+def source_freshness(updated_at, now) -> dict:
+    """Freshness from the page's own update time, counted in U.S. weekdays."""
+    if updated_at is None:
+        return {"status": "SOURCE_TIMESTAMP_UNAVAILABLE", "age_days": None, "basis": "provider retrieved_at"}
+    age = (now - updated_at).total_seconds()
+    if age < -SOURCE_FUTURE_TOLERANCE_SECONDS:
+        return {"status": "SOURCE_TIMESTAMP_UNAVAILABLE", "age_days": None, "basis": "provider retrieved_at",
+                "rejected_source_timestamp": timeutil.iso_z(updated_at), "reason": "FUTURE_SOURCE_TIMESTAMP"}
+    start, end = timeutil.eastern_date_from_utc(updated_at), timeutil.eastern_date_from_utc(now)
+    weekdays = sum(1 for offset in range(1, min((end - start).days, 400) + 1)
+                   if (start + timedelta(days=offset)).weekday() < 5)
+    return {"status": "CURRENT" if weekdays <= SOURCE_STALE_AFTER_WEEKDAYS else "STALE",
+            "age_days": round(max(age, 0) / 86400.0, 6), "weekdays_since_update": weekdays,
+            "basis": "Investing.com Updated time"}
+
+
+def _displayed_previous(context: dict | None, raw_rows: list[dict]) -> dict:
+    """Previous Day/Week values, used only when the table repeats the accepted bars.
+
+    The table is an independent copy of the same distribution. Its current
+    column must equal every accepted raw bucket (and nothing else) before its
+    previous columns are trusted; otherwise they are withheld as a mismatch.
+    """
+    table = (context or {}).get("table") or []
+    if not table:
+        return {"status": "UNAVAILABLE", "reason": "TABLE_ABSENT"}
+    accepted = {(row["rate_low"], row["rate_high"]): row["probability_pct"] for row in raw_rows}
+    repeated = {(row["rate_low"], row["rate_high"]): row["current_pct"] for row in table}
+    # The table only has to agree where both show a value: it proves the rows
+    # and columns line up. Buckets absent from one side are not a conflict; a
+    # clear disagreement (beyond display rounding) or an unreadable current
+    # column means the previous values cannot be tied to this distribution.
+    overlap = [key for key in accepted if repeated.get(key) is not None]
+    disagree = [key for key in overlap if abs(repeated[key] - accepted[key]) > PREVIOUS_TABLE_TOLERANCE_PP]
+    extra = [key for key in set(repeated) - set(accepted) if (repeated[key] or 0.0) > PREVIOUS_TABLE_TOLERANCE_PP]
+    if len(repeated) != len(table) or not overlap or disagree or extra:
+        return {"status": "MISMATCH", "reason": "TABLE_CURRENT_DIFFERS_FROM_DISTRIBUTION",
+                "disagreeing_buckets": [list(key) for key in disagree + extra]}
+    unreadable = sum(row.get("invalid_cells", 0) for row in table)
+    out = {"status": "PARTIAL" if unreadable or len(overlap) < len(accepted) else "OK",
+           "unreadable_cells": unreadable}
+    for horizon in ("previous_day", "previous_week"):
+        # A dash means the bucket was not listed for that horizon.
+        values = [{"rate_low": row["rate_low"], "rate_high": row["rate_high"],
+                   "probability_pct": row[horizon + "_pct"]} for row in sorted(table, key=lambda r: r["rate_low"])
+                  if row[horizon + "_pct"] is not None]
+        total = sum(item["probability_pct"] for item in values) if values else None
+        complete = total is not None and NORMALIZATION_MIN_SUM <= total <= NORMALIZATION_MAX_SUM
+        expected = (sum((item["rate_low"] + item["rate_high"]) / 2.0 * item["probability_pct"] / total
+                        for item in values) if complete else None)
+        out[horizon] = {"probabilities": values, "complete": complete,
+                        "raw_probability_sum_pct": round(total, 9) if total is not None else None,
+                        "normalized_expected_rate": expected}
+    return out
+
+
+def _table_distribution(context: dict | None, day: str) -> list[dict] | None:
+    """The card table's current column as raw rows, when it is fully readable."""
+    table = (context or {}).get("table") or []
+    if not table or any(row.get("current_invalid") for row in table):
+        return None
+    rows = [{"meeting_date": day, "rate_low": row["rate_low"], "rate_high": row["rate_high"],
+             "probability_pct": row["current_pct"]} for row in table if row["current_pct"]]
+    total = sum(row["probability_pct"] for row in rows)
+    return rows if rows and NORMALIZATION_MIN_SUM <= total <= NORMALIZATION_MAX_SUM else None
 
 
 def fetch_fed_rate_monitor_html(transport: Transport, url: str = FED_RATE_MONITOR_URL) -> str:
@@ -142,9 +390,9 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
     fragments = _class_fragments(html, "infoFed")
     blocks = []
     for fragment in fragments:
-        match = re.search(r'Meeting Time:\s*</span>\s*<i\b[^>]*>([^<]+)</i>', fragment)
-        if match:
-            blocks.append((match.group(1), None, fragment[match.end():]))
+        raw_time, rest = _meeting_time(fragment)
+        if raw_time is not None:
+            blocks.append((raw_time, None, rest))
         else:
             dropped_meeting_blocks.append({"reason": "missing_meeting_time"})
     info_fed_marker_count = len(fragments)
@@ -155,11 +403,8 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
         )
 
     for meeting_time_raw, _future_price_raw, rest in blocks:
-        try:
-            meeting_date = datetime.strptime(
-                meeting_time_raw.strip(), _MEETING_TIME_FORMAT
-            ).date()
-        except ValueError:
+        meeting_date = _meeting_date(meeting_time_raw)
+        if meeting_date is None:
             warnings.append(f"unparseable meeting time {meeting_time_raw!r}; block skipped")
             dropped_meeting_blocks.append(
                 {"meeting_time": meeting_time_raw, "reason": "unparseable_meeting_time"}
@@ -173,13 +418,13 @@ def parse_fed_rate_monitor(html: str) -> tuple[list[dict], list[str], dict]:
         items = []
         block_partial = False
         for fragment in bucket_fragments:
-            matches = list(_BUCKET_ITEM_RE.finditer(fragment))
-            if len(matches) != 1:
+            item = _bucket_item(fragment)
+            if item is None:
                 unmatched_bucket_items += 1
                 block_partial = True
-                warnings.append(f"bucket marker for meeting {day} did not match the bucket row structure exactly once")
+                warnings.append(f"bucket marker for meeting {day} did not contain exactly one range and percentage")
             else:
-                items.append(matches[0].groups())
+                items.append(item)
         marker_count = len(bucket_fragments)
         if not items:
             warnings.append(
@@ -545,6 +790,24 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     html = fetch_fed_rate_monitor_html(transport)
     retrieved_at = clock()
     raw_rows, warnings, parse_report = parse_fed_rate_monitor(html)
+    contexts = parse_displayed_context(html)
+    # A card whose bars could not be read completely still publishes the same
+    # distribution in its table; use it instead of dropping the meeting. A
+    # contradiction between page copies is never resolved this way.
+    recovered = {}
+    for day in sorted(set(parse_report["partial_meeting_dates"]) - set(parse_report["conflicting_copy_meeting_dates"])):
+        rows = _table_distribution(contexts.get(day), day)
+        if rows:
+            recovered[day] = rows
+    if recovered:
+        raw_rows = sorted([row for row in raw_rows if row["meeting_date"] not in recovered] +
+                          [row for rows in recovered.values() for row in rows],
+                          key=lambda row: (row["meeting_date"], row["rate_low"]))
+        parse_report = dict(parse_report, partial_meeting_dates=sorted(
+            set(parse_report["partial_meeting_dates"]) - set(recovered)),
+            table_recovered_meeting_dates=sorted(recovered))
+        warnings.append("meeting card bars unreadable; distribution read from the card's table for "
+                        + ", ".join(sorted(recovered)))
     if not raw_rows:
         raise FedwatchError(
             PROVIDER_INVESTING,
@@ -601,6 +864,9 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
     meetings = []
     for meeting_date in sorted(record_by_date):
         record = record_by_date[meeting_date]
+        context = contexts.get(meeting_date) or {}
+        updated_at = context.get("source_updated_at")
+        freshness = source_freshness(updated_at, retrieved_at)
         meetings.append(
             {
                 "meeting_date": meeting_date,
@@ -634,6 +900,15 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
                 },
                 "copy_conflict": meeting_date in parse_report["conflicting_copy_meeting_dates"],
                 "copy_conflicts": [item for item in parse_report["copy_conflicts"] if item["meeting_date"] == meeting_date],
+                "source_timestamp": timeutil.iso_z(updated_at) if updated_at and freshness["status"] != "SOURCE_TIMESTAMP_UNAVAILABLE" else None,
+                "freshness": freshness,
+                "displayed_context": {
+                    "source_updated_text": context.get("source_updated_text"),
+                    "futures_price": context.get("futures_price"),
+                    "futures_implied_rate": (round(100.0 - context["futures_price"], 6)
+                                             if context.get("futures_price") is not None else None),
+                    "previous": _displayed_previous(context, raw_by_date[meeting_date]),
+                },
             }
         )
 
@@ -657,6 +932,24 @@ def fetch_distributions(transport: Transport, clock=timeutil.utc_now) -> dict:
             "normalized_probability_sum_target_pct": 100.0,
         },
         "warnings": warnings,
+    }
+
+
+def _timing(meeting: dict) -> dict:
+    """Source time, freshness and page context for one Fed-side section."""
+    timestamp = meeting.get("source_timestamp")
+    return {
+        "source_timestamp": timestamp,
+        "freshness": meeting.get("freshness") or {
+            "status": "SOURCE_TIMESTAMP_UNAVAILABLE", "age_days": None, "basis": "provider retrieved_at"},
+        "displayed_context": meeting.get("displayed_context"),
+        "timestamp_note": (
+            "The Fed Rate Monitor card's 'Updated' time (U.S. Eastern, converted to UTC) is the "
+            "source observation time; the provider retrieved_at is when MarketLab read it."
+            if timestamp else
+            "No readable 'Updated' time was found for this meeting card; the provider "
+            "retrieved_at is the observation time."
+        ),
     }
 
 
@@ -724,16 +1017,7 @@ def with_local_probabilities(distributions: dict, upper: float | None, lower: fl
                     f"first meeting {meeting_date} requires a readable FRED target pair" if unavailable_target else
                     f"local change for meeting {meeting_date} requires an established adjacent predecessor",
                     detail={"meeting_date": meeting_date}).to_dict(),
-                "source_timestamp": None,
-                "freshness": {
-                    "status": "SOURCE_TIMESTAMP_UNAVAILABLE",
-                    "age_days": None,
-                    "basis": "provider retrieved_at",
-                },
-                "timestamp_note": (
-                    "Investing.com publishes no observation timestamp on the Fed Rate "
-                    "Monitor page; the provider retrieved_at is the observation time."
-                ),
+                **_timing(meeting),
             }
         )
     return sections
@@ -758,16 +1042,7 @@ def without_local_probabilities(distributions: dict) -> list[dict]:
             "local_probabilities": None,
             "meeting_ordinal": None,
             "local_status": "CURRENT_TARGET_RANGE_UNAVAILABLE",
-            "source_timestamp": None,
-            "freshness": {
-                "status": "SOURCE_TIMESTAMP_UNAVAILABLE",
-                "age_days": None,
-                "basis": "provider retrieved_at",
-            },
-            "timestamp_note": (
-                "Investing.com publishes no observation timestamp on the Fed Rate "
-                "Monitor page; the provider retrieved_at is the observation time."
-            ),
+            **_timing(meeting),
         }
         for meeting in distributions["meetings"]
     ]

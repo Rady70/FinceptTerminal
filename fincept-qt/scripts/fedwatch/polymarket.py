@@ -63,13 +63,23 @@ OUTCOME_SUM_MAX = 1.15
 _UP_WORDS = r"increase|increases|raise|raises|hike|hikes"
 _DOWN_WORDS = r"decrease|decreases|cut|cuts|lower|lowers"
 _UP_WORDS_SET = {word.lower() for word in _UP_WORDS.split("|")}
+# "by" and the unit spelling vary between listings ("by 25 bps", "25bp",
+# "25 basis points"); the number must still be followed by a bp unit, so a
+# year or a date can never be read as a rate change.
 _BP_PATTERN = re.compile(
-    rf"(?P<direction>{_UP_WORDS}|{_DOWN_WORDS}).*?by\s+(?P<bp>\d+)(?P<plus>\+)?\s*bps?",
+    rf"\b(?P<direction>{_UP_WORDS}|{_DOWN_WORDS})\b.*?(?:\bby\s+)?(?P<bp>\d+)(?P<plus>\+)?\s*"
+    r"(?:bps?|basis[\s-]points?)\b",
     re.IGNORECASE,
 )
-_NO_CHANGE_PATTERN = re.compile(r"no change", re.IGNORECASE)
+_NO_CHANGE_PATTERN = re.compile(r"no change|\bunchanged\b|\bhold(?:s)?\s+(?:interest\s+)?rates?\b", re.IGNORECASE)
 
 _TITLE_PATTERN = re.compile(r"^fed decision in ([a-z]+)(?:\s+(\d{4}))?\??$", re.IGNORECASE)
+# One Fed decision, not a multi-meeting combination, dissent count or other
+# side market. Wording around it may change ("October Fed decision?",
+# "Fed rate decision in October 2026?").
+_TITLE_FED_RE = re.compile(r"\b(?:fed|fomc|federal reserve)\b", re.IGNORECASE)
+_TITLE_DECISION_RE = re.compile(r"\bdecision\b", re.IGNORECASE)
+_TITLE_EXCLUDED_RE = re.compile(r"\b(?:decisions|dissents?|combos?|how many|chair|vote|votes)\b|&", re.IGNORECASE)
 _MONTH_NAME_TO_NUM = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
     "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
@@ -559,17 +569,26 @@ def discover_candidate_events(
 
 
 def _title_meeting(title: str) -> tuple[int, int | None] | None:
-    """Strictly parse "Fed Decision in <Month>[ <Year>]?" titles."""
+    """Month (and year, when present) of a single Fed-decision event title.
+
+    The established "Fed Decision in <Month>[ <Year>]?" form is read first.
+    Other wordings qualify when they name the Fed and one decision, mention
+    exactly one month, and are not a combination, dissent or side market.
+    """
     cleaned = re.sub(r"\s+", " ", (title or "").strip())
     match = _TITLE_PATTERN.match(cleaned)
-    if not match:
+    if match:
+        month = _MONTH_NAME_TO_NUM.get(match.group(1).lower())
+        if month is None:
+            return None
+        return month, int(match.group(2)) if match.group(2) else None
+    if not (_TITLE_FED_RE.search(cleaned) and _TITLE_DECISION_RE.search(cleaned)) or _TITLE_EXCLUDED_RE.search(cleaned):
         return None
-    month_name = match.group(1).lower()
-    month = _MONTH_NAME_TO_NUM.get(month_name)
-    if month is None:
+    months = _months_mentioned(cleaned)
+    years = _years_mentioned(cleaned)
+    if len(months) != 1 or len(years) > 1:
         return None
-    year = int(match.group(2)) if match.group(2) else None
-    return month, year
+    return next(iter(months)), next(iter(years)) if years else None
 
 
 def _months_mentioned(text: str) -> set[int]:
@@ -593,7 +612,9 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
     submarket is quarantined independently; it cannot invalidate otherwise
     exact meeting identities and readable validated neighbouring markets.
     """
-    if event.get("active") is not True or event.get("closed") is not False:
+    # Only an explicit inactive or closed flag disqualifies; a listing that
+    # omits either field is judged by its date and market structure.
+    if event.get("active") is False or event.get("closed") is True:
         return None, "EVENT_NOT_ACTIVE_AND_OPEN"
 
     raw_title = event.get("title")
@@ -653,7 +674,8 @@ def validate_candidate_event(event: dict, meeting_date: date) -> tuple[dict | No
             rejected_binary_markets.append({"market_id": market["market_id"],
                 "outcome_bp": market["bp_delta"], "open_ended": market["open_ended"],
                 "reason": "INVALID_BINARY_OUTCOMES"})
-        if _months_mentioned(market["question"]) != {meeting_date.month}:
+        # A question may omit the month; it must never name another one.
+        if _months_mentioned(market["question"]) - {meeting_date.month}:
             return None, "QUESTION_MEETING_MISMATCH"
         mentioned_years = _years_mentioned(market["question"])
         if mentioned_years and mentioned_years != {meeting_date.year}:

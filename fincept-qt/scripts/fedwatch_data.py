@@ -46,7 +46,7 @@ from fedwatch import history as fedwatch_history  # noqa: E402
 from fedwatch import snapshot as fedwatch_snapshot  # noqa: E402
 from fedwatch import store as fedwatch_store  # noqa: E402
 from fedwatch import timeutil as fedwatch_timeutil  # noqa: E402
-from fedwatch import acquisition, published_history, sources  # noqa: E402
+from fedwatch import acquisition, published_history, sources, workspace  # noqa: E402
 from fedwatch.errors import FedwatchError  # noqa: E402
 from fedwatch.transport import HttpTransport  # noqa: E402
 
@@ -65,6 +65,7 @@ USAGE = {
         "polymarket_fomc": "Polymarket FOMC discovery, mapping validation and current prices",
         "collect": "current snapshot + durable recording + meeting lifecycle",
         "local_snapshot": "saved current attempt and coverage; no network acquisition",
+        "workspace": "all stored meetings, latest states, daily history and changes; no network acquisition",
         "history_sources": "public availability, implemented routes and local coverage",
         "history_cme_import": "explicit local CME-published target-range CSV import",
         "history_compare_cme": "date/band matched published versus ZQ cumulative history",
@@ -243,6 +244,11 @@ def _dispatch(command: str, argv: list[str]) -> dict:
         if not args.meeting:
             raise InvalidArgumentsError("--meeting is required")
         return _envelope(published_history.compare_reconstruction(store, args.meeting))
+
+    if command == "workspace":
+        parser = _parser(command)
+        parser.add_argument("--db", default=None)
+        return _envelope(workspace.build(_open_store(parser.parse_args(argv))))
 
     if command == "history_cme_import":
         parser = _parser(command)

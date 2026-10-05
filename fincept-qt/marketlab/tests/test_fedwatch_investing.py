@@ -143,7 +143,7 @@ class InvestingParseTests(unittest.TestCase):
         self.assertFalse(report["structurally_complete"])
         self.assertEqual(report["unmatched_bucket_item_count"], 1)
         self.assertEqual(report["partial_meeting_dates"], ["2026-10-28"])
-        self.assertTrue(any("did not match the bucket row structure" in w for w in warnings))
+        self.assertTrue(any("did not contain exactly one range and percentage" in w for w in warnings))
 
     def test_all_malformed_percentages_is_an_investing_provider_error(self):
         html = synthetic_html(
