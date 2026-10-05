@@ -115,7 +115,13 @@ class RecordingTests(unittest.TestCase):
         self.assertGreater(report["polymarket_observations"], 0)
         rows = self.store.observations(meeting_date="2026-10-28")
         methods = {row["method"] for row in rows}
-        self.assertEqual(methods, {"LIVE_INVESTING_DERIVED", "POLYMARKET_CLOB"})
+        self.assertEqual(methods, {"LIVE_INVESTING_DERIVED", "LIVE_INVESTING_TARGET_RANGE", "POLYMARKET_CLOB"})
+        # The cumulative distribution is archived by target band beside the local rows.
+        bands = [row for row in rows if row["method"] == "LIVE_INVESTING_TARGET_RANGE"]
+        self.assertTrue(bands)
+        self.assertAlmostEqual(sum(row["probability_pct"] for row in bands), 100.0, places=9)
+        self.assertEqual(report["target_range_counts"], {"inserted": len(
+            [row for row in self.store.observations() if row["method"] == "LIVE_INVESTING_TARGET_RANGE"])})
         fed = [
             row for row in rows if row["method"] == "LIVE_INVESTING_DERIVED"
         ]
@@ -219,7 +225,11 @@ class RecordingTests(unittest.TestCase):
         second = fedwatch_history.record_snapshot(
             self.store, second_snapshot["data"], clock=FixedClock(later)
         )
-        accepted = second["fed_side_observations"] + second["polymarket_observations"]
+        # This fixture page has no Updated time, so each retrieval is a new
+        # target-range instant too (a published time would dedupe them).
+        accepted = (second["fed_side_observations"] + second["polymarket_observations"]
+                    + second["target_range_counts"]["inserted"])
+        self.assertEqual(set(second["target_range_counts"]), {"inserted"})
         self.assertEqual(
             self.store.count_observations(), count_after_first + accepted,
             "every accepted observation instant is its own durable row",
@@ -1230,6 +1240,7 @@ class StorageGrowthTests(unittest.TestCase):
         )
         accepted_fed = first["fed_side_observations"]
         accepted_poly = first["polymarket_observations"]
+        accepted_bands = sum(first["target_range_counts"].values())
         for index in range(1, 11):
             moment = NOW + timedelta(minutes=10 * index)
             data = dict(snapshot["data"])
@@ -1238,7 +1249,7 @@ class StorageGrowthTests(unittest.TestCase):
             self.assertEqual(report["fed_side_observations"], accepted_fed)
             self.assertEqual(report["counts"].get("duplicate", 0), accepted_poly)
         self.assertEqual(
-            store.count_observations(), accepted_fed + accepted_poly + 10 * accepted_fed
+            store.count_observations(), accepted_fed + accepted_poly + 11 * accepted_bands + 10 * accepted_fed
         )
 
     def test_repeated_collect_with_changing_values_records_each_instant(self):

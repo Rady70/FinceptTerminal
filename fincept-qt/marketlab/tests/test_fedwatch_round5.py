@@ -50,8 +50,12 @@ class FirstOnlyTests(unittest.TestCase):
                                 with closing(FedwatchHistoryStore(Path(tmp) / "history.db")) as store:
                                     history.record_snapshot(store, result, clock=CLOCK)
                                     rows = store.observations(meeting_date="2026-10-28")
-                                    retained = [row for row in rows if row["source"] == "investing"]
+                                    retained = [row for row in rows if row["method"] == "LIVE_INVESTING_DERIVED"]
                                     self.assertTrue(retained)
+                                    # The archived target-range distribution needs no FRED pair.
+                                    bands = [row for row in rows if row["method"] == "LIVE_INVESTING_TARGET_RANGE"]
+                                    self.assertTrue(bands)
+                                    self.assertNotIn("target_range_unverified", bands[0]["detail"])
                                     self.assertTrue(all(row["detail"]["target_range_unverified"] for row in retained))
                                     self.assertTrue(all(row["detail"]["target_range_pair_date"] == "2026-09-28" for row in retained))
                         elif scenario == "decision":

@@ -517,6 +517,14 @@
       "sink": "open_url",
       "disposition": "guarded",
       "files": [
+        "src/screens/economics/panels/FedWatchPanel.cpp"
+      ],
+      "note": "The FedWatch \"CME FEDWATCH\" button hands one fixed public URL (https://www.cmegroup.com/fedwatch) to the user's browser through ExternalUrlGuard::open_external(), so the deny-list is consulted before the platform handoff. It is an explicit user click for personal viewing of CME's own page; MarketLab makes no request to CME and collects no CME website data."
+    },
+    {
+      "sink": "open_url",
+      "disposition": "guarded",
+      "files": [
         "src/network/http/ExternalUrlGuard.cpp"
       ],
       "note": "The fork's ONLY QDesktopServices::openUrl call. Every screen that opens a fetched link routes through open_external(), which consults HostedPathGuard::is_fincept_destination() and refuses before the platform handoff (FINCEPT_FORK_PLAN.md \u00a711.2). Concentrating the launch here is what makes the deny-list impossible for a call site to forget."
@@ -673,6 +681,9 @@
   ],
   "sink_counts_note": "Pinned occurrence count of every (file, sink) pair in the scanned sink scopes (under src/, and the reachable production Python under scripts/), exhaustive and exact. This is the half of the sink check that is keyed on the SITES rather than on the file: the dispositions above answer \"is this judged?\", these numbers answer \"is this still the same set of sites that was judged?\". A count that goes up is a new outbound-capable site and fails the audit even though its file (or its \"dir/**\" subtree) is already dispositioned; a count that goes down, or a file that disappears, also fails, so the inventory cannot drift away from the tree. Counts are textual occurrences of the sink regex, comments included \u2014 editing a comment that names QNetworkAccessManager will move a number, and that is the intended cost of pinning sites rather than files. Known limit: a change that adds one sink and deletes another of the same kind in the same file leaves the count equal and is not caught; site-level pinning is a different and much larger control.",
   "sink_counts": {
+    "src/screens/economics/panels/FedWatchPanel.cpp": {
+      "open_url": 1
+    },
     "scripts/fedwatch/transport.py": {
       "py_http_client": 2
     },

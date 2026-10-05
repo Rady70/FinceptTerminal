@@ -48,6 +48,10 @@ from fedwatch.store import (
 from fedwatch.transport import HttpTransport, Transport
 
 FED_METHOD_LIVE = "LIVE_INVESTING_DERIVED"
+# The cumulative target-range distribution the local conversion starts from.
+# It needs no FRED pair or adjacent meeting, so it is archived independently;
+# outcome_bp is the band's upper bound in bp (TARGET_RANGE_UPPER_BP).
+FED_METHOD_LIVE_TARGET = "LIVE_INVESTING_TARGET_RANGE"
 FED_METHOD_ZQ = "HISTORICAL_ZQ_RECONSTRUCTED"
 POLY_METHOD = "POLYMARKET_CLOB"
 POLY_SOURCE = "polymarket"
@@ -105,6 +109,7 @@ def _record_fed_side(
             {"meeting_date": meeting_date, "source": INVESTING_SOURCE, "reason": "FED_SIDE_UNAVAILABLE"}
         )
         return
+    _record_target_ranges(store, meeting_date, fed, retrieved_at, recorded_at, report)
     local_rows = fed.get("local_probabilities")
     if fed.get("local_status") != "OK" or not local_rows:
         report["skipped"].append(
@@ -137,6 +142,7 @@ def _record_fed_side(
         "copy_conflicts": fed.get("copy_conflicts", []),
         "target_range_unverified": fed.get("target_range_unverified", False),
         "target_range_pair_date": fed.get("target_range_pair_date"),
+        "displayed_context": fed.get("displayed_context"),
     }
     for row in local_rows:
         probability = _finite_number(row.get("probability_pct"))
@@ -183,6 +189,63 @@ def _record_fed_side(
         )
         report["fed_side_observations"] += 1
         _count_record(report, result)
+
+
+def _record_target_ranges(store, meeting_date, fed, retrieved_at, recorded_at, report) -> None:
+    """Archive the accepted cumulative distribution even when no local step exists."""
+    normalized = fed.get("normalized_probabilities")
+    if not isinstance(normalized, list) or not normalized:
+        return
+    raw_by_band = {(row.get("rate_low"), row.get("rate_high")): row.get("probability_pct")
+                   for row in fed.get("raw_probabilities") or [] if isinstance(row, dict)}
+    previous = ((fed.get("displayed_context") or {}).get("previous") or {})
+    previous_by_band = {}
+    for horizon in ("previous_day", "previous_week"):
+        for row in (previous.get(horizon) or {}).get("probabilities") or []:
+            previous_by_band.setdefault((row["rate_low"], row["rate_high"]), {})[horizon + "_pct"] = row["probability_pct"]
+    context = fed.get("displayed_context") or {}
+    freshness = fed.get("freshness") or {}
+    for row in normalized:
+        low, high = _finite_number(row.get("rate_low")), _finite_number(row.get("rate_high"))
+        probability = _finite_number(row.get("probability_pct"))
+        if low is None or high is None or probability is None:
+            report["skipped"].append({"meeting_date": meeting_date, "source": INVESTING_SOURCE,
+                                      "reason": "MALFORMED_TARGET_RANGE_ROW"})
+            continue
+        upper_bp = int(round(high * 100))
+        raw = _finite_number(raw_by_band.get((row.get("rate_low"), row.get("rate_high"))))
+        detail = {
+            "origin": "live_collect",
+            "financial_object": "TARGET_RANGE_UPPER_BP",
+            "source": fed.get("source"),
+            "rate_low": low,
+            "rate_high": high,
+            "source_timestamp": fed.get("source_timestamp"),
+            "local_status": fed.get("local_status"),
+            "normalization_factor": (fed.get("normalization") or {}).get("normalization_factor"),
+            "normalized_expected_rate": (fed.get("normalization") or {}).get("normalized_expected_rate"),
+            "futures_price": context.get("futures_price"),
+            "displayed_previous_status": previous.get("status"),
+            **previous_by_band.get((row.get("rate_low"), row.get("rate_high")), {}),
+        }
+        digest = content_digest({"method": FED_METHOD_LIVE_TARGET, "rate_low": low, "rate_high": high,
+                                 "probability_pct": probability, "raw_probability_pct": raw,
+                                 "source_timestamp": fed.get("source_timestamp")})
+        try:
+            result = store.record_observation(
+            meeting_date=meeting_date, source=INVESTING_SOURCE, method=FED_METHOD_LIVE_TARGET,
+            outcome_bp=upper_bp, open_ended=False, probability_pct=probability, raw_probability_pct=raw,
+            # Re-reading the same published update is a duplicate, not growth.
+            normalized_probability_pct=probability, observed_at=fed.get("source_timestamp") or retrieved_at,
+            source_observed_at=fed.get("source_timestamp"), retrieved_at=retrieved_at, quality_status="OK",
+            freshness_status=freshness.get("status"), digest=digest, detail=detail, recorded_at=recorded_at)
+        except HistoryStoreError as exc:
+            report["skipped"].append({"meeting_date": meeting_date, "source": INVESTING_SOURCE,
+                                      "reason": "TARGET_RANGE_ROW_REJECTED", "detail": {"error": exc.message}})
+            continue
+        # Counted separately so the established per-outcome record counts keep their meaning.
+        counts = report.setdefault("target_range_counts", {})
+        counts[result] = counts.get(result, 0) + 1
 
 
 def _record_polymarket(
