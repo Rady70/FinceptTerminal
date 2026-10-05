@@ -20,6 +20,8 @@ Economics service, script `fedwatch_data.py`, source tag `fedwatch`.
 
 | User operation | Backend command | Internet |
 |---|---|---|
+| Open the FedWatch workspace; focus another meeting (2026-10-05 redesign) | `workspace` once; meeting focus is local | None |
+| REFRESH in the redesigned workspace | `collect` (every upcoming meeting), then `history_backfill` (validated markets, 24 h reuse), then `workspace` | Existing bounded current requests plus bounded CLOB history |
 | Open saved research | `local_snapshot` | None |
 | Change meeting/outcome/range/method; view details | `local_snapshot`, `history_meetings`, `history_series`, `history_analytics`, `history_sources`, `history_compare_cme` | None |
 | Manual current Refresh | `collect --meeting YYYY-MM-DD` | Existing bounded current requests; complete valid recent attempts reused |
@@ -554,6 +556,9 @@ change was introduced; existing workflows have no automatic PR check trigger.
 
 ## Finalized Batch C consumer wiring
 
+Superseded on 2026-10-05 by the research workspace described in the last
+section; kept as the record of the Batch C panel.
+
 Activation uses `history_meetings`, `local_snapshot`, `history_series`, and
 `history_analytics` only. Meeting changes reload retained current/history;
 outcome/method changes reload local analytics; range/details controls use
@@ -600,3 +605,100 @@ These are hidden-widget fixtures and service checks, not owner native acceptance
 Exact-head full application build receipts are retained in the paired control
 record. Existing Batch C owner acceptance is historical; this new combined
 executable needs later owner manual inspection. No desktop automation is run.
+
+## Research workspace redesign and tolerant acquisition — 2026-10-05
+
+Starting point: application `main` `92b881beb9ffe0b26feaf93846f69173d33cd53e`.
+
+### Panel contract
+
+The Economics → FedWatch panel opens with **one** network-free `workspace`
+read (`scripts/fedwatch/workspace.py`) and shows every stored meeting at
+once. Focusing a meeting (matrix row, path column or meeting chip) is local
+and issues no request. The only acquisition control is **REFRESH**:
+`collect` without `--meeting` (one Investing page, FRED, the Federal Reserve
+calendar and Polymarket for every upcoming meeting), then `history_backfill`
+for all validated markets (the existing 24-hour reuse applies), then
+`workspace` again. A failed step is reported and the stored values stay on
+screen. The panel has no dropdowns, method/range toggles or line charts.
+
+`workspace` returns, per meeting: the latest accepted Fed-side target-range
+distribution with `CURRENT`, `STALE` (shown with its own timestamp, never as
+current), `HISTORICAL` or `UNAVAILABLE` state; Investing's displayed
+previous-day/previous-week values and expected rates; the futures price;
+the local step; Polymarket outcomes with the same states; the current
+comparison (only when both sources are current); daily history for both
+sources (latest accepted observation per UTC day, gaps kept); and the
+approved `analytics.compute_analytics` changes per outcome, including the
+reference observation time of each 1D/7D/30D change.
+
+### Values the Investing card already published
+
+The Fed Rate Monitor card carries an "Updated" time, the 30-Day Fed Funds
+futures price and a table of Current / Previous Day / Previous Week
+probabilities. The parser previously ignored all three and recorded
+`SOURCE_TIMESTAMP_UNAVAILABLE`. `parse_displayed_context` now reads them
+without changing the qualified distribution rows:
+
+* the Eastern "Updated" time becomes `source_timestamp`; freshness is `STALE`
+  only after more than two U.S. weekdays without an update (futures do not
+  trade at weekends), and an unreadable or future time falls back to the old
+  retrieval-time behaviour;
+* previous values are used when the table agrees with the accepted bars where
+  both show a value (±0.15 pp display rounding). The page's dash means "not
+  listed"; an unreadable cell is only missing; only a clear disagreement
+  withholds them (`MISMATCH`);
+* the futures price is shown as published, with `100 − price` as the
+  contract-month average implied rate (not the post-meeting target).
+
+### Format-change tolerance
+
+Websites change markup and wording; valid values must not be dropped for it.
+
+* Investing: bucket rows are read by meaning (one range and one percentage in
+  the row's visible text) when the exact markup does not match; meeting dates
+  accept short or long month names and other time formats; table columns are
+  found by their headers; if a card's bars cannot be read, the card's own
+  table (current column, readable and summing to 100 ± 0.5) supplies the
+  distribution. Copies that contradict each other are still never blended.
+* Polymarket: a single-decision event no longer needs the exact
+  "Fed Decision in <Month>?" title (combinations, dissent counts and other
+  side markets are still excluded); a rate question may omit the month but
+  never name another; "by", "bp/bps/basis points" and "hold rates" wording
+  vary; a listing that omits `active`/`closed` is judged by its exact
+  meeting-date and market structure, while an explicit closed flag still
+  rejects it.
+* The exact end-date match, submarket structure, sum bands, ambiguity
+  handling and failure isolation are unchanged.
+
+### Archive no longer tied to the local step
+
+`LIVE_INVESTING_TARGET_RANGE` rows (outcome_bp = upper bound in bp,
+`TARGET_RANGE_UPPER_BP`) now archive every accepted cumulative distribution,
+including meetings whose local step is unavailable (for example the first
+meeting while FRED is down). Their `observed_at` is the card's Updated time
+when readable, so re-reading the same update adds no rows. `history_series`
+without a method and the analytics methods are unchanged.
+
+### CME
+
+CME's website and data terms prohibit scripts, robots and other automated
+access to cmegroup.com data, and the FedWatch API is paid (outside the owner's
+free-data policy), so CME FedWatch output is not collected. The Fed-side values
+come from Investing.com's monitor, which is computed from CME 30-Day Fed Funds
+futures; its displayed futures price is now surfaced. The panel's "CME
+FEDWATCH ↗" button opens the official page in the user's browser through
+`ExternalUrlGuard::open_external` (inventoried in `hosted_path_inventory.json`).
+
+### Validation (local)
+
+Python: 453 FedWatch tests pass on Python 3.14. On the app-managed Python
+3.11.9 the only failures are the same 16 `test_fedwatch_acceptance` rule-A
+cases that fail on the unchanged starting `main` (float summation differs from
+the manifest's Python ≥3.12). CTest: `marketlab_audit`,
+`marketlab_fedwatch_fixtures`, `tst_fedwatch_panel`, `tst_fedwatch_view_model`,
+`tst_fedwatch_dispatch`, `tst_marketlab_boundary`, `tst_economics_envelope`
+and `tst_time_series_data` pass. Changed C++ is clang-formatted and clean under
+the gating clang-tidy checks. Native screenshots, request accounting and the
+exact executable identity are in the control record
+`docs/FEDWATCH_WORKSPACE_REDESIGN.md`.

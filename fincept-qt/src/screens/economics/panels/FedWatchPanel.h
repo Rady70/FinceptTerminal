@@ -1,16 +1,31 @@
 #pragma once
 #include "screens/economics/panels/EconPanelBase.h"
+#include "screens/economics/panels/FedWatchViewModel.h"
 
 #include <QHash>
 
 #include <functional>
 
-class QPlainTextEdit;
-class QToolButton;
+class QFrame;
 class QGridLayout;
+class QPlainTextEdit;
+class QScrollArea;
+class QToolButton;
+
 namespace fincept::screens {
-class FedWatchHistoryChart;
-class FedWatchCurrentChart;
+class FedWatchMatrix;
+class FedWatchPathChart;
+class FedWatchBandBars;
+class FedWatchOutcomeBars;
+class FedWatchHeatStrip;
+
+/// Economics -> FedWatch research workspace.
+///
+/// Opening the panel reads everything from local storage in one `workspace`
+/// request and shows it immediately. The only acquisition control is REFRESH,
+/// which collects current observations for every upcoming meeting, updates the
+/// bounded Polymarket daily history for validated markets, and reloads the
+/// local read. Meeting focus changes are local and need no request.
 class FedWatchPanel : public EconPanelBase {
     Q_OBJECT
   public:
@@ -21,115 +36,76 @@ class FedWatchPanel : public EconPanelBase {
     QVariantMap save_panel_state() const override;
     void restore_panel_state(const QVariantMap& state) override;
     void accept_result(const QString& request_id, const services::EconomicsResult& result);
+
+    const fedwatch::Workspace& workspace() const { return workspace_; }
+    QString selected_meeting() const { return selected_; }
+    void select_meeting(const QString& meeting);
+    bool refreshing() const { return stage_ != Stage::Idle; }
+
   signals:
     void command_requested(const QString& command, const QStringList& args, const QString& request_id);
 
   protected:
-    void build_controls(QHBoxLayout*) override;
+    void build_controls(QHBoxLayout* toolbar) override;
     void on_fetch() override;
-    void on_result(const QString&, const services::EconomicsResult&) override;
+    void on_result(const QString& request_id, const services::EconomicsResult& result) override;
     void refresh_panel_theme() override;
     void resizeEvent(QResizeEvent* event) override;
 
   private:
-    // Panel-owned selection state. Visible buttons are the only user controls.
-    struct Selection : QObject {
-        explicit Selection(QObject* parent) : QObject(parent) {}
-        QVector<QPair<QString, QVariant>> items;
-        int index = -1;
-        std::function<void()> changed;
-        void clear() {
-            items.clear();
-            index = -1;
-        }
-        void addItem(const QString& label, const QVariant& value) { items.push_back({label, value}); }
-        int count() const { return items.size(); }
-        int currentIndex() const { return index; }
-        QString itemText(int i) const { return i >= 0 && i < count() ? items[i].first : QString{}; }
-        QVariant itemData(int i) const { return i >= 0 && i < count() ? items[i].second : QVariant{}; }
-        QString currentText() const { return itemText(index); }
-        QVariant currentData() const { return itemData(index); }
-        int findData(const QVariant& value) const {
-            for (int i = 0; i < count(); ++i)
-                if (itemData(i) == value)
-                    return i;
-            return -1;
-        }
-        void setCurrentIndex(int i) {
-            i = i >= 0 && i < count() ? i : -1;
-            if (i == index)
-                return;
-            index = i;
-            if (!signalsBlocked() && changed)
-                changed();
-        }
-    };
+    enum class Stage { Idle, Loading, Collecting, Backfilling };
     void request(const QString& command, const QStringList& args = {});
-    void rebuild_meetings();
-    void load_meeting();
-    void load_local();
-    void rebuild_outcomes();
-    QList<QJsonObject> current_outcome_rows() const;
-    void load_analytics();
+    void load_workspace();
     void render();
-    void render_history();
-    QString backfill_status() const;
-    void arrange_charts();
-    void arrange_controls();
-    void ensure_selected_controls();
-    QWidget* make_chip_row(const QString& kind, Selection* model, int height);
-    void sync_chips();
-    bool resolved() const;
-    bool local_only() const;
-    QJsonObject meeting() const;
-    QJsonObject current_meeting() const;
+    void render_kpis();
+    void render_chips();
+    void render_focus();
+    void render_history(const fedwatch::Meeting& meeting);
+    void render_changes(const fedwatch::Meeting& meeting);
+    void render_sources();
+    void render_status();
+    void arrange();
+    QFrame* card(const QString& object_name);
+    QWidget* section(QWidget* parent, const QString& title, const QString& hint, QLabel** hint_label = nullptr);
+
     Dispatch dispatch_;
     int sequence_ = 0;
-    int generation_ = 0;
-    struct Pending {
-        QString command;
-        int generation;
-        QString meeting;
-    };
-    QHash<QString, Pending> pending_;
-    QWidget* controls_ = nullptr;
-    QGridLayout* controls_layout_ = nullptr;
-    QWidget *meeting_control_ = nullptr, *outcome_control_ = nullptr, *range_control_ = nullptr;
-    QWidget *meeting_chips_ = nullptr, *outcome_chips_ = nullptr, *method_chips_ = nullptr, *range_chips_ = nullptr;
-    QPushButton* update_upcoming_ = nullptr;
-    QPushButton* load_history_ = nullptr;
-    QPushButton* contextual_load_history_ = nullptr;
-    Selection *meetings_ = nullptr, *outcomes_ = nullptr, *methods_ = nullptr, *ranges_ = nullptr;
-    QLabel *summary_ = nullptr, *status_ = nullptr, *coverage_ = nullptr;
-    QLabel* diagnostic_status_ = nullptr;
-    QLabel* compact_coverage_ = nullptr;
-    QWidget* history_controls_ = nullptr;
-    QToolButton *previous_meeting_ = nullptr, *next_meeting_ = nullptr;
-    QLabel *fed_history_state_ = nullptr, *poly_history_state_ = nullptr;
-    QLabel *selected_current_ = nullptr, *source_status_ = nullptr;
-    QWidget *probability_section_ = nullptr, *polymarket_section_ = nullptr, *diagnostics_ = nullptr;
-    QGridLayout* charts_layout_ = nullptr;
-    QTableWidget *distribution_ = nullptr, *indicators_ = nullptr;
-    QPlainTextEdit* details_ = nullptr;
-    FedWatchHistoryChart *probability_ = nullptr, *polymarket_ = nullptr, *divergence_ = nullptr;
-    FedWatchCurrentChart* current_chart_ = nullptr;
-    QJsonObject snapshot_, overview_, series_, analytics_;
-    QString selected_meeting_, restored_outcome_;
-    QString selected_outcome_;
+    QHash<QString, QString> pending_;
+    QString latest_workspace_request_;
+    Stage stage_ = Stage::Idle;
     bool activated_ = false;
-    bool current_ok_ = false;
-    bool collect_in_flight_ = false;
-    bool backfill_in_flight_ = false;
-    bool meeting_explicitly_selected_ = false;
-    bool outcome_explicitly_selected_ = false;
-    QString current_error_, inventory_error_, series_error_, analytics_error_;
-    QStringList analytics_error_context_;
-    struct BackfillResult {
-        QJsonObject data;
-        QString error;
+
+    fedwatch::Workspace workspace_;
+    QJsonObject raw_workspace_;
+    QString selected_, restored_selection_;
+    QString load_error_, refresh_summary_;
+    QStringList refresh_issues_;
+
+    QLabel *as_of_ = nullptr, *status_ = nullptr;
+    QPushButton* open_cme_ = nullptr;
+    struct Kpi {
+        QFrame* frame = nullptr;
+        QLabel *caption = nullptr, *value = nullptr, *sub = nullptr;
     };
-    QHash<QString, BackfillResult> backfill_results_;
-    QString backfill_meeting_;
+    QVector<Kpi> kpis_;
+    QWidget* kpi_row_ = nullptr;
+    QGridLayout* kpi_layout_ = nullptr;
+    QScrollArea* matrix_scroll_ = nullptr;
+    FedWatchMatrix* matrix_ = nullptr;
+    FedWatchPathChart* path_ = nullptr;
+    QWidget* chips_ = nullptr;
+    QLabel *focus_title_ = nullptr, *focus_meta_ = nullptr;
+    QGridLayout* focus_layout_ = nullptr;
+    QWidget *band_card_ = nullptr, *outcome_card_ = nullptr;
+    FedWatchBandBars* bands_ = nullptr;
+    FedWatchOutcomeBars* outcomes_ = nullptr;
+    QLabel *band_note_ = nullptr, *outcome_note_ = nullptr;
+    FedWatchHeatStrip *fed_mix_ = nullptr, *poly_mix_ = nullptr;
+    QLabel *history_note_ = nullptr, *fed_mix_hint_ = nullptr, *poly_mix_hint_ = nullptr;
+    QTableWidget *changes_ = nullptr, *sources_ = nullptr;
+    QLabel *diagnostics_ = nullptr, *notes_ = nullptr;
+    QToolButton* audit_toggle_ = nullptr;
+    QPlainTextEdit* audit_ = nullptr;
     int workspace_page_ = -1;
 };
 } // namespace fincept::screens

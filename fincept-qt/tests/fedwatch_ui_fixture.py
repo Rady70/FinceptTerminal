@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "marketlab" / "tests"))
 
 from fedwatch_test_support import FakeTransport, FixedClock, epoch, make_clob_history, make_snapshot_transport, utc
 from test_fedwatch_analytics import seed
-from fedwatch import acquisition, history, snapshot
+from fedwatch import acquisition, history, snapshot, timeutil, workspace
 from fedwatch.store import FedwatchHistoryStore
 from fedwatch.transport import TransportError
 
@@ -49,6 +49,12 @@ def backfill_fixture(store, case, meeting="2026-10-28"):
 def main() -> None:
     store = FedwatchHistoryStore(Path(sys.argv[1]))
     case = sys.argv[2] if len(sys.argv) > 2 else ""
+    if case == "workspace":
+        # The panel's single local read, at a fixed clock so current/stale
+        # states are deterministic.
+        now = timeutil.parse_iso_z(sys.argv[3]) if len(sys.argv) > 3 else utc(2026, 9, 28, 12)
+        print(json.dumps({"success": True, "data": workspace.build(store, clock=FixedClock(now))}, allow_nan=False))
+        return
     if case == "local-snapshot":
         meeting = sys.argv[3] if len(sys.argv) > 3 else None
         print(json.dumps(acquisition.local_snapshot(store, meeting, clock=FixedClock(utc(2026, 9, 28, 12))), allow_nan=False))
