@@ -1543,7 +1543,7 @@ constexpr int kCotGridHeader = 26;
 constexpr int kCotGridRow = 42;
 constexpr double kCotGridNameW = 200; // "Producer/Merchant"
 constexpr double kCotGridTagsMin = 120;
-constexpr double kCotGridRestMin = 820; // position, level and three horizons
+constexpr double kCotGridRestMin = 850; // position, level and three horizons
 } // namespace
 
 CftcReadingsGrid::CftcReadingsGrid(QWidget* parent) : CftcChart(parent) {
@@ -1582,13 +1582,13 @@ void CftcReadingsGrid::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing);
     p.fillRect(rect(), QColor(BG_SURFACE()));
     clear_hits();
-    // Minimum widths fit the longest group name ("Producer/Merchant"), "10.3
-    // percentile" and a change with its LARGE chip; extra width goes to the
-    // horizons and tags.
+    // Minimum widths fit the longest group name ("Producer/Merchant"), an Open
+    // Interest in contracts, "10.3 percentile" and a change with its LARGE chip;
+    // extra width goes to the horizons and tags.
     const double name_w = kCotGridNameW;
     const double tags_w = std::clamp(width() * 0.13, kCotGridTagsMin, 280.0);
     const double rest = std::max(kCotGridRestMin, width() - name_w - tags_w - 8);
-    const double pos_w = std::max(130.0, rest * 0.16);
+    const double pos_w = std::max(160.0, rest * 0.16); // "10,000,000 contracts"
     const double level_w = std::max(170.0, rest * 0.17);
     const double h_w = (rest - pos_w - level_w) / 3.0;
     const double x_pos = name_w;

@@ -1762,7 +1762,7 @@ class CftcBackfillMonitorTest(unittest.TestCase):
     def test_cot_market_without_history_is_an_error_with_the_reason(self):
         self._serve_monitor([])
         result = self.wrapper.get_cot_market("euro", "disaggregated", True, refresh=True)
-        self.assertIn("publishes no disaggregated report", result["error"]["error"])
+        self.assertIn("publishes no Disaggregated report", result["error"]["error"])
         self.assertIn("Unknown market", self.wrapper.get_cot_market("micro_gold", "legacy", True)["error"]["error"])
 
     def test_cli_monitor_refresh_flag_reads_stored_data_only(self):

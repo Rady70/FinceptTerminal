@@ -2249,7 +2249,9 @@ class CFTCDataWrapper:
                 if note:
                     reason = note
                 elif status == "no_data":
-                    reason = f"CFTC publishes no {family} report for this market"
+                    report = {"legacy": "Legacy", "disaggregated": "Disaggregated",
+                              "tff": "Traders in Financial Futures"}.get(family, family)
+                    reason = f"CFTC publishes no {report} report for this market"
                 else:
                     reason = "no stored history for this market"
                 return {"error": CFTCError("cot_market", reason).to_dict()}
