@@ -1,20 +1,16 @@
 // src/screens/economics/panels/CftcWorkspaceContract.h
 //
-// Batch 4B correction pass: the CFTC Analysis page hierarchy, the
-// interpretation-horizon controls, the selected-window percentile labelling and
-// the neutral participant terminology as small pure contracts.
+// Small pure contracts shared by the CFTC presentation layers: the 1W | 4W |
+// 13W interpretation-horizon vocabulary and the label of the interpretation's
+// strict 156-prior-report percentile.
 //
-// This header exists so the page structure the user sees is testable without
-// linking the widget tree (tests/ HARD RULE). CftcPanel consumes these helpers
-// directly: the section order guard runs during page construction, the visible-
-// range predicate decides which sections a range change refreshes, the horizon
-// helpers drive the 1W | 4W | 13W buttons, and the percentile labels keep the
-// interpretation's strict 156-prior-report metric visually distinct from the
-// selected-window raw-net statistic.
+// The research-workspace redesign (2026-10) replaced the Analysis page whose
+// section order this header used to pin, and its raw-net-contract window
+// percentile: the workspace now uses the Net %OI percentile against the
+// previous 156 reports as its single historical measure (governing plan:
+// percentile, COT Index and z-score are not independent confirmations).
 //
-// Header-only over Qt Core. It contains no analytical logic: Batch 4A decides
-// every state and every metric, and this contract only names the presentation
-// structure.
+// Header-only over Qt Core; it contains no analytical logic.
 #pragma once
 
 #include <QCoreApplication>
@@ -23,65 +19,6 @@
 #include <QVector>
 
 namespace fincept::screens {
-
-/// One top-level section of the CFTC Analysis page. The order returned by
-/// cftc_workspace_section_order() is the authoritative information hierarchy:
-/// the report header, the latest snapshot, the Batch 4A interpretation and the
-/// participant/statistics detail tables, then the analytical charts and the
-/// heatmap.
-enum class CftcWorkspaceSection {
-    Header,                   ///< market/report identity and the history-display controls
-    CurrentSnapshot,          ///< the latest official report at a glance
-    Interpretation,           ///< the Batch 4A conclusion for the selected horizon
-    Positioning,              ///< per-participant latest legs and shares
-    WeeklyChanges,            ///< the two newest reports, all participants
-    Statistics,               ///< selected-window statistics and extremes
-    PricePositioningEvidence, ///< per-horizon price/positioning evidence (raw)
-    SyncChart,                ///< the synchronized price + positioning chart
-    HistoricalPositioning,    ///< the principal multi-series historical chart
-    Heatmap,                  ///< the trailing positioning heatmap
-};
-
-inline QVector<CftcWorkspaceSection> cftc_workspace_section_order() {
-    return {CftcWorkspaceSection::Header,
-            CftcWorkspaceSection::CurrentSnapshot,
-            CftcWorkspaceSection::Interpretation,
-            CftcWorkspaceSection::Positioning,
-            CftcWorkspaceSection::WeeklyChanges,
-            CftcWorkspaceSection::Statistics,
-            CftcWorkspaceSection::PricePositioningEvidence,
-            CftcWorkspaceSection::SyncChart,
-            CftcWorkspaceSection::HistoricalPositioning,
-            CftcWorkspaceSection::Heatmap};
-}
-
-/// Whether the history-display range (1Y … MAX) changes this section's
-/// presentation. The Interpretation is deliberately excluded: it always
-/// evaluates the full validated official history through the Batch 4A engine,
-/// and the strict 156-prior-report reference makes any visible-range scoping an
-/// error. WeeklyChanges only reads the two newest reports, so it is independent
-/// of the display range as well.
-inline bool cftc_section_refreshed_by_visible_range(CftcWorkspaceSection section) {
-    switch (section) {
-        case CftcWorkspaceSection::Interpretation:
-            return false;
-        case CftcWorkspaceSection::WeeklyChanges:
-            return false;
-        case CftcWorkspaceSection::Positioning:
-            // The positioning table is now latest-report legs and shares only;
-            // it no longer carries selected-window statistics.
-            return false;
-        case CftcWorkspaceSection::Header:
-        case CftcWorkspaceSection::CurrentSnapshot:
-        case CftcWorkspaceSection::SyncChart:
-        case CftcWorkspaceSection::HistoricalPositioning:
-        case CftcWorkspaceSection::Statistics:
-        case CftcWorkspaceSection::PricePositioningEvidence:
-        case CftcWorkspaceSection::Heatmap:
-            return true;
-    }
-    return false;
-}
 
 // ── Interpretation horizon (1W | 4W | 13W) ───────────────────────────────────
 
@@ -133,31 +70,6 @@ inline QString cftc_horizon_evidence_header(int horizon_reports) {
 /// statistic.
 inline QString cftc_interpretation_percentile_label() {
     return QCoreApplication::translate("CftcPresentation", "Historical percentile (Net %OI vs 156 prior reports)");
-}
-
-/// The older workspace percentile: a descriptive percentile of the raw net
-/// position inside the selected history display range, with the latest report
-/// included in its own distribution. It is a different metric on a different
-/// window and must never be presented as the interpretation measurement: the
-/// card subtitle and this tooltip name the metric, and no categorical range
-/// verdict is attached.
-inline QString cftc_window_percentile_label(const QString& range_label) {
-    return QCoreApplication::translate("CftcWorkspace", "WINDOW PERCENTILE (%1)").arg(range_label);
-}
-
-inline QString cftc_window_percentile_tooltip() {
-    return QCoreApplication::translate(
-        "CftcWorkspace",
-        "Descriptive percentile of the raw net position (contracts) within the selected history display range "
-        "(1Y–MAX), with the latest report included in the distribution. This is a different measure from the COT "
-        "interpretation's strict trailing Net %OI percentile over the 156 prior reports: raw contracts rise with "
-        "market size, so the two can differ widely when Open Interest has grown.");
-}
-
-/// The information-hierarchy guard the panel runs while building the Analysis
-/// page: sections must be created in the contract order above.
-inline bool cftc_section_order_stays_monotonic(int previous_index, int next_index) {
-    return next_index > previous_index;
 }
 
 } // namespace fincept::screens

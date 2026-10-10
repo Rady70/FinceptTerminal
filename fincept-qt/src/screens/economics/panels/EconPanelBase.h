@@ -62,8 +62,9 @@ class EconPanelBase : public QWidget {
     /// panel cannot offer actions that are known to fail.
     void mark_source_unavailable(const QString& reason);
 
-    /// Populate the shared table + update stat cards.
-    void display(const QJsonArray& rows, const QString& title = {});
+    /// Populate the shared table + update stat cards. `column_order` (optional)
+    /// lists the columns to show first, in that order; any other key follows.
+    void display(const QJsonArray& rows, const QString& title = {}, const QStringList& column_order = {});
     void export_csv();
 
     /// Chart-first presentation for an ordinary historical numeric series.

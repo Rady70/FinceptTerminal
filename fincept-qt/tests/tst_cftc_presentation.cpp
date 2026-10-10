@@ -2575,8 +2575,13 @@ void TstCftcPresentation::golden_real_gold_legacy_report() {
     const CftcHistory history = cftc_parse_history(gold_legacy_futures_only_rows(), CftcFamily::Legacy);
     QVERIFY2(history.error.isEmpty(), qPrintable(history.error));
     QCOMPARE(history.observations.size(), 200);
-    QVERIFY(cftc_history_basis_error(history.observations, /*futures_only=*/true).isEmpty());
-    QVERIFY(!cftc_history_basis_error(history.observations, /*futures_only=*/false).isEmpty());
+    {
+        CftcHistory futures = history;
+        QVERIFY(cftc_apply_report_basis(futures, /*futures_only=*/true).isEmpty());
+        QVERIFY(futures.set_aside.isEmpty());
+        CftcHistory combined = history;
+        QVERIFY(!cftc_apply_report_basis(combined, /*futures_only=*/false).isEmpty());
+    }
 
     const CftcInterpretationInput input =
         cftc_make_interpretation_input(CftcFamily::Legacy, history.observations, QStringLiteral("futures_only"), {},

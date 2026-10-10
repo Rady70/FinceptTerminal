@@ -1610,6 +1610,172 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         runs = status["data"]["recent_backfill_runs"]
         self.assertTrue(any(run["status"] == "ok" for run in runs))
 
+    # ── tolerance to provider format changes (2026-10 workspace audit) ─────
+
+    def test_renamed_socrata_columns_are_read_by_meaning(self):
+        # The same report published under drifted column spellings: case,
+        # the "postions" typo fixed, the doubled underscore removed and the
+        # "_all" suffix added or dropped. Every value must still be read.
+        exact = raw_disaggregated_row()
+        exact.update({"swap_positions_long_all": "111", "swap__positions_short_all": "222",
+                      "swap__positions_spread_all": "33", "other_rept_positions_long": "44",
+                      "other_rept_positions_short": "55", "conc_gross_le_4_tdr_long": "12.5"})
+        drifted = {
+            "report_date_as_yyyy_mm_dd": exact["report_date_as_yyyy_mm_dd"],
+            "market_and_exchange_names": exact["market_and_exchange_names"],
+            "cftc_contract_market_code": exact["cftc_contract_market_code"],
+            "futonly_or_combined": "FutOnly",
+            "Open_Interest_ALL": exact["open_interest_all"],
+            "prod_merc_positions_long_all": exact["prod_merc_positions_long"],
+            "Prod_Merc_Positions_Short": exact["prod_merc_positions_short"],
+            "swap_positions_long": "111",
+            "swap_positions_short_all": "222",
+            "swap_positions_spread_all": "33",
+            "m_money_positions_long": exact["m_money_positions_long_all"],
+            "M_MONEY_POSITIONS_SHORT_ALL": exact["m_money_positions_short_all"],
+            "other_rept_positions_long_all": "44",
+            "other_rept_positions_short_all": "55",
+            "nonrept_positions_long": exact["nonrept_positions_long_all"],
+            "nonrept_positions_short": exact["nonrept_positions_short_all"],
+            "conc_gross_le_4_tdr_long_all": "12.5",
+        }
+        reference = self.wrapper._canonical_history_row(exact, "disaggregated", True)
+        tolerant = self.wrapper._canonical_history_row(drifted, "disaggregated", True)
+        self.assertEqual(tolerant, reference)
+        self.assertEqual(tolerant["swap_dealer_short"], 222)
+        self.assertEqual(tolerant["swap_dealer_spread"], 33)
+        self.assertEqual(tolerant["concentration_gross_4_long"], 12.5)
+
+    def test_old_and_other_crop_columns_never_stand_in_for_all(self):
+        # Legacy `noncomm_positions_spread` is the Old crop-year spread and the
+        # `_1` / `_2` / `_old` / `_other` columns are Old/Other aggregates: when
+        # the "(All)" cell is absent they must not be used in its place.
+        legacy = raw_legacy_row()
+        legacy["noncomm_positions_spread"] = "348763"
+        legacy["noncomm_positions_long_old"] = "569806"
+        del legacy["noncomm_positions_long_all"]
+        row = self.wrapper._canonical_history_row(legacy, "legacy", True)
+        self.assertIsNone(row["non_commercial_spread"])
+        self.assertIsNone(row["non_commercial_long"])
+        disagg = raw_disaggregated_row()
+        disagg["m_money_positions_spread_1"] = "251864"
+        disagg["m_money_positions_spread_2"] = "875"
+        row = self.wrapper._canonical_history_row(disagg, "disaggregated", True)
+        self.assertIsNone(row["managed_money_spread"])
+
+    def test_non_finite_cells_stay_missing_without_failing_the_row(self):
+        legacy = raw_legacy_row()
+        legacy["comm_positions_long_all"] = "inf"
+        legacy["traders_tot_all"] = "nan"
+        row = self.wrapper._canonical_history_row(legacy, "legacy", True)
+        self.assertIsNone(row["commercial_long"])
+        self.assertIsNone(row["traders_total"])
+        self.assertEqual(row["commercial_short"], 100)
+        self.assertIsNone(cftc_data.CFTCDataWrapper._to_int(float("inf")))
+
+    def test_missing_basis_is_the_basis_of_the_resource_read(self):
+        unstated = raw_legacy_row()
+        del unstated["futonly_or_combined"]
+        self.assertEqual(self.wrapper._canonical_history_row(unstated, "legacy", True)["futonly_or_combined"],
+                         "FutOnly")
+        self.assertEqual(self.wrapper._canonical_history_row(unstated, "legacy", False)["futonly_or_combined"],
+                         "Combined")
+        stated = raw_legacy_row()
+        stated["futonly_or_combined"] = "Combined"
+        # A stated basis is never overwritten; a contradiction is set aside later.
+        self.assertEqual(self.wrapper._canonical_history_row(stated, "legacy", True)["futonly_or_combined"],
+                         "Combined")
+
+    def test_annual_headers_match_without_case_or_punctuation(self):
+        record = legacy_annual_record()
+        reference_zip = annual_zip("legacy", [record])
+        drifted_header = [column.upper().replace(" ", "_").replace("(", "").replace(")", "")
+                          for column in ANNUAL_LEGACY_HEADER]
+        drifted_header.reverse()
+        drifted_record = {drifted: record.get(original, "")
+                          for original, drifted in zip(reversed(ANNUAL_LEGACY_HEADER), drifted_header)}
+        self._serve_annual(reference_zip)
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        expected = json.loads(self._archive_rows()[0]["row_json"])
+        other = cftc_data.CFTCDataWrapper(archive_dir=os.path.join(self.tmp, "drifted"))
+        other._download_annual = lambda url, timeout=180: annual_zip(
+            "legacy", [drifted_record], header=drifted_header)
+        result = other.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertEqual(result["data"]["years"][0]["status"], "ok", result)
+        conn = sqlite3.connect(os.path.join(self.tmp, "drifted", "cot_archive.db"))
+        try:
+            stored = json.loads(conn.execute("SELECT row_json FROM cot_observations").fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(stored, expected)
+
+    def test_annual_year_missing_one_participant_keeps_the_rest(self):
+        header = [column for column in ANNUAL_LEGACY_HEADER
+                  if not column.startswith("Nonreportable Positions")]
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()], header=header))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "ok", year)
+        self.assertEqual(year["missing_columns"], ["non_reportable_long", "non_reportable_short"])
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertIsNone(row["non_reportable_long"])
+        self.assertEqual(row["non_commercial_long"], 284885)
+        run = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"][0]
+        self.assertEqual(run["detail"]["missing_columns"], ["non_reportable_long", "non_reportable_short"])
+
+    def test_annual_two_digit_years_before_2000(self):
+        self.assertEqual(cftc_data.CFTCDataWrapper._annual_report_date("870227"), "1987-02-27")
+        self.assertEqual(cftc_data.CFTCDataWrapper._annual_report_date("240625"), "2024-06-25")
+        record = legacy_annual_record()
+        record.pop("As of Date in Form YYYY-MM-DD")
+        record["As of Date in Form YYMMDD"] = "870227"
+        header = [column for column in ANNUAL_LEGACY_HEADER if column != "As of Date in Form YYYY-MM-DD"]
+        self._serve_annual(annual_zip("legacy", [record], header=header))
+        self.wrapper.cot_backfill("legacy", True, 1987, 1987, ["gold"])
+        self.assertEqual([row["report_date"] for row in self._archive_rows()], ["1987-02-27"])
+
+    def test_cot_market_returns_every_stored_row_and_keeps_them_on_failure(self):
+        rows = []
+        report_date = datetime(2020, 1, 7)
+        for _ in range(260):
+            rows.append(raw_legacy_row(report_date=report_date.strftime("%Y-%m-%d")))
+            report_date += timedelta(days=7)
+        self._serve_monitor(rows)
+        first = self.wrapper.get_cot_market("gold", "legacy", True, refresh=True)
+        self.assertTrue(first.get("success"), first)
+        self.assertEqual(len(first["data"]), 260, "the detailed workspace receives the whole stored history")
+        self.assertEqual(first["parameters"]["status"], "updated")
+        self.assertIsNotNone(first["parameters"]["full_history_fetched_at"])
+        # A later provider failure still returns the stored history, labelled.
+        self._serve_monitor([], fail="provider offline")
+        second = self.wrapper.get_cot_market("gold", "legacy", True, refresh=True)
+        self.assertTrue(second.get("success"), second)
+        self.assertEqual(second["parameters"]["status"], "archive_only")
+        self.assertIn("provider offline", second["parameters"]["refresh_note"])
+        self.assertEqual(len(second["data"]), 260)
+        # refresh=false never asks the provider.
+        self.captured_urls = []
+        third = self.wrapper.get_cot_market("gold", "legacy", True, refresh=False)
+        self.assertEqual(self.captured_urls, [])
+        self.assertEqual(third["parameters"]["status"], "archive_only")
+
+    def test_cot_market_without_history_is_an_error_with_the_reason(self):
+        self._serve_monitor([])
+        result = self.wrapper.get_cot_market("euro", "disaggregated", True, refresh=True)
+        self.assertIn("publishes no disaggregated report", result["error"]["error"])
+        self.assertIn("Unknown market", self.wrapper.get_cot_market("micro_gold", "legacy", True)["error"]["error"])
+
+    def test_cli_monitor_refresh_flag_reads_stored_data_only(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        captured = io.StringIO()
+        with mock.patch.object(cftc_data, "CFTCDataWrapper", return_value=self.wrapper), \
+                mock.patch("sys.stdout", captured):
+            self.wrapper._monitor_get = lambda url: self.fail("refresh=false must not request")
+            cftc_data.main(["cot_monitor", "legacy", "true", "gold", "25000", "false"])
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(payload["data"]["markets"][0]["status"], "archive_only")
+
     # ── catalog consistency ─────────────────────────────────────────────────
 
     @unittest.skipUnless(os.path.exists(_CATALOG_HEADER), "application market catalog not present")

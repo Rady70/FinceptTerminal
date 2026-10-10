@@ -176,9 +176,9 @@ struct CftcObservation {
 
 /// Parse the CFTC report-date text into a QDate. The provider sends
 /// `YYYY-MM-DD` and Socrata sometimes appends `T00:00:00.000`; a trailing time
-/// part is ignored. `YYYY-MM` and `YYYY` are accepted the same way the shared
-/// chart date contract accepts them, so the core stays dependency-free of the
-/// UI layer without changing the accepted input. Anything else is invalid.
+/// part is ignored, and the `MM/DD/YYYY` form of the older annual files is read
+/// too. A COT report is one dated weekly observation, so a partial date
+/// (`YYYY-MM`, `YYYY`) is invalid: completing it would invent a report day.
 inline QDate cftc_parse_report_date(const QString& text) {
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty())
@@ -188,17 +188,22 @@ inline QDate cftc_parse_report_date(const QString& text) {
     if (space >= 0 && (cut < 0 || space < cut))
         cut = space;
     const QString date_part = cut > 0 ? trimmed.left(cut) : trimmed;
-    const QStringList parts = date_part.split(QLatin1Char('-'), Qt::SkipEmptyParts);
-    if (parts.size() == 3)
-        return QDate(parts[0].toInt(), parts[1].toInt(), parts[2].toInt());
-    if (parts.size() == 2)
-        return QDate(parts[0].toInt(), parts[1].toInt(), 1);
-    if (parts.size() == 1) {
+    auto number = [](const QString& part, int& out) {
         bool ok = false;
-        const int year = parts[0].toInt(&ok);
-        if (ok && year > 0)
-            return QDate(year, 1, 1);
-    }
+        out = part.toInt(&ok);
+        return ok;
+    };
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    const QStringList dashed = date_part.split(QLatin1Char('-'));
+    if (dashed.size() == 3 && dashed[0].size() == 4 && number(dashed[0], year) && number(dashed[1], month) &&
+        number(dashed[2], day))
+        return QDate(year, month, day);
+    const QStringList slashed = date_part.split(QLatin1Char('/'));
+    if (slashed.size() == 3 && slashed[2].size() == 4 && number(slashed[0], month) && number(slashed[1], day) &&
+        number(slashed[2], year))
+        return QDate(year, month, day);
     return {};
 }
 
@@ -261,9 +266,21 @@ inline QString cftc_normalized_report_basis(const QString& text) {
 /// the whole market is corrupt input.
 inline constexpr double kCftcLegOverOpenInterestTolerance = 2.0;
 
+/// One provider report the parser did not use, with the reason. A report is
+/// set aside only when its own published figures cannot be used (no readable
+/// date, a non-finite cell, a negative position or Open Interest, a leg larger
+/// than the whole market, contradictory duplicate rows, or another report
+/// basis); every other report of the history is kept.
+struct CftcSetAsideReport {
+    QString date_label; ///< the provider's report-date text (may be empty)
+    QString reason;
+};
+
 struct CftcHistory {
     QVector<CftcObservation> observations; // ascending by report date
-    QString error;                         // non-empty when unusable
+    QVector<CftcSetAsideReport> set_aside; // reports left out, each with its reason
+    int basis_inherited = 0;               // reports that did not state their basis (see cftc_apply_report_basis)
+    QString error;                         // non-empty when nothing usable remains
 };
 
 /// The participant keys only this report family uses. Other Reportables and
@@ -287,16 +304,40 @@ inline QStringList cftc_family_distinctive_participant_keys(CftcFamily family) {
     return out;
 }
 
-/// Build the typed history from the provider's rows. Fails closed: a row with
-/// an unparseable date or a repeated report date makes the whole payload
-/// unusable rather than being silently dropped (which would hide history). The
-/// same applies to structurally impossible input: a non-finite number in any
-/// retained numeric field (Open Interest, participant legs, trader counts,
-/// concentration), a negative position or Open Interest, a participant leg
-/// larger than the whole market's Open Interest, and a row that does not belong
-/// to the declared report family — it carries none of that family's
-/// distinctive participant fields, or it carries another family's (a
-/// mis-declared family would otherwise read as "every leg is missing").
+/// Whether two parsed rows publish exactly the same report (every retained
+/// value equal). Used to collapse a repeated row instead of discarding it.
+inline bool cftc_same_report(const CftcObservation& a, const CftcObservation& b) {
+    return a.date == b.date && a.contract_code == b.contract_code && a.report_basis == b.report_basis &&
+           a.open_interest == b.open_interest && a.longs == b.longs && a.shorts == b.shorts &&
+           a.traders_total == b.traders_total && a.traders_reportable_long == b.traders_reportable_long &&
+           a.traders_reportable_short == b.traders_reportable_short &&
+           a.concentration_gross_4_long == b.concentration_gross_4_long &&
+           a.concentration_gross_4_short == b.concentration_gross_4_short &&
+           a.concentration_gross_8_long == b.concentration_gross_8_long &&
+           a.concentration_gross_8_short == b.concentration_gross_8_short &&
+           a.concentration_net_4_long == b.concentration_net_4_long &&
+           a.concentration_net_4_short == b.concentration_net_4_short &&
+           a.concentration_net_8_long == b.concentration_net_8_long &&
+           a.concentration_net_8_short == b.concentration_net_8_short;
+}
+
+/// Build the typed history from the provider's rows.
+///
+/// A report whose own published figures cannot be used is set aside, named
+/// with its reason in `set_aside`, and the rest of the history is kept (one
+/// corrupt 1987 row must not hide forty years of valid reports). A report is
+/// set aside for: no readable report date; a non-finite number in any retained
+/// numeric field (Open Interest, participant legs, trader counts,
+/// concentration); a negative position or Open Interest; a participant leg
+/// larger than the whole market's Open Interest (beyond the Combined rounding
+/// tolerance); or two different rows published for the same report date. An
+/// identical repeated row is kept once. Nothing is repaired or estimated: a
+/// set-aside report is absent, so weekly continuity across it is broken.
+///
+/// The payload as a whole is refused only when it does not belong to the
+/// declared report family (a row carries none of the family's distinctive
+/// participant fields, or another family's), because then every reading would
+/// be mislabelled, or when no usable report remains.
 inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family) {
     CftcHistory out;
     const auto participants = cftc_family_participants(family);
@@ -308,6 +349,9 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         out.error = message;
         out.observations.clear();
         return out;
+    };
+    auto set_aside = [&out](const QString& date_label, const QString& reason) {
+        out.set_aside.append({date_label, reason});
     };
     const QStringList own_keys = cftc_family_distinctive_participant_keys(family);
     QStringList foreign_keys;
@@ -322,8 +366,7 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         }
         return false;
     };
-    // Every numeric field the observation retains. A "nan"/"inf" cell in any of
-    // them is corrupt input, never a missing observation.
+    // Every numeric field the observation retains.
     QStringList numeric_keys = {
         QStringLiteral("open_interest_all"),          QStringLiteral("traders_total"),
         QStringLiteral("traders_reportable_long"),    QStringLiteral("traders_reportable_short"),
@@ -333,26 +376,34 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
         QStringLiteral("concentration_net_8_long"),   QStringLiteral("concentration_net_8_short")};
     for (const auto& participant : participants)
         numeric_keys << participant.key + QStringLiteral("_long") << participant.key + QStringLiteral("_short");
-    out.observations.reserve(rows.size());
+    QVector<CftcObservation> parsed;
+    parsed.reserve(rows.size());
     for (const auto& value : rows) {
         const QJsonObject row = value.toObject();
         CftcObservation obs;
         obs.date_label = row.value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString().trimmed();
-        obs.date = cftc_parse_report_date(obs.date_label);
-        if (!obs.date.isValid())
-            return fail(QCoreApplication::translate("CftcPanel", "A report row has no usable report date."));
         if (!carries_any(row, own_keys) || carries_any(row, foreign_keys)) {
             return fail(QCoreApplication::translate("CftcPanel",
                                                     "The report row for %1 does not carry the %2 participant fields; "
                                                     "the rows do not belong to the requested report family.")
                             .arg(obs.date_label, cftc_family_code(family)));
         }
+        obs.date = cftc_parse_report_date(obs.date_label);
+        if (!obs.date.isValid()) {
+            set_aside(obs.date_label, QCoreApplication::translate("CftcPanel", "the report date cannot be read"));
+            continue;
+        }
+        QString non_finite_key;
         for (const QString& key : std::as_const(numeric_keys)) {
             if (cftc_cell_is_non_finite(row, key)) {
-                return fail(
-                    QCoreApplication::translate("CftcPanel", "The report row for %1 carries a non-finite value in %2.")
-                        .arg(obs.date_label, key));
+                non_finite_key = key;
+                break;
             }
+        }
+        if (!non_finite_key.isEmpty()) {
+            set_aside(obs.date_label,
+                      QCoreApplication::translate("CftcPanel", "a non-finite value in %1").arg(non_finite_key));
+            continue;
         }
         obs.market = row.value(QStringLiteral("market_and_exchange_names")).toString();
         obs.contract_code = row.value(QStringLiteral("cftc_contract_market_code")).toString();
@@ -376,67 +427,107 @@ inline CftcHistory cftc_parse_history(const QJsonArray& rows, CftcFamily family)
             obs.longs.append(cftc_number(row, participant.key + QStringLiteral("_long")));
             obs.shorts.append(cftc_number(row, participant.key + QStringLiteral("_short")));
         }
-        // Structurally impossible values are corrupt input: they would
-        // otherwise produce fabricated extremes (a leg worth 2,000 % of Open
-        // Interest reads as a "severe" historical reading).
-        if (obs.open_interest && *obs.open_interest < 0.0) {
-            return fail(QCoreApplication::translate("CftcPanel", "The report row for %1 carries a negative Open "
-                                                                 "Interest.")
-                            .arg(obs.date_label));
-        }
-        for (int p = 0; p < participants.size(); ++p) {
-            for (const std::optional<double>& leg : {obs.longs[p], obs.shorts[p]}) {
+        // Structurally impossible values: the report's figures contradict
+        // each other (in the official history these are 1986-1992 rows whose
+        // derived Non-Reportable position is negative or whose commercial leg
+        // exceeds Open Interest). Which figure is wrong cannot be known, so
+        // the whole report is set aside; it is never repaired.
+        QString impossible;
+        if (obs.open_interest && *obs.open_interest < 0.0)
+            impossible = QCoreApplication::translate("CftcPanel", "a negative Open Interest");
+        for (int p = 0; impossible.isEmpty() && p < participants.size(); ++p) {
+            for (int side = 0; side < 2; ++side) {
+                const std::optional<double>& leg = side == 0 ? obs.longs[p] : obs.shorts[p];
                 if (!leg)
                     continue;
+                const QString what = QCoreApplication::translate("CftcPanel", side == 0 ? "%1 long" : "%1 short")
+                                         .arg(participants[p].label);
                 if (*leg < 0.0) {
-                    return fail(QCoreApplication::translate("CftcPanel",
-                                                            "The report row for %1 carries a negative %2 position.")
-                                    .arg(obs.date_label, participants[p].key));
+                    impossible = QCoreApplication::translate("CftcPanel", "a negative %1 position").arg(what);
+                    break;
                 }
                 if (obs.open_interest && *leg > *obs.open_interest + kCftcLegOverOpenInterestTolerance) {
-                    return fail(QCoreApplication::translate("CftcPanel", "The report row for %1 carries a %2 position "
-                                                                         "larger than the market's Open Interest.")
-                                    .arg(obs.date_label, participants[p].key));
+                    impossible =
+                        QCoreApplication::translate("CftcPanel", "a %1 position larger than Open Interest").arg(what);
+                    break;
                 }
             }
         }
-        out.observations.append(obs);
-    }
-    std::stable_sort(out.observations.begin(), out.observations.end(),
-                     [](const CftcObservation& a, const CftcObservation& b) { return a.date < b.date; });
-    for (int i = 1; i < out.observations.size(); ++i) {
-        if (out.observations[i].date == out.observations[i - 1].date) {
-            out.error =
-                QCoreApplication::translate("CftcPanel", "The provider returned two rows for the same report date.");
-            out.observations.clear();
-            return out;
+        if (!impossible.isEmpty()) {
+            set_aside(obs.date_label, impossible);
+            continue;
         }
+        parsed.append(obs);
+    }
+    std::stable_sort(parsed.begin(), parsed.end(),
+                     [](const CftcObservation& a, const CftcObservation& b) { return a.date < b.date; });
+    out.observations.reserve(parsed.size());
+    for (int i = 0; i < parsed.size();) {
+        int j = i + 1;
+        while (j < parsed.size() && parsed[j].date == parsed[i].date)
+            ++j;
+        bool identical = true;
+        for (int k = i + 1; k < j; ++k)
+            identical = identical && cftc_same_report(parsed[i], parsed[k]);
+        if (identical) {
+            out.observations.append(parsed[i]); // an identical repeated row is kept once
+        } else {
+            set_aside(parsed[i].date_label,
+                      QCoreApplication::translate("CftcPanel", "%1 different rows were published for this report date")
+                          .arg(j - i));
+        }
+        i = j;
+    }
+    if (out.observations.isEmpty()) {
+        const QString first = out.set_aside.isEmpty() ? QString() : out.set_aside.first().reason;
+        return fail(QCoreApplication::translate("CftcPanel",
+                                                "None of the %1 provider reports could be used (first reason: %2).")
+                        .arg(rows.size())
+                        .arg(first));
     }
     return out;
 }
 
-/// Ingestion check that the rows really are the report basis the caller asked
-/// for. Every row must carry the published `futonly_or_combined` metadata and
-/// it must name the requested basis; otherwise the payload is refused, because
-/// a Combined history labelled Futures Only (or a splice of the two) changes
-/// every normalized metric. Returns an empty string when the rows match.
-inline QString cftc_history_basis_error(const QVector<CftcObservation>& observations, bool futures_only) {
+/// The report-basis code of the provider's `futonly_or_combined` text for a
+/// requested basis ("FutOnly" or "Combined").
+inline QString cftc_report_basis_text(bool futures_only) {
+    return futures_only ? QStringLiteral("FutOnly") : QStringLiteral("Combined");
+}
+
+/// Keep only reports of the requested report basis. Futures Only and Combined
+/// reports measure different positions, so a report that states the other
+/// basis is set aside (never mixed in). A report that states no basis takes the
+/// basis of the source it was requested from, because every CFTC resource and
+/// every archive identity holds exactly one basis; such reports are counted in
+/// `basis_inherited`. Returns an error only when no report of the requested
+/// basis remains.
+inline QString cftc_apply_report_basis(CftcHistory& history, bool futures_only) {
     const QString expected =
         futures_only ? QStringLiteral("futures_only") : QStringLiteral("futures_and_options_combined");
-    for (const auto& obs : observations) {
+    QVector<CftcObservation> kept;
+    kept.reserve(history.observations.size());
+    for (CftcObservation obs : std::as_const(history.observations)) {
         if (obs.report_basis.isEmpty()) {
-            return QCoreApplication::translate("CftcPanel", "The report row for %1 does not state its report basis "
-                                                            "(futures only or combined), so it cannot be verified.")
-                .arg(obs.date_label);
+            obs.report_basis = cftc_report_basis_text(futures_only);
+            ++history.basis_inherited;
+            kept.append(obs);
+            continue;
         }
         if (cftc_normalized_report_basis(obs.report_basis) != expected) {
-            return QCoreApplication::translate("CftcPanel",
-                                               "The report row for %1 is published as \"%2\", not the requested %3 "
-                                               "report basis.")
-                .arg(obs.date_label, obs.report_basis,
-                     futures_only ? QCoreApplication::translate("CftcPanel", "Futures Only")
-                                  : QCoreApplication::translate("CftcPanel", "Combined"));
+            history.set_aside.append(
+                {obs.date_label,
+                 QCoreApplication::translate("CftcPanel", "published as \"%1\", not the requested %2 basis")
+                     .arg(obs.report_basis, futures_only ? QCoreApplication::translate("CftcPanel", "Futures Only")
+                                                         : QCoreApplication::translate("CftcPanel", "Combined"))});
+            continue;
         }
+        kept.append(obs);
+    }
+    history.observations = kept;
+    if (kept.isEmpty()) {
+        return QCoreApplication::translate("CftcPanel", "No report of the requested %1 basis was published.")
+            .arg(futures_only ? QCoreApplication::translate("CftcPanel", "Futures Only")
+                              : QCoreApplication::translate("CftcPanel", "Combined"));
     }
     return {};
 }

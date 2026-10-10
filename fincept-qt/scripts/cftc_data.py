@@ -7,6 +7,7 @@ import json
 import math
 import re
 import csv
+import functools
 import io
 import os
 import sqlite3
@@ -572,38 +573,79 @@ class CFTCDataWrapper:
         if value is None or isinstance(value, bool):
             return None
         if isinstance(value, (int, float)):
-            return int(value)
+            # "nan"/"inf" are corrupt cells, not numbers: they stay absent
+            # instead of raising (int(inf) is an OverflowError).
+            return int(value) if math.isfinite(value) else None
         if isinstance(value, str):
             text = value.strip().replace(',', '')
             if not text:
                 return None
             try:
-                return int(float(text))
+                parsed = float(text)
             except ValueError:
                 return None
+            return int(parsed) if math.isfinite(parsed) else None
         return None
+
+    # Provider columns of the Old and Other crop-year aggregates. They are
+    # different published quantities from the "(All)" columns and must never
+    # stand in for them, whatever their spelling. The Legacy Old spreading
+    # column is the one Old/Other column published without a suffix.
+    _AGGREGATE_SUFFIXES = ("_old", "_other", "_1", "_2")
+    _AGGREGATE_COLUMNS = frozenset({"noncomm_positions_spread"})
+
+    @staticmethod
+    @functools.lru_cache(maxsize=4096)
+    def _field_token(name: str) -> str:
+        """Spelling-insensitive identity of a provider column name.
+
+        CFTC column names vary between resources and over time in case,
+        punctuation, a doubled underscore ("swap__positions"), known typos
+        ("postions", "spead") and an optional "_all" suffix on the "(All)"
+        aggregate. The token removes exactly those differences, so a renamed
+        column with the same meaning is still found.
+        """
+        text = re.sub(r"[^0-9a-z]+", "_", str(name).strip().lower()).strip("_")
+        text = text.replace("postions", "positions").replace("spead", "spread")
+        if text.endswith("_all"):
+            text = text[:-4]
+        return text
+
+    @classmethod
+    def _field_values(cls, record: Dict[str, Any], names: tuple) -> Iterable[Any]:
+        """Candidate cells for a concept, best first: the documented aliases
+        verbatim, then any other column whose spelling-insensitive identity
+        matches one of them. Old/Other crop-year columns never match."""
+        for name in names:
+            if name in record and record[name] is not None:
+                yield record[name]
+        tokens = {cls._field_token(name) for name in names}
+        for key, value in record.items():
+            if value is None or key in names:
+                continue
+            lowered = str(key).strip().lower()
+            if lowered.endswith(cls._AGGREGATE_SUFFIXES) or lowered in cls._AGGREGATE_COLUMNS:
+                continue
+            if cls._field_token(key) in tokens:
+                yield value
 
     @staticmethod
     def _pick(record: Dict[str, Any], names: tuple) -> Optional[int]:
-        """First present, non-null alias in `names` -> int, else None."""
-        for name in names:
-            if name in record and record[name] is not None:
-                parsed = CFTCDataWrapper._to_int(record[name])
-                if parsed is not None:
-                    return parsed
+        """First usable alias in `names` -> int, else None (see _field_values)."""
+        for value in CFTCDataWrapper._field_values(record, names):
+            parsed = CFTCDataWrapper._to_int(value)
+            if parsed is not None:
+                return parsed
         return None
 
     @staticmethod
     def _pick_number(record: Dict[str, Any], names: tuple) -> Optional[float]:
-        """First present, numeric alias in `names` -> float, else None.
+        """First usable alias in `names` -> float, else None.
 
         Concentration cells are decimals ("12.5"), so the integer coercion
         used for position counts would truncate them. A non-numeric or absent
         cell stays None; it never becomes 0."""
-        for name in names:
-            if name not in record or record[name] is None:
-                continue
-            value = record[name]
+        for value in CFTCDataWrapper._field_values(record, names):
             if isinstance(value, bool):
                 continue
             if isinstance(value, (int, float)):
@@ -758,14 +800,19 @@ class CFTCDataWrapper:
     # Socrata resources, per family. Legacy publishes non-commercial spreading
     # only; Producer/Merchant and Non-Reportable never carry a spread column.
     # A participant without a published column stores None, never 0.
+    #
+    # Only the "(All)" columns are aliases. `noncomm_positions_spread`,
+    # `m_money_positions_spread_1` and `other_rept_positions_spread_1` are the
+    # Old crop-year aggregates (verified 2026-10-10 on corn: 348,763 Old vs
+    # 412,917 All) and were removed as fallbacks.
     _SPREAD_FIELDS = {
         "legacy": {
-            "non_commercial": ("noncomm_postions_spread_all", "noncomm_positions_spread"),
+            "non_commercial": ("noncomm_postions_spread_all",),
         },
         "disaggregated": {
             "swap_dealer": ("swap__positions_spread_all",),
-            "managed_money": ("m_money_positions_spread", "m_money_positions_spread_1"),
-            "other_reportable": ("other_rept_positions_spread", "other_rept_positions_spread_1"),
+            "managed_money": ("m_money_positions_spread",),
+            "other_reportable": ("other_rept_positions_spread",),
         },
         "tff": {
             "dealer": ("dealer_positions_spread_all",),
@@ -865,12 +912,14 @@ class CFTCDataWrapper:
     # Only the "(All)" legacy columns are accepted; "(Old)" and "(Other)" are
     # different published aggregates and must never be selected here.
     _ANNUAL_FIELD_ALIASES = {
+        # Four-digit-year forms first; the two-digit YYMMDD column is the last
+        # resort (the official files carry both, and they agree).
         "report_date_as_yyyy_mm_dd": (
             "Report_Date_as_YYYY-MM-DD",
-            "Report_Date_as_MM_DD_YYYY",
-            "As_of_Date_In_Form_YYMMDD",
             "As of Date in Form YYYY-MM-DD",
+            "Report_Date_as_MM_DD_YYYY",
             "As of Date in Form MM_DD_YYYY",
+            "As_of_Date_In_Form_YYMMDD",
             "As of Date in Form YYMMDD",
         ),
         "cftc_contract_market_code": ("CFTC_Contract_Market_Code", "CFTC Contract Market Code"),
@@ -978,10 +1027,16 @@ class CFTCDataWrapper:
 
     @staticmethod
     def _normalize_annual_header(name: str) -> str:
-        """Collapse whitespace and spaces around '=' so the small spelling
-        differences between CFTC annual-file releases do not change a match."""
-        text = re.sub(r"\s+", " ", str(name).strip())
-        return re.sub(r"\s*=\s*", "=", text)
+        """Spelling-insensitive identity of an annual-file column header.
+
+        CFTC annual-file releases differ in case, spacing ("LT = 4" / "LT=4"),
+        punctuation ("Positions-Long (All)" / "Positions_Long_All"), trailing
+        blanks and the "postions" typo; none of that changes the column's
+        meaning, so all of it is removed before a match. The "(All)", "(Old)"
+        and "(Other)" qualifiers survive as distinct suffixes.
+        """
+        text = re.sub(r"[^0-9a-z]+", "_", str(name).strip().lower()).strip("_")
+        return text.replace("postions", "positions")
 
     def _build_search_query(self, identifier: str) -> str:
         """Build the `$where` fragment that selects one contract/market.
@@ -1244,7 +1299,8 @@ class CFTCDataWrapper:
                 return {"error": CFTCError(
                     "cot_history", f"No COT history found for identifier: {identifier}").to_dict()}
 
-            history: List[Dict[str, Any]] = [self._canonical_history_row(record, family) for record in records]
+            history: List[Dict[str, Any]] = [
+                self._canonical_history_row(record, family, futures_only) for record in records]
 
             history.sort(key=lambda item: item.get("report_date_as_yyyy_mm_dd") or "")
 
@@ -1301,7 +1357,8 @@ class CFTCDataWrapper:
             self._cot_code_value_cache = cache
         return cache
 
-    def _canonical_history_row(self, record: Dict[str, Any], family: str) -> Dict[str, Any]:
+    def _canonical_history_row(self, record: Dict[str, Any], family: str,
+                               futures_only: Optional[bool] = None) -> Dict[str, Any]:
         """One Socrata record projected to the canonical workspace row shape.
 
         Shared by the current `cot_history` path and the cross-market monitor.
@@ -1310,6 +1367,11 @@ class CFTCDataWrapper:
         publishes; the engine ignores the extra keys, but the durable archive
         retains them as published. A cell the report does not carry stays None,
         never zero.
+
+        Each Socrata resource publishes exactly one report basis, so when a
+        record omits `futonly_or_combined` the basis of the resource it was read
+        from (`futures_only`) is that record's basis; a record that states a
+        basis keeps its own text, and a contradicting one is set aside later.
         """
         participants = self._PARTICIPANT_FIELDS[family]
         row: Dict[str, Any] = {}
@@ -1321,6 +1383,8 @@ class CFTCDataWrapper:
             # Both ingestion paths store the same canonical identity text; see
             # _canonical_text for the whitespace/quote normalization.
             row[key] = self._canonical_text(record.get(key))
+        if not row.get("futonly_or_combined") and futures_only is not None:
+            row["futonly_or_combined"] = "FutOnly" if futures_only else "Combined"
         row["open_interest_all"] = self._pick(record, ("open_interest_all",))
         for key, long_aliases, short_aliases in participants:
             row[f"{key}_long"] = self._pick(record, long_aliases)
@@ -1423,29 +1487,49 @@ class CFTCDataWrapper:
         if re.fullmatch(r"\d{8}", text):
             return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
         if re.fullmatch(r"\d{6}", text):
-            return f"20{text[:2]}-{text[2:4]}-{text[4:6]}"
+            # YYMMDD. The official history begins in 1986, so 50-99 are the
+            # 1900s and 00-49 the 2000s (a fixed "20" prefix dated a 1987
+            # report in 2087).
+            year = int(text[:2])
+            century = 1900 if year >= 50 else 2000
+            return f"{century + year:04d}-{text[2:4]}-{text[4:6]}"
         return None
 
-    def _annual_header_error(self, header: List[str], family: str) -> Optional[str]:
-        """Refuse a year whose file does not carry the family's required
-        columns; a partial header would otherwise be recorded as a valid report
-        with every leg missing."""
+    def _annual_missing_columns(self, header: List[str], family: str) -> Tuple[Optional[str], List[str]]:
+        """Check an annual file's header: (refusal reason or None, missing optional columns).
+
+        Only what identifies a report is required: its date, its contract code,
+        its Open Interest and at least one of the family's participant leg
+        pairs (a file without any is not this family's file). Any other
+        participant, trader-count or concentration column may be absent in a
+        given release; those cells are stored as missing (None, never zero)
+        and the year's run names them, instead of discarding the whole year.
+        """
         present = {self._normalize_annual_header(name) for name in header}
-        checks: Dict[str, Iterable[str]] = {
-            key: self._ANNUAL_FIELD_ALIASES[key]
-            for key in ("report_date_as_yyyy_mm_dd", "cftc_contract_market_code",
-                        "market_and_exchange_names", "open_interest_all")
-        }
-        for key, (long_aliases, short_aliases) in self._ANNUAL_LEG_ALIASES[family].items():
-            checks[f"{key}_long"] = long_aliases
-            checks[f"{key}_short"] = short_aliases
-        missing = sorted(
-            concept for concept, aliases in checks.items()
-            if not any(self._normalize_annual_header(alias) in present for alias in aliases)
-        )
-        if missing:
-            return "the annual file is missing required columns: " + ", ".join(missing)
-        return None
+
+        def has(aliases: Iterable[str]) -> bool:
+            return any(self._normalize_annual_header(alias) in present for alias in aliases)
+
+        required = [key for key in ("report_date_as_yyyy_mm_dd", "cftc_contract_market_code", "open_interest_all")
+                    if not has(self._ANNUAL_FIELD_ALIASES[key])]
+        legs = self._ANNUAL_LEG_ALIASES[family]
+        if not any(has(long_aliases) and has(short_aliases) for long_aliases, short_aliases in legs.values()):
+            required.append(f"any {family} participant long/short pair")
+        if required:
+            return "the annual file is missing required columns: " + ", ".join(required), []
+        optional: List[str] = []
+        if not has(self._ANNUAL_FIELD_ALIASES["market_and_exchange_names"]):
+            optional.append("market_and_exchange_names")
+        for key, (long_aliases, short_aliases) in legs.items():
+            if not has(long_aliases):
+                optional.append(f"{key}_long")
+            if not has(short_aliases):
+                optional.append(f"{key}_short")
+        return None, optional
+
+    def _annual_header_error(self, header: List[str], family: str) -> Optional[str]:
+        """Refusal reason for a header without a report's identity, else None."""
+        return self._annual_missing_columns(header, family)[0]
 
     def _canonical_row_from_annual(self, record: Dict[str, Any], family: str, futures_only: bool):
         """One annual-file CSV record -> canonical row, or (None, reason).
@@ -1544,7 +1628,7 @@ class CFTCDataWrapper:
             "year": year, "url": None, "entry": None,
             "rows_inserted": 0, "rows_updated": 0, "rows_rejected": 0,
             "rows_filtered": 0, "rows_unchanged": 0, "rows_collapsed": 0,
-            "conflicting_reports": [],
+            "conflicting_reports": [], "missing_columns": [],
             "status": "failed", "error": None,
         }
 
@@ -1563,7 +1647,8 @@ class CFTCDataWrapper:
                 rows_rejected=outcome["rows_rejected"],
                 detail={"entry": outcome["entry"], "rows_filtered": outcome["rows_filtered"],
                         "rows_collapsed": outcome["rows_collapsed"],
-                        "conflicting_reports": outcome["conflicting_reports"], "error": error},
+                        "conflicting_reports": outcome["conflicting_reports"],
+                        "missing_columns": outcome["missing_columns"], "error": error},
                 started_at=started_at)
             return outcome
 
@@ -1589,9 +1674,13 @@ class CFTCDataWrapper:
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 entries = zf.namelist()
-                entry = next((candidate for candidate in preferred if candidate in entries), None)
+                # The documented entry name, compared without case; otherwise
+                # the archive's single text/CSV entry.
+                lowered = {name.lower(): name for name in entries}
+                entry = next((lowered[candidate.lower()] for candidate in preferred
+                              if candidate.lower() in lowered), None)
                 if entry is None:
-                    candidates = [name for name in entries if name.lower().endswith(".txt")]
+                    candidates = [name for name in entries if name.lower().endswith((".txt", ".csv"))]
                     if len(candidates) == 1:
                         entry = candidates[0]
                 if entry is None:
@@ -1604,9 +1693,10 @@ class CFTCDataWrapper:
                         header = next(reader)
                     except StopIteration:
                         return finish("malformed", "the annual file is empty")
-                    header_error = self._annual_header_error(header, family)
+                    header_error, missing_columns = self._annual_missing_columns(header, family)
                     if header_error:
                         return finish("malformed", header_error)
+                    outcome["missing_columns"] = missing_columns
                     rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
                     rows_by_key: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
                     for fields in reader:
@@ -1821,7 +1911,8 @@ class CFTCDataWrapper:
 
     def _monitor_fetch_rows(self, code: str, family: str, resource_id: str, max_rows: int,
                             page_size: int = 5000,
-                            since_date: Optional[str] = None) -> List[Dict[str, Any]]:
+                            since_date: Optional[str] = None,
+                            futures_only: Optional[bool] = None) -> List[Dict[str, Any]]:
         """Canonical rows for one contract from the current API path.
 
         Without `since_date` this is the contract's complete history, paginated
@@ -1865,7 +1956,7 @@ class CFTCDataWrapper:
                 offset += len(page)
             if len(records) >= max_rows:
                 raise Exception(f"the contract history reached the {max_rows}-row monitor cap")
-        rows = [self._canonical_history_row(record, family) for record in records]
+        rows = [self._canonical_history_row(record, family, futures_only) for record in records]
         # A row without its report date cannot be placed in time: it is left out
         # alone and counted. A row naming another contract, or none, puts the
         # response's identity in doubt and still fails the market.
@@ -2046,20 +2137,146 @@ class CFTCDataWrapper:
 
     def _monitor_market(self, key: str, code: Optional[str], family: str, resource_id: str,
                         max_rows: int, refresh: bool, full_required: bool,
-                        since_date: Optional[str]) -> Dict[str, Any]:
+                        since_date: Optional[str], futures_only: Optional[bool] = None) -> Dict[str, Any]:
         if code is None or not refresh:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": None}
         try:
             fetched, row_note, complete = self._monitor_fetch_rows(
                 code, family, resource_id, max_rows,
-                since_date=None if full_required else since_date)
+                since_date=None if full_required else since_date, futures_only=futures_only)
             return {"market_key": key, "contract_code": code, "fetched": fetched,
                     "fetch_ok": True, "fetch_error": None, "full_history": full_required,
                     "row_note": row_note, "complete": complete}
         except Exception as exc:
             return {"market_key": key, "contract_code": code, "fetched": None,
                     "fetch_ok": False, "fetch_error": str(exc), "full_history": full_required}
+
+    def _store_market_refresh(self, archive: CftcCotArchive, family: str, basis_code: str, code: str,
+                              resource_id: str, refresh: bool, result: Dict[str, Any],
+                              retrieved_at: str) -> Tuple[List[Dict[str, Any]], str, str, int, int]:
+        """Store one market's fetched rows and classify its availability.
+
+        Returns (stored rows ascending, status, note, inserted, updated). The
+        statuses keep valid, stored-only and unavailable data distinct:
+        `updated`/`current` after a successful read, `archive_only` when the
+        read failed (or was not requested) but stored history exists,
+        `unavailable`/`no_local_history` when nothing is stored, and `no_data`
+        when the provider answered with no rows for this contract in this
+        report (the report does not cover it).
+        """
+        fetched = result.get("fetched")
+        fetch_ok = bool(result.get("fetch_ok"))
+        fetch_error = result.get("fetch_error")
+        refresh_note = fetch_error or result.get("row_note") or ""
+        inserted = updated = 0
+        if fetched:
+            # A market whose fetched rows cannot be stored (e.g. two
+            # different observations for one report) fails on its own:
+            # nothing of it is written, its stored history is still
+            # returned, and the other markets are unaffected.
+            try:
+                inserted, updated, _unchanged = archive.upsert_observations(
+                    fetched, family, basis_code, source=f"socrata:{resource_id}",
+                    retrieval_time=retrieved_at)
+                # A read that left rows out (a contradictory or undated
+                # report) is not the complete history. An increment only
+                # asks from the newest stored date, so a week it skipped
+                # would never be asked for again: the completeness claim
+                # is withdrawn and the next scan reads the contract in
+                # full, full read or increment alike.
+                if fetch_ok and not result.get("complete", True):
+                    archive.clear_full_history(family, basis_code, code)
+                elif fetch_ok and result.get("full_history"):
+                    archive.mark_full_history(family, basis_code, code)
+            except Exception as exc:
+                fetch_error = f"the fetched rows were not stored: {exc}"
+                refresh_note = fetch_error
+        rows = archive.observations(family, basis_code, code)
+        if fetch_error:
+            status = "archive_only" if rows else "unavailable"
+        elif not refresh:
+            status = "archive_only" if rows else "no_local_history"
+        elif fetch_ok and (inserted or updated):
+            status = "updated"
+        elif fetch_ok and rows:
+            # A successful increment with nothing new (or a full read
+            # whose rows were all already stored): the stored history
+            # is current. A contract that stopped reporting is caught
+            # by the engine's report-age freshness flag.
+            status = "current"
+        else:
+            status = "no_data"
+        return rows, status, refresh_note, inserted, updated
+
+    def get_cot_market(self, identifier: str, report_type: str = "legacy", futures_only: bool = False,
+                       refresh: bool = True, max_rows: int = 25000) -> Dict[str, Any]:
+        """One market's complete stored history, refreshed from the current API.
+
+        The detailed workspace's acquisition path. It shares the monitor's
+        archive and rules: the contract's full official history is read once,
+        later reads are increments from the newest stored report, and every row
+        is kept in the durable archive. When the provider read fails the stored
+        history is still returned with status `archive_only`, so a provider
+        outage never blanks history that was already validated and stored.
+        Unlike the monitor transport, every stored row is returned.
+        """
+        try:
+            family = self._report_family(report_type)
+            if family not in self._PARTICIPANT_FIELDS:
+                return {"error": CFTCError(
+                    "cot_market",
+                    f"The '{report_type}' report family is not supported. "
+                    "Supported families are legacy, disaggregated and financial (TFF)."
+                ).to_dict()}
+            resolved, unknown = self._resolve_markets([identifier] if identifier else [])
+            if unknown or len(resolved) != 1:
+                return {"error": CFTCError(
+                    "cot_market", f"Unknown market selection: {identifier}").to_dict()}
+            key, code = resolved[0]
+            suffix = "_futures_only" if futures_only else "_combined"
+            resource_id = self.reports_dict.get(family + suffix)
+            basis_code = "futures_only" if futures_only else "futures_and_options_combined"
+            archive = self._open_archive()
+            full_required = archive.full_history_at(family, basis_code, code) is None
+            result = self._monitor_market(key, code, family, resource_id, int(max_rows), bool(refresh),
+                                          full_required, archive.latest_report_date(family, basis_code, code),
+                                          bool(futures_only))
+            retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            rows, status, note, inserted, updated = self._store_market_refresh(
+                archive, family, basis_code, code, resource_id, bool(refresh), result, retrieved_at)
+            if not rows:
+                if note:
+                    reason = note
+                elif status == "no_data":
+                    reason = f"CFTC publishes no {family} report for this market"
+                else:
+                    reason = "no stored history for this market"
+                return {"error": CFTCError("cot_market", reason).to_dict()}
+            return {
+                "success": True,
+                "data": rows,
+                "parameters": {
+                    "identifier": key,
+                    "report_type": report_type,
+                    "report_family": family,
+                    "futures_only": bool(futures_only),
+                    "status": status,
+                    "refresh_note": note,
+                    "inserted": inserted,
+                    "updated": updated,
+                    "count": len(rows),
+                    "first_report_date": rows[0].get("report_date_as_yyyy_mm_dd"),
+                    "last_report_date": rows[-1].get("report_date_as_yyyy_mm_dd"),
+                    "full_history_fetched_at": archive.full_history_at(family, basis_code, code),
+                    "source": self.base_url,
+                    "dataset": resource_id,
+                    "archive_path": str(archive.path),
+                    "retrieved_at": retrieved_at,
+                }
+            }
+        except Exception as e:
+            return {"error": CFTCError("cot_market", str(e)).to_dict()}
 
     def get_cot_monitor(self, report_type: str = "legacy", futures_only: bool = False,
                         markets: Union[str, List[str], None] = "all", max_rows: int = 25000,
@@ -2107,7 +2324,8 @@ class CFTCDataWrapper:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     submissions = [
                         (pool.submit(self._monitor_market, key, code, family, resource_id,
-                                     int(max_rows), bool(refresh), plan[key][1], plan[key][0]), key)
+                                     int(max_rows), bool(refresh), plan[key][1], plan[key][0],
+                                     bool(futures_only)), key)
                         for key, code in resolved
                     ]
                     for future, key in submissions:
@@ -2121,51 +2339,11 @@ class CFTCDataWrapper:
             retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             markets_payload: List[Dict[str, Any]] = []
             for key, code in resolved:
-                result = fetched_by_key.get(key, {})
-                fetched = result.get("fetched")
-                fetch_ok = bool(result.get("fetch_ok"))
-                fetch_error = result.get("fetch_error")
-                refresh_note = fetch_error or result.get("row_note") or ""
-                inserted = updated = 0
-                if fetched:
-                    # A market whose fetched rows cannot be stored (e.g. two
-                    # different observations for one report) fails on its own:
-                    # nothing of it is written, its stored history is still
-                    # returned, and the other markets are unaffected.
-                    try:
-                        inserted, updated, _unchanged = archive.upsert_observations(
-                            fetched, family, basis_code, source=f"socrata:{resource_id}",
-                            retrieval_time=retrieved_at)
-                        # A read that left rows out (a contradictory or undated
-                        # report) is not the complete history. An increment only
-                        # asks from the newest stored date, so a week it skipped
-                        # would never be asked for again: the completeness claim
-                        # is withdrawn and the next scan reads the contract in
-                        # full, full read or increment alike.
-                        if fetch_ok and not result.get("complete", True):
-                            archive.clear_full_history(family, basis_code, code)
-                        elif fetch_ok and result.get("full_history"):
-                            archive.mark_full_history(family, basis_code, code)
-                    except Exception as exc:
-                        fetch_error = f"the fetched rows were not stored: {exc}"
-                        refresh_note = fetch_error
-                rows = archive.observations(family, basis_code, code)
+                rows, status, refresh_note, inserted, updated = self._store_market_refresh(
+                    archive, family, basis_code, code, resource_id, bool(refresh),
+                    fetched_by_key.get(key, {}), retrieved_at)
                 archive_rows = len(rows)
                 transport_rows, concentration_history = self._monitor_transport_rows(rows, family)
-                if fetch_error:
-                    status = "archive_only" if rows else "unavailable"
-                elif not refresh:
-                    status = "archive_only" if rows else "no_local_history"
-                elif fetch_ok and (inserted or updated):
-                    status = "updated"
-                elif fetch_ok and rows:
-                    # A successful increment with nothing new (or a full read
-                    # whose rows were all already stored): the stored history
-                    # is current. A contract that stopped reporting is caught
-                    # by the engine's report-age freshness flag.
-                    status = "current"
-                else:
-                    status = "no_data"
                 markets_payload.append({
                     "market_key": key,
                     "contract_code": code,
@@ -2677,7 +2855,8 @@ def main(args=None):
             "commands": [
                 "cot_data [identifier] [report_type] [futures_only] [start_date] [end_date] [limit]",
                 "cot_history [identifier] [report_type] [futures_only] [max_rows]",
-                "cot_monitor [report_type] [futures_only] [markets|all] [max_rows]",
+                "cot_monitor [report_type] [futures_only] [markets|all] [max_rows] [refresh]",
+                "cot_market [identifier] [report_type] [futures_only] [refresh]",
                 "cot_backfill [report_type] [futures_only] [start_year] [end_year] [markets|all]",
                 "cot_archive_status",
                 "search_cot_markets [query]",
@@ -2717,7 +2896,17 @@ def main(args=None):
             futures_only = args[2].lower() == "true" if len(args) + 1 > 3 else False
             markets = args[3] if len(args) + 1 > 4 else "all"
             max_rows = int(args[4]) if len(args) + 1 > 5 else 25000
-            result = wrapper.get_cot_monitor(report_type, futures_only, markets, max_rows)
+            # Optional fifth argument: "false" reads the stored archive only
+            # (no provider request), so a workspace can open instantly.
+            refresh = args[5].lower() != "false" if len(args) + 1 > 6 else True
+            result = wrapper.get_cot_monitor(report_type, futures_only, markets, max_rows, refresh)
+
+        elif command == "cot_market":
+            identifier = args[1] if len(args) + 1 > 2 else None
+            report_type = args[2] if len(args) + 1 > 3 else "legacy"
+            futures_only = args[3].lower() == "true" if len(args) + 1 > 4 else False
+            refresh = args[4].lower() != "false" if len(args) + 1 > 5 else True
+            result = wrapper.get_cot_market(identifier, report_type, futures_only, refresh)
 
         elif command == "cot_backfill":
             report_type = args[1] if len(args) + 1 > 2 else "legacy"
@@ -2765,7 +2954,7 @@ def main(args=None):
         # The monitor carries every market's canonical history; compact JSON
         # keeps that provider response practical without changing the contract
         # (it is still the same object, parsed identically by the host).
-        if command == "cot_monitor":
+        if command in ("cot_monitor", "cot_market"):
             print(json.dumps(result, separators=(",", ":")))
         else:
             print(json.dumps(result, indent=2))
