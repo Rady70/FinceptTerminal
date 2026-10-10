@@ -33,9 +33,9 @@
 //   * an exact 1/4/13-report horizon requires an unbroken weekly report
 //     sequence, so a gap makes the horizon unavailable instead of relabelling
 //     a longer elapsed interval;
-//   * the 156-report percentile and move-materiality references are strictly
-//     trailing: the current observation never contributes to the distribution
-//     that judges it;
+//   * the percentile and move-size references are strictly trailing: the
+//     current observation never contributes to the distribution that judges
+//     it;
 //   * missing or unsuitable price data leaves the price relationship
 //     unavailable, never flat; a continuous front-month futures proxy that is
 //     not roll-adjusted is unsuitable, because a contract roll inside a window
@@ -69,6 +69,24 @@
 //   * row report-basis metadata is verified against the declared basis, and a
 //     latest report older than 14 days relative to the evaluation date is
 //     flagged as outdated.
+//
+// Rule set v3 (2026-10-10, owner decision: one year is the basis of the
+// analysis) changes only the reference windows and the move-size measure:
+//   * every percentile (Net %OI, market concentration) compares the current
+//     reading with the previous 52 valid reports (v2: 156, and the full
+//     trailing history for concentration);
+//   * a move's size is measured against the typical one-report move of the
+//     same quantity over the previous 52 reports: typical(h) = root mean square
+//     of those 52 one-report moves x sqrt(h), and the size
+//     rank is erf(|move| / typical(h) / sqrt(2)), the share of a normal
+//     distribution's absolute values below the move. The 0.75 / 0.90
+//     materiality cut-offs therefore mean 1.15 and 1.645 typical moves.
+//     Measured on the official history of every catalog market, one-report
+//     positioning changes add up close to independently (variance ratio about
+//     1.2 at 4 reports and 0.95 at 13), which is what the sqrt(h) scaling
+//     assumes; ranking each horizon against its own overlapping moves inside
+//     one year would rest on about four independent 13-report moves.
+// v2 stays reproducible through cftc_v2_interpretation_config().
 #pragma once
 
 #include "services/economics/CftcMetricModel.h"
@@ -89,16 +107,21 @@ namespace fincept::services {
 /// The versioned descriptive rule-set identity for the default configuration.
 /// Any change to a rule, threshold or reference window requires a new version
 /// string; a caller-supplied configuration that differs from the defaults is
-/// reported under the distinct custom identity below. v2 carries the
-/// 2026-09-24 audit corrections listed at the top of this header.
+/// reported under the distinct custom identity below. v3 is the one-year
+/// basis described at the top of this header.
 inline QString cftc_interpretation_rule_set_version() {
+    return QStringLiteral("cftc-descriptive-interpretation-v3");
+}
+
+/// The previous rule set, still produced by cftc_v2_interpretation_config().
+inline QString cftc_interpretation_v2_rule_set_version() {
     return QStringLiteral("cftc-descriptive-interpretation-v2");
 }
 
 /// The truthful identity for interpretations produced with a configuration
-/// that differs from the defaults. It is never presented as the plain version.
+/// that is neither v3 nor v2. It is never presented as the plain version.
 inline QString cftc_interpretation_custom_rule_set_version() {
-    return QStringLiteral("cftc-descriptive-interpretation-v2-custom");
+    return QStringLiteral("cftc-descriptive-interpretation-v3-custom");
 }
 
 /// Longest calendar gap between an official report date and the close used
@@ -115,8 +138,17 @@ inline constexpr int kCftcReportPriceMaxLagDays = 4;
 /// The low-side bands are stored as their own literals (0.10 / 0.025 / 0.25)
 /// rather than derived as 1 - high, so the boundary comparisons are exact
 /// decimal values instead of floating-point subtraction results.
+/// How a move's size is judged (v3: WeeklyScaled; v2: TrailingRank).
+enum class CftcMoveSizeMethod {
+    /// Rank of |move| among the previous history_window moves of the same horizon.
+    TrailingRank,
+    /// |move| against the typical one-report move of the previous
+    /// history_window reports, scaled by sqrt(horizon); see the header.
+    WeeklyScaled,
+};
+
 struct CftcInterpretationConfig {
-    int history_window = 156;                     // HISTORY_WINDOW
+    int history_window = 52;                      // HISTORY_WINDOW (v2: 156)
     double extreme_percentile = 0.90;             // EXTREME_PERCENTILE
     double low_extreme_percentile = 0.10;         // HISTORICALLY_LOW_NET / CROWDED_SHORT band
     double severe_extreme_percentile = 0.975;     // SEVERE_EXTREME_PERCENTILE
@@ -148,11 +180,27 @@ struct CftcInterpretationConfig {
     /// market/report properties; this selection never maps them onto a
     /// participant category.
     QString primary_concentration_field = QStringLiteral("concentration_gross_4_long");
+    /// Move-size measure (v3: WeeklyScaled; v2: TrailingRank).
+    CftcMoveSizeMethod move_size_method = CftcMoveSizeMethod::WeeklyScaled;
+    /// Reports in the concentration percentile reference; 0 = the field's full
+    /// trailing history (v2).
+    int concentration_window = 52;
 };
 
 /// The exact default configuration of the current rule set.
 inline CftcInterpretationConfig cftc_default_interpretation_config() {
     return {};
+}
+
+/// The configuration of rule set v2 (156-report window, ranks against the
+/// previous 156 moves of the same horizon, full-history concentration
+/// percentile). Kept so v2 results stay reproducible.
+inline CftcInterpretationConfig cftc_v2_interpretation_config() {
+    CftcInterpretationConfig config;
+    config.history_window = 156;
+    config.move_size_method = CftcMoveSizeMethod::TrailingRank;
+    config.concentration_window = 0;
+    return config;
 }
 
 /// Whether a configuration carries the immutable defaults of the current rule
@@ -174,13 +222,32 @@ inline bool cftc_interpretation_config_is_default(const CftcInterpretationConfig
            config.price_max_lag_days == defaults.price_max_lag_days &&
            config.max_report_age_days == defaults.max_report_age_days &&
            config.horizons_reports == defaults.horizons_reports &&
-           config.primary_concentration_field == defaults.primary_concentration_field;
+           config.primary_concentration_field == defaults.primary_concentration_field &&
+           config.move_size_method == defaults.move_size_method &&
+           config.concentration_window == defaults.concentration_window;
+}
+
+/// Whether a configuration is exactly rule set v2.
+inline bool cftc_interpretation_config_is_v2(const CftcInterpretationConfig& config) {
+    CftcInterpretationConfig as_default = config;
+    const CftcInterpretationConfig v2 = cftc_v2_interpretation_config();
+    if (config.history_window != v2.history_window || config.move_size_method != v2.move_size_method ||
+        config.concentration_window != v2.concentration_window)
+        return false;
+    const CftcInterpretationConfig defaults;
+    as_default.history_window = defaults.history_window;
+    as_default.move_size_method = defaults.move_size_method;
+    as_default.concentration_window = defaults.concentration_window;
+    return cftc_interpretation_config_is_default(as_default);
 }
 
 /// The rule-set identity that truthfully describes a configuration.
 inline QString cftc_interpretation_rule_set_version_for(const CftcInterpretationConfig& config) {
-    return cftc_interpretation_config_is_default(config) ? cftc_interpretation_rule_set_version()
-                                                         : cftc_interpretation_custom_rule_set_version();
+    if (cftc_interpretation_config_is_default(config))
+        return cftc_interpretation_rule_set_version();
+    if (cftc_interpretation_config_is_v2(config))
+        return cftc_interpretation_v2_rule_set_version();
+    return cftc_interpretation_custom_rule_set_version();
 }
 
 /// The only exact report horizons the descriptive taxonomy interprets.
@@ -575,6 +642,11 @@ struct CftcHorizonFlowReading {
     bool has_net_rank = false;
     double net_rank = 0.0;
     int net_rank_reference_count = 0;
+    /// v3 size of the net flow: |net_flow| / typical, and the typical net flow
+    /// for this horizon (percentage points of the anchor report's Open Interest).
+    bool has_net_scale = false;
+    double net_scale = 0.0;
+    double net_typical = 0.0;
 };
 
 /// One participant's descriptive interpretation: its neutral terminology and
@@ -714,6 +786,10 @@ struct CftcOpenInterestReading {
     int rank_reference_count = 0;
     bool material = false;
     bool move_large = false;
+    /// v3 size: |change| / typical, and the typical change for this horizon.
+    bool has_scale = false;
+    double scale = 0.0;
+    double typical = 0.0;
 };
 
 struct CftcInterpretationResult {
@@ -891,6 +967,11 @@ struct CftcTrailingMoveRank {
     bool available = false;
     int reference_count = 0;
     double rank = 0.0;
+    /// WeeklyScaled only: |move| / typical and the typical move for the horizon
+    /// (root mean square of the reference one-report moves x sqrt(horizon)).
+    bool has_scale = false;
+    double scale = 0.0;
+    double typical = 0.0;
 };
 
 inline CftcTrailingMoveRank cftc_trailing_move_rank(const QVector<CftcDatedValue>& moves, const QDate& current_date,
@@ -933,6 +1014,83 @@ inline CftcTrailingMoveRank cftc_trailing_move_rank(const QVector<CftcDatedValue
     out.rank =
         (static_cast<double>(below) + 0.5 * static_cast<double>(equal)) / static_cast<double>(out.reference_count);
     return out;
+}
+
+/// v3 move size: the current `horizon`-report move against the typical
+/// one-report move of the `window` reports before it. `one_report_moves` is the
+/// same quantity's one-report move series; only moves dated strictly before the
+/// current report are reference. typical = root mean square of those moves (the
+/// typical size of a one-report move, steady drift included) x sqrt(horizon);
+/// rank = erf(|move| / typical / sqrt(2)). A reference without any move ranks a
+/// zero move 0 and any other move 1.
+inline CftcTrailingMoveRank cftc_trailing_scaled_move(const QVector<CftcDatedValue>& moves,
+                                                      const QVector<CftcDatedValue>& one_report_moves, int horizon,
+                                                      const QDate& current_date, int window) {
+    CftcTrailingMoveRank out;
+    if (window < 1 || horizon < 1 || !current_date.isValid())
+        return out;
+    double current = 0.0;
+    for (const auto& point : moves) {
+        if (point.date == current_date) {
+            current = std::fabs(point.value);
+            out.has_current = true;
+            break;
+        }
+        if (point.date > current_date)
+            break;
+    }
+    if (!out.has_current)
+        return out;
+    QVector<double> reference;
+    reference.reserve(one_report_moves.size());
+    for (const auto& point : one_report_moves) {
+        if (point.date >= current_date)
+            break;
+        reference.append(point.value);
+    }
+    if (reference.size() > window)
+        reference = reference.mid(reference.size() - window);
+    out.reference_count = reference.size();
+    if (out.reference_count < window)
+        return out;
+    double sum_of_squares = 0.0;
+    for (double value : reference)
+        sum_of_squares += value * value;
+    const double mean_square = sum_of_squares / static_cast<double>(reference.size());
+    out.available = true;
+    out.typical = std::sqrt(mean_square) * std::sqrt(static_cast<double>(horizon));
+    out.has_scale = out.typical > 0.0;
+    if (out.has_scale) {
+        out.scale = current / out.typical;
+        out.rank = std::erf(out.scale / std::sqrt(2.0));
+    } else {
+        out.rank = current == 0.0 ? 0.0 : 1.0;
+    }
+    return out;
+}
+
+/// The multiple of the typical move at which a WeeklyScaled size reaches `rank`
+/// (rank = erf(multiple / sqrt(2))): about 1.15 for 0.75 and 1.645 for 0.90.
+inline double cftc_scaled_move_cutoff(double rank) {
+    double low = 0.0;
+    double high = 10.0;
+    for (int i = 0; i < 60; ++i) {
+        const double mid = 0.5 * (low + high);
+        if (std::erf(mid / std::sqrt(2.0)) < rank)
+            low = mid;
+        else
+            high = mid;
+    }
+    return high;
+}
+
+/// The size of the current move under the configured method.
+inline CftcTrailingMoveRank cftc_move_size(const QVector<CftcDatedValue>& moves,
+                                           const QVector<CftcDatedValue>& one_report_moves, int horizon,
+                                           const QDate& current_date, const CftcInterpretationConfig& config) {
+    if (config.move_size_method == CftcMoveSizeMethod::TrailingRank)
+        return cftc_trailing_move_rank(moves, current_date, config.history_window);
+    return cftc_trailing_scaled_move(moves, one_report_moves, horizon, current_date, config.history_window);
 }
 
 // ── Exact report-horizon flows ──────────────────────────────────────────────
@@ -1184,7 +1342,7 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
          QStringLiteral("'crowded' wording only for broad non-commercial, managed money and leveraged funds")},
         {QStringLiteral("HISTORICAL_PERCENTILE"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("midpoint-tie percentile of net_pct_oi against the previous 156 valid reports")},
+         QStringLiteral("midpoint-tie percentile of net_pct_oi against the previous 52 valid reports")},
         {QStringLiteral("HISTORICALLY_HIGH_NET"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic, QStringLiteral("percentile >= 0.90")},
         {QStringLiteral("HISTORICALLY_LOW_NET"), CftcInterpretationScope::HistoricalRelativeState,
@@ -1200,9 +1358,10 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
         {QStringLiteral("SEVERE_SHORT_EXTREME"), CftcInterpretationScope::HistoricalRelativeState,
          CftcEvidenceBasis::EngineHeuristic, QStringLiteral("net short and percentile <= 0.025")},
         {QStringLiteral("GROSS_FLOW"), CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("1/4/13-report long/short flows material at the 0.75 move rank")},
+         QStringLiteral("1/4/13-report long/short flows material at size rank 0.75 (1.15 typical one-report moves "
+                        "of the previous 52 reports x sqrt(h))")},
         {QStringLiteral("NET_SHIFT"), CftcInterpretationScope::DescriptiveFlow, CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("1/4/13-report net flow material at the 0.75 move rank")},
+         QStringLiteral("1/4/13-report net flow material at size rank 0.75 (1.15 typical moves x sqrt(h))")},
         {QStringLiteral("NET_SHARE_RAW_DISAGREEMENT"), CftcInterpretationScope::DescriptiveFlow,
          CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("raw net flow and Net %OI change have opposite signs, neither is zero, and at least one "
@@ -1287,7 +1446,7 @@ inline QVector<CftcInterpretationRule> cftc_interpretation_rule_catalog() {
          QStringLiteral("Open Interest change < 0 and material")},
         {QStringLiteral("HIGH_MARKET_CONCENTRATION"), CftcInterpretationScope::MarketStructure,
          CftcEvidenceBasis::EngineHeuristic,
-         QStringLiteral("selected market CR concentration percentile >= 0.90 of its trailing reference")},
+         QStringLiteral("selected market CR concentration percentile >= 0.90 of the previous 52 reports")},
         {QStringLiteral("CONCENTRATION_RISING"), CftcInterpretationScope::MarketStructure,
          CftcEvidenceBasis::EngineHeuristic,
          QStringLiteral("market concentration change > 0 and absolute move rank >= 0.75")},
@@ -1513,6 +1672,13 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
         CftcUnavailableReason share_reason = CftcUnavailableReason::None;
         CftcTrailingMoveRank price_rank;
     };
+    // One-report move series: the reference of every v3 move size.
+    const QVector<CftcDatedValue> one_report_long =
+        cftc_flow_move_series(history, participant_index, CftcFlowMetric::Long, 1);
+    const QVector<CftcDatedValue> one_report_short =
+        cftc_flow_move_series(history, participant_index, CftcFlowMetric::Short, 1);
+    const QVector<CftcDatedValue> one_report_net =
+        cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, 1);
     QVector<HorizonEvaluation> horizons;
     horizons.reserve(config.horizons_reports.size());
     for (int horizon : config.horizons_reports) {
@@ -1524,14 +1690,14 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
         else if (!evaluation.flow.continuous)
             evaluation.horizon_reason = CftcUnavailableReason::BrokenReportSequence;
         evaluation.long_rank =
-            cftc_trailing_move_rank(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Long, horizon),
-                                    current_date, config.history_window);
+            cftc_move_size(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Long, horizon),
+                           one_report_long, horizon, current_date, config);
         evaluation.short_rank =
-            cftc_trailing_move_rank(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Short, horizon),
-                                    current_date, config.history_window);
+            cftc_move_size(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Short, horizon),
+                           one_report_short, horizon, current_date, config);
         evaluation.net_rank =
-            cftc_trailing_move_rank(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, horizon),
-                                    current_date, config.history_window);
+            cftc_move_size(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, horizon),
+                           one_report_net, horizon, current_date, config);
         horizons.append(evaluation);
     }
 
@@ -1556,6 +1722,9 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
         reading.has_net_rank = evaluation.net_rank.available;
         reading.net_rank = evaluation.net_rank.rank;
         reading.net_rank_reference_count = evaluation.net_rank.reference_count;
+        reading.has_net_scale = evaluation.net_rank.has_scale;
+        reading.net_scale = evaluation.net_rank.scale;
+        reading.net_typical = evaluation.net_rank.typical;
         out.flow_readings.append(reading);
     }
 
@@ -1705,9 +1874,10 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
                                                (flow.net_flow < 0.0 && flow.net_share_change > 0.0);
             const bool neither_zero = flow.net_flow != 0.0 && flow.net_share_change != 0.0;
             if (raw_and_share_opposed && neither_zero) {
-                const CftcTrailingMoveRank share_rank = cftc_trailing_move_rank(
+                const CftcTrailingMoveRank share_rank = cftc_move_size(
                     cftc_flow_move_series(history, participant_index, CftcFlowMetric::NetShareChange, horizon),
-                    current_date, config.history_window);
+                    cftc_flow_move_series(history, participant_index, CftcFlowMetric::NetShareChange, 1), horizon,
+                    current_date, config);
                 const bool net_material =
                     evaluation.net_rank.available && evaluation.net_rank.rank >= config.material_move_percentile;
                 const bool share_material = share_rank.available && share_rank.rank >= config.material_move_percentile;
@@ -1808,7 +1978,9 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
                 assessment.price_latest_date = latest.date;
                 const QVector<CftcDatedValue> price_moves =
                     cftc_price_move_series(prices, history, horizon, config.price_max_lag_days);
-                evaluation.price_rank = cftc_trailing_move_rank(price_moves, current_date, config.history_window);
+                evaluation.price_rank =
+                    cftc_move_size(price_moves, cftc_price_move_series(prices, history, 1, config.price_max_lag_days),
+                                   horizon, current_date, config);
                 if (!evaluation.price_rank.available) {
                     assessment.reason = evaluation.price_rank.has_current
                                             ? CftcUnavailableReason::InsufficientPriceHistory
@@ -1861,8 +2033,9 @@ inline CftcParticipantInterpretation cftc_interpret_participant(
             reason = CftcUnavailableReason::BrokenReportSequence;
             return false;
         }
-        rank = cftc_trailing_move_rank(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, horizon),
-                                       current_date, config.history_window);
+        rank = cftc_move_size(cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, horizon),
+                              cftc_flow_move_series(history, participant_index, CftcFlowMetric::Net, 1), horizon,
+                              current_date, config);
         const bool anchor_oi_positive = detail::cftc_anchor_oi_positive(history, current_index - horizon);
         if (!flow.has_net_flow) {
             if (anchor_oi_positive)
@@ -2210,9 +2383,9 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
             reason = CftcUnavailableReason::MissingOpenInterest;
         else if (*history[anchor_index].open_interest <= 0.0)
             reason = CftcUnavailableReason::NonPositiveOpenInterest;
-        const CftcTrailingMoveRank rank =
-            cftc_trailing_move_rank(cftc_flow_move_series(history, -1, CftcFlowMetric::OpenInterest, horizon),
-                                    current_date, config.history_window);
+        const CftcTrailingMoveRank rank = cftc_move_size(
+            cftc_flow_move_series(history, -1, CftcFlowMetric::OpenInterest, horizon),
+            cftc_flow_move_series(history, -1, CftcFlowMetric::OpenInterest, 1), horizon, current_date, config);
         if (reason == CftcUnavailableReason::None && !rank.available)
             reason = CftcUnavailableReason::InsufficientHistory;
         CftcOpenInterestReading reading;
@@ -2225,6 +2398,9 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
             reading.has_rank = true;
             reading.rank = rank.rank;
             reading.rank_reference_count = rank.reference_count;
+            reading.has_scale = rank.has_scale;
+            reading.scale = rank.scale;
+            reading.typical = rank.typical;
             reading.material = flow.oi_change != 0.0 && rank.rank >= config.material_move_percentile;
             reading.move_large = rank.rank >= config.large_move_percentile;
         }
@@ -2275,9 +2451,12 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
         assessment.has_current = current_value.has_value();
         if (current_value)
             assessment.current = *current_value;
-        // The plan's HIGH_MARKET_CONCENTRATION uses the field's own full
-        // trailing reference, not the Net %OI history window.
-        const CftcTrailingPercentile percentile = cftc_full_trailing_percentile_at(series, current_date);
+        // v3: the previous concentration_window reports; v2 (window 0): the
+        // field's own full trailing reference.
+        const CftcTrailingPercentile percentile =
+            config.concentration_window > 0
+                ? cftc_trailing_percentile_at(series, current_date, config.concentration_window)
+                : cftc_full_trailing_percentile_at(series, current_date);
         assessment.has_percentile = percentile.available;
         if (percentile.available) {
             assessment.percentile = percentile.percentile;
@@ -2305,8 +2484,7 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
                     if (before && after)
                         change_series.append({history[i].date, history[i].date_label, *after - *before});
                 }
-                const CftcTrailingMoveRank rank =
-                    cftc_trailing_move_rank(change_series, current_date, config.history_window);
+                const CftcTrailingMoveRank rank = cftc_move_size(change_series, change_series, 1, current_date, config);
                 assessment.has_change_rank = rank.available;
                 if (rank.available) {
                     assessment.change_rank = rank.rank;

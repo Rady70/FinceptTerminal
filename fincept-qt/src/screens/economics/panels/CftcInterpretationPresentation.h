@@ -2308,6 +2308,14 @@ inline QString cftc_outdated_report_sentence(const services::CftcInterpretationR
 /// than CFTC definitions.
 inline QString cftc_method_sentence(const services::CftcInterpretationResult& result) {
     const services::CftcInterpretationConfig& config = result.config;
+    if (config.move_size_method == services::CftcMoveSizeMethod::WeeklyScaled) {
+        return cftc_presentation_tr("Method: “material” means a move of at least %1 times the typical move of that "
+                                    "length (the root mean square of the previous %2 one-report moves x the square "
+                                    "root of the reports), and historical levels compare Net %OI with the previous "
+                                    "%2 reports. These thresholds are MarketLab heuristics, not CFTC definitions.")
+            .arg(QString::number(services::cftc_scaled_move_cutoff(config.material_move_percentile), 'f', 2))
+            .arg(config.history_window);
+    }
     return cftc_presentation_tr("Method: “material” means a move at or above the %1 percentile of the previous %2 "
                                 "comparable moves, and historical levels compare Net %OI with the previous %2 "
                                 "reports. These thresholds are MarketLab heuristics, not CFTC definitions.")

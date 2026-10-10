@@ -153,8 +153,11 @@ QVector<CftcPricePoint> price_points(const QVector<double>& closes) {
     return out;
 }
 
+// The suite below pins rule set v2's exact rules (trailing ranks, full-history
+// concentration); a window of 156 reproduces v2 itself. Rule set v3 has its
+// own tests at the end of the file.
 CftcInterpretationConfig small_window_config(int window = 4) {
-    CftcInterpretationConfig config;
+    CftcInterpretationConfig config = cftc_v2_interpretation_config();
     config.history_window = window;
     return config;
 }
@@ -475,14 +478,32 @@ class TstCftcInterpretation : public QObject {
     void default_window_percentile_boundaries();
     void default_window_materiality_boundaries();
     void per_cause_insufficient_history_reasons();
+    // Rule set v3
+    void v3_percentile_uses_the_previous_52_reports();
+    void v3_move_size_is_scaled_from_the_typical_weekly_move();
+    void v3_flat_reference_sizes_zero_and_nonzero_moves();
+    void v3_needs_52_prior_weekly_moves();
 };
 
 // ── Contract and configuration ──────────────────────────────────────────────
 
 void TstCftcInterpretation::default_rule_set_configuration() {
-    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v2"));
+    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v3"));
     const CftcInterpretationConfig config;
-    QCOMPARE(config.history_window, 156);
+    QCOMPARE(config.history_window, 52);
+    QCOMPARE(config.move_size_method, CftcMoveSizeMethod::WeeklyScaled);
+    QCOMPARE(config.concentration_window, 52);
+    const CftcInterpretationConfig v2 = cftc_v2_interpretation_config();
+    QCOMPARE(v2.history_window, 156);
+    QCOMPARE(v2.move_size_method, CftcMoveSizeMethod::TrailingRank);
+    QCOMPARE(v2.concentration_window, 0);
+    QCOMPARE(cftc_interpretation_rule_set_version_for(v2), QStringLiteral("cftc-descriptive-interpretation-v2"));
+    QVERIFY(cftc_interpretation_config_is_v2(v2));
+    QVERIFY(!cftc_interpretation_config_is_v2(config));
+    CftcInterpretationConfig v2_other = v2;
+    v2_other.extreme_percentile = 0.95;
+    QVERIFY(!cftc_interpretation_config_is_v2(v2_other));
+    QCOMPARE(cftc_interpretation_rule_set_version_for(v2_other), cftc_interpretation_custom_rule_set_version());
     QCOMPARE(config.extreme_percentile, 0.90);
     QCOMPARE(config.low_extreme_percentile, 0.10);
     QCOMPARE(config.severe_extreme_percentile, 0.975);
@@ -497,7 +518,7 @@ void TstCftcInterpretation::default_rule_set_configuration() {
     QCOMPARE(cftc_unwind_low_reentry_percentile(config), 0.25);
     QCOMPARE(cftc_low_extreme_percentile(config), 0.10);
     QCOMPARE(cftc_low_severe_percentile(config), 0.025);
-    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v2"));
+    QCOMPARE(cftc_interpretation_rule_set_version(), QStringLiteral("cftc-descriptive-interpretation-v3"));
     QVERIFY(cftc_interpretation_custom_rule_set_version() != cftc_interpretation_rule_set_version());
     QVERIFY(cftc_interpretation_config_is_default(cftc_default_interpretation_config()));
     QVERIFY(!cftc_interpretation_config_is_default(small_window_config(4)));
@@ -615,8 +636,8 @@ void TstCftcInterpretation::custom_config_gets_distinct_rule_set_identity() {
     QVector<double> longs = {500.0, 505.0, 510.0, 515.0, 520.0, 525.0, 530.0, 535.0, 2000.0};
     QVector<double> shorts(9, 400.0);
     const CftcInterpretationResult v1 = cftc_interpret(legacy_input(legacy_series(longs, shorts), 156));
-    QCOMPARE(v1.rule_set_version, cftc_interpretation_rule_set_version());
-    QVERIFY(v1.config_is_default);
+    QCOMPARE(v1.rule_set_version, cftc_interpretation_v2_rule_set_version());
+    QVERIFY(!v1.config_is_default); // v2 is reproducible, but it is not the current default
     const CftcInterpretationResult custom = cftc_interpret(legacy_input(legacy_series(longs, shorts), 4));
     QCOMPARE(custom.rule_set_version, cftc_interpretation_custom_rule_set_version());
     QVERIFY2(!custom.config_is_default, "an overridden configuration must not claim the plain v1 identity");
@@ -2858,7 +2879,7 @@ void TstCftcInterpretation::default_window_percentile_boundaries() {
         return cftc_interpret(input);
     };
     CftcInterpretationResult result = percentile_result(140, 0, 16);
-    QVERIFY(result.config_is_default);
+    QCOMPARE(result.rule_set_version, cftc_interpretation_v2_rule_set_version());
     const CftcParticipantInterpretation* participant = find_participant(result, key);
     QVERIFY(participant);
     QCOMPARE(participant->percentile_reference_count, 156);
@@ -2904,7 +2925,7 @@ void TstCftcInterpretation::default_window_materiality_boundaries() {
         return cftc_interpret(input);
     };
     CftcInterpretationResult result = net_move_result(117, 0, 39);
-    QVERIFY(result.config_is_default);
+    QCOMPARE(result.rule_set_version, cftc_interpretation_v2_rule_set_version());
     const CftcParticipantInterpretation* participant = find_participant(result, key);
     QVERIFY(participant);
     const CftcInterpretationState* shift = find_state(participant->states, QStringLiteral("NET_LONGWARD_SHIFT"), 1);
@@ -2972,4 +2993,119 @@ void TstCftcInterpretation::per_cause_insufficient_history_reasons() {
 }
 
 QTEST_GUILESS_MAIN(TstCftcInterpretation)
+// ── Rule set v3 ─────────────────────────────────────────────────────────────
+
+namespace {
+
+CftcInterpretationInput v3_input(const QVector<double>& percents) {
+    CftcInterpretationInput input = legacy_input(legacy_percent_series(percents));
+    input.config = cftc_default_interpretation_config();
+    return input;
+}
+
+/// Net %OI levels whose 1-report moves alternate +1 / -1 (standard deviation
+/// exactly 1 over any even run), ending at `last_level`.
+QVector<double> alternating_levels(int reports) {
+    QVector<double> levels;
+    for (int i = 0; i < reports; ++i)
+        levels.append(i % 2 == 0 ? 10.0 : 11.0);
+    return levels;
+}
+
+} // namespace
+
+void TstCftcInterpretation::v3_percentile_uses_the_previous_52_reports() {
+    // 100 old readings above the current value, then 52 below it: a 52-report
+    // reference ranks the current reading at the top; v2's 156 would not.
+    QVector<double> percents;
+    for (int i = 0; i < 100; ++i)
+        percents.append(50.0);
+    for (int i = 0; i < 52; ++i)
+        percents.append(10.0 + 0.1 * i);
+    percents.append(30.0);
+    const CftcInterpretationResult result = cftc_interpret(v3_input(percents));
+    QCOMPARE(result.rule_set_version, QStringLiteral("cftc-descriptive-interpretation-v3"));
+    QVERIFY(result.config_is_default);
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant && participant->historical_percentile_available);
+    QCOMPARE(participant->percentile_reference_count, 52);
+    QCOMPARE(participant->percentile, 1.0);
+    QVERIFY(has_state(participant->states, QStringLiteral("HISTORICALLY_HIGH_NET")));
+}
+
+void TstCftcInterpretation::v3_move_size_is_scaled_from_the_typical_weekly_move() {
+    // 60 reports whose weekly moves alternate +1/-1 (sd 1), then a +2 move.
+    QVector<double> levels = alternating_levels(60);
+    const double before = levels.last();
+    levels.append(before + 2.0);
+    const CftcInterpretationResult result = cftc_interpret(v3_input(levels));
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    const CftcHorizonFlowReading* one = nullptr;
+    const CftcHorizonFlowReading* four = nullptr;
+    for (const auto& reading : participant->flow_readings) {
+        if (reading.horizon_reports == 1)
+            one = &reading;
+        if (reading.horizon_reports == 4)
+            four = &reading;
+    }
+    QVERIFY(one && four && one->has_net_rank && four->has_net_rank);
+    QVERIFY(one->has_net_scale);
+    QCOMPARE(one->net_rank_reference_count, 52);
+    QVERIFY(std::fabs(one->net_typical - 1.0) < 1e-12);
+    QVERIFY(std::fabs(one->net_scale - 2.0) < 1e-12);
+    QVERIFY(std::fabs(one->net_rank - std::erf(2.0 / std::sqrt(2.0))) < 1e-12); // 0.9545: large
+    const CftcInterpretationState* shift = find_state(participant->states, QStringLiteral("NET_LONGWARD_SHIFT"), 1);
+    QVERIFY(shift && shift->move_large);
+    // The 4-report move is measured against 1 x sqrt(4) = 2.
+    const double four_move = levels.last() - levels[levels.size() - 1 - 4];
+    QVERIFY(std::fabs(four->net_typical - 2.0) < 1e-12);
+    QVERIFY(std::fabs(four->net_scale - std::fabs(four_move) / 2.0) < 1e-12);
+    // 1.15 typical moves is the 0.75 materiality cut-off, 1.645 the 0.90 one.
+    QVERIFY(std::erf(1.15 / std::sqrt(2.0)) > 0.749 && std::erf(1.15 / std::sqrt(2.0)) < 0.751);
+    QVERIFY(std::erf(1.645 / std::sqrt(2.0)) > 0.899 && std::erf(1.645 / std::sqrt(2.0)) < 0.901);
+}
+
+void TstCftcInterpretation::v3_flat_reference_sizes_zero_and_nonzero_moves() {
+    QVector<CftcDatedValue> ones;
+    for (int i = 0; i < 52; ++i)
+        ones.append({kLatest.addDays(-7LL * (52 - i)), QString(), 0.0});
+    QVector<CftcDatedValue> current = {{kLatest, QString(), 0.0}};
+    CftcTrailingMoveRank size = cftc_trailing_scaled_move(current, ones, 1, kLatest, 52);
+    QVERIFY(size.available && !size.has_scale);
+    QCOMPARE(size.rank, 0.0);
+    current = {{kLatest, QString(), -0.5}};
+    size = cftc_trailing_scaled_move(current, ones, 1, kLatest, 52);
+    QVERIFY(size.available && !size.has_scale);
+    QCOMPARE(size.rank, 1.0);
+    // The current report's own one-report move is never reference.
+    ones.append({kLatest, QString(), 100.0});
+    size = cftc_trailing_scaled_move(current, ones, 1, kLatest, 52);
+    QCOMPARE(size.reference_count, 52);
+    QCOMPARE(size.rank, 1.0);
+}
+
+void TstCftcInterpretation::v3_needs_52_prior_weekly_moves() {
+    // 52 reports give 51 weekly moves before the current one: unavailable.
+    QVector<double> levels = alternating_levels(52);
+    levels.append(levels.last() + 2.0);
+    CftcInterpretationResult result = cftc_interpret(v3_input(levels));
+    const CftcParticipantInterpretation* participant = find_participant(result, QStringLiteral("non_commercial"));
+    QVERIFY(participant);
+    bool rank_available = false;
+    for (const auto& reading : participant->flow_readings)
+        if (reading.horizon_reports == 1)
+            rank_available = reading.has_net_rank;
+    QVERIFY(!rank_available);
+    // One more report: 52 prior moves, available.
+    levels = alternating_levels(53);
+    levels.append(levels.last() + 2.0);
+    result = cftc_interpret(v3_input(levels));
+    participant = find_participant(result, QStringLiteral("non_commercial"));
+    for (const auto& reading : participant->flow_readings)
+        if (reading.horizon_reports == 1)
+            rank_available = reading.has_net_rank;
+    QVERIFY(rank_available);
+}
+
 #include "tst_cftc_interpretation.moc"

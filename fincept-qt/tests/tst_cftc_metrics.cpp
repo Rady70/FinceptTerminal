@@ -1160,8 +1160,8 @@ void TstCftcMetrics::parse_accepts_cftc_report_date_forms() {
     // A COT report is one dated weekly observation: completing a partial
     // date would invent a report day, so "2026-09" and "2026" are unreadable
     // and the report is set aside (here the only one, so nothing is usable).
-    for (const QString& text : {QStringLiteral("2026-09"), QStringLiteral("2026"), QStringLiteral("not-a-date"),
-                                QString()}) {
+    for (const QString& text :
+         {QStringLiteral("2026-09"), QStringLiteral("2026"), QStringLiteral("not-a-date"), QString()}) {
         const CftcHistory history = parse_single(text);
         QVERIFY2(!history.error.isEmpty(), qPrintable(text));
         QVERIFY(history.observations.isEmpty());
@@ -1251,8 +1251,7 @@ void TstCftcMetrics::parse_rejects_non_finite_values() {
         field_row[key] = QStringLiteral("nan");
         field_rows.replace(field_rows.size() - 1, field_row);
         const CftcHistory history = cftc_parse_history(field_rows, CftcFamily::Legacy);
-        QVERIFY2(history.set_aside.size() == 1 && history.set_aside.first().reason.contains(key),
-                 qPrintable(key));
+        QVERIFY2(history.set_aside.size() == 1 && history.set_aside.first().reason.contains(key), qPrintable(key));
     }
 
     QJsonObject bare;

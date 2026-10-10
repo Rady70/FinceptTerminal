@@ -6,12 +6,14 @@
 //
 //   * ALL MARKETS opens immediately from the local canonical archive and
 //     refreshes from the CFTC when a newer weekly report is due: key figures,
-//     the positioning board (every market's place in its 3-year history and
-//     every participant group's net position), and the notable developments.
-//   * One MARKET: plain-language conclusions for 1, 4 or 13 weeks, positions by
-//     group, a synchronized history (price for reference, net positions,
-//     percentile, open interest, concentration), the week-by-week change strip
-//     and the exact report tables.
+//     asset-class tabs, the positioning map (every market as a tile by the
+//     speculators' 52-week level) and the positioning board (every market's
+//     place in its 52-week range and every participant group's net position).
+//   * One MARKET: the readings grid (every group's position, 52-week level and
+//     1 / 4 / 13-week change as standard labels, sentences in the tooltips),
+//     positions by group, a synchronized history (price for reference, net
+//     positions, percentile, open interest, concentration), the week-by-week
+//     change strip and the exact report tables.
 //
 // A TABLE switch shows the exact rows behind either view (newest first, CSV).
 // Scripts: cftc_data.py (cot_monitor, cot_market, cot_backfill).
@@ -48,6 +50,8 @@ struct HistoryPoint;
 namespace fincept::screens {
 
 class CftcPositioningBoard;
+class CftcPositioningMap;
+class CftcReadingsGrid;
 class CftcParticipantBars;
 class CftcHistoryChart;
 class CftcFlowStrip;
@@ -102,9 +106,9 @@ class CftcPanel : public EconPanelBase {
     bool overview_refresh_due() const;
     void render_overview();
     void render_kpis();
-    void render_developments();
     void set_as_of(const QString& text, const QDate& report_date);
-    QString extremes_table_html(const QVector<CftcDevelopment>& developments, int* count) const;
+    void select_asset_class(int id);
+    QVector<CftcMarketRow> visible_rows() const;
     void render_overview_notes();
     void set_status(const QString& text, bool busy);
     void request_backfill();
@@ -117,13 +121,12 @@ class CftcPanel : public EconPanelBase {
     void interpret_market();
     void render_market();
     void render_market_header();
-    void render_conclusion();
+    void render_readings();
     void render_participant_bars();
     void render_history();
     void render_flows();
     void render_tables();
     void render_market_notes();
-    void set_horizon(int horizon);
     void set_range(int years);
     QJsonArray market_table_rows() const;
     QStringList market_table_columns() const;
@@ -152,6 +155,7 @@ class CftcPanel : public EconPanelBase {
     bool overview_from_refresh_ = false;
     QString pending_overview_;
     bool pending_overview_refresh_ = false;
+    QString asset_class_; ///< the selected asset-class tab; empty = all
     QString pending_backfill_;
     QHash<QString, QDateTime> auto_refreshed_; ///< family/basis -> last automatic refresh
 
@@ -168,7 +172,6 @@ class CftcPanel : public EconPanelBase {
     services::CftcHistory history_;
     services::CftcInterpretationResult result_;
     QVector<services::CftcParticipantTrail> trails_;
-    int horizon_ = 4;
     int range_years_ = 3;
 
     PriceState price_state_ = PriceState::None;
@@ -207,15 +210,17 @@ class CftcPanel : public EconPanelBase {
     QWidget* kpi_row_ = nullptr;
     QGridLayout* kpi_layout_ = nullptr;
     QVector<Kpi> kpis_;
+    QWidget* class_bar_ = nullptr;
+    QButtonGroup* class_group_ = nullptr;
+    QVector<QPushButton*> class_btns_; ///< id 0 = all, i = cftc_asset_class_order()[i - 1]
+    QFrame* map_card_ = nullptr;
+    QLabel* map_title_ = nullptr;
+    QLabel* map_hint_ = nullptr;
+    CftcPositioningMap* map_ = nullptr;
     QLabel* board_title_ = nullptr;
     QLabel* board_hint_ = nullptr;
     QScrollArea* board_scroll_ = nullptr;
     CftcPositioningBoard* board_ = nullptr;
-    QLabel* developments_title_ = nullptr;
-    QGridLayout* developments_layout_ = nullptr;
-    QVector<QFrame*> development_cards_;
-    QVector<QLabel*> development_titles_;
-    QVector<QLabel*> development_bodies_;
     QLabel* overview_notes_ = nullptr;
     QLabel* overview_source_ = nullptr;
     QPushButton* backfill_btn_ = nullptr;
@@ -227,13 +232,12 @@ class CftcPanel : public EconPanelBase {
     QLabel* market_title_ = nullptr;
     QLabel* market_meta_ = nullptr;
     QLabel* market_badge_ = nullptr;
+    QLabel* market_tags_ = nullptr; ///< the speculators' labels for this market
     QGridLayout* top_layout_ = nullptr;
-    QFrame* conclusion_card_ = nullptr;
+    QFrame* conclusion_card_ = nullptr; ///< the readings card
     QLabel* conclusion_title_ = nullptr;
-    QButtonGroup* horizon_group_ = nullptr;
-    QVector<QPushButton*> horizon_btns_;
-    QLabel* conclusion_headline_ = nullptr;
-    QLabel* conclusion_points_ = nullptr;
+    CftcReadingsGrid* readings_ = nullptr;
+    QScrollArea* readings_scroll_ = nullptr;
     QLabel* conclusion_footnote_ = nullptr;
     QFrame* participants_card_ = nullptr;
     QLabel* participants_title_ = nullptr;

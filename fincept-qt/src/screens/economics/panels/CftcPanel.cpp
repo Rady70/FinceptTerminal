@@ -107,6 +107,11 @@ QString cot_family_code(CftcFamily family) {
     return services::cftc_family_code(family);
 }
 
+/// Plain text with line breaks as rich text (the note labels render HTML).
+QString cot_note_html(const QString& text) {
+    return text.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br/>"));
+}
+
 QString cot_basis_text(bool futures_only) {
     return futures_only ? QCoreApplication::translate("CftcPanel", "futures only")
                         : QCoreApplication::translate("CftcPanel", "futures and options combined");
@@ -398,6 +403,39 @@ void CftcPanel::build_overview_page() {
     }
     layout->addWidget(kpi_row_);
 
+    // Asset-class tabs: one row of segments; they filter the cards, map and board.
+    class_bar_ = new QWidget(overview_content_);
+    class_bar_->setObjectName("cftcClassBar");
+    auto* class_layout = new QHBoxLayout(class_bar_);
+    class_layout->setContentsMargins(0, 0, 0, 0);
+    class_layout->setSpacing(4);
+    class_group_ = new QButtonGroup(this);
+    class_group_->setExclusive(true);
+    const QStringList classes = services::cftc_asset_class_order();
+    for (int id = 0; id <= classes.size(); ++id) {
+        auto* button = segment(class_bar_, class_group_, id, QStringLiteral("cftcClass%1").arg(id));
+        class_btns_ << button;
+        class_layout->addWidget(button);
+    }
+    class_layout->addStretch(1);
+    class_btns_.first()->setChecked(true);
+    connect(class_group_, &QButtonGroup::idClicked, this, &CftcPanel::select_asset_class);
+    layout->addWidget(class_bar_);
+
+    map_card_ = card(overview_content_, QStringLiteral("cftcMapCard"));
+    auto* map_layout = new QVBoxLayout(map_card_);
+    map_layout->setContentsMargins(12, 10, 12, 12);
+    map_layout->setSpacing(6);
+    map_title_ = heading(map_card_, QString());
+    map_hint_ = note(map_card_);
+    map_ = new CftcPositioningMap(map_card_);
+    map_->setObjectName("cftcMap");
+    connect(map_, &CftcPositioningMap::marketActivated, this, [this](const QString& key) { open_market(key, false); });
+    map_layout->addWidget(map_title_);
+    map_layout->addWidget(map_hint_);
+    map_layout->addWidget(map_);
+    layout->addWidget(map_card_);
+
     auto* board_card = card(overview_content_, QStringLiteral("cftcBoardCard"));
     auto* board_layout = new QVBoxLayout(board_card);
     board_layout->setContentsMargins(12, 10, 12, 12);
@@ -419,37 +457,6 @@ void CftcPanel::build_overview_page() {
     connect(board_, &CftcPositioningBoard::marketActivated, this,
             [this](const QString& key) { open_market(key, false); });
     layout->addWidget(board_card);
-
-    developments_title_ = heading(overview_content_, QString());
-    layout->addWidget(developments_title_);
-    auto* developments = new QWidget(overview_content_);
-    developments->setObjectName("cftcDevelopments");
-    developments_layout_ = new QGridLayout(developments);
-    developments_layout_->setContentsMargins(0, 0, 0, 0);
-    developments_layout_->setSpacing(8);
-    for (int i = 0; i < 4; ++i) {
-        auto* frame = card(developments, QStringLiteral("cftcDevelopments%1").arg(i));
-        auto* v = new QVBoxLayout(frame);
-        v->setContentsMargins(12, 9, 12, 10);
-        v->setSpacing(6);
-        auto* title = new QLabel(frame);
-        title->setObjectName("cftcDevTitle");
-        auto* body = new QLabel(frame);
-        body->setObjectName(QStringLiteral("cftcDevBody%1").arg(i));
-        body->setProperty("cftcDevBody", true);
-        body->setWordWrap(true);
-        body->setTextFormat(Qt::RichText);
-        body->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        body->setOpenExternalLinks(false);
-        connect(body, &QLabel::linkActivated, this, [this](const QString& key) { open_market(key, false); });
-        v->addWidget(title);
-        v->addWidget(body);
-        v->addStretch(1);
-        development_cards_ << frame;
-        development_titles_ << title;
-        development_bodies_ << body;
-    }
-    layout->addWidget(developments);
 
     auto* notes_card = card(overview_content_, QStringLiteral("cftcOverviewNotesCard"));
     auto* notes_layout = new QVBoxLayout(notes_card);
@@ -494,8 +501,13 @@ void CftcPanel::build_market_page() {
     market_title_ = new QLabel(header);
     market_title_->setObjectName("cftcMarketTitle");
     market_meta_ = note(header, QStringLiteral("cftcMarketMeta"));
+    market_tags_ = new QLabel(header);
+    market_tags_->setObjectName("cftcMarketTags");
+    market_tags_->setTextFormat(Qt::RichText);
+    market_tags_->hide();
     header_text->addWidget(market_title_);
     header_text->addWidget(market_meta_);
+    header_text->addWidget(market_tags_);
     header_layout->addLayout(header_text, 1);
     market_badge_ = new QLabel(header);
     market_badge_->setObjectName("cftcBadge");
@@ -513,32 +525,20 @@ void CftcPanel::build_market_page() {
     auto* conclusion = new QVBoxLayout(conclusion_card_);
     conclusion->setContentsMargins(14, 10, 14, 12);
     conclusion->setSpacing(8);
-    auto* conclusion_head = new QHBoxLayout;
     conclusion_title_ = heading(conclusion_card_, QString());
-    conclusion_head->addWidget(conclusion_title_);
-    conclusion_head->addStretch(1);
-    horizon_group_ = new QButtonGroup(this);
-    for (int horizon : {1, 4, 13}) {
-        auto* button = segment(conclusion_card_, horizon_group_, horizon, QStringLiteral("cftcHorizon%1").arg(horizon));
-        horizon_btns_ << button;
-        conclusion_head->addWidget(button);
-    }
-    connect(horizon_group_, &QButtonGroup::idClicked, this, &CftcPanel::set_horizon);
-    conclusion->addLayout(conclusion_head);
-    conclusion_headline_ = new QLabel(conclusion_card_);
-    conclusion_headline_->setObjectName("cftcHeadline");
-    conclusion_headline_->setWordWrap(true);
-    conclusion_headline_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    conclusion_points_ = new QLabel(conclusion_card_);
-    conclusion_points_->setObjectName("cftcPoints");
-    conclusion_points_->setWordWrap(true);
-    conclusion_points_->setTextFormat(Qt::RichText);
-    conclusion_points_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    readings_scroll_ = new QScrollArea(conclusion_card_);
+    readings_scroll_->setObjectName("cftcReadingsScroll");
+    readings_scroll_->setFrameShape(QFrame::NoFrame);
+    readings_scroll_->setWidgetResizable(true);
+    readings_scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    readings_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    readings_ = new CftcReadingsGrid(readings_scroll_);
+    readings_->setObjectName("cftcReadings");
+    readings_scroll_->setWidget(readings_);
     conclusion_footnote_ = note(conclusion_card_, QStringLiteral("cftcFootnote"));
-    conclusion->addWidget(conclusion_headline_);
-    conclusion->addWidget(conclusion_points_);
+    conclusion->addWidget(conclusion_title_);
+    conclusion->addWidget(readings_scroll_);
     conclusion->addWidget(conclusion_footnote_);
-    conclusion->addStretch(1);
 
     participants_card_ = card(top, QStringLiteral("cftcParticipantsCard"));
     auto* participants = new QVBoxLayout(participants_card_);
@@ -677,36 +677,35 @@ void CftcPanel::apply_texts() {
         nav_table_->setText(tr("TABLE"));
         nav_table_->setToolTip(tr("The exact rows behind this view, newest first; CSV exports them"));
     }
-    const QStringList captions = {tr("LATEST REPORT"), tr("AT A 3-YEAR EXTREME"), tr("TURNING"),
-                                  tr("LARGE WEEKLY MOVES"), tr("OPEN INTEREST · 4 WEEKS")};
+    const QStringList captions = {tr("LATEST REPORT"), tr("SPECULATOR BIAS"), tr("CROWDED"), tr("FLIPPED THIS WEEK"),
+                                  tr("LARGE WEEKLY MOVES")};
     for (int i = 0; i < kpis_.size(); ++i)
         kpis_[i].caption->setText(captions.value(i));
+    if (!class_btns_.isEmpty()) {
+        class_btns_[0]->setText(tr("ALL"));
+        const QStringList classes = services::cftc_asset_class_order();
+        for (int i = 1; i < class_btns_.size(); ++i)
+            class_btns_[i]->setText(services::cftc_asset_class_label(classes.value(i - 1)).toUpper());
+    }
+    // The map title names the family's speculators; render_overview() sets it.
+    if (map_hint_)
+        map_hint_->setText(tr("Each tile is a market, placed by where the speculators' net position sits among its "
+                              "previous 52 weekly reports. Left edge: green BULLISH, red BEARISH, grey NEUTRAL. "
+                              "Hover a tile for the details; click it to open the market."));
     if (board_title_)
-        board_title_->setText(tr("POSITIONING ACROSS MARKETS"));
+        board_title_->setText(tr("ALL GROUPS"));
     if (board_hint_)
-        board_hint_->setText(
-            tr("Left: where the headline group's net position sits among its previous 156 weekly reports (about 3 "
-               "years), with hollow dots 13, 4 and 1 weeks ago. 1W Δ: its net change since the previous report, as a "
-               "share of that report's open interest. Right: every group's net position as a share of open "
-               "interest, shaded amber toward the top of its history and cyan toward the bottom. Click a market to "
-               "open it."));
-    if (developments_title_)
-        developments_title_->setText(tr("NOTABLE IN THE LATEST REPORT"));
-    const QStringList dev_titles = {tr("AT AN EXTREME (TOP OR BOTTOM 10% OF 3 YEARS)"), tr("TURNING"),
-                                    tr("LARGE MOVES (BIGGER THAN 90% OF COMPARABLE CHANGES)"),
-                                    tr("OPEN INTEREST AND CONCENTRATION")};
-    for (int i = 0; i < development_titles_.size(); ++i)
-        development_titles_[i]->setText(dev_titles.value(i));
+        board_hint_->setText(tr("Bias and 52-week range of the speculators, then every group's net position as a "
+                                "share of open interest, shaded amber toward the top of its 52 weeks and cyan toward "
+                                "the bottom. 1W Δ: the net change since the previous report, as a share of that "
+                                "report's open interest."));
     if (backfill_btn_) {
         backfill_btn_->setText(tr("LOAD ANNUAL FILES"));
         backfill_btn_->setToolTip(tr("Download the CFTC's annual history files for this report into the local archive "
                                      "(an alternative to the full read the first REFRESH performs)"));
     }
     if (conclusion_title_)
-        conclusion_title_->setText(tr("WHAT THE LATEST REPORT SHOWS"));
-    const QStringList horizons = {tr("1 WEEK"), tr("4 WEEKS"), tr("13 WEEKS")};
-    for (int i = 0; i < horizon_btns_.size(); ++i)
-        horizon_btns_[i]->setText(horizons.value(i));
+        conclusion_title_->setText(tr("READINGS · LAST 52 WEEKS · CHANGES OVER 1, 4 AND 13 WEEKS"));
     if (participants_title_)
         participants_title_->setText(tr("POSITIONS BY GROUP"));
     if (history_title_)
@@ -751,33 +750,15 @@ void CftcPanel::arrange() {
         for (int c = 0; c < 5; ++c)
             kpi_layout_->setColumnStretch(c, c < columns ? 1 : 0);
     }
-    if (developments_layout_ && development_cards_.size() == 4) {
-        // Wide: the extremes table on the left, the three shorter lists stacked
-        // on the right (top-aligned, extra height below them). Narrow: one column.
-        const bool two_columns = w >= 1100;
-        for (auto* frame : development_cards_)
-            developments_layout_->removeWidget(frame);
-        if (two_columns) {
-            developments_layout_->addWidget(development_cards_[0], 0, 0, 4, 1, Qt::AlignTop);
-            for (int i = 1; i < 4; ++i)
-                developments_layout_->addWidget(development_cards_[i], i - 1, 1, Qt::AlignTop);
-        } else {
-            for (int i = 0; i < 4; ++i)
-                developments_layout_->addWidget(development_cards_[i], i, 0);
-        }
-        developments_layout_->setColumnStretch(0, 1);
-        developments_layout_->setColumnStretch(1, two_columns ? 1 : 0);
-        for (int r = 0; r < 4; ++r)
-            developments_layout_->setRowStretch(r, two_columns && r == 3 ? 1 : 0);
-    }
     const bool wide = w >= 1250;
     if (top_layout_) {
         top_layout_->removeWidget(conclusion_card_);
         top_layout_->removeWidget(participants_card_);
+        // The readings grid needs the full width; the group bars sit below it.
         top_layout_->addWidget(conclusion_card_, 0, 0);
-        top_layout_->addWidget(participants_card_, wide ? 0 : 1, wide ? 1 : 0);
-        top_layout_->setColumnStretch(0, wide ? 11 : 1);
-        top_layout_->setColumnStretch(1, wide ? 10 : 0);
+        top_layout_->addWidget(participants_card_, 1, 0);
+        top_layout_->setColumnStretch(0, 1);
+        top_layout_->setColumnStretch(1, 0);
     }
     if (tables_layout_) {
         tables_layout_->removeWidget(report_card_);
@@ -802,8 +783,6 @@ void CftcPanel::sync_selectors() {
         family_group_->button(family_id)->setChecked(true);
     if (basis_group_ && basis_group_->button(futures_only_ ? 0 : 1))
         basis_group_->button(futures_only_ ? 0 : 1)->setChecked(true);
-    if (horizon_group_ && horizon_group_->button(horizon_))
-        horizon_group_->button(horizon_)->setChecked(true);
     if (range_group_ && range_group_->button(range_years_))
         range_group_->button(range_years_)->setChecked(true);
 }
@@ -1044,23 +1023,41 @@ void CftcPanel::accept_overview(const services::EconomicsResult& result, bool re
 
 void CftcPanel::render_overview() {
     render_kpis();
+    if (map_title_)
+        map_title_->setText(tr("POSITIONING MAP · %1 · LEVEL IN THE LAST 52 WEEKS")
+                                .arg(cftc_group_name(family_, cftc_principal_participant_key(family_)).toUpper()));
     // Until a market has a report (first download of a report family) there
     // is nothing to compare: the status line explains, and the KPI cards,
-    // board and developments stay hidden instead of listing empty rows.
+    // tabs, map and board stay hidden instead of listing empty rows.
     const bool any_report = std::any_of(rows_.cbegin(), rows_.cend(), [](const CftcMarketRow& row) {
         return row.availability == CftcRowAvailability::Current || row.availability == CftcRowAvailability::Stored ||
                row.availability == CftcRowAvailability::Old;
     });
-    for (QWidget* section : {kpi_row_, static_cast<QWidget*>(developments_title_),
-                             overview_content_->findChild<QWidget*>(QStringLiteral("cftcBoardCard")),
-                             overview_content_->findChild<QWidget*>(QStringLiteral("cftcDevelopments"))})
+    for (QWidget* section : {kpi_row_, class_bar_, static_cast<QWidget*>(map_card_),
+                             overview_content_->findChild<QWidget*>(QStringLiteral("cftcBoardCard"))})
         if (section)
             section->setVisible(any_report);
+    // Tabs for the asset classes this report has; a tab that empties falls back to all.
+    const QStringList classes = services::cftc_asset_class_order();
+    for (int i = 1; i < class_btns_.size(); ++i) {
+        const QString code = classes.value(i - 1);
+        const bool present = std::any_of(rows_.cbegin(), rows_.cend(), [&code](const CftcMarketRow& row) {
+            return row.asset_class == code && row.availability != CftcRowAvailability::NotCovered &&
+                   row.availability != CftcRowAvailability::Unavailable;
+        });
+        class_btns_[i]->setVisible(present);
+        if (!present && asset_class_ == code) {
+            asset_class_.clear();
+            class_btns_[0]->setChecked(true);
+        }
+    }
+    const QVector<CftcMarketRow> shown = visible_rows();
+    if (map_)
+        map_->set_rows(shown, cftc_group_name(family_, cftc_principal_participant_key(family_)));
     QVector<CftcBoardRow> board_rows;
-    QStringList seen_classes;
     for (const QString& asset_class : services::cftc_asset_class_order()) {
         bool heading_added = false;
-        for (const auto& row : rows_) {
+        for (const auto& row : shown) {
             // A market without a usable report has no row: it is named once in
             // the notes below, with the reason.
             if (row.asset_class != asset_class || row.availability == CftcRowAvailability::NotCovered ||
@@ -1088,7 +1085,6 @@ void CftcPanel::render_overview() {
         const int scrollbar = 14;
         board_scroll_->setFixedHeight(board_->height() + scrollbar);
     }
-    render_developments();
     render_overview_notes();
     // Markets the selected report does not publish cannot be opened.
     if (auto* model = qobject_cast<QStandardItemModel*>(market_combo_ ? market_combo_->model() : nullptr)) {
@@ -1128,8 +1124,7 @@ void CftcPanel::render_overview() {
 void CftcPanel::render_kpis() {
     if (kpis_.size() < 5)
         return;
-    const CftcOverviewFigures figures = cftc_overview_figures(rows_);
-    const QString principal = cftc_group_name(family_, cftc_principal_participant_key(family_));
+    const CftcOverviewFigures figures = cftc_overview_figures(visible_rows());
     auto names = [](const QStringList& list) {
         if (list.size() <= 5)
             return list.join(QStringLiteral(", "));
@@ -1154,64 +1149,41 @@ void CftcPanel::render_kpis() {
         report_sub += QLatin1Char(' ') + tr("· %1 with an old report").arg(figures.markets_old);
     set(0, figures.latest_report.isValid() ? figures.latest_report.toString(QStringLiteral("d MMM yyyy")) : tr("none"),
         report_sub);
-    set(1, QString::number(figures.extreme_markets.size()),
-        figures.extreme_markets.isEmpty()
-            ? tr("%1 is not in its top or bottom 10% in any market").arg(principal)
-            : tr("%1 in its top or bottom 10%: %2").arg(principal, names(figures.extreme_markets)));
-    set(2, QString::number(figures.turning_markets.size()),
-        figures.turning_markets.isEmpty()
-            ? tr("no group moved out of, or back from, an extreme this week")
-            : tr("a group moved out of, or back from, an extreme: %1").arg(names(figures.turning_markets)));
-    set(3, QString::number(figures.large_move_markets.size()),
+    const QString group = cftc_group_name(family_, cftc_principal_participant_key(family_));
+    set(1, tr("▲ %1   ▼ %2   = %3").arg(figures.bullish.size()).arg(figures.bearish.size()).arg(figures.neutral.size()),
+        tr("%1 positioning over 52 weeks: BULLISH / BEARISH / NEUTRAL").arg(group));
+    kpis_[1].frame->setToolTip(
+        tr("BULLISH: %1\nBEARISH: %2\nNEUTRAL: %3\n\n%4")
+            .arg(names(figures.bullish), names(figures.bearish), names(figures.neutral), cftc_method_note()));
+    set(2, tr("L %1 · S %2").arg(figures.crowded_long.size()).arg(figures.crowded_short.size()),
+        figures.crowded_long.isEmpty() && figures.crowded_short.isEmpty()
+            ? tr("no market has %1 crowded long or crowded short").arg(group)
+            : tr("long: %1 · short: %2")
+                  .arg(figures.crowded_long.isEmpty() ? tr("none") : names(figures.crowded_long),
+                       figures.crowded_short.isEmpty() ? tr("none") : names(figures.crowded_short)));
+    set(3, QString::number(figures.flipped.size()),
+        figures.flipped.isEmpty() ? tr("%1 kept its side in every market").arg(group)
+                                  : tr("%1 net position changed side: %2").arg(group, names(figures.flipped)));
+    set(4, QString::number(figures.large_move_markets.size()),
         figures.large_move_markets.isEmpty()
-            ? tr("no %1 weekly change bigger than 90% of comparable weeks").arg(principal)
-            : tr("%1 weekly change bigger than 90% of comparable weeks: %2")
-                  .arg(principal, names(figures.large_move_markets)));
-    set(4, tr("▲ %1   ▼ %2").arg(figures.oi_up_notable).arg(figures.oi_down_notable),
-        tr("markets whose open interest rose / fell more than in 75% of comparable 4-week periods"));
+            ? tr("no LARGE one-week change of %1").arg(group)
+            : tr("%1 one-week change LARGE: %2").arg(group, names(figures.large_move_markets)));
 }
 
-QString CftcPanel::extremes_table_html(const QVector<CftcDevelopment>& developments, int* count) const {
-    // One row per group in a tail: market (a link, once per market), group,
-    // the reading in words, the net position, the percentile and how many
-    // consecutive weekly reports it has been there.
-    const QString accent = ui::colors::AMBER();
-    const QString cyan = ui::colors::CYAN();
-    const QString muted = ui::colors::TEXT_SECONDARY();
-    QString rows;
-    QString current_market;
-    *count = 0;
-    for (const auto& development : developments) {
-        if (development.kind != CftcDevelopmentKind::Extreme)
-            continue;
-        ++*count;
-        const bool first = development.market_key != current_market;
-        current_market = development.market_key;
-        const QString market =
-            first ? QStringLiteral("<a href='%1' style='color:%2; text-decoration:none;'><b>%3</b></a>")
-                        .arg(development.market_key.toHtmlEscaped(), accent, development.market_label.toHtmlEscaped())
-                  : QString();
-        QString weeks;
-        if (development.tail_run == 1)
-            weeks = tr("new");
-        else if (development.tail_run > 1)
-            weeks =
-                (development.tail_run_capped ? QStringLiteral("≥") : QString()) + QString::number(development.tail_run);
-        const QString tone = development.tail == CftcLevelTail::High ? accent : cyan;
-        rows += QStringLiteral("<tr><td>%1</td><td>%2</td><td>%3</td><td align='right'>%4</td>"
-                               "<td align='right' style='color:%5;'>%6</td><td align='right'>%7</td></tr>")
-                    .arg(market, cftc_group_name(family_, development.participant_key).toHtmlEscaped(),
-                         cftc_tail_phrase(development.tail, development.net_pct_oi).toHtmlEscaped(),
-                         cftc_signed_pct(development.net_pct_oi), tone,
-                         cftc_percentile_ordinal(development.percentile).toHtmlEscaped(), weeks.toHtmlEscaped());
-    }
-    if (*count == 0)
-        return {};
-    const QString head =
-        QStringLiteral("<tr style='color:%1;'><td>%2</td><td>%3</td><td>%4</td><td align='right'>%5"
-                       "</td><td align='right'>%6</td><td align='right'>%7</td></tr>")
-            .arg(muted, tr("MARKET"), tr("GROUP"), tr("READING"), tr("NET % OI"), tr("PERCENTILE"), tr("WEEKS"));
-    return QStringLiteral("<table width='100%' cellspacing='0' cellpadding='3'>%1%2</table>").arg(head, rows);
+void CftcPanel::select_asset_class(int id) {
+    const QStringList classes = services::cftc_asset_class_order();
+    asset_class_ = id <= 0 ? QString() : classes.value(id - 1);
+    render_overview();
+}
+
+QVector<CftcMarketRow> CftcPanel::visible_rows() const {
+    if (asset_class_.isEmpty())
+        return rows_;
+    QVector<CftcMarketRow> out;
+    for (const auto& row : rows_)
+        if (row.asset_class == asset_class_)
+            out << row;
+    return out;
 }
 
 void CftcPanel::set_as_of(const QString& text, const QDate& report_date) {
@@ -1225,51 +1197,6 @@ void CftcPanel::set_as_of(const QString& text, const QDate& report_date) {
         return;
     as_of_lbl_->setText(compact_toolbar_ ? as_of_short_ : as_of_text_);
     as_of_lbl_->setToolTip(as_of_text_);
-}
-
-void CftcPanel::render_developments() {
-    if (development_bodies_.size() < 4)
-        return;
-    const QVector<CftcDevelopment> developments = cftc_overview_developments(entries_, rows_);
-    const QString accent = ui::colors::AMBER();
-    const QString muted = ui::colors::TEXT_SECONDARY();
-    const CftcDevelopmentKind kinds[4] = {CftcDevelopmentKind::Extreme, CftcDevelopmentKind::Turning,
-                                          CftcDevelopmentKind::LargeMove, CftcDevelopmentKind::MarketStructure};
-    for (int k = 0; k < 4; ++k) {
-        QString html;
-        QString current_market;
-        int count = 0;
-        if (kinds[k] == CftcDevelopmentKind::Extreme) {
-            html = extremes_table_html(developments, &count);
-            if (count == 0)
-                html.clear();
-        }
-        for (const auto& development : developments) {
-            if (kinds[k] == CftcDevelopmentKind::Extreme)
-                break;
-            if (development.kind != kinds[k])
-                continue;
-            ++count;
-            if (development.market_key != current_market) {
-                if (!current_market.isEmpty())
-                    html += QStringLiteral("</p>");
-                html +=
-                    QStringLiteral("<p style='margin:0 0 7px 0;'><a href='%1' style='color:%2; text-decoration:none;'>"
-                                   "<b>%3</b></a>")
-                        .arg(development.market_key.toHtmlEscaped(), accent, development.market_label.toHtmlEscaped());
-                current_market = development.market_key;
-            }
-            html += QStringLiteral("<br/>") + development.text.toHtmlEscaped();
-        }
-        if (!current_market.isEmpty())
-            html += QStringLiteral("</p>");
-        if (count == 0) {
-            html = QStringLiteral("<span style='color:%1;'>%2</span>")
-                       .arg(muted, overview_loaded_ ? tr("Nothing in the latest report.").toHtmlEscaped()
-                                                    : QStringLiteral("…"));
-        }
-        development_bodies_[k]->setText(html);
-    }
 }
 
 void CftcPanel::render_overview_notes() {
@@ -1330,7 +1257,7 @@ void CftcPanel::render_overview_notes() {
         source += QLatin1Char(' ') + tr("Local archive: %1 stored reports.").arg(cftc_contracts(total)).toHtmlEscaped();
     source += QLatin1Char(' ') +
               tr("Interpretation rule set %1.").arg(services::cftc_interpretation_rule_set_version()).toHtmlEscaped();
-    source += QStringLiteral("<br/>") + cftc_method_note().toHtmlEscaped();
+    source += QStringLiteral("<br/>") + cot_note_html(cftc_method_note());
     overview_source_->setText(source);
 }
 
@@ -1416,8 +1343,10 @@ void CftcPanel::open_market(const QString& market_key, bool refresh) {
         market_badge_->hide();
         for (QWidget* section : std::as_const(market_sections_))
             section->hide();
-        conclusion_headline_->clear();
-        conclusion_points_->clear();
+        readings_->set_rows({});
+        readings_scroll_->setFixedHeight(readings_->height() + 14); // room for the sideways scrollbar
+        market_tags_->clear();
+        market_tags_->hide();
         conclusion_footnote_->clear();
         bars_->set_rows({});
         history_chart_->clear();
@@ -1516,7 +1445,7 @@ void CftcPanel::render_market() {
     if (!market_loaded_)
         return;
     render_market_header();
-    render_conclusion();
+    render_readings();
     render_participant_bars();
     render_history();
     render_flows();
@@ -1561,25 +1490,174 @@ void CftcPanel::render_market_header() {
     }
     market_badge_->setText(badge);
     market_badge_->setVisible(!badge.isEmpty());
+
+    // The speculators' standard labels, as a line of tags under the title.
+    const QString principal = cftc_principal_participant_key(family_);
+    const services::CftcParticipantTrail* trail = nullptr;
+    for (const auto& candidate : trails_)
+        if (candidate.participant_key == principal)
+            trail = &candidate;
+    auto tag = [](const QString& text, const QColor& tone, bool filled) {
+        return filled ? QStringLiteral("<span style='background-color:%1; color:%2; font-weight:700;'>&nbsp;%3&nbsp;"
+                                       "</span>")
+                            .arg(tone.name(), cftc_ink_on(tone).name(), text.toHtmlEscaped())
+                      : QStringLiteral("<span style='color:%1; font-weight:700;'>%2</span>")
+                            .arg(tone.name(), text.toHtmlEscaped());
+    };
+    QStringList tags;
+    QStringList tips;
+    for (const auto& p : result_.participants) {
+        if (p.participant_key != principal)
+            continue;
+        const CftcBias bias = cftc_positioning_bias(p, result_.config);
+        if (bias != CftcBias::Unavailable) {
+            tags << tag(cftc_bias_label(bias), cftc_bias_color(bias), bias != CftcBias::Neutral);
+            tips << cftc_bias_reason(bias, p, result_.config);
+        }
+        if (p.has_net_pct_oi && p.historical_percentile_available) {
+            const CftcLevelBand band = cftc_level_band(p.percentile, result_.config);
+            tags << tag(cftc_level_band_label(band), cftc_band_color(band), false);
+        }
+        const CftcCrowding crowding = cftc_crowding(p);
+        if (crowding != CftcCrowding::None) {
+            tags << tag(cftc_crowding_label(crowding), cftc_tag_color(cftc_crowding_label(crowding)), false);
+            tips << cftc_crowding_reason(crowding, p, result_.config);
+        }
+        if (trail) {
+            const CftcSideFlip flip = cftc_side_flip(trail->net_pct_oi);
+            if (flip.direction != 0) {
+                tags << tag(cftc_side_flip_label(flip), cftc_tag_color(cftc_side_flip_label(flip)), false);
+                tips << cftc_side_flip_reason(flip);
+            }
+        }
+    }
+    if (!tags.isEmpty()) {
+        market_tags_->setText(tr("%1:").arg(cftc_group_name(family_, principal)).toHtmlEscaped() +
+                              QStringLiteral("&nbsp;&nbsp;") + tags.join(QStringLiteral("&nbsp;&nbsp;")));
+        market_tags_->setToolTip(tips.join(QLatin1Char('\n')));
+    }
+    market_tags_->setVisible(!tags.isEmpty());
 }
 
-void CftcPanel::render_conclusion() {
+void CftcPanel::render_readings() {
+    using namespace ui::colors;
+    const services::CftcInterpretationConfig& config = result_.config;
+    const QString principal = cftc_principal_participant_key(family_);
+    const int horizons[3] = {1, 4, 13};
+    QVector<CftcReadingsRow> rows;
+    for (const auto& p : result_.participants) {
+        CftcReadingsRow row;
+        row.name = cftc_group_name(family_, p.participant_key);
+        row.principal = p.participant_key == principal;
+        const services::CftcParticipantTrail* trail = nullptr;
+        for (const auto& candidate : trails_)
+            if (candidate.participant_key == p.participant_key)
+                trail = &candidate;
+        if (p.has_net_pct_oi) {
+            row.position.tag = p.net_pct_oi > 0.0 ? tr("NET LONG") : p.net_pct_oi < 0.0 ? tr("NET SHORT") : tr("FLAT");
+            row.position.tag_color = p.net_pct_oi > 0.0 ? QColor(AMBER()) : QColor(CYAN());
+            row.position.value = tr("%1 of OI").arg(cftc_abs_pct(p.net_pct_oi));
+            row.position.tooltip =
+                tr("%1: %2 (%3 contracts)")
+                    .arg(row.name, cftc_net_position_text(p.net_pct_oi), cot_signed_number(p.net_position, 0));
+        }
+        if (p.has_net_pct_oi && p.historical_percentile_available) {
+            const CftcLevelBand band = cftc_level_band(p.percentile, config);
+            row.level.tag = cftc_level_band_label(band);
+            row.level.tag_color = cftc_band_color(band);
+            row.level.value = cftc_percentile_ordinal(p.percentile);
+            row.level.tooltip = cftc_level_statement(family_, p, trail, config, 4, /*include_usual_range=*/true);
+        } else if (p.has_net_pct_oi) {
+            row.level.value = tr("—");
+            row.level.tooltip = tr("Fewer than %1 earlier reports to compare with.").arg(config.history_window);
+        }
+        for (int i = 0; i < 3; ++i) {
+            const services::CftcHorizonFlowReading* reading = nullptr;
+            for (const auto& candidate : p.flow_readings)
+                if (candidate.horizon_reports == horizons[i])
+                    reading = &candidate;
+            CftcReadingCell& cell = row.horizons[i];
+            if (!reading || !reading->evaluated || !reading->has_net_flow) {
+                if (reading && !reading->evaluated)
+                    cell.tooltip = cftc_unavailable_reason_wording(reading->reason);
+                continue;
+            }
+            const CftcFlowType type = cftc_flow_type(*reading, config);
+            cell.tag = cftc_flow_label(type);
+            cell.tag_color = cftc_flow_color(type);
+            cell.value = tr("net %1").arg(cftc_signed_pct(reading->net_flow));
+            cell.size = cftc_change_size_label(cftc_change_size(reading->has_net_rank, reading->net_rank, config));
+            cell.tooltip = cftc_change_statement(family_, p, trail, horizons[i], config);
+        }
+        QStringList tips;
+        if (row.principal) {
+            const CftcBias bias = cftc_positioning_bias(p, config);
+            if (bias != CftcBias::Unavailable) {
+                row.tags << cftc_bias_label(bias);
+                tips << cftc_bias_reason(bias, p, config);
+            }
+            const CftcCrowding crowding = cftc_crowding(p);
+            if (crowding != CftcCrowding::None) {
+                row.tags << cftc_crowding_label(crowding);
+                tips << cftc_crowding_reason(crowding, p, config);
+            }
+            if (trail) {
+                const CftcSideFlip flip = cftc_side_flip(trail->net_pct_oi);
+                if (flip.direction != 0) {
+                    row.tags << cftc_side_flip_label(flip);
+                    tips << cftc_side_flip_reason(flip);
+                }
+            }
+        }
+        const QString transition = cftc_transition_statement(family_, p, trail);
+        if (!transition.isEmpty()) {
+            row.tags << tr("TURNING");
+            tips << transition;
+        }
+        row.tags_tooltip = tips.join(QLatin1Char('\n'));
+        rows << row;
+    }
+    // Open interest.
+    CftcReadingsRow oi;
+    oi.name = tr("Open interest");
+    oi.open_interest = true;
+    if (result_.open_interest_available) {
+        oi.position.value = tr("%1 contracts").arg(cftc_contracts(result_.open_interest));
+        oi.position.tooltip = cftc_open_interest_statement(result_, 1);
+    }
+    for (int i = 0; i < 3; ++i) {
+        for (const auto& reading : result_.open_interest_readings) {
+            if (reading.horizon_reports != horizons[i] || !reading.evaluated || !reading.has_oi_change)
+                continue;
+            CftcReadingCell& cell = oi.horizons[i];
+            cell.tag = reading.oi_change >= 0.0 ? tr("RISING") : tr("FALLING");
+            cell.tag_color = reading.oi_change >= 0.0 ? QColor(AMBER()) : QColor(CYAN());
+            cell.value = cftc_signed_pct(reading.oi_change);
+            cell.size = cftc_change_size_label(cftc_change_size(reading.has_rank, reading.rank, config));
+            cell.tooltip = cftc_open_interest_statement(result_, horizons[i]);
+        }
+    }
+    rows << oi;
+    readings_->set_rows(rows);
+    readings_scroll_->setFixedHeight(readings_->height() + 14); // room for the sideways scrollbar
+
+    // Below the grid: the price relationship where one exists, and what could
+    // not be assessed.
     CftcConclusionInput input;
     input.family = family_;
     input.result = &result_;
     input.trails = trails_;
-    input.horizon = horizon_;
+    input.horizon = 4;
     input.price_state = price_context_state();
     input.price_unavailable_note = price_state_ == PriceState::Unavailable ? price_reason_ : QString();
     input.price_series_label = price_series_label();
     const CftcConclusion conclusion = cftc_compose_conclusion(input);
-    conclusion_headline_->setText(conclusion.headline);
-    QString html;
-    for (const QString& point : conclusion.points) {
-        html += QStringLiteral("<p style='margin:0 0 7px 0;'>%1</p>").arg(point.toHtmlEscaped());
-    }
-    conclusion_points_->setText(html);
     QStringList footnote;
+    const QString price = cftc_price_statement(family_, result_, principal, 4, price_series_label());
+    if (!price.isEmpty())
+        footnote << price;
+    if (result_.report_outdated)
+        footnote << tr("Old report: the latest available report is %1 days old.").arg(result_.report_age_days);
     if (!conclusion.not_assessed.isEmpty())
         footnote << tr("Not assessed — %1.").arg(conclusion.not_assessed.join(QStringLiteral("; ")));
     conclusion_footnote_->setText(footnote.join(QStringLiteral(" ")));
@@ -1636,7 +1714,7 @@ void CftcPanel::render_participant_bars() {
     if (latest.traders_total)
         meta << tr("%1 reportable traders").arg(cftc_contracts(*latest.traders_total));
     meta << tr("Bars: long and short positions as a share of open interest; diamond = net. Track: percentile vs the "
-               "previous 156 weekly reports (hollow = 4 and 13 weeks ago). 1W Δ: net change since the previous "
+               "previous 52 weekly reports (hollow = 4 and 13 weeks ago). 1W Δ: net change since the previous "
                "report, as a share of that report's open interest.");
     participants_meta_->setText(meta.join(QStringLiteral("  ·  ")));
 }
@@ -1706,8 +1784,8 @@ void CftcPanel::render_flows() {
     QVector<CftcFlowRow> rows;
     for (int i = 0; i < participants.size(); ++i)
         rows << CftcFlowRow{cftc_group_name(family_, participants[i].key),
-                            cftc_weekly_flow_cells(history_.observations, i, 156), false};
-    rows << CftcFlowRow{tr("Open interest"), cftc_weekly_flow_cells(history_.observations, -1, 156), true};
+                            cftc_weekly_flow_cells(history_.observations, i, 52), false};
+    rows << CftcFlowRow{tr("Open interest"), cftc_weekly_flow_cells(history_.observations, -1, 52), true};
     flow_strip_->set_rows(rows);
 }
 
@@ -1776,7 +1854,7 @@ void CftcPanel::render_tables() {
     context_table_->clear();
     context_table_->setColumnCount(6);
     context_table_->setHorizontalHeaderLabels({tr("GROUP"), tr("NOW"), tr("PERCENTILE\nNOW · 4W · 13W AGO"),
-                                               tr("3-YEAR\nRANGE"), tr("FULL HISTORY\nRANGE"),
+                                               tr("52-WEEK\nRANGE"), tr("FULL HISTORY\nRANGE"),
                                                tr("LAST TIME\nBEYOND NOW")});
     context_table_->setRowCount(participants.size());
     for (int i = 0; i < participants.size(); ++i) {
@@ -1794,7 +1872,7 @@ void CftcPanel::render_tables() {
                 QStringLiteral("%1 · %2 · %3")
                     .arg(pct(trails_[i].percentile_now), pct(trails_[i].percentile_4r), pct(trails_[i].percentile_13r)),
                 Qt::AlignCenter,
-                tr("Percentile of the net position among the previous 156 weekly reports: now %1, 4 weeks ago "
+                tr("Percentile of the net position among the previous 52 weekly reports: now %1, 4 weeks ago "
                    "%2, 13 weeks ago %3")
                     .arg(pct(trails_[i].percentile_now), pct(trails_[i].percentile_4r), pct(trails_[i].percentile_13r)),
                 cftc_percentile_color(*trails_[i].percentile_now) == QColor(ui::colors::BG_RAISED())
@@ -1864,19 +1942,11 @@ void CftcPanel::render_market_notes() {
                      .arg(history_.basis_inherited)
                      .arg(cot_basis_text(futures_only_))
                      .toHtmlEscaped();
-    lines << cftc_method_note().toHtmlEscaped();
+    lines << cot_note_html(cftc_method_note());
     lines << tr("Interpretation rule set %1 (deterministic; descriptive only).")
                  .arg(result_.rule_set_version)
                  .toHtmlEscaped();
     market_notes_->setText(lines.join(QStringLiteral("<br/>")));
-}
-
-void CftcPanel::set_horizon(int horizon) {
-    if (horizon != 1 && horizon != 4 && horizon != 13)
-        return;
-    horizon_ = horizon;
-    if (market_loaded_)
-        render_conclusion();
 }
 
 void CftcPanel::set_range(int years) {
@@ -2021,7 +2091,6 @@ QVariantMap CftcPanel::save_panel_state() const {
     return {{QStringLiteral("family"), cot_family_code(family_)},
             {QStringLiteral("futures_only"), futures_only_},
             {QStringLiteral("market"), view_ == View::Market ? market_key_ : QString()},
-            {QStringLiteral("horizon"), horizon_},
             {QStringLiteral("range"), range_years_}};
 }
 
@@ -2030,9 +2099,6 @@ void CftcPanel::restore_panel_state(const QVariantMap& state) {
         family_ = services::cftc_family_from_code(state.value(QStringLiteral("family")).toString());
     if (state.contains(QStringLiteral("futures_only")))
         futures_only_ = state.value(QStringLiteral("futures_only")).toBool();
-    const int horizon = state.value(QStringLiteral("horizon"), horizon_).toInt();
-    if (horizon == 1 || horizon == 4 || horizon == 13)
-        horizon_ = horizon;
     const int range = state.value(QStringLiteral("range"), range_years_).toInt();
     if (range == 0 || range == 1 || range == 3 || range == 5 || range == 10)
         range_years_ = range;
@@ -2088,11 +2154,11 @@ void CftcPanel::refresh_panel_theme() {
             .arg(BG_BASE(), BG_SURFACE(), BORDER_DIM(), BG_RAISED(), TEXT_PRIMARY(), AMBER(), TEXT_SECONDARY(),
                  WARNING(), BG_HOVER())
             .arg(BORDER_BRIGHT(), TEXT_ON_ACCENT(), TEXT_TERTIARY()));
-    for (QWidget* chart : std::initializer_list<QWidget*>{board_, bars_, history_chart_, flow_strip_})
+    for (QWidget* chart : std::initializer_list<QWidget*>{board_, map_, bars_, history_chart_, flow_strip_, readings_})
         if (chart)
             chart->update();
-    if (overview_loaded_)
-        render_developments();
+    if (market_loaded_)
+        render_market_header();
 }
 
 void CftcPanel::retranslateUi() {

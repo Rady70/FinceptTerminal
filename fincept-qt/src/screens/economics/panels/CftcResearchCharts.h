@@ -4,8 +4,10 @@
 // caller supplies: a missing reading is left empty (a gap, never a zero or an
 // interpolated line), and every mark has a hover text with the exact values.
 // Colours come from the active theme tokens: amber means "toward long / high
-// in its history", cyan "toward short / low in its history"; neither colour
-// implies good or bad.
+// in its history", cyan "toward short / low in its history". The standard
+// labels (CftcResearchText.h) are drawn as tags: BULLISH green, BEARISH red,
+// NEUTRAL grey, CROWDED in the warning colour, flips and turns in the info
+// colour, flows by the direction they move the net position.
 #pragma once
 
 #include "screens/economics/panels/CftcResearchModel.h"
@@ -46,6 +48,18 @@ QColor cftc_change_color(double value, double extent);
 QColor cftc_ink_on(const QColor& background);
 QColor cftc_group_color(int index);
 
+// ── Standard-label tags ─────────────────────────────────────────────────────
+
+QColor cftc_bias_color(CftcBias bias);
+QColor cftc_flow_color(CftcFlowType type);
+QColor cftc_band_color(CftcLevelBand band);
+/// Colour of a row tag (CROWDED …, FLIPPED …, TURNING, LARGE MOVE).
+QColor cftc_tag_color(const QString& tag);
+/// Draws a tag whose left edge is at `left`, vertically centred in [top, top+height];
+/// returns its width. `filled` tags use a solid background, others an outline.
+double cftc_draw_tag(QPainter& painter, double left, double top, double height, const QString& text, const QColor& tone,
+                     bool filled, const QFont& font);
+
 // ── Overview: positioning board ─────────────────────────────────────────────
 
 /// One market row of the board, or a group heading when `heading` is set.
@@ -82,6 +96,74 @@ class CftcPositioningBoard : public CftcChart {
     services::CftcFamily family_ = services::CftcFamily::Legacy;
     QVector<QPair<QRectF, QString>> row_targets_;
     int content_height() const;
+};
+
+// ── Overview: positioning map ───────────────────────────────────────────────
+
+/// Every market as a tile in one of five columns by the headline group's
+/// 52-week level (VERY LOW … VERY HIGH), most extreme first within a column.
+class CftcPositioningMap : public CftcChart {
+    Q_OBJECT
+  public:
+    explicit CftcPositioningMap(QWidget* parent = nullptr);
+    void set_rows(const QVector<CftcMarketRow>& rows, const QString& group_name);
+    QSize sizeHint() const override;
+    int tile_count() const;
+
+  signals:
+    void marketActivated(const QString& market_key);
+
+  protected:
+    void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+
+  private:
+    QVector<CftcMarketRow> columns_[5];
+    QString group_name_;
+    QVector<QPair<QRectF, QString>> targets_;
+    int content_height() const;
+};
+
+// ── Detail: readings grid ───────────────────────────────────────────────────
+
+/// One cell of the readings grid: an optional tag, a value and its tooltip.
+struct CftcReadingCell {
+    QString tag;
+    QColor tag_color;
+    bool tag_filled = false;
+    QString value;
+    QString size; ///< "LARGE" / "NOTABLE" / empty
+    QString tooltip;
+};
+
+struct CftcReadingsRow {
+    QString name;
+    bool principal = false;
+    bool open_interest = false;
+    CftcReadingCell position;
+    CftcReadingCell level;
+    CftcReadingCell horizons[3]; ///< 1, 4 and 13 weeks
+    QStringList tags;
+    QString tags_tooltip;
+};
+
+/// The market page's comparison grid: one row per participant group plus Open
+/// Interest; columns: position, 52-week level, and the 1 / 4 / 13-week change
+/// with its flow type and size.
+class CftcReadingsGrid : public CftcChart {
+    Q_OBJECT
+  public:
+    explicit CftcReadingsGrid(QWidget* parent = nullptr);
+    void set_rows(const QVector<CftcReadingsRow>& rows);
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+  protected:
+    void paintEvent(QPaintEvent*) override;
+
+  private:
+    QVector<CftcReadingsRow> rows_;
 };
 
 // ── Detail: participant positions now ───────────────────────────────────────
@@ -129,7 +211,7 @@ struct CftcHistorySeries {
 
 /// Up to five vertically stacked panes on one report-date axis with a shared
 /// crosshair: price (reference, optional), Net %OI by participant, the
-/// headline group's 156-report percentile, Open Interest and the 4-largest
+/// headline group's 52-report percentile, Open Interest and the 4-largest
 /// traders' concentration. Clicking a legend entry hides or shows a series.
 class CftcHistoryChart : public CftcChart {
     Q_OBJECT

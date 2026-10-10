@@ -4,8 +4,10 @@
 // (services/economics/CftcMetricModel.h), the participant percentile trail
 // (services/economics/CftcMonitorModel.h), the plain-language conclusions
 // (screens/economics/panels/CftcResearchText.h) and the overview / market
-// projections (screens/economics/panels/CftcResearchModel.h). Header-only over
-// Qt Core; no app sources (tests/ HARD RULE).
+// projections (screens/economics/panels/CftcResearchModel.h), and the standard
+// labels (level band, flow type, change size, positioning bias, crowding, side
+// flip) under rule set v3 (52-report basis). Header-only over Qt Core; no app
+// sources (tests/ HARD RULE).
 #include "screens/economics/panels/CftcResearchModel.h"
 #include "screens/economics/panels/CftcResearchText.h"
 #include "services/economics/CftcMetricModel.h"
@@ -41,14 +43,14 @@ QJsonObject legacy_row(const QDate& date, double oi, double c_long, double c_sho
 }
 
 /// 200 weekly reports where the Non-Commercial net position sets a new high
-/// every week (so it is the highest of every 156-report reference), the
+/// every week (so it is the highest of every 52-report reference), the
 /// Commercial net position a new low, and Non-Reportable oscillates.
 QJsonArray trending_rows(int count = 200) {
     QJsonArray rows;
     const QDate start(2022, 1, 4);
     for (int i = 0; i < count; ++i) {
-        rows.append(legacy_row(start.addDays(7 * i), 1000.0, 400.0, 500.0 + i, 300.0 + i, 200.0, 100.0,
-                               100.0 + (i % 7)));
+        rows.append(
+            legacy_row(start.addDays(7 * i), 1000.0, 400.0, 500.0 + i, 300.0 + i, 200.0, 100.0, 100.0 + (i % 7)));
     }
     return rows;
 }
@@ -71,12 +73,64 @@ QVector<CftcParticipantTrail> trails_of(const CftcHistory& history, const CftcIn
     return out;
 }
 
+/// Trading, forecast and recommendation words: never in any text.
 const QRegularExpression& forbidden_vocabulary() {
     static const QRegularExpression pattern(
-        QStringLiteral("\\b(buy|sell|hold|bullish|bearish|signal|forecast|predict|expect|likely|should|crowded|"
-                       "squeeze|overbought|oversold|reversal|opportunit|conviction|recommend|target|smart money)\\b"),
+        QStringLiteral("\\b(buy|sell|hold|signal|forecast|predict|expect|likely|should|squeeze|overbought|oversold|"
+                       "reversal|opportunit|conviction|recommend|target|smart money)\\b"),
         QRegularExpression::CaseInsensitiveOption);
     return pattern;
+}
+
+/// The standard label words: they belong to the labels, their definitions and
+/// their tooltips, never to the numbers-first statements.
+const QRegularExpression& label_vocabulary() {
+    static const QRegularExpression pattern(QStringLiteral("\\b(bullish|bearish|crowded)\\b"),
+                                            QRegularExpression::CaseInsensitiveOption);
+    return pattern;
+}
+
+CftcHorizonFlowReading flow_reading(double long_flow, double long_rank, double short_flow, double short_rank) {
+    CftcHorizonFlowReading reading;
+    reading.horizon_reports = 1;
+    reading.evaluated = true;
+    reading.has_long_flow = reading.has_short_flow = reading.has_net_flow = true;
+    reading.long_flow = long_flow;
+    reading.short_flow = short_flow;
+    reading.net_flow = long_flow - short_flow;
+    reading.has_long_rank = reading.has_short_rank = true;
+    reading.long_rank = long_rank;
+    reading.short_rank = short_rank;
+    return reading;
+}
+
+/// A speculative participant with a level and a 4-week net change.
+CftcParticipantInterpretation speculator(double net, double percentile, double four_week_net = 0.0,
+                                         double four_week_rank = 0.0) {
+    CftcParticipantInterpretation p;
+    p.participant_key = QStringLiteral("non_commercial");
+    p.has_net_pct_oi = true;
+    p.net_pct_oi = net;
+    p.historical_percentile_available = true;
+    p.percentile = percentile;
+    p.percentile_reference_count = 52;
+    CftcHorizonFlowReading four;
+    four.horizon_reports = 4;
+    four.evaluated = true;
+    four.has_net_flow = true;
+    four.net_flow = four_week_net;
+    four.has_net_rank = true;
+    four.net_rank = four_week_rank;
+    p.flow_readings << four;
+    return p;
+}
+
+QVector<CftcMonitorHistoryPoint> weekly_path(const QVector<double>& values) {
+    QVector<CftcMonitorHistoryPoint> path;
+    const QDate start(2025, 1, 7);
+    for (int i = 0; i < values.size(); ++i)
+        path << CftcMonitorHistoryPoint{start.addDays(7 * i), true, values[i]};
+    return path;
 }
 
 } // namespace
@@ -103,9 +157,15 @@ class TstCftcResearch : public QObject {
     void conclusion_covers_every_group_at_a_tail();
     void old_report_is_stated_first();
     void no_forecast_or_recommendation_vocabulary();
+    // Labels.
+    void level_band_boundaries();
+    void flow_type_names_the_side_that_moved();
+    void change_size_follows_the_engine_cut_offs();
+    void positioning_bias_rule_and_reasons();
+    void crowding_follows_the_engine_state_and_carries_the_caveat();
+    void side_flip_counts_the_weeks_on_the_other_side();
     // Model.
     void rows_keep_availability_states_apart();
-    void developments_come_only_from_tails_turns_and_large_moves();
     void percentile_series_equals_the_engine_helper();
     void flow_cells_break_on_a_missing_weekly_step();
     void historical_context_finds_records_and_last_beyond();
@@ -244,7 +304,8 @@ void TstCftcResearch::trail_matches_the_engine_percentile_rule() {
         // 4 reports back equals the helper evaluated on that report.
         const QVector<CftcDatedValue> series = cftc_metric_series(history.observations, p, CftcMetricKind::NetPctOi);
         const QDate four_back = history.observations[history.observations.size() - 5].date;
-        const CftcTrailingPercentile expected = cftc_trailing_percentile_at(series, four_back, 156);
+        const CftcTrailingPercentile expected =
+            cftc_trailing_percentile_at(series, four_back, result.config.history_window);
         QVERIFY(trails[p].percentile_4r.has_value());
         QCOMPARE(*trails[p].percentile_4r, expected.percentile);
     }
@@ -257,9 +318,9 @@ void TstCftcResearch::tail_run_counts_consecutive_weeks_and_breaks_on_gaps() {
     const CftcHistory history = parse(trending_rows());
     const CftcInterpretationResult result = interpret(history, history.observations.last().date);
     const QVector<CftcParticipantTrail> trails = trails_of(history, result);
-    // Reports 156..199 all have a 156-report reference and are all in the tail;
+    // Reports 52..199 all have a 52-report reference and are all in the tail;
     // the run reaches the start of the computable window, so it is "at least".
-    QCOMPARE(trails[1].tail_run_reports, 44);
+    QCOMPARE(trails[1].tail_run_reports, 148);
     QVERIFY(trails[1].tail_run_capped);
     // A two-week gap three reports back breaks the run there.
     QJsonArray gapped = trending_rows();
@@ -296,8 +357,8 @@ void TstCftcResearch::percentile_text_never_rounds_onto_a_limit() {
     QCOMPARE(cftc_percentile_ordinal(0.0), QStringLiteral("the lowest"));
     QCOMPARE(cftc_share_text(0.997), QStringLiteral("more than 99%"));
     QCOMPARE(cftc_share_text(0.003), QStringLiteral("less than 1%"));
-    QCOMPARE(cftc_level_rank_text(1.0, 156), QStringLiteral("higher than every one of the previous 156 weekly reports"));
-    QCOMPARE(cftc_level_rank_text(0.04, 156), QStringLiteral("lower than 96% of the previous 156 weekly reports"));
+    QCOMPARE(cftc_level_rank_text(1.0, 52), QStringLiteral("higher than every one of the previous 52 weekly reports"));
+    QCOMPARE(cftc_level_rank_text(0.04, 52), QStringLiteral("lower than 96% of the previous 52 weekly reports"));
 }
 
 void TstCftcResearch::change_wording_follows_sign_and_size() {
@@ -306,18 +367,34 @@ void TstCftcResearch::change_wording_follows_sign_and_size() {
     QCOMPARE(cftc_net_change_phrase(-1.2, -4.0, -5.2), QStringLiteral("net short grew by 1.2% of open interest"));
     QCOMPARE(cftc_net_change_phrase(1.7, -12.9, -11.2), QStringLiteral("net short shrank by 1.7% of open interest"));
     QVERIFY(cftc_net_change_phrase(3.0, -1.0, 2.0).startsWith(QStringLiteral("switched from net short to net long")));
-    QVERIFY(cftc_move_size_text(0.92, 4).startsWith(QStringLiteral("a large change, bigger than 92%")));
-    QVERIFY(cftc_move_size_text(0.80, 4).startsWith(QStringLiteral("a notable change")));
-    QVERIFY(cftc_move_size_text(0.60, 4).startsWith(QStringLiteral("an ordinary change")));
-    QCOMPARE(cftc_move_size_text(0.25, 1), QStringLiteral("a small change, smaller than 75% of comparable one-week changes"));
-    // A rank of 1 (every comparable change smaller) never reads "100%".
-    QCOMPARE(cftc_move_size_text(1.0, 4), QStringLiteral("a large change, bigger than all comparable 4-week changes"));
-    QCOMPARE(cftc_move_size_text(0.0, 1), QStringLiteral("a small change, smaller than all comparable one-week changes"));
+    // Rule set v3: the multiple of the typical change of that length.
+    const CftcInterpretationConfig v3;
+    QCOMPARE(cftc_move_size_text(0.954, 4, true, 2.0, v3),
+             QStringLiteral("a large change, 2.0 times the typical 4-week change of the last 52 weeks"));
+    QVERIFY(cftc_move_size_text(0.80, 4, true, 1.28, v3).startsWith(QStringLiteral("a notable change, 1.3 times")));
+    QCOMPARE(cftc_move_size_text(0.60, 1, true, 0.84, v3),
+             QStringLiteral("an ordinary change, 0.8 times the typical one-week change of the last 52 weeks"));
+    QVERIFY(cftc_move_size_text(0.2, 13, true, 0.26, v3).startsWith(QStringLiteral("a small change, 0.3 times")));
+    // A rank of 1 from a very large multiple is still a multiple, not a flat reference.
+    QCOMPARE(cftc_move_size_text(1.0, 1, true, 9.4, v3),
+             QStringLiteral("a large change, 9.4 times the typical one-week change of the last 52 weeks"));
+    // A reference without any change: no multiple exists.
+    QCOMPARE(cftc_move_size_text(1.0, 4, false, 0.0, v3),
+             QStringLiteral("a large change: there was no change in the previous 52 weeks"));
+    QCOMPARE(cftc_move_size_text(0.0, 1, false, 0.0, v3), QStringLiteral("no change, as in the previous 52 weeks"));
+    // The v2 preset compares with earlier changes of the same length; a rank of
+    // 1 (every comparable change smaller) never reads "100%".
+    const CftcInterpretationConfig v2 = cftc_v2_interpretation_config();
+    QCOMPARE(cftc_move_size_text(0.25, 1, false, 0.0, v2),
+             QStringLiteral("a small change, smaller than 75% of comparable one-week changes"));
+    QCOMPARE(cftc_move_size_text(1.0, 4, false, 0.0, v2),
+             QStringLiteral("a large change, bigger than all comparable 4-week changes"));
     QCOMPARE(cftc_rank_comparison(QStringLiteral("higher"), 0.997, QStringLiteral("earlier reports")),
              QStringLiteral("higher than nearly all earlier reports"));
-    QCOMPARE(cftc_rank_position(0.3, QStringLiteral("earlier reports")), QStringLiteral("lower than 70% of earlier reports"));
-    QCOMPARE(cftc_level_rank_text(0.997, 156),
-             QStringLiteral("higher than nearly every one of the previous 156 weekly reports"));
+    QCOMPARE(cftc_rank_position(0.3, QStringLiteral("earlier reports")),
+             QStringLiteral("lower than 70% of earlier reports"));
+    QCOMPARE(cftc_level_rank_text(0.997, 52),
+             QStringLiteral("higher than nearly every one of the previous 52 weekly reports"));
 }
 
 void TstCftcResearch::conclusion_covers_every_group_at_a_tail() {
@@ -330,21 +407,24 @@ void TstCftcResearch::conclusion_covers_every_group_at_a_tail() {
     input.horizon = 4;
     const CftcConclusion conclusion = cftc_compose_conclusion(input);
     QVERIFY2(conclusion.headline.startsWith(QStringLiteral("Non-Commercial: unusually large net long (the highest over "
-                                                           "3 years)")),
+                                                           "52 weeks)")),
              qPrintable(conclusion.headline));
     QVERIFY2(conclusion.headline.contains(QStringLiteral("Commercial: unusually large net short (the lowest)")),
              qPrintable(conclusion.headline));
     const QString all = conclusion.points.join(QLatin1Char('\n'));
     QVERIFY2(all.contains(QStringLiteral("Non-Commercial: net long 29.9% of open interest — unusually large: higher "
-                                         "than every one of the previous 156 weekly reports (about 3 years). In the top "
-                                         "10% for at least 44 consecutive weeks.")),
+                                         "than every one of the previous 52 weekly reports. In the top 10% for at "
+                                         "least 148 consecutive weeks.")),
              qPrintable(all));
     QVERIFY2(all.contains(QStringLiteral("Commercial: net short 29.9% of open interest — unusually large: lower than "
-                                         "every one of the previous 156 weekly reports")),
+                                         "every one of the previous 52 weekly reports")),
              qPrintable(all));
-    // The 4-week change of the headline group carries its legs and its size.
+    // The 4-week change of the headline group carries its legs and its size: a
+    // steady +0.1 a week is 0.4 over 4 weeks, twice the typical 4-week change
+    // (root mean square of the weekly changes, 0.1, x sqrt(4)).
     QVERIFY2(all.contains(QStringLiteral("Non-Commercial: net long grew by 0.4% of open interest over 4 weeks (longs "
-                                         "+0.4%, shorts 0.0%)")),
+                                         "+0.4%, shorts 0.0%) — a large change, 2.0 times the typical 4-week change of "
+                                         "the last 52 weeks.")),
              qPrintable(all));
     QVERIFY(all.contains(QStringLiteral("Open interest: 1,000 contracts")));
     // No price was supplied: one brief "not assessed" note, no price sentence.
@@ -375,11 +455,213 @@ void TstCftcResearch::no_forecast_or_recommendation_vocabulary() {
             const CftcConclusion conclusion = cftc_compose_conclusion(input);
             QStringList texts = conclusion.points;
             texts << conclusion.headline << conclusion.not_assessed;
-            for (const QString& text : std::as_const(texts))
+            for (const QString& text : std::as_const(texts)) {
                 QVERIFY2(!forbidden_vocabulary().match(text).hasMatch(), qPrintable(text));
+                QVERIFY2(!label_vocabulary().match(text).hasMatch(), qPrintable(text));
+            }
         }
     }
     QVERIFY(!forbidden_vocabulary().match(cftc_method_note()).hasMatch());
+    // Every label and its tooltip sentence stays free of trading vocabulary.
+    const CftcInterpretationConfig config;
+    QStringList labels;
+    for (const auto& p : {speculator(12.0, 0.8), speculator(12.0, 0.8, -3.0, 0.95), speculator(-8.0, 0.2),
+                          speculator(-8.0, 0.6), speculator(0.0, 0.5)}) {
+        const CftcBias bias = cftc_positioning_bias(p, config);
+        labels << cftc_bias_label(bias) << cftc_bias_reason(bias, p, config);
+    }
+    for (CftcCrowding crowding : {CftcCrowding::Long, CftcCrowding::Short})
+        labels << cftc_crowding_label(crowding) << cftc_crowding_reason(crowding, speculator(1.0, 0.5), config);
+    for (int type = 0; type <= static_cast<int>(CftcFlowType::BothCutting); ++type)
+        labels << cftc_flow_label(static_cast<CftcFlowType>(type));
+    labels << cftc_side_flip_reason({1, 12, false}) << cftc_side_flip_reason({-1, 3, true});
+    for (const QString& text : std::as_const(labels))
+        QVERIFY2(!forbidden_vocabulary().match(text).hasMatch(), qPrintable(text));
+}
+
+// ── Labels ──────────────────────────────────────────────────────────────────
+
+void TstCftcResearch::level_band_boundaries() {
+    const CftcInterpretationConfig config;
+    QCOMPARE(cftc_level_band(1.0, config), CftcLevelBand::VeryHigh);
+    QCOMPARE(cftc_level_band(0.90, config), CftcLevelBand::VeryHigh);
+    QCOMPARE(cftc_level_band(0.899, config), CftcLevelBand::High);
+    QCOMPARE(cftc_level_band(0.70, config), CftcLevelBand::High);
+    QCOMPARE(cftc_level_band(0.699, config), CftcLevelBand::Normal);
+    QCOMPARE(cftc_level_band(0.5, config), CftcLevelBand::Normal);
+    QCOMPARE(cftc_level_band(0.301, config), CftcLevelBand::Normal);
+    QCOMPARE(cftc_level_band(0.30, config), CftcLevelBand::Low);
+    QCOMPARE(cftc_level_band(0.101, config), CftcLevelBand::Low);
+    QCOMPARE(cftc_level_band(0.10, config), CftcLevelBand::VeryLow);
+    QCOMPARE(cftc_level_band(0.0, config), CftcLevelBand::VeryLow);
+    QCOMPARE(cftc_level_band_label(CftcLevelBand::VeryHigh), QStringLiteral("VERY HIGH"));
+    QCOMPARE(cftc_level_band_label(CftcLevelBand::Normal), QStringLiteral("NORMAL"));
+    QCOMPARE(cftc_level_band_label(CftcLevelBand::VeryLow), QStringLiteral("VERY LOW"));
+}
+
+void TstCftcResearch::flow_type_names_the_side_that_moved() {
+    const CftcInterpretationConfig config;
+    QCOMPARE(cftc_flow_type(flow_reading(0.5, 0.74, -0.4, 0.70), config), CftcFlowType::Quiet);
+    QCOMPARE(cftc_flow_type(flow_reading(0.5, 0.75, -0.1, 0.30), config), CftcFlowType::LongBuild);
+    QCOMPARE(cftc_flow_type(flow_reading(-0.9, 0.95, 0.1, 0.30), config), CftcFlowType::LongLiquidation);
+    QCOMPARE(cftc_flow_type(flow_reading(0.1, 0.30, 0.8, 0.80), config), CftcFlowType::ShortBuild);
+    QCOMPARE(cftc_flow_type(flow_reading(0.1, 0.30, -0.8, 0.80), config), CftcFlowType::ShortCovering);
+    QCOMPARE(cftc_flow_type(flow_reading(0.6, 0.80, 0.7, 0.85), config), CftcFlowType::BothAdding);
+    QCOMPARE(cftc_flow_type(flow_reading(-0.6, 0.80, -0.7, 0.85), config), CftcFlowType::BothCutting);
+    // Opposite notable legs: the larger size names it, then the larger amount.
+    QCOMPARE(cftc_flow_type(flow_reading(0.9, 0.95, -0.5, 0.80), config), CftcFlowType::LongBuild);
+    QCOMPARE(cftc_flow_type(flow_reading(-0.5, 0.80, 0.9, 0.95), config), CftcFlowType::ShortBuild);
+    QCOMPARE(cftc_flow_type(flow_reading(0.2, 1.0, -0.5, 1.0), config), CftcFlowType::ShortCovering);
+    // A leg that did not move never names the flow, whatever its rank.
+    QCOMPARE(cftc_flow_type(flow_reading(0.0, 1.0, 0.0, 0.2), config), CftcFlowType::Quiet);
+    // Missing pieces are unavailable, never quiet.
+    CftcHorizonFlowReading missing = flow_reading(0.5, 0.9, 0.1, 0.1);
+    missing.has_short_rank = false;
+    QCOMPARE(cftc_flow_type(missing, config), CftcFlowType::Unavailable);
+    CftcHorizonFlowReading not_evaluated = flow_reading(0.5, 0.9, 0.1, 0.1);
+    not_evaluated.evaluated = false;
+    QCOMPARE(cftc_flow_type(not_evaluated, config), CftcFlowType::Unavailable);
+    QVERIFY(cftc_flow_label(CftcFlowType::Unavailable).isEmpty());
+    QCOMPARE(cftc_flow_label(CftcFlowType::ShortCovering), QStringLiteral("SHORT COVERING"));
+    QCOMPARE(cftc_flow_direction(CftcFlowType::LongBuild), 1);
+    QCOMPARE(cftc_flow_direction(CftcFlowType::ShortCovering), 1);
+    QCOMPARE(cftc_flow_direction(CftcFlowType::LongLiquidation), -1);
+    QCOMPARE(cftc_flow_direction(CftcFlowType::ShortBuild), -1);
+    QCOMPARE(cftc_flow_direction(CftcFlowType::BothAdding), 0);
+    QCOMPARE(cftc_flow_direction(CftcFlowType::Quiet), 0);
+}
+
+void TstCftcResearch::change_size_follows_the_engine_cut_offs() {
+    const CftcInterpretationConfig config;
+    QCOMPARE(cftc_change_size(false, 0.99, config), CftcChangeSize::Unavailable);
+    QCOMPARE(cftc_change_size(true, 0.90, config), CftcChangeSize::Large);
+    QCOMPARE(cftc_change_size(true, 0.899, config), CftcChangeSize::Notable);
+    QCOMPARE(cftc_change_size(true, 0.75, config), CftcChangeSize::Notable);
+    QCOMPARE(cftc_change_size(true, 0.749, config), CftcChangeSize::Ordinary);
+    QCOMPARE(cftc_change_size_label(CftcChangeSize::Large), QStringLiteral("LARGE"));
+    QCOMPARE(cftc_change_size_label(CftcChangeSize::Notable), QStringLiteral("NOTABLE"));
+    QVERIFY(cftc_change_size_label(CftcChangeSize::Ordinary).isEmpty());
+    // In rule set v3 the cut-offs are about 1.15 and 1.645 typical changes.
+    QVERIFY(std::erf(1.16 / std::sqrt(2.0)) >= config.material_move_percentile);
+    QVERIFY(std::erf(1.14 / std::sqrt(2.0)) < config.material_move_percentile);
+    QVERIFY(std::erf(1.65 / std::sqrt(2.0)) >= config.large_move_percentile);
+    QVERIFY(std::erf(1.64 / std::sqrt(2.0)) < config.large_move_percentile);
+}
+
+void TstCftcResearch::positioning_bias_rule_and_reasons() {
+    const CftcInterpretationConfig config;
+    auto bias = [&](const CftcParticipantInterpretation& p) { return cftc_positioning_bias(p, config); };
+    // Net long at or above the middle of the year.
+    QCOMPARE(bias(speculator(12.0, 0.8)), CftcBias::Bullish);
+    QCOMPARE(bias(speculator(12.0, 0.5)), CftcBias::Bullish);
+    QCOMPARE(bias(speculator(12.0, 0.8, 3.0, 0.99)), CftcBias::Bullish);  // adding sharply
+    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.89)), CftcBias::Bullish); // cutting, but not by a LARGE amount
+    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.90)), CftcBias::Neutral); // cutting by a LARGE amount
+    QCOMPARE(bias(speculator(12.0, 0.49)), CftcBias::Neutral);            // long, but low for the year
+    // The mirror image.
+    QCOMPARE(bias(speculator(-8.0, 0.2)), CftcBias::Bearish);
+    QCOMPARE(bias(speculator(-8.0, 0.5)), CftcBias::Bearish);
+    QCOMPARE(bias(speculator(-8.0, 0.2, -2.0, 0.99)), CftcBias::Bearish);
+    QCOMPARE(bias(speculator(-8.0, 0.2, 2.0, 0.95)), CftcBias::Neutral);
+    QCOMPARE(bias(speculator(-8.0, 0.5, 2.0, 0.95)), CftcBias::Neutral);
+    QCOMPARE(bias(speculator(-8.0, 0.51)), CftcBias::Neutral);
+    QCOMPARE(bias(speculator(0.0, 0.5)), CftcBias::Neutral);
+    // No 4-week reading: the level alone decides.
+    CftcParticipantInterpretation no_four = speculator(12.0, 0.8, -3.0, 0.99);
+    no_four.flow_readings[0].evaluated = false;
+    QCOMPARE(bias(no_four), CftcBias::Bullish);
+    // Without a year of history there is no bias.
+    CftcParticipantInterpretation young = speculator(12.0, 0.8);
+    young.historical_percentile_available = false;
+    QCOMPARE(bias(young), CftcBias::Unavailable);
+    QVERIFY(cftc_bias_reason(CftcBias::Unavailable, young, config).isEmpty());
+    QVERIFY(cftc_bias_label(CftcBias::Unavailable).isEmpty());
+    // Each reason restates the rule branch that applied.
+    auto reason = [&](const CftcParticipantInterpretation& p) { return cftc_bias_reason(bias(p), p, config); };
+    QCOMPARE(reason(speculator(12.0, 0.8)),
+             QStringLiteral("BULLISH positioning: net long 12.0% of open interest, higher than 80% of the previous 52 "
+                            "weekly reports, and the net long has not shrunk by a large amount over 4 weeks. It "
+                            "describes positions, not prices."));
+    QCOMPARE(reason(speculator(-8.0, 0.2)),
+             QStringLiteral("BEARISH positioning: net short 8.0% of open interest, lower than 80% of the previous 52 "
+                            "weekly reports, and the net short has not shrunk by a large amount over 4 weeks. It "
+                            "describes positions, not prices."));
+    QVERIFY(reason(speculator(12.0, 0.8, -3.0, 0.95))
+                .endsWith(QStringLiteral("but the net long shrank by a large amount over 4 weeks.")));
+    QVERIFY(reason(speculator(-8.0, 0.5, 2.0, 0.95))
+                .endsWith(QStringLiteral("but the net short shrank by a large amount over 4 weeks.")));
+    QCOMPARE(reason(speculator(12.0, 0.3)),
+             QStringLiteral("NEUTRAL: net long 12.0% of open interest, but lower than 70% of the previous 52 weekly "
+                            "reports — the side and the level of the year point different ways."));
+    QCOMPARE(reason(speculator(0.0, 0.5)), QStringLiteral("NEUTRAL: flat (long equals short)."));
+}
+
+void TstCftcResearch::crowding_follows_the_engine_state_and_carries_the_caveat() {
+    const CftcInterpretationConfig config;
+    CftcParticipantInterpretation p = speculator(20.0, 0.95);
+    QCOMPARE(cftc_crowding(p), CftcCrowding::None); // the label only restates the engine state
+    CftcInterpretationState state;
+    state.state_id = QStringLiteral("CROWDED_LONG");
+    p.states << state;
+    QCOMPARE(cftc_crowding(p), CftcCrowding::Long);
+    QCOMPARE(cftc_crowding_label(CftcCrowding::Long), QStringLiteral("CROWDED LONG"));
+    QCOMPARE(cftc_crowding_label(CftcCrowding::Short), QStringLiteral("CROWDED SHORT"));
+    QVERIFY(cftc_crowding_label(CftcCrowding::None).isEmpty());
+    p.terminology_caveat_code = QStringLiteral("broad_category_caveat");
+    const QString reason = cftc_crowding_reason(CftcCrowding::Long, p, config);
+    QVERIFY2(reason.startsWith(QStringLiteral("CROWDED LONG: net long and in the top 10% of the previous 52 weekly "
+                                              "reports. Non-Commercial is the CFTC's broad non-commercial category")),
+             qPrintable(reason));
+    p.terminology_caveat_code = QStringLiteral("not_all_outright_speculation_caveat");
+    QVERIFY(cftc_crowding_reason(CftcCrowding::Short, p, config)
+                .endsWith(QStringLiteral("not all positions in it are outright speculation.")));
+    p.terminology_caveat_code.clear();
+    QCOMPARE(cftc_crowding_reason(CftcCrowding::Short, p, config),
+             QStringLiteral("CROWDED SHORT: net short and in the bottom 10% of the previous 52 weekly reports."));
+    QVERIFY(cftc_crowding_reason(CftcCrowding::None, p, config).isEmpty());
+    // On the trending fixture the engine sets the state for the speculators only.
+    const CftcHistory history = parse(trending_rows());
+    const CftcInterpretationResult result = interpret(history, history.observations.last().date.addDays(3));
+    QCOMPARE(cftc_crowding(result.participants[1]), CftcCrowding::Long); // Non-Commercial, highest
+    QCOMPARE(cftc_crowding(result.participants[0]), CftcCrowding::None); // Commercial, lowest
+}
+
+void TstCftcResearch::side_flip_counts_the_weeks_on_the_other_side() {
+    // Ten weeks net short from the start of the path, then net long.
+    CftcSideFlip flip = cftc_side_flip(weekly_path({-5, -4, -3, -3, -2, -2, -1, -1, -1, -0.5, 0.4}));
+    QCOMPARE(flip.direction, 1);
+    QCOMPARE(flip.prior_weeks, 10);
+    QVERIFY(flip.prior_capped);
+    QCOMPARE(cftc_side_flip_label(flip), QStringLiteral("FLIPPED LONG"));
+    QCOMPARE(cftc_side_flip_reason(flip),
+             QStringLiteral("Turned net long this week after at least 10 consecutive weeks net short."));
+    // Three weeks net long after a net-short stretch, then net short.
+    flip = cftc_side_flip(weekly_path({-1, -2, 1, 2, 3, -0.2}));
+    QCOMPARE(flip.direction, -1);
+    QCOMPARE(flip.prior_weeks, 3);
+    QVERIFY(!flip.prior_capped);
+    QCOMPARE(cftc_side_flip_label(flip), QStringLiteral("FLIPPED SHORT"));
+    QCOMPARE(cftc_side_flip_reason(flip),
+             QStringLiteral("Turned net short this week after 3 consecutive weeks net long."));
+    // No flip: same side, a flat report, a missing report, a gap before the
+    // latest report, or a single report.
+    QCOMPARE(cftc_side_flip(weekly_path({1, 2, 3})).direction, 0);
+    QCOMPARE(cftc_side_flip(weekly_path({1, 0, -1})).direction, 0);
+    QVector<CftcMonitorHistoryPoint> missing = weekly_path({1, 2, -1});
+    missing[1].has_net_pct_oi = false;
+    QCOMPARE(cftc_side_flip(missing).direction, 0);
+    QVector<CftcMonitorHistoryPoint> gap = weekly_path({1, 2, -1});
+    gap[2].date = gap[2].date.addDays(7);
+    QCOMPARE(cftc_side_flip(gap).direction, 0);
+    QCOMPARE(cftc_side_flip(weekly_path({-1})).direction, 0);
+    // A gap inside the earlier run stops the count there ("at least").
+    QVector<CftcMonitorHistoryPoint> inner_gap = weekly_path({1, 1, 1, 1, -1});
+    for (int i = 0; i < 2; ++i)
+        inner_gap[i].date = inner_gap[i].date.addDays(-7);
+    flip = cftc_side_flip(inner_gap);
+    QCOMPARE(flip.direction, -1);
+    QCOMPARE(flip.prior_weeks, 2);
+    QVERIFY(flip.prior_capped);
 }
 
 // ── Model ───────────────────────────────────────────────────────────────────
@@ -405,7 +687,8 @@ void TstCftcResearch::rows_keep_availability_states_apart() {
         silver.replace(i, row);
     }
     markets.append(market(QStringLiteral("gold"), QStringLiteral("088691"), QStringLiteral("current"), gold));
-    QJsonObject failed = market(QStringLiteral("silver"), QStringLiteral("084691"), QStringLiteral("archive_only"), silver);
+    QJsonObject failed =
+        market(QStringLiteral("silver"), QStringLiteral("084691"), QStringLiteral("archive_only"), silver);
     failed[QStringLiteral("refresh_error")] = QStringLiteral("HTTP 503");
     markets.append(failed);
     markets.append(market(QStringLiteral("euro"), QStringLiteral("099741"), QStringLiteral("no_data"), {}));
@@ -436,50 +719,29 @@ void TstCftcResearch::rows_keep_availability_states_apart() {
     }
     QCOMPARE(rows[0].cells.size(), 3);
     QCOMPARE(rows[0].tail, CftcLevelTail::High);
-    QVERIFY(rows[0].tags.contains(QStringLiteral("EXTREME")));
+    // The speculators' labels: highest of the year, net long and adding.
+    QCOMPARE(rows[0].band, std::optional<CftcLevelBand>(CftcLevelBand::VeryHigh));
+    QCOMPARE(rows[0].bias, CftcBias::Bullish);
+    QVERIFY(rows[0].bias_reason.startsWith(QStringLiteral("BULLISH positioning: net long 29.9% of open interest")));
+    QCOMPARE(rows[0].crowding, CftcCrowding::Long);
+    QVERIFY(rows[0].crowding_reason.contains(QStringLiteral("broad non-commercial category")));
+    QCOMPARE(rows[0].flip.direction, 0);
+    QVERIFY(!rows[0].turning);
+    // A steady +0.1 a week is one typical weekly change: quiet and ordinary.
+    QCOMPARE(rows[0].flow_1w, CftcFlowType::Quiet);
+    QCOMPARE(rows[0].size_1w, CftcChangeSize::Ordinary);
+    QCOMPARE(rows[0].tags, QStringList{QStringLiteral("CROWDED LONG")});
     const CftcOverviewFigures figures = cftc_overview_figures(rows);
     QCOMPARE(figures.markets_listed, 2); // a market the report does not publish is not listed
     QCOMPARE(figures.markets_not_covered, 1);
     QCOMPARE(figures.markets_current, 1);
     QCOMPARE(figures.markets_stored, 1);
-    QCOMPARE(figures.extreme_markets.size(), 2);
-}
-
-void TstCftcResearch::developments_come_only_from_tails_turns_and_large_moves() {
-    QJsonObject payload;
-    payload[QStringLiteral("report_family")] = QStringLiteral("legacy");
-    payload[QStringLiteral("report_basis")] = QStringLiteral("futures_only");
-    QJsonObject gold;
-    gold[QStringLiteral("market_key")] = QStringLiteral("gold");
-    gold[QStringLiteral("contract_code")] = QStringLiteral("088691");
-    gold[QStringLiteral("status")] = QStringLiteral("current");
-    gold[QStringLiteral("rows")] = trending_rows();
-    payload[QStringLiteral("markets")] = QJsonArray{gold};
-    const CftcMonitorModel model = cftc_parse_monitor_payload(payload, CftcFamily::Legacy, true,
-                                                              QDate(2022, 1, 4).addDays(7 * 199 + 3),
-                                                              cftc_principal_participant_key(CftcFamily::Legacy));
-    const QVector<CftcMarketRow> rows = cftc_market_rows(model.entries);
-    const QVector<CftcDevelopment> developments = cftc_overview_developments(model.entries, rows);
-    int extremes = 0;
-    for (const auto& development : developments) {
-        QVERIFY(!forbidden_vocabulary().match(development.text).hasMatch());
-        if (development.kind == CftcDevelopmentKind::Extreme)
-            ++extremes;
-        // Every equal-sized weekly move ranks at the midpoint: not a large move.
-        QVERIFY(development.kind != CftcDevelopmentKind::LargeMove);
-    }
-    QCOMPARE(extremes, 2); // Non-Commercial at the top, Commercial at the bottom
-    QVERIFY(developments.first().text.startsWith(QStringLiteral("Non-Commercial: unusually large net long (29.9% of "
-                                                                "open interest), the highest over 3 years, at least 44 "
-                                                                "weeks running")));
-    // The overview's extremes table reads the same figures as the statement.
-    const CftcDevelopment& top = developments.first();
-    QCOMPARE(top.participant_key, QStringLiteral("non_commercial"));
-    QCOMPARE(top.tail, CftcLevelTail::High);
-    QCOMPARE(QString::number(top.net_pct_oi, 'f', 1), QStringLiteral("29.9"));
-    QCOMPARE(top.percentile, 1.0);
-    QCOMPARE(top.tail_run, 44);
-    QVERIFY(top.tail_run_capped);
+    QCOMPARE(figures.bullish.size(), 2);
+    QVERIFY(figures.bearish.isEmpty());
+    QCOMPARE(figures.crowded_long.size(), 2);
+    QVERIFY(figures.crowded_short.isEmpty());
+    QVERIFY(figures.flipped.isEmpty());
+    QVERIFY(figures.large_move_markets.isEmpty());
 }
 
 void TstCftcResearch::percentile_series_equals_the_engine_helper() {
@@ -493,7 +755,8 @@ void TstCftcResearch::percentile_series_equals_the_engine_helper() {
     const QVector<CftcDatedValue> values = cftc_metric_series(history.observations, 1, CftcMetricKind::NetPctOi);
     QCOMPARE(series.size(), history.observations.size());
     for (int i = 0; i < series.size(); ++i) {
-        const CftcTrailingPercentile expected = cftc_trailing_percentile_at(values, history.observations[i].date, 156);
+        const CftcTrailingPercentile expected = cftc_trailing_percentile_at(values, history.observations[i].date,
+                                                                            CftcInterpretationConfig{}.history_window);
         QCOMPARE(series[i].has_value, expected.available);
         if (expected.available)
             QCOMPARE(series[i].value, expected.percentile);

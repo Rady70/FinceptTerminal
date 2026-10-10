@@ -1,25 +1,36 @@
 // src/screens/economics/panels/CftcResearchText.h
 //
-// Plain-language conclusions for the CFTC research workspace.
+// Labels and plain-language statements for the CFTC research workspace.
 //
-// This layer turns the frozen interpretation engine's output
-// (CftcInterpretationResult, rule set cftc-descriptive-interpretation-v2) into
-// short statements a reader can check: every statement carries the reading it
-// rests on and the historical comparison behind it. It never classifies
-// anything itself: levels, tails and move sizes are read from the engine's
-// own percentiles and ranks, and the thresholds are the engine's (10% / 90%
-// tails, 75% notable and 90% large moves).
+// This layer turns the interpretation engine's output (CftcInterpretationResult,
+// rule set cftc-descriptive-interpretation-v3: the previous 52 weekly reports
+// are the basis) into
+//   * a small fixed vocabulary of labels the workspace shows as tags, so
+//     markets and groups can be compared at a glance (level band, flow type,
+//     change size, the speculators' positioning bias, CROWDED, side flips);
+//   * short statements a reader can check, shown as the labels' tooltips:
+//     every statement carries the reading it rests on and the comparison
+//     behind it.
+// It classifies nothing beyond those definitions: levels, tails and change
+// sizes are the engine's own percentiles and size ranks with the engine's
+// thresholds (10% / 90% tails, 75% notable and 90% large changes).
 //
-// Rules the wording follows:
+// The positioning bias (BULLISH / BEARISH / NEUTRAL) describes how the
+// speculative group is positioned and moving over the last year; it does not
+// predict prices. CROWDED LONG / SHORT is the engine's CROWDED_LONG /
+// CROWDED_SHORT state (speculative group net long in the top 10%, or net short
+// in the bottom 10%, of the previous 52 reports).
+//
+// Rules the statements follow:
 //   * numbers first: "net long 38.2% of open interest, higher than 96% of the
-//     previous 156 weekly reports" instead of a label such as "crowded";
+//     previous 52 weekly reports";
 //   * every participant group whose positioning is at a historical tail is
 //     described, not only the headline group, because the categories of one
 //     report are often the more informative side of a market;
 //   * direction words follow the actual sign: a net-short group whose net
 //     position rises is "net short shrank", never "bought";
 //   * a limitation is stated once, briefly, in `not_assessed`;
-//   * no forecast, recommendation, signal or trading vocabulary.
+//   * no forecast, recommendation or trading vocabulary.
 //
 // Header-only over Qt Core so the wording contract is unit-testable without
 // the widget tree.
@@ -167,7 +178,7 @@ inline QString cftc_rank_position(double rank, const QString& reference) {
     return cftc_rank_comparison(cftc_text_tr("lower"), 1.0 - rank, reference);
 }
 
-/// "higher than 96% of the previous 156 weekly reports". The percentile is
+/// "higher than 96% of the previous 52 weekly reports". The percentile is
 /// the engine's midpoint-tie rank against its strictly trailing reference.
 inline QString cftc_level_rank_text(double percentile, int reference_count) {
     const QString reference = cftc_text_tr("the previous %1 weekly reports").arg(reference_count);
@@ -222,20 +233,34 @@ inline QString cftc_weeks_text(int horizon) {
     return cftc_text_tr("over %1 weeks").arg(horizon);
 }
 
-/// Size of a move from its engine rank against the previous comparable moves
-/// of the same length: large (>= 0.90), notable (>= 0.75), ordinary, small.
-inline QString cftc_move_size_text(double rank, int horizon) {
-    const QString comparable = horizon == 1 ? cftc_text_tr("comparable one-week changes")
-                                            : cftc_text_tr("comparable %1-week changes").arg(horizon);
-    const QString bigger = cftc_rank_comparison(cftc_text_tr("bigger"), rank, comparable);
-    if (rank >= 0.90)
-        return cftc_text_tr("a large change, %1").arg(bigger);
-    if (rank >= 0.75)
-        return cftc_text_tr("a notable change, %1").arg(bigger);
-    if (rank >= 0.5)
-        return cftc_text_tr("an ordinary change, %1").arg(bigger);
-    return cftc_text_tr("a small change, %1")
-        .arg(cftc_rank_comparison(cftc_text_tr("smaller"), 1.0 - rank, comparable));
+/// Size of a change from the engine's size rank (large >= 0.90, notable >= 0.75,
+/// ordinary >= 0.5, small). Rule set v3 (WeeklyScaled) adds its multiple of the
+/// typical change of that length: the root mean square of the previous
+/// `history_window` one-week changes x sqrt(weeks). A v3 reading without a
+/// scale has a reference without any change. The v2 preset (TrailingRank)
+/// compares with the previous same-length changes.
+inline QString cftc_move_size_text(double rank, int horizon, bool has_scale, double scale,
+                                   const services::CftcInterpretationConfig& config) {
+    const QString word = rank >= 0.90   ? cftc_text_tr("a large change")
+                         : rank >= 0.75 ? cftc_text_tr("a notable change")
+                         : rank >= 0.5  ? cftc_text_tr("an ordinary change")
+                                        : cftc_text_tr("a small change");
+    const int weeks = config.history_window;
+    if (config.move_size_method == services::CftcMoveSizeMethod::TrailingRank) {
+        const QString reference = horizon == 1 ? cftc_text_tr("comparable one-week changes")
+                                               : cftc_text_tr("comparable %1-week changes").arg(horizon);
+        return word + QStringLiteral(", ") +
+               (rank >= 0.5 ? cftc_rank_comparison(cftc_text_tr("bigger"), rank, reference)
+                            : cftc_rank_comparison(cftc_text_tr("smaller"), 1.0 - rank, reference));
+    }
+    if (!has_scale) {
+        return rank > 0.0 ? cftc_text_tr("a large change: there was no change in the previous %1 weeks").arg(weeks)
+                          : cftc_text_tr("no change, as in the previous %1 weeks").arg(weeks);
+    }
+    const QString typical =
+        horizon == 1 ? cftc_text_tr("the typical one-week change of the last %1 weeks").arg(weeks)
+                     : cftc_text_tr("the typical %1-week change of the last %2 weeks").arg(horizon).arg(weeks);
+    return cftc_text_tr("%1, %2 times %3").arg(word, QString::number(scale, 'f', 1), typical);
 }
 
 // ── Level ───────────────────────────────────────────────────────────────────
@@ -359,8 +384,8 @@ inline QString tail_zone_text(CftcLevelTail tail) {
 } // namespace detail
 
 /// One participant's level statement: "Managed Money: net long 11.7% of open
-/// interest, an unusually small net long — lower than 90% of the previous 156
-/// weekly reports (about 3 years). In the bottom 10% for 7 consecutive weeks."
+/// interest — unusually small: lower than 90% of the previous 52
+/// weekly reports. In the bottom 10% for 7 consecutive weeks."
 /// Empty when the latest report carries no Net %OI for the group.
 inline QString cftc_level_statement(services::CftcFamily family, const services::CftcParticipantInterpretation& p,
                                     const services::CftcParticipantTrail* trail,
@@ -370,13 +395,14 @@ inline QString cftc_level_statement(services::CftcFamily family, const services:
         return {};
     const QString name = cftc_group_name(family, p.participant_key);
     if (!p.historical_percentile_available) {
-        return cftc_text_tr("%1: %2 (no 156-report history to compare with).")
-            .arg(name, cftc_net_position_text(p.net_pct_oi));
+        return cftc_text_tr("%1: %2 (no %3-report history to compare with).")
+            .arg(name, cftc_net_position_text(p.net_pct_oi))
+            .arg(config.history_window);
     }
     const CftcLevelTail tail = cftc_level_tail(p.percentile, config);
     if (tail == CftcLevelTail::None && !include_usual_range)
         return {};
-    QString text = cftc_text_tr("%1: %2 — %3: %4 (about 3 years).")
+    QString text = cftc_text_tr("%1: %2 — %3: %4.")
                        .arg(name, cftc_net_position_text(p.net_pct_oi), cftc_tail_adjective(tail, p.net_pct_oi),
                             cftc_level_rank_text(p.percentile, p.percentile_reference_count));
     if (tail != CftcLevelTail::None && trail && trail->tail_run_reports >= 2) {
@@ -446,7 +472,8 @@ inline QString cftc_net_change_phrase(double net_flow, std::optional<double> net
 /// its size against comparable moves, plus the engine's sustained count.
 /// Empty when the horizon could not be formed.
 inline QString cftc_change_statement(services::CftcFamily family, const services::CftcParticipantInterpretation& p,
-                                     const services::CftcParticipantTrail* trail, int horizon) {
+                                     const services::CftcParticipantTrail* trail, int horizon,
+                                     const services::CftcInterpretationConfig& config) {
     const services::CftcHorizonFlowReading* reading = detail::reading_for(p, horizon);
     if (!reading || !reading->evaluated || !reading->has_net_flow || !p.has_net_pct_oi)
         return {};
@@ -461,7 +488,8 @@ inline QString cftc_change_statement(services::CftcFamily family, const services
             .arg(name, cftc_net_change_phrase(reading->net_flow, detail::net_pct_ago(trail, horizon), p.net_pct_oi),
                  cftc_weeks_text(horizon), legs);
     if (reading->has_net_rank)
-        text += QStringLiteral(" — ") + cftc_move_size_text(reading->net_rank, horizon);
+        text += QStringLiteral(" — ") +
+                cftc_move_size_text(reading->net_rank, horizon, reading->has_net_scale, reading->net_scale, config);
     text += QLatin1Char('.');
     // Both gross sides moved materially in the same direction: the net figure
     // understates the activity.
@@ -507,7 +535,8 @@ inline QString cftc_open_interest_statement(const services::CftcInterpretationRe
                     (reading.oi_change >= 0.0 ? cftc_text_tr("up %1 %2") : cftc_text_tr("down %1 %2"))
                         .arg(cftc_abs_pct(reading.oi_change), cftc_weeks_text(horizon));
         if (reading.has_rank)
-            text += QStringLiteral(" — ") + cftc_move_size_text(reading.rank, horizon);
+            text += QStringLiteral(" — ") +
+                    cftc_move_size_text(reading.rank, horizon, reading.has_scale, reading.scale, result.config);
     }
     return text + QLatin1Char('.');
 }
@@ -531,8 +560,12 @@ inline QString cftc_concentration_statement(const services::CftcInterpretationRe
             cftc_text_tr("Concentration: the 4 largest traders on the long side account for %1 of open interest")
                 .arg(cftc_abs_pct(assessment.current));
         if (high && assessment.has_percentile)
-            text += QStringLiteral(" — ") + cftc_rank_comparison(cftc_text_tr("higher"), assessment.percentile,
-                                                                 cftc_text_tr("earlier reports for this market"));
+            text += QStringLiteral(" — ") +
+                    cftc_rank_comparison(
+                        cftc_text_tr("higher"), assessment.percentile,
+                        result.config.concentration_window > 0
+                            ? cftc_text_tr("the previous %1 reports").arg(result.config.concentration_window)
+                            : cftc_text_tr("earlier reports"));
         if (rising && assessment.has_change)
             text += QStringLiteral("; ") +
                     cftc_text_tr("up %1 percentage points this week").arg(QString::number(assessment.change, 'f', 1));
@@ -600,11 +633,12 @@ inline CftcConclusion cftc_compose_conclusion(const CftcConclusionInput& input) 
             out.points << level;
         if (principal->has_net_pct_oi && principal->historical_percentile_available) {
             const CftcLevelTail tail = cftc_level_tail(principal->percentile, config);
-            headline_parts << cftc_text_tr("%1: %2 (%3 over 3 years)")
+            headline_parts << cftc_text_tr("%1: %2 (%3 over %4 weeks)")
                                   .arg(cftc_group_name(input.family, principal_key),
                                        tail == CftcLevelTail::None ? cftc_net_position_text(principal->net_pct_oi)
                                                                    : cftc_tail_phrase(tail, principal->net_pct_oi),
-                                       cftc_percentile_ordinal(principal->percentile));
+                                       cftc_percentile_ordinal(principal->percentile))
+                                  .arg(principal->percentile_reference_count);
         } else if (principal->has_net_pct_oi) {
             headline_parts << cftc_text_tr("%1: %2").arg(cftc_group_name(input.family, principal_key),
                                                          cftc_net_position_text(principal->net_pct_oi));
@@ -642,8 +676,8 @@ inline CftcConclusion cftc_compose_conclusion(const CftcConclusionInput& input) 
     }
     // 3. Changes over the horizon: the headline group, then large moves of others.
     if (principal) {
-        const QString change = cftc_change_statement(input.family, *principal,
-                                                     detail::trail_for(input.trails, principal_key), input.horizon);
+        const QString change = cftc_change_statement(
+            input.family, *principal, detail::trail_for(input.trails, principal_key), input.horizon, config);
         if (!change.isEmpty()) {
             out.points << change;
         } else {
@@ -663,8 +697,8 @@ inline CftcConclusion cftc_compose_conclusion(const CftcConclusionInput& input) 
         if (!reading || !reading->evaluated || !reading->has_net_rank ||
             reading->net_rank < config.large_move_percentile)
             continue;
-        const QString change =
-            cftc_change_statement(input.family, p, detail::trail_for(input.trails, p.participant_key), input.horizon);
+        const QString change = cftc_change_statement(
+            input.family, p, detail::trail_for(input.trails, p.participant_key), input.horizon, config);
         if (!change.isEmpty())
             out.points << change;
     }
@@ -707,14 +741,323 @@ inline CftcConclusion cftc_compose_conclusion(const CftcConclusionInput& input) 
     return out;
 }
 
-/// The one-paragraph method note shown once, at the foot of the workspace.
+/// The method note shown once, at the foot of the workspace: one line per
+/// label family.
 inline QString cftc_method_note() {
     return cftc_text_tr(
-        "Net position = long minus short, shown as a share of total open interest. Percentiles compare the latest "
-        "reading with the previous 156 weekly reports (about 3 years); the top and bottom 10% are called unusual. "
-        "Changes are compared with the previous 156 changes of the same length: bigger than 75% is notable, bigger "
-        "than 90% is large. These cut-offs are MarketLab conventions, not CFTC definitions. The statements describe "
-        "reported positions only; they are not forecasts.");
+        "Basis: the previous 52 weekly reports. Net position = long minus short, as a share of open interest.\n"
+        "LEVEL: VERY LOW = bottom 10% of the previous 52 reports, LOW = up to 30%, NORMAL, HIGH = from 70%, VERY "
+        "HIGH = top 10%.\n"
+        "NOTABLE / LARGE: a change of about 1.15 / 1.65 times the typical change of that length (the typical "
+        "size of the previous 52 weekly changes x the square root of the weeks).\n"
+        "FLOW: the side that moved notably: LONG BUILD, LONG LIQUIDATION, SHORT BUILD, SHORT COVERING, BOTH "
+        "ADDING, BOTH CUTTING, or QUIET.\n"
+        "BULLISH / BEARISH / NEUTRAL (speculators: Non-Commercial, Managed Money, Leveraged Funds): BULLISH = "
+        "net long, at or above the middle of their year and not cutting sharply over 4 weeks; BEARISH = the "
+        "mirror image; otherwise NEUTRAL.\n"
+        "CROWDED LONG / SHORT: speculators net long in the top 10% / net short in the bottom 10% of the year. In "
+        "the official reports since 1988 such episodes lasted a median of 2 weeks, 38% lasted 4 weeks or more, "
+        "and 44% were crowded on the same side 4 weeks after they began.\n"
+        "FLIPPED LONG / SHORT: the net position changed side since the previous weekly report. TURNING: moved "
+        "out of the 10% tail this week, or fell back after at least 3 weeks in it within the last 13 (overview: "
+        "the speculators). LARGE MOVE: the speculators' one-week change is LARGE.\n"
+        "These are MarketLab conventions that describe reported positions, not prices; they are not CFTC "
+        "definitions.");
+}
+
+// ── Standard labels ─────────────────────────────────────────────────────────
+
+/// Where a group's net position sits among the previous 52 reports.
+enum class CftcLevelBand { VeryLow, Low, Normal, High, VeryHigh };
+
+inline CftcLevelBand cftc_level_band(double percentile, const services::CftcInterpretationConfig& config) {
+    if (percentile >= config.extreme_percentile)
+        return CftcLevelBand::VeryHigh;
+    if (percentile >= 0.70)
+        return CftcLevelBand::High;
+    if (percentile <= config.low_extreme_percentile)
+        return CftcLevelBand::VeryLow;
+    if (percentile <= 0.30)
+        return CftcLevelBand::Low;
+    return CftcLevelBand::Normal;
+}
+
+inline QString cftc_level_band_label(CftcLevelBand band) {
+    switch (band) {
+        case CftcLevelBand::VeryLow:
+            return cftc_text_tr("VERY LOW");
+        case CftcLevelBand::Low:
+            return cftc_text_tr("LOW");
+        case CftcLevelBand::Normal:
+            return cftc_text_tr("NORMAL");
+        case CftcLevelBand::High:
+            return cftc_text_tr("HIGH");
+        case CftcLevelBand::VeryHigh:
+            return cftc_text_tr("VERY HIGH");
+    }
+    return {};
+}
+
+/// Which side of a group moved notably over a horizon. A leg moved notably when
+/// its size rank is at least the engine's materiality cut-off (0.75). When
+/// both legs moved notably in opposite directions, the larger one names it.
+enum class CftcFlowType {
+    Unavailable,
+    Quiet,
+    LongBuild,
+    LongLiquidation,
+    ShortBuild,
+    ShortCovering,
+    BothAdding,
+    BothCutting
+};
+
+inline CftcFlowType cftc_flow_type(const services::CftcHorizonFlowReading& reading,
+                                   const services::CftcInterpretationConfig& config) {
+    if (!reading.evaluated || !reading.has_long_flow || !reading.has_short_flow || !reading.has_long_rank ||
+        !reading.has_short_rank)
+        return CftcFlowType::Unavailable;
+    const bool long_moved = reading.long_flow != 0.0 && reading.long_rank >= config.material_move_percentile;
+    const bool short_moved = reading.short_flow != 0.0 && reading.short_rank >= config.material_move_percentile;
+    if (!long_moved && !short_moved)
+        return CftcFlowType::Quiet;
+    auto long_type = [&] { return reading.long_flow > 0.0 ? CftcFlowType::LongBuild : CftcFlowType::LongLiquidation; };
+    auto short_type = [&] { return reading.short_flow > 0.0 ? CftcFlowType::ShortBuild : CftcFlowType::ShortCovering; };
+    if (long_moved && !short_moved)
+        return long_type();
+    if (short_moved && !long_moved)
+        return short_type();
+    if (reading.long_flow > 0.0 && reading.short_flow > 0.0)
+        return CftcFlowType::BothAdding;
+    if (reading.long_flow < 0.0 && reading.short_flow < 0.0)
+        return CftcFlowType::BothCutting;
+    if (reading.long_rank != reading.short_rank)
+        return reading.long_rank > reading.short_rank ? long_type() : short_type();
+    return std::fabs(reading.long_flow) >= std::fabs(reading.short_flow) ? long_type() : short_type();
+}
+
+inline QString cftc_flow_label(CftcFlowType type) {
+    switch (type) {
+        case CftcFlowType::Unavailable:
+            return {};
+        case CftcFlowType::Quiet:
+            return cftc_text_tr("QUIET");
+        case CftcFlowType::LongBuild:
+            return cftc_text_tr("LONG BUILD");
+        case CftcFlowType::LongLiquidation:
+            return cftc_text_tr("LONG LIQUIDATION");
+        case CftcFlowType::ShortBuild:
+            return cftc_text_tr("SHORT BUILD");
+        case CftcFlowType::ShortCovering:
+            return cftc_text_tr("SHORT COVERING");
+        case CftcFlowType::BothAdding:
+            return cftc_text_tr("BOTH ADDING");
+        case CftcFlowType::BothCutting:
+            return cftc_text_tr("BOTH CUTTING");
+    }
+    return {};
+}
+
+/// Whether a flow type moves the net position up (+1), down (-1) or not (0).
+inline int cftc_flow_direction(CftcFlowType type) {
+    switch (type) {
+        case CftcFlowType::LongBuild:
+        case CftcFlowType::ShortCovering:
+            return 1;
+        case CftcFlowType::LongLiquidation:
+        case CftcFlowType::ShortBuild:
+            return -1;
+        default:
+            return 0;
+    }
+}
+
+/// Size of a group's net change over a horizon (or of an Open Interest change).
+enum class CftcChangeSize { Unavailable, Ordinary, Notable, Large };
+
+inline CftcChangeSize cftc_change_size(bool has_rank, double rank, const services::CftcInterpretationConfig& config) {
+    if (!has_rank)
+        return CftcChangeSize::Unavailable;
+    if (rank >= config.large_move_percentile)
+        return CftcChangeSize::Large;
+    if (rank >= config.material_move_percentile)
+        return CftcChangeSize::Notable;
+    return CftcChangeSize::Ordinary;
+}
+
+inline QString cftc_change_size_label(CftcChangeSize size) {
+    switch (size) {
+        case CftcChangeSize::Large:
+            return cftc_text_tr("LARGE");
+        case CftcChangeSize::Notable:
+            return cftc_text_tr("NOTABLE");
+        default:
+            return {};
+    }
+}
+
+/// The speculative group's positioning bias over the last year. BULLISH: net
+/// long and at or above the middle of the previous 52 reports, unless its net
+/// position fell by a LARGE amount over 4 weeks; BEARISH: net short and at or
+/// below the middle, unless it rose by a LARGE amount over 4 weeks; NEUTRAL
+/// otherwise. It describes positions, not prices.
+enum class CftcBias { Unavailable, Bullish, Bearish, Neutral };
+
+inline CftcBias cftc_positioning_bias(const services::CftcParticipantInterpretation& p,
+                                      const services::CftcInterpretationConfig& config) {
+    if (!p.has_net_pct_oi || !p.historical_percentile_available)
+        return CftcBias::Unavailable;
+    const services::CftcHorizonFlowReading* four = nullptr;
+    for (const auto& reading : p.flow_readings)
+        if (reading.horizon_reports == 4)
+            four = &reading;
+    const bool sharp_fall = four && four->evaluated && four->has_net_flow && four->has_net_rank &&
+                            four->net_flow < 0.0 && four->net_rank >= config.large_move_percentile;
+    const bool sharp_rise = four && four->evaluated && four->has_net_flow && four->has_net_rank &&
+                            four->net_flow > 0.0 && four->net_rank >= config.large_move_percentile;
+    if (p.net_pct_oi > 0.0 && p.percentile >= 0.5)
+        return sharp_fall ? CftcBias::Neutral : CftcBias::Bullish;
+    if (p.net_pct_oi < 0.0 && p.percentile <= 0.5)
+        return sharp_rise ? CftcBias::Neutral : CftcBias::Bearish;
+    return CftcBias::Neutral;
+}
+
+inline QString cftc_bias_label(CftcBias bias) {
+    switch (bias) {
+        case CftcBias::Bullish:
+            return cftc_text_tr("BULLISH");
+        case CftcBias::Bearish:
+            return cftc_text_tr("BEARISH");
+        case CftcBias::Neutral:
+            return cftc_text_tr("NEUTRAL");
+        case CftcBias::Unavailable:
+            break;
+    }
+    return {};
+}
+
+/// The bias as a sentence, for its tooltip. The branches follow the rule in
+/// cftc_positioning_bias.
+inline QString cftc_bias_reason(CftcBias bias, const services::CftcParticipantInterpretation& p,
+                                const services::CftcInterpretationConfig& config) {
+    if (bias == CftcBias::Unavailable)
+        return {};
+    const QString side = cftc_net_position_text(p.net_pct_oi);
+    const QString level = cftc_level_rank_text(p.percentile, config.history_window);
+    if (bias == CftcBias::Bullish)
+        return cftc_text_tr("BULLISH positioning: %1, %2, and the net long has not shrunk by a large amount over 4 "
+                            "weeks. It describes positions, not prices.")
+            .arg(side, level);
+    if (bias == CftcBias::Bearish)
+        return cftc_text_tr("BEARISH positioning: %1, %2, and the net short has not shrunk by a large amount over 4 "
+                            "weeks. It describes positions, not prices.")
+            .arg(side, level);
+    if (p.net_pct_oi > 0.0 && p.percentile >= 0.5)
+        return cftc_text_tr("NEUTRAL: %1, %2, but the net long shrank by a large amount over 4 weeks.")
+            .arg(side, level);
+    if (p.net_pct_oi < 0.0 && p.percentile <= 0.5)
+        return cftc_text_tr("NEUTRAL: %1, %2, but the net short shrank by a large amount over 4 weeks.")
+            .arg(side, level);
+    if (p.net_pct_oi == 0.0)
+        return cftc_text_tr("NEUTRAL: %1.").arg(side);
+    return cftc_text_tr("NEUTRAL: %1, but %2 — the side and the level of the year point different ways.")
+        .arg(side, level);
+}
+
+/// The engine's CROWDED_LONG / CROWDED_SHORT state of a speculative group.
+enum class CftcCrowding { None, Long, Short };
+
+inline CftcCrowding cftc_crowding(const services::CftcParticipantInterpretation& p) {
+    for (const auto& state : p.states) {
+        if (state.state_id == QLatin1String("CROWDED_LONG"))
+            return CftcCrowding::Long;
+        if (state.state_id == QLatin1String("CROWDED_SHORT"))
+            return CftcCrowding::Short;
+    }
+    return CftcCrowding::None;
+}
+
+inline QString cftc_crowding_label(CftcCrowding crowding) {
+    if (crowding == CftcCrowding::Long)
+        return cftc_text_tr("CROWDED LONG");
+    if (crowding == CftcCrowding::Short)
+        return cftc_text_tr("CROWDED SHORT");
+    return {};
+}
+
+/// The crowding label as a sentence, with the category caveat the engine's
+/// terminology contract requires wherever crowding wording is used.
+inline QString cftc_crowding_reason(CftcCrowding crowding, const services::CftcParticipantInterpretation& p,
+                                    const services::CftcInterpretationConfig& config) {
+    if (crowding == CftcCrowding::None)
+        return {};
+    QString text =
+        (crowding == CftcCrowding::Long
+             ? cftc_text_tr("CROWDED LONG: net long and in the top 10% of the previous %1 weekly reports.")
+             : cftc_text_tr("CROWDED SHORT: net short and in the bottom 10% of the previous %1 weekly reports."))
+            .arg(config.history_window);
+    const QString caveat = cftc_terminology_caveat_sentence(p);
+    if (!caveat.isEmpty())
+        text += QLatin1Char(' ') + caveat;
+    return text;
+}
+
+/// A group whose net position changed side in the latest report: the new side
+/// (+1 long, -1 short, 0 none) and how many consecutive weekly reports it spent
+/// on the other side before (capped when the run reaches the start of the
+/// history or a gap).
+struct CftcSideFlip {
+    int direction = 0;
+    int prior_weeks = 0;
+    bool prior_capped = false;
+};
+
+inline CftcSideFlip cftc_side_flip(const QVector<services::CftcMonitorHistoryPoint>& path) {
+    CftcSideFlip out;
+    const int n = static_cast<int>(path.size());
+    if (n < 2)
+        return out;
+    const auto& now = path[n - 1];
+    const auto& before = path[n - 2];
+    if (!now.has_net_pct_oi || !before.has_net_pct_oi || now.net_pct_oi == 0.0 || before.net_pct_oi == 0.0 ||
+        (now.net_pct_oi > 0.0) == (before.net_pct_oi > 0.0) || !services::cftc_weekly_neighbour(before.date, now.date))
+        return out;
+    out.direction = now.net_pct_oi > 0.0 ? 1 : -1;
+    const bool before_long = before.net_pct_oi > 0.0;
+    int index = n - 2;
+    for (; index >= 0; --index) {
+        const auto& point = path[index];
+        if (!point.has_net_pct_oi || point.net_pct_oi == 0.0 || (point.net_pct_oi > 0.0) != before_long)
+            break;
+        ++out.prior_weeks;
+        if (index > 0 && !services::cftc_weekly_neighbour(path[index - 1].date, point.date)) {
+            out.prior_capped = true;
+            break;
+        }
+    }
+    if (index < 0)
+        out.prior_capped = true;
+    return out;
+}
+
+inline QString cftc_side_flip_label(const CftcSideFlip& flip) {
+    if (flip.direction > 0)
+        return cftc_text_tr("FLIPPED LONG");
+    if (flip.direction < 0)
+        return cftc_text_tr("FLIPPED SHORT");
+    return {};
+}
+
+inline QString cftc_side_flip_reason(const CftcSideFlip& flip) {
+    if (flip.direction == 0)
+        return {};
+    const QString side = flip.direction > 0 ? cftc_text_tr("net long") : cftc_text_tr("net short");
+    const QString other = flip.direction > 0 ? cftc_text_tr("net short") : cftc_text_tr("net long");
+    return (flip.prior_capped ? cftc_text_tr("Turned %1 this week after at least %2 consecutive weeks %3.")
+                              : cftc_text_tr("Turned %1 this week after %2 consecutive weeks %3."))
+        .arg(side)
+        .arg(flip.prior_weeks)
+        .arg(other);
 }
 
 } // namespace fincept::screens

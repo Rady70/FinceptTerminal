@@ -86,6 +86,83 @@ QColor cftc_group_color(int index) {
     return QColor(colors[static_cast<std::size_t>(std::abs(index)) % colors.size()]);
 }
 
+// ── Standard-label tags ─────────────────────────────────────────────────────
+
+QColor cftc_bias_color(CftcBias bias) {
+    using namespace ui::colors;
+    switch (bias) {
+        case CftcBias::Bullish:
+            return QColor(POSITIVE());
+        case CftcBias::Bearish:
+            return QColor(NEGATIVE());
+        default:
+            return QColor(TEXT_SECONDARY());
+    }
+}
+
+QColor cftc_flow_color(CftcFlowType type) {
+    using namespace ui::colors;
+    const int direction = cftc_flow_direction(type);
+    if (direction > 0)
+        return QColor(POSITIVE());
+    if (direction < 0)
+        return QColor(NEGATIVE());
+    if (type == CftcFlowType::BothAdding || type == CftcFlowType::BothCutting)
+        return QColor(INFO());
+    return QColor(TEXT_TERTIARY());
+}
+
+QColor cftc_band_color(CftcLevelBand band) {
+    using namespace ui::colors;
+    switch (band) {
+        case CftcLevelBand::VeryHigh:
+        case CftcLevelBand::High:
+            return QColor(AMBER());
+        case CftcLevelBand::VeryLow:
+        case CftcLevelBand::Low:
+            return QColor(CYAN());
+        case CftcLevelBand::Normal:
+            break;
+    }
+    return QColor(TEXT_SECONDARY());
+}
+
+QColor cftc_tag_color(const QString& tag) {
+    using namespace ui::colors;
+    if (tag.startsWith(QCoreApplication::translate("CftcResearch", "CROWDED")))
+        return QColor(WARNING());
+    if (tag.startsWith(QCoreApplication::translate("CftcResearch", "FLIPPED")) ||
+        tag == QCoreApplication::translate("CftcResearch", "TURNING"))
+        return QColor(INFO());
+    return QColor(TEXT_PRIMARY());
+}
+
+double cftc_draw_tag(QPainter& painter, double left, double top, double height, const QString& text, const QColor& tone,
+                     bool filled, const QFont& font) {
+    if (text.isEmpty())
+        return 0.0;
+    painter.save();
+    painter.setFont(font);
+    const QFontMetricsF metrics(font);
+    const double w = metrics.horizontalAdvance(text) + 12.0;
+    const double h = std::min(height, metrics.height() + 6.0);
+    const QRectF chip(left, top + (height - h) / 2.0, w, h);
+    if (filled) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(tone);
+        painter.drawRoundedRect(chip, 3, 3);
+        painter.setPen(cftc_ink_on(tone));
+    } else {
+        painter.setPen(QPen(cot_with_alpha(tone, 0.85), 1));
+        painter.setBrush(cot_with_alpha(tone, 0.12));
+        painter.drawRoundedRect(chip.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+        painter.setPen(tone);
+    }
+    painter.drawText(chip, Qt::AlignCenter, text);
+    painter.restore();
+    return w;
+}
+
 // ── Base ────────────────────────────────────────────────────────────────────
 
 CftcChart::CftcChart(QWidget* parent) : QWidget(parent) {
@@ -127,6 +204,8 @@ constexpr int kCotBoardHeader = 40;
 constexpr int kCotBoardRow = 25;
 constexpr int kCotBoardHeading = 26;
 constexpr double kCotLabelW = 168;
+constexpr double kCotBiasW = 84;
+constexpr double kCotFlowW = 184;
 constexpr double kCotNetW = 66;
 constexpr double kCotDeltaW = 62;
 constexpr double kCotCellW = 76;
@@ -134,11 +213,43 @@ constexpr double kCotOiW = 72;
 constexpr double kCotConcW = 64;
 constexpr double kCotTagW = 132;
 constexpr double kCotTrackMin = 240;
+
+/// Draws `tags` left to right between `left` and `right`. A tag that does not
+/// fit is replaced by "+N" (the number not shown), so no tag disappears
+/// silently; the caller's tooltip lists them all.
+template <typename Tone, typename Filled>
+void cot_draw_tags(QPainter& p, double left, double right, double top, double height, const QStringList& tags,
+                   Tone tone, Filled filled, const QFont& font) {
+    const QFontMetricsF metrics(font);
+    double x = left;
+    for (int i = 0; i < tags.size(); ++i) {
+        const double w = metrics.horizontalAdvance(tags[i]) + 12.0;
+        const int rest = static_cast<int>(tags.size()) - i - 1;
+        const double more = rest > 0 ? metrics.horizontalAdvance(QStringLiteral("+%1").arg(rest)) + 16.0 : 0.0;
+        if (x + w + more > right) {
+            cftc_draw_tag(p, x, top, height, QStringLiteral("+%1").arg(tags.size() - i),
+                          QColor(ui::colors::TEXT_SECONDARY()), false, font);
+            return;
+        }
+        x += cftc_draw_tag(p, x, top, height, tags[i], tone(tags[i]), filled(tags[i]), font) + 4.0;
+    }
+}
+
+/// The NOTABLE / LARGE chip drawn after a change value.
+double cot_draw_size(QPainter& p, double left, double top, double height, CftcChangeSize size, const QFont& font) {
+    const QString label = cftc_change_size_label(size);
+    if (label.isEmpty())
+        return 0.0;
+    return cftc_draw_tag(p, left, top, height, label,
+                         size == CftcChangeSize::Large ? QColor(ui::colors::TEXT_PRIMARY())
+                                                       : QColor(ui::colors::TEXT_SECONDARY()),
+                         false, font);
+}
 } // namespace
 
 CftcPositioningBoard::CftcPositioningBoard(QWidget* parent) : CftcChart(parent) {
     setCursor(Qt::PointingHandCursor);
-    setAccessibleName(tr("Positioning board: every market's position in its 3-year history and every participant "
+    setAccessibleName(tr("Positioning board: every market's position in its 52-week range and every participant "
                          "group's net position"));
 }
 
@@ -179,8 +290,8 @@ int CftcPositioningBoard::content_height() const {
 }
 
 QSize CftcPositioningBoard::minimumSizeHint() const {
-    const double w = kCotLabelW + kCotTrackMin + kCotNetW + kCotDeltaW + columns_.size() * kCotCellW + kCotOiW +
-                     kCotConcW + kCotTagW + 24;
+    const double w = kCotLabelW + kCotBiasW + kCotTrackMin + kCotNetW + kCotDeltaW + kCotFlowW +
+                     columns_.size() * kCotCellW + kCotOiW + kCotConcW + kCotTagW + 24;
     return {static_cast<int>(w), content_height()};
 }
 
@@ -201,13 +312,15 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
         p.drawText(rect(), Qt::AlignCenter, tr("No stored COT reports yet. Press REFRESH to read the CFTC history."));
         return;
     }
-    const double fixed =
-        kCotLabelW + kCotNetW + kCotDeltaW + columns_.size() * kCotCellW + kCotOiW + kCotConcW + kCotTagW + 16;
+    const double fixed = kCotLabelW + kCotBiasW + kCotNetW + kCotDeltaW + kCotFlowW + columns_.size() * kCotCellW +
+                         kCotOiW + kCotConcW + kCotTagW + 16;
     const double track_w = std::max(kCotTrackMin, width() - fixed);
-    const double x_track = kCotLabelW;
+    const double x_bias = kCotLabelW;
+    const double x_track = x_bias + kCotBiasW;
     const double x_net = x_track + track_w + 8;
     const double x_delta = x_net + kCotNetW;
-    const double x_cells = x_delta + kCotDeltaW;
+    const double x_flow = x_delta + kCotDeltaW + 6;
+    const double x_cells = x_flow + kCotFlowW;
     const double x_oi = x_cells + columns_.size() * kCotCellW;
     const double x_conc = x_oi + kCotOiW;
     const double x_tags = x_conc + kCotConcW + 8;
@@ -217,10 +330,12 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
     p.setPen(QColor(TEXT_SECONDARY()));
     const double head_text_y = 4;
     p.drawText(QRectF(10, head_text_y, kCotLabelW - 10, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("MARKET"));
+    p.drawText(QRectF(x_bias, head_text_y, kCotBiasW - 6, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("BIAS"));
     p.drawText(QRectF(x_track, head_text_y, track_w, 18), Qt::AlignLeft | Qt::AlignVCenter,
-               tr("%1 · NET POSITION IN ITS 3-YEAR HISTORY").arg(cftc_group_name(family_, principal_key_).toUpper()));
+               tr("%1 · NET POSITION IN ITS 52-WEEK RANGE").arg(cftc_group_name(family_, principal_key_).toUpper()));
     p.drawText(QRectF(x_net, head_text_y, kCotNetW - 6, 18), Qt::AlignRight | Qt::AlignVCenter, tr("NET %OI"));
     p.drawText(QRectF(x_delta, head_text_y, kCotDeltaW - 6, 18), Qt::AlignRight | Qt::AlignVCenter, tr("1W Δ"));
+    p.drawText(QRectF(x_flow, head_text_y, kCotFlowW - 6, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("1W FLOW"));
     for (int c = 0; c < columns_.size(); ++c) {
         const QRectF cell(x_cells + c * kCotCellW, head_text_y, kCotCellW - 4, 18);
         const bool principal = columns_[c] == principal_key_;
@@ -245,9 +360,10 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
                tr("net % of open interest · shade = percentile"));
     add_hit(QRectF(x_track, 0, track_w, kCotBoardHeader),
             tr("Each row places the headline group's net position (long minus short, as a share of open interest) "
-               "among the previous 156 weekly reports (about 3 years): left = lowest, right = highest. The shaded "
-               "ends are the bottom and top 10%. Hollow dots show the same reading 13, 4 and 1 weeks ago; the filled "
-               "dot is the latest report."));
+               "among the previous 52 weekly reports: left = lowest, right = highest. The shaded ends are the bottom "
+               "and top 10%. Hollow dots show the same reading 13, 4 and 1 weeks ago; the filled dot is the latest "
+               "report."));
+    add_hit(QRectF(x_bias, 0, kCotBiasW, kCotBoardHeader), cftc_method_note());
     p.setPen(QPen(QColor(BORDER_DIM()), 1));
     p.drawLine(QPointF(0, kCotBoardHeader), QPointF(width(), kCotBoardHeader));
 
@@ -327,7 +443,7 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
             p.drawEllipse(QPointF(px(*m.percentile), cy), 5.5, 5.5);
             tooltip << tr("%1: %2 — %3")
                            .arg(cftc_group_name(family_, m.principal_key), cftc_net_position_text(m.net_pct_oi),
-                                cftc_level_rank_text(*m.percentile, 156));
+                                cftc_level_rank_text(*m.percentile, 52));
             tooltip << tr("13 weeks ago: %1 · 4 weeks ago: %2 · last week: %3 · now: %4")
                            .arg(cot_pct_text(m.percentile_13r), cot_pct_text(m.percentile_4r),
                                 cot_pct_text(m.percentile_1r), cot_pct_text(m.percentile));
@@ -339,7 +455,23 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
             p.setFont(chart_font(10));
             p.setPen(QColor(TEXT_SECONDARY()));
             p.drawText(track.adjusted(6, -4, 0, 4), Qt::AlignLeft | Qt::AlignVCenter,
-                       tr("fewer than 156 earlier reports to compare with"));
+                       tr("fewer than 52 earlier reports to compare with"));
+        }
+        // Bias.
+        if (m.bias != CftcBias::Unavailable) {
+            const double w = cftc_draw_tag(p, x_bias, y + 2, kCotBoardRow - 4, cftc_bias_label(m.bias),
+                                           cftc_bias_color(m.bias), m.bias != CftcBias::Neutral, chart_font(9, true));
+            add_hit(QRectF(x_bias, y, w, kCotBoardRow), m.bias_reason);
+        }
+        // One-week flow type and size.
+        if (m.flow_1w != CftcFlowType::Unavailable) {
+            const QString size = cftc_change_size_label(m.size_1w);
+            const double w = cftc_draw_tag(p, x_flow, y + 2, kCotBoardRow - 4, cftc_flow_label(m.flow_1w),
+                                           cftc_flow_color(m.flow_1w), false, chart_font(9, true));
+            cot_draw_size(p, x_flow + w + 4, y + 4, kCotBoardRow - 8, m.size_1w, chart_font(8, true));
+            add_hit(QRectF(x_flow, y, kCotFlowW, kCotBoardRow),
+                    tr("%1 this week%2")
+                        .arg(cftc_flow_label(m.flow_1w), size.isEmpty() ? QString() : QStringLiteral(" · ") + size));
         }
         // Net %OI and its weekly change.
         p.setFont(chart_font(12, true));
@@ -380,7 +512,7 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
                                    .arg(m.label, cftc_group_name(family_, data->participant_key),
                                         cftc_net_position_text(data->net_pct_oi));
             if (data->percentile)
-                cell_tip += QStringLiteral("\n") + cftc_level_rank_text(*data->percentile, 156) + QStringLiteral(" (") +
+                cell_tip += QStringLiteral("\n") + cftc_level_rank_text(*data->percentile, 52) + QStringLiteral(" (") +
                             cftc_percentile_ordinal(*data->percentile) + QStringLiteral(")");
             add_hit(cell, cell_tip);
         }
@@ -395,8 +527,8 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
             QString oi_tip =
                 tr("Open interest %1 contracts; %2 over 4 weeks")
                     .arg(cftc_contracts(m.open_interest), cot_signed_text(*m.oi_change_4r, 1, QStringLiteral("%")));
-            if (m.oi_rank_4r)
-                oi_tip += QStringLiteral(" (") + cftc_move_size_text(*m.oi_rank_4r, 4) + QStringLiteral(")");
+            if (!m.oi_size_4r.isEmpty())
+                oi_tip += QStringLiteral(" (") + m.oi_size_4r + QStringLiteral(")");
             add_hit(QRectF(x_oi, y, kCotOiW, kCotBoardRow), oi_tip);
         }
         if (m.concentration_long) {
@@ -409,33 +541,35 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
                                    .arg(QString::number(*m.concentration_long, 'f', 1) + QLatin1Char('%'));
             if (m.concentration_long_percentile)
                 conc_tip += QStringLiteral("\n") +
-                            cftc_rank_position(*m.concentration_long_percentile, tr("earlier reports for this market"));
+                            cftc_rank_position(*m.concentration_long_percentile, tr("the previous 52 reports"));
             add_hit(QRectF(x_conc, y, kCotConcW, kCotBoardRow), conc_tip);
         }
         // Tags.
         double tx = x_tags;
-        p.setFont(chart_font(9, true));
-        for (const QString& tag : m.tags) {
-            const double tw = QFontMetricsF(p.font()).horizontalAdvance(tag) + 10;
-            if (tx + tw > width() - 4)
-                break;
-            const QRectF chip(tx, y + 5, tw, kCotBoardRow - 10);
-            const QColor tone = tag == tr("TURNING")      ? QColor(INFO())
-                                : tag == tr("LARGE MOVE") ? QColor(TEXT_PRIMARY())
-                                                          : QColor(AMBER());
-            p.setPen(QPen(cot_with_alpha(tone, 0.8), 1));
-            p.setBrush(cot_with_alpha(tone, 0.12));
-            p.drawRoundedRect(chip, 3, 3);
-            p.setPen(tone);
-            p.drawText(chip, Qt::AlignCenter, tag);
-            tx += tw + 4;
-        }
+        const QFont tag_font = chart_font(9, true);
+        QStringList tag_tips;
+        if (!m.bias_reason.isEmpty())
+            tag_tips << m.bias_reason;
+        if (!m.crowding_reason.isEmpty())
+            tag_tips << m.crowding_reason;
+        if (m.flip.direction != 0)
+            tag_tips << cftc_side_flip_reason(m.flip);
+        if (m.turning)
+            tag_tips << m.turning_reason;
+        QStringList shown = m.tags;
+        shown.removeAll(tr("LARGE MOVE")); // the 1W FLOW column shows the size
+        cot_draw_tags(
+            p, tx, width() - 4, y + 2, kCotBoardRow - 4, shown, [](const QString& tag) { return cftc_tag_color(tag); },
+            [](const QString&) { return false; }, tag_font);
+        if (!m.tags.isEmpty())
+            add_hit(QRectF(x_tags, y, width() - x_tags, kCotBoardRow), tag_tips.join(QStringLiteral("\n")));
         if (!m.availability_note.isEmpty() && m.availability != CftcRowAvailability::Unavailable)
             tooltip << m.availability_note;
         if (m.report_date.isValid())
             tooltip << tr("Latest report: %1").arg(m.report_date.toString(Qt::ISODate));
         tooltip << tr("Click to open the market");
-        add_hit(QRectF(0, y, x_net + kCotNetW + kCotDeltaW, kCotBoardRow), tooltip.join(QStringLiteral("\n")));
+        add_hit(QRectF(0, y, x_bias, kCotBoardRow), tooltip.join(QStringLiteral("\n")));
+        add_hit(QRectF(x_track, y, x_flow - x_track, kCotBoardRow), tooltip.join(QStringLiteral("\n")));
         // Row separator.
         p.setPen(QPen(cot_with_alpha(QColor(BORDER_DIM()), 0.6), 1));
         p.drawLine(QPointF(10, y + kCotBoardRow - 0.5), QPointF(width() - 10, y + kCotBoardRow - 0.5));
@@ -517,7 +651,7 @@ void CftcParticipantBars::paintEvent(QPaintEvent*) {
     const double x_pct = x_net + net_w + 6;
     const double x_delta = x_pct + pct_w + 4;
     p.drawText(QRectF(x_net, 2, net_w - 4, 18), Qt::AlignRight | Qt::AlignVCenter, tr("NET"));
-    p.drawText(QRectF(x_pct, 2, pct_w, 18), Qt::AlignCenter, tr("3-YEAR PERCENTILE"));
+    p.drawText(QRectF(x_pct, 2, pct_w, 18), Qt::AlignCenter, tr("52-WEEK PERCENTILE"));
     p.drawText(QRectF(x_delta, 2, delta_w, 18), Qt::AlignRight | Qt::AlignVCenter, tr("1W Δ"));
 
     double y = kCotBarsHeader;
@@ -607,7 +741,7 @@ void CftcParticipantBars::paintEvent(QPaintEvent*) {
                        .arg(cot_signed_text(row.net_contracts, 0),
                             cot_signed_text(row.net_pct, 1, QStringLiteral("%")));
         if (row.percentile)
-            tip << tr("Percentile vs the previous 156 weekly reports: %1 (4 weeks ago %2, 13 weeks ago %3)")
+            tip << tr("Percentile vs the previous 52 weekly reports: %1 (4 weeks ago %2, 13 weeks ago %3)")
                        .arg(cot_pct_text(row.percentile), cot_pct_text(row.percentile_4r),
                             cot_pct_text(row.percentile_13r));
         if (row.net_flow_1w)
@@ -979,7 +1113,7 @@ void CftcHistoryChart::paintEvent(QPaintEvent*) {
                 if (hover_date)
                     if (const auto* pt = cot_point_at(percentile_, *hover_date); pt && pt->has_value)
                         readout = cftc_percentile_ordinal(pt->value);
-                pane_title(title_top, tr("%1 · PERCENTILE VS PREVIOUS 156 REPORTS").arg(percentile_label_.toUpper()),
+                pane_title(title_top, tr("%1 · PERCENTILE VS PREVIOUS 52 REPORTS").arg(percentile_label_.toUpper()),
                            readout);
                 break;
             }
@@ -1205,6 +1339,329 @@ void CftcFlowStrip::paintEvent(QPaintEvent*) {
         p.drawText(QRectF(x, y + 2, 60, kCotFlowAxis - 4), Qt::AlignLeft | Qt::AlignVCenter,
                    dates[i].toString(QStringLiteral("MMM yy")));
         last_x = x;
+    }
+}
+
+// ── Positioning map ─────────────────────────────────────────────────────────
+
+namespace {
+constexpr int kCotMapHeader = 34;
+constexpr int kCotMapTile = 66;
+constexpr int kCotMapGap = 6;
+} // namespace
+
+CftcPositioningMap::CftcPositioningMap(QWidget* parent) : CftcChart(parent) {
+    setCursor(Qt::PointingHandCursor);
+    setAccessibleName(tr("Positioning map: every market in five columns by the headline group's 52-week level"));
+}
+
+void CftcPositioningMap::set_rows(const QVector<CftcMarketRow>& rows, const QString& group_name) {
+    for (auto& column : columns_)
+        column.clear();
+    group_name_ = group_name;
+    QStringList description;
+    for (const auto& row : rows) {
+        if (!row.band || !row.percentile)
+            continue;
+        columns_[static_cast<int>(*row.band)].append(row);
+        description
+            << QStringLiteral("%1: %2 %3").arg(row.label, cftc_level_band_label(*row.band), cftc_bias_label(row.bias));
+    }
+    // Most extreme first: highest first in the upper bands, lowest first in the lower ones.
+    for (int c = 0; c < 5; ++c) {
+        const bool descending = c >= 2;
+        std::stable_sort(columns_[c].begin(), columns_[c].end(),
+                         [descending](const CftcMarketRow& a, const CftcMarketRow& b) {
+                             return descending ? *a.percentile > *b.percentile : *a.percentile < *b.percentile;
+                         });
+    }
+    setAccessibleDescription(description.join(QStringLiteral(" | ")));
+    setFixedHeight(content_height());
+    updateGeometry();
+    update();
+}
+
+int CftcPositioningMap::tile_count() const {
+    int n = 0;
+    for (const auto& column : columns_)
+        n += column.size();
+    return n;
+}
+
+int CftcPositioningMap::content_height() const {
+    int most = 1;
+    for (const auto& column : columns_)
+        most = std::max(most, static_cast<int>(column.size()));
+    return kCotMapHeader + most * (kCotMapTile + kCotMapGap) + 4;
+}
+
+QSize CftcPositioningMap::sizeHint() const {
+    return {1000, content_height()};
+}
+
+void CftcPositioningMap::resizeEvent(QResizeEvent* event) {
+    CftcChart::resizeEvent(event);
+    update();
+}
+
+void CftcPositioningMap::paintEvent(QPaintEvent*) {
+    using namespace ui::colors;
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), QColor(BG_SURFACE()));
+    clear_hits();
+    targets_.clear();
+    const double gap = 8.0;
+    const double col_w = (width() - 4 * gap) / 5.0;
+    const CftcLevelBand bands[5] = {CftcLevelBand::VeryLow, CftcLevelBand::Low, CftcLevelBand::Normal,
+                                    CftcLevelBand::High, CftcLevelBand::VeryHigh};
+    const QString ranges[5] = {tr("bottom 10%"), tr("10–30%"), tr("30–70%"), tr("70–90%"), tr("top 10%")};
+    const QFont tag_font = chart_font(9, true);
+    for (int c = 0; c < 5; ++c) {
+        const double x = c * (col_w + gap);
+        const QColor tone = cftc_band_color(bands[c]);
+        p.setFont(chart_font(11, true));
+        p.setPen(tone);
+        p.drawText(QRectF(x, 0, col_w, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                   QStringLiteral("%1 · %2").arg(cftc_level_band_label(bands[c])).arg(columns_[c].size()));
+        p.setFont(chart_font(9));
+        p.setPen(QColor(TEXT_TERTIARY()));
+        p.drawText(QRectF(x, 16, col_w, 14), Qt::AlignLeft | Qt::AlignVCenter, ranges[c]);
+        p.setPen(QPen(cot_with_alpha(tone, 0.6), 2));
+        p.drawLine(QPointF(x, kCotMapHeader - 3), QPointF(x + col_w, kCotMapHeader - 3));
+        add_hit(QRectF(x, 0, col_w, kCotMapHeader),
+                tr("%1: %2 net position in the %3 of its previous 52 weekly reports")
+                    .arg(cftc_level_band_label(bands[c]), group_name_, ranges[c]));
+        double y = kCotMapHeader;
+        for (const CftcMarketRow& m : columns_[c]) {
+            const QRectF tile(x, y, col_w, kCotMapTile);
+            targets_.push_back({tile, m.market_key});
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(BG_RAISED()));
+            p.drawRoundedRect(tile, 4, 4);
+            // Bias stripe on the left edge.
+            p.setBrush(m.bias == CftcBias::Unavailable ? QColor(BORDER_DIM()) : cftc_bias_color(m.bias));
+            p.drawRoundedRect(QRectF(tile.left(), tile.top(), 4, tile.height()), 2, 2);
+            const QRectF inner = tile.adjusted(10, 5, -6, -5);
+            // Line 1: market and percentile.
+            p.setFont(chart_font(12, true));
+            p.setPen(QColor(TEXT_PRIMARY()));
+            p.drawText(QRectF(inner.left(), inner.top(), inner.width() - 44, 18), Qt::AlignLeft | Qt::AlignVCenter,
+                       QFontMetricsF(p.font()).elidedText(m.label, Qt::ElideRight, inner.width() - 46));
+            p.setFont(chart_font(11, true));
+            p.setPen(tone);
+            p.drawText(QRectF(inner.right() - 44, inner.top(), 44, 18), Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(std::lround(*m.percentile * 100.0)));
+            // Line 2: net position and one-week change.
+            p.setFont(chart_font(10));
+            p.setPen(QColor(TEXT_SECONDARY()));
+            QString line = tr("net %1").arg(cot_signed_text(m.net_pct_oi, 1, QStringLiteral("%")));
+            if (m.net_flow_1w)
+                line += QStringLiteral("  ·  1W ") + cot_signed_text(*m.net_flow_1w, 1);
+            p.drawText(QRectF(inner.left(), inner.top() + 18, inner.width(), 16), Qt::AlignLeft | Qt::AlignVCenter,
+                       line);
+            // The one-week size follows the change; in a narrow tile it leads the tag row instead.
+            const QString size_label = cftc_change_size_label(m.size_1w);
+            const QFont size_font = chart_font(8, true);
+            const double size_x = inner.left() + QFontMetricsF(p.font()).horizontalAdvance(line) + 6;
+            const bool size_inline =
+                size_label.isEmpty() ||
+                size_x + QFontMetricsF(size_font).horizontalAdvance(size_label) + 12 <= inner.right();
+            if (size_inline)
+                cot_draw_size(p, size_x, inner.top() + 19, 14, m.size_1w, size_font);
+            // Line 3: bias, flow and tags.
+            double tx = inner.left();
+            const double tag_top = inner.top() + 36;
+            if (m.bias != CftcBias::Unavailable)
+                tx += cftc_draw_tag(p, tx, tag_top, 18, cftc_bias_label(m.bias), cftc_bias_color(m.bias),
+                                    m.bias != CftcBias::Neutral, tag_font) +
+                      4;
+            QStringList extra;
+            if (!size_inline)
+                extra << size_label;
+            if (m.flow_1w != CftcFlowType::Unavailable && m.flow_1w != CftcFlowType::Quiet)
+                extra << cftc_flow_label(m.flow_1w);
+            for (const QString& tag : m.tags)
+                if (tag != tr("LARGE MOVE"))
+                    extra << tag;
+            const QString flow_label = cftc_flow_label(m.flow_1w);
+            const QColor flow_color = cftc_flow_color(m.flow_1w);
+            cot_draw_tags(
+                p, tx, inner.right(), tag_top, 18, extra,
+                [&](const QString& tag) {
+                    if (!size_inline && tag == size_label)
+                        return QColor(m.size_1w == CftcChangeSize::Large ? TEXT_PRIMARY() : TEXT_SECONDARY());
+                    return tag == flow_label ? flow_color : cftc_tag_color(tag);
+                },
+                [](const QString&) { return false; }, tag_font);
+            QStringList tip;
+            tip << QStringLiteral("%1 · %2").arg(m.label, group_name_);
+            tip << tr("%1 — %2").arg(cftc_net_position_text(m.net_pct_oi), cftc_level_rank_text(*m.percentile, 52));
+            if (!m.bias_reason.isEmpty())
+                tip << m.bias_reason;
+            if (m.flow_1w != CftcFlowType::Unavailable)
+                tip << tr("This week: %1%2")
+                           .arg(cftc_flow_label(m.flow_1w),
+                                cftc_change_size_label(m.size_1w).isEmpty()
+                                    ? QString()
+                                    : QStringLiteral(" · ") + cftc_change_size_label(m.size_1w));
+            if (!m.crowding_reason.isEmpty())
+                tip << m.crowding_reason;
+            if (m.flip.direction != 0)
+                tip << cftc_side_flip_reason(m.flip);
+            if (m.turning)
+                tip << m.turning_reason;
+            tip << tr("Click to open the market");
+            add_hit(tile, tip.join(QStringLiteral("\n")));
+            y += kCotMapTile + kCotMapGap;
+        }
+    }
+    if (tile_count() == 0) {
+        p.setPen(QColor(TEXT_SECONDARY()));
+        p.setFont(chart_font(12));
+        p.drawText(rect().adjusted(0, kCotMapHeader, 0, 0), Qt::AlignCenter,
+                   tr("No market has 52 weeks of history in this selection."));
+    }
+}
+
+void CftcPositioningMap::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        for (const auto& target : targets_) {
+            if (target.first.contains(event->position())) {
+                emit marketActivated(target.second);
+                return;
+            }
+        }
+    }
+    CftcChart::mousePressEvent(event);
+}
+
+// ── Readings grid ───────────────────────────────────────────────────────────
+
+namespace {
+constexpr int kCotGridHeader = 26;
+constexpr int kCotGridRow = 42;
+constexpr double kCotGridNameW = 200; // "Producer/Merchant"
+constexpr double kCotGridTagsMin = 120;
+constexpr double kCotGridRestMin = 820; // position, level and three horizons
+} // namespace
+
+CftcReadingsGrid::CftcReadingsGrid(QWidget* parent) : CftcChart(parent) {
+    setAccessibleName(tr("Readings: every participant group's position, 52-week level and 1, 4 and 13-week changes"));
+}
+
+void CftcReadingsGrid::set_rows(const QVector<CftcReadingsRow>& rows) {
+    rows_ = rows;
+    QStringList description;
+    for (const auto& row : rows_) {
+        QStringList parts{row.name, row.position.tag, row.position.value, row.level.tag};
+        for (const auto& h : row.horizons)
+            parts << h.tag << h.value << h.size;
+        parts << row.tags;
+        parts.removeAll(QString());
+        description << parts.join(QLatin1Char(' '));
+    }
+    setAccessibleDescription(description.join(QStringLiteral(" | ")));
+    setFixedHeight(kCotGridHeader + std::max<int>(1, rows_.size()) * kCotGridRow + 6);
+    update();
+}
+
+QSize CftcReadingsGrid::sizeHint() const {
+    return {1000, kCotGridHeader + std::max<int>(1, rows_.size()) * kCotGridRow + 6};
+}
+
+QSize CftcReadingsGrid::minimumSizeHint() const {
+    // The column minimums of paintEvent(); a narrower window scrolls sideways.
+    return {static_cast<int>(kCotGridNameW + kCotGridTagsMin + kCotGridRestMin + 8),
+            kCotGridHeader + std::max<int>(1, rows_.size()) * kCotGridRow + 6};
+}
+
+void CftcReadingsGrid::paintEvent(QPaintEvent*) {
+    using namespace ui::colors;
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), QColor(BG_SURFACE()));
+    clear_hits();
+    // Minimum widths fit the longest group name ("Producer/Merchant"), "10.3
+    // percentile" and a change with its LARGE chip; extra width goes to the
+    // horizons and tags.
+    const double name_w = kCotGridNameW;
+    const double tags_w = std::clamp(width() * 0.13, kCotGridTagsMin, 280.0);
+    const double rest = std::max(kCotGridRestMin, width() - name_w - tags_w - 8);
+    const double pos_w = std::max(130.0, rest * 0.16);
+    const double level_w = std::max(170.0, rest * 0.17);
+    const double h_w = (rest - pos_w - level_w) / 3.0;
+    const double x_pos = name_w;
+    const double x_level = x_pos + pos_w;
+    const double x_h = x_level + level_w;
+    const double x_tags = x_h + 3 * h_w;
+    p.setFont(chart_font(10, true));
+    p.setPen(QColor(TEXT_SECONDARY()));
+    p.drawText(QRectF(8, 0, name_w - 8, kCotGridHeader), Qt::AlignLeft | Qt::AlignVCenter, tr("GROUP"));
+    p.drawText(QRectF(x_pos, 0, pos_w, kCotGridHeader), Qt::AlignLeft | Qt::AlignVCenter, tr("POSITION"));
+    const QString level_header = tr("LEVEL · 52 WEEKS");
+    p.drawText(QRectF(x_level, 0, level_w, kCotGridHeader), Qt::AlignLeft | Qt::AlignVCenter,
+               QFontMetricsF(p.font()).horizontalAdvance(level_header) <= level_w - 8 ? level_header : tr("LEVEL"));
+    const QString horizon_names[3] = {tr("1 WEEK"), tr("4 WEEKS"), tr("13 WEEKS")};
+    for (int i = 0; i < 3; ++i)
+        p.drawText(QRectF(x_h + i * h_w, 0, h_w, kCotGridHeader), Qt::AlignLeft | Qt::AlignVCenter, horizon_names[i]);
+    p.drawText(QRectF(x_tags, 0, tags_w, kCotGridHeader), Qt::AlignLeft | Qt::AlignVCenter, tr("TAGS"));
+    add_hit(QRectF(0, 0, width(), kCotGridHeader), cftc_method_note());
+    p.setPen(QPen(QColor(BORDER_DIM()), 1));
+    p.drawLine(QPointF(0, kCotGridHeader - 0.5), QPointF(width(), kCotGridHeader - 0.5));
+
+    const QFont tag_font = chart_font(9, true);
+    auto draw_cell = [&](const CftcReadingCell& cell, double x, double y, double w) {
+        double tx = x;
+        if (!cell.tag.isEmpty())
+            tx += cftc_draw_tag(p, tx, y + 4, kCotGridRow / 2.0 - 2, cell.tag, cell.tag_color, cell.tag_filled,
+                                tag_font) +
+                  6;
+        p.setFont(chart_font(12, true));
+        p.setPen(QColor(TEXT_PRIMARY()));
+        QString value = cell.value;
+        p.drawText(QRectF(x, y + kCotGridRow / 2.0, w - 8, kCotGridRow / 2.0 - 4), Qt::AlignLeft | Qt::AlignVCenter,
+                   value);
+        if (!cell.size.isEmpty()) {
+            const double vw = QFontMetricsF(p.font()).horizontalAdvance(value);
+            cot_draw_size(p, x + vw + 8, y + kCotGridRow / 2.0, kCotGridRow / 2.0 - 4,
+                          cell.size == cftc_change_size_label(CftcChangeSize::Large) ? CftcChangeSize::Large
+                                                                                     : CftcChangeSize::Notable,
+                          chart_font(8, true));
+        }
+        Q_UNUSED(tx);
+        if (!cell.tooltip.isEmpty())
+            add_hit(QRectF(x, y, w, kCotGridRow), cell.tooltip);
+    };
+    double y = kCotGridHeader;
+    for (const auto& row : rows_) {
+        if (row.principal)
+            p.fillRect(QRectF(0, y, width(), kCotGridRow), cot_with_alpha(QColor(AMBER()), 0.06));
+        p.setFont(chart_font(12, row.principal));
+        p.setPen(QColor(row.principal ? TEXT_PRIMARY() : TEXT_SECONDARY()));
+        p.drawText(QRectF(8, y, name_w - 12, kCotGridRow), Qt::AlignLeft | Qt::AlignVCenter,
+                   QFontMetricsF(p.font()).elidedText(row.name, Qt::ElideRight, name_w - 12));
+        draw_cell(row.position, x_pos, y, pos_w);
+        draw_cell(row.level, x_level, y, level_w);
+        for (int i = 0; i < 3; ++i)
+            draw_cell(row.horizons[i], x_h + i * h_w, y, h_w);
+        cot_draw_tags(
+            p, x_tags, width() - 4, y, kCotGridRow, row.tags,
+            [](const QString& tag) {
+                return tag == cftc_bias_label(CftcBias::Bullish)   ? cftc_bias_color(CftcBias::Bullish)
+                       : tag == cftc_bias_label(CftcBias::Bearish) ? cftc_bias_color(CftcBias::Bearish)
+                       : tag == cftc_bias_label(CftcBias::Neutral) ? cftc_bias_color(CftcBias::Neutral)
+                                                                   : cftc_tag_color(tag);
+            },
+            [](const QString& tag) {
+                return tag == cftc_bias_label(CftcBias::Bullish) || tag == cftc_bias_label(CftcBias::Bearish);
+            },
+            tag_font);
+        if (!row.tags_tooltip.isEmpty())
+            add_hit(QRectF(x_tags, y, width() - x_tags, kCotGridRow), row.tags_tooltip);
+        p.setPen(QPen(cot_with_alpha(QColor(BORDER_DIM()), 0.6), 1));
+        p.drawLine(QPointF(8, y + kCotGridRow - 0.5), QPointF(width() - 8, y + kCotGridRow - 0.5));
+        y += kCotGridRow;
     }
 }
 

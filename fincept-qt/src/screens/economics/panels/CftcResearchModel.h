@@ -1,11 +1,11 @@
 // src/screens/economics/panels/CftcResearchModel.h
 //
 // Presentation projections for the CFTC research workspace: the cross-market
-// overview rows, its key figures and notable developments, and the series a
+// overview rows with their standard labels, the key figures, and the series a
 // single-market page draws. Every number is read from the interpretation
 // engine's result or computed with the engine's own helpers
-// (cftc_trailing_percentile_at, cftc_report_flow, cftc_position_metrics); no
-// threshold or state is defined here.
+// (cftc_trailing_percentile_at, cftc_report_flow, cftc_position_metrics); the
+// labels are the definitions in CftcResearchText.h.
 //
 // Header-only over Qt Core so the projections are unit-testable.
 #pragma once
@@ -64,16 +64,29 @@ struct CftcMarketRow {
     CftcLevelTail tail = CftcLevelTail::None;
     int tail_run = 0;
 
+    // Standard labels of the principal (speculative) group.
+    std::optional<CftcLevelBand> band;
+    CftcBias bias = CftcBias::Unavailable;
+    QString bias_reason;
+    CftcCrowding crowding = CftcCrowding::None;
+    QString crowding_reason; ///< with the CFTC category caveat
+    CftcSideFlip flip;
+    CftcFlowType flow_1w = CftcFlowType::Unavailable;
+    CftcChangeSize size_1w = CftcChangeSize::Unavailable;
+    bool turning = false; ///< the speculators moved out of, or fell back from, a 10% tail
+    QString turning_reason;
+
     QVector<CftcMatrixCell> cells; ///< every participant, family order
 
     bool has_open_interest = false;
     double open_interest = 0.0;
     std::optional<double> oi_change_4r;
     std::optional<double> oi_rank_4r;
+    QString oi_size_4r;                       ///< size of the 4-week Open Interest change, in words
     std::optional<double> concentration_long; ///< top-4 gross long, % of OI
     std::optional<double> concentration_long_percentile;
 
-    QStringList tags; ///< compact development labels ("EXTREME", "TURNING", "LARGE MOVE")
+    QStringList tags; ///< standard tags in display order: CROWDED, FLIPPED, TURNING, LARGE MOVE
 };
 
 /// The engine's one-report net flow of a group: the change in net contracts
@@ -162,11 +175,25 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
         row.net_pct_oi = p.net_pct_oi;
         row.percentile = cell.percentile;
         row.tail = cell.tail;
+        if (cell.percentile)
+            row.band = cftc_level_band(*cell.percentile, config);
+        row.bias = cftc_positioning_bias(p, config);
+        row.bias_reason = cftc_bias_reason(row.bias, p, config);
+        row.crowding = cftc_crowding(p);
+        row.crowding_reason = cftc_crowding_reason(row.crowding, p, config);
+        for (const auto& reading : p.flow_readings) {
+            if (reading.horizon_reports != 1)
+                continue;
+            row.flow_1w = cftc_flow_type(reading, config);
+            if (reading.evaluated)
+                row.size_1w = cftc_change_size(reading.has_net_rank, reading.net_rank, config);
+        }
         if (const services::CftcParticipantTrail* trail = detail::entry_trail(entry, p.participant_key)) {
             row.percentile_1r = trail->percentile_1r;
             row.percentile_4r = trail->percentile_4r;
             row.percentile_13r = trail->percentile_13r;
             row.tail_run = trail->tail_run_reports;
+            row.flip = cftc_side_flip(trail->net_pct_oi);
         }
     }
     row.has_open_interest = result.open_interest_available;
@@ -176,8 +203,10 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
             continue;
         if (reading.has_oi_change)
             row.oi_change_4r = reading.oi_change;
-        if (reading.has_rank)
+        if (reading.has_rank) {
             row.oi_rank_4r = reading.rank;
+            row.oi_size_4r = cftc_move_size_text(reading.rank, 4, reading.has_scale, reading.scale, config);
+        }
     }
     for (const auto& assessment : result.concentration) {
         if (assessment.field_key != QLatin1String("concentration_gross_4_long"))
@@ -187,29 +216,25 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
         if (assessment.has_percentile)
             row.concentration_long_percentile = assessment.percentile;
     }
-    // Compact labels for the map/matrix rows (the developments list carries
-    // the full wording).
-    bool any_tail = false;
-    bool turning = false;
-    bool large = false;
+    // Turning: the speculators moved out of, or fell back from, a 10% tail
+    // (every tag of the row describes the speculators; the market page shows
+    // each group's own).
     for (const auto& p : result.participants) {
-        if (p.historical_percentile_available && cftc_level_tail(p.percentile, config) != CftcLevelTail::None)
-            any_tail = true;
+        if (p.participant_key != row.principal_key)
+            continue;
         if (detail::has_state(p, "EXITED_HIGH_EXTREME") || detail::has_state(p, "EXITED_LOW_EXTREME") ||
             detail::has_state(p, "UNWINDING_HIGH_EXTREME") || detail::has_state(p, "UNWINDING_LOW_EXTREME"))
-            turning = true;
-        for (const auto& reading : p.flow_readings)
-            if (reading.horizon_reports == 1 && reading.evaluated && reading.has_net_rank &&
-                reading.net_rank >= config.large_move_percentile && p.participant_key == row.principal_key)
-                large = true;
+            row.turning_reason =
+                cftc_transition_statement(entry.family, p, detail::entry_trail(entry, p.participant_key));
     }
-    if (row.tail != CftcLevelTail::None)
-        row.tags << cftc_text_tr("EXTREME");
-    else if (any_tail)
-        row.tags << cftc_text_tr("GROUP EXTREME");
-    if (turning)
+    row.turning = !row.turning_reason.isEmpty();
+    if (row.crowding != CftcCrowding::None)
+        row.tags << cftc_crowding_label(row.crowding);
+    if (row.flip.direction != 0)
+        row.tags << cftc_side_flip_label(row.flip);
+    if (row.turning)
         row.tags << cftc_text_tr("TURNING");
-    if (large)
+    if (row.size_1w == CftcChangeSize::Large)
         row.tags << cftc_text_tr("LARGE MOVE");
     return row;
 }
@@ -239,15 +264,18 @@ struct CftcOverviewFigures {
     QDate latest_report;     ///< the most common latest report date among current markets
     int markets_listed = 0;  ///< markets the selected report covers
     int markets_current = 0; ///< with the latest report
-    int markets_stored = 0;  ///< stored data only (refresh failed / not run)
+    int markets_stored = 0;  ///< stored data only (refresh failed)
     int markets_old = 0;     ///< latest report older than the freshness limit
     int markets_unavailable = 0;
     int markets_not_covered = 0;
-    QStringList extreme_markets;    ///< principal group in a 10% tail
-    QStringList turning_markets;    ///< any group moved out of / back from a tail
-    QStringList large_move_markets; ///< principal one-week change >= 90% of comparable changes
-    int oi_up_notable = 0;          ///< 4-week Open Interest change >= 75% of comparable changes, rising
-    int oi_down_notable = 0;
+    QStringList bullish; ///< speculators' positioning bias
+    QStringList bearish;
+    QStringList neutral;
+    QStringList crowded_long;
+    QStringList crowded_short;
+    QStringList flipped;            ///< speculators' net position changed side this week
+    QStringList turning_markets;    ///< speculators moved out of / fell back from a tail
+    QStringList large_move_markets; ///< speculators' one-week net change LARGE
 };
 
 inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& rows) {
@@ -274,14 +302,22 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
         ++figures.markets_listed;
         if (row.report_date.isValid() && row.availability != CftcRowAvailability::Old)
             dates[row.report_date] += 1;
-        if (row.tail != CftcLevelTail::None)
-            figures.extreme_markets << row.label;
-        if (row.tags.contains(cftc_text_tr("TURNING")))
+        if (row.bias == CftcBias::Bullish)
+            figures.bullish << row.label;
+        else if (row.bias == CftcBias::Bearish)
+            figures.bearish << row.label;
+        else if (row.bias == CftcBias::Neutral)
+            figures.neutral << row.label;
+        if (row.crowding == CftcCrowding::Long)
+            figures.crowded_long << row.label;
+        else if (row.crowding == CftcCrowding::Short)
+            figures.crowded_short << row.label;
+        if (row.flip.direction != 0)
+            figures.flipped << row.label;
+        if (row.turning)
             figures.turning_markets << row.label;
-        if (row.tags.contains(cftc_text_tr("LARGE MOVE")))
+        if (row.size_1w == CftcChangeSize::Large)
             figures.large_move_markets << row.label;
-        if (row.oi_change_4r && row.oi_rank_4r && *row.oi_rank_4r >= 0.75)
-            (*row.oi_change_4r >= 0.0 ? figures.oi_up_notable : figures.oi_down_notable) += 1;
     }
     int best = 0;
     for (auto it = dates.constBegin(); it != dates.constEnd(); ++it) {
@@ -291,133 +327,6 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
         }
     }
     return figures;
-}
-
-// ── Notable developments ────────────────────────────────────────────────────
-
-enum class CftcDevelopmentKind { Extreme, Turning, LargeMove, MarketStructure };
-
-struct CftcDevelopment {
-    CftcDevelopmentKind kind = CftcDevelopmentKind::Extreme;
-    int entry_index = -1;
-    QString market_key;
-    QString market_label;
-    QString participant_key; ///< empty for market-level items
-    QString text;            ///< plain statement without the market name
-    // Extreme items also carry their figures, for the overview's table.
-    double net_pct_oi = 0.0;
-    double percentile = 0.0;
-    CftcLevelTail tail = CftcLevelTail::None;
-    int tail_run = 0; ///< consecutive weekly reports in the tail (0 = not known)
-    bool tail_run_capped = false;
-};
-
-/// The developments that deserve attention across the scanned markets, from
-/// the engine's own states and ranks only:
-///   * Extreme — any participant group in its top or bottom 10% (one line per
-///     group, with the percentile and how long it has been there);
-///   * Turning — a group moved out of a tail, or back from a recent extreme;
-///   * LargeMove — a one-week net change, or failing that a four-week one,
-///     bigger than 90% of comparable changes (the engine's "large" rank);
-///   * MarketStructure — a large four-week Open Interest change, or a market
-///     concentration in the top 10% of its history.
-/// Ordinary 75th-percentile moves are not listed here: across three
-/// horizons and several groups almost every market has one, so they stay in
-/// the market's own page.
-inline QVector<CftcDevelopment> cftc_overview_developments(const QVector<services::CftcMonitorEntry>& entries,
-                                                           const QVector<CftcMarketRow>& rows) {
-    QVector<CftcDevelopment> out;
-    for (const CftcMarketRow& row : rows) {
-        if (row.availability == CftcRowAvailability::NotCovered || row.availability == CftcRowAvailability::Unavailable)
-            continue;
-        const services::CftcMonitorEntry& entry = entries.at(row.entry_index);
-        const services::CftcInterpretationResult& result = entry.result;
-        const services::CftcInterpretationConfig& config = result.config;
-        auto add = [&](CftcDevelopmentKind kind, const QString& participant, const QString& text) {
-            if (text.isEmpty())
-                return;
-            out.append({kind, row.entry_index, row.market_key, row.label, participant, text});
-        };
-        // Principal first, then the other groups in family order.
-        QVector<const services::CftcParticipantInterpretation*> ordered;
-        for (const auto& p : result.participants)
-            if (p.participant_key == row.principal_key)
-                ordered.prepend(&p);
-            else
-                ordered.append(&p);
-        for (const auto* p : ordered) {
-            if (!p->has_net_pct_oi || !p->historical_percentile_available)
-                continue;
-            const CftcLevelTail tail = cftc_level_tail(p->percentile, config);
-            if (tail == CftcLevelTail::None)
-                continue;
-            const services::CftcParticipantTrail* trail = detail::entry_trail(entry, p->participant_key);
-            QString text =
-                cftc_text_tr("%1: %2 (%3 of open interest), %4 over 3 years")
-                    .arg(cftc_group_name(entry.family, p->participant_key), cftc_tail_phrase(tail, p->net_pct_oi),
-                         cftc_abs_pct(p->net_pct_oi), cftc_percentile_ordinal(p->percentile));
-            if (trail && trail->tail_run_reports >= 2)
-                text += cftc_text_tr(", %1%2 weeks running")
-                            .arg(trail->tail_run_capped ? cftc_text_tr("at least ") : QString())
-                            .arg(trail->tail_run_reports);
-            else if (trail && trail->tail_run_reports == 1)
-                text += cftc_text_tr(", new this week");
-            add(CftcDevelopmentKind::Extreme, p->participant_key, text);
-            CftcDevelopment& item = out.last();
-            item.net_pct_oi = p->net_pct_oi;
-            item.percentile = p->percentile;
-            item.tail = tail;
-            item.tail_run = trail ? trail->tail_run_reports : 0;
-            item.tail_run_capped = trail && trail->tail_run_capped;
-        }
-        for (const auto* p : ordered) {
-            const QString transition =
-                cftc_transition_statement(entry.family, *p, detail::entry_trail(entry, p->participant_key));
-            add(CftcDevelopmentKind::Turning, p->participant_key, transition);
-        }
-        for (const auto* p : ordered) {
-            for (int horizon : {1, 4}) {
-                const services::CftcHorizonFlowReading* reading = nullptr;
-                for (const auto& r : p->flow_readings)
-                    if (r.horizon_reports == horizon)
-                        reading = &r;
-                if (!reading || !reading->evaluated || !reading->has_net_rank ||
-                    reading->net_rank < config.large_move_percentile)
-                    continue;
-                const services::CftcParticipantTrail* trail = detail::entry_trail(entry, p->participant_key);
-                const std::optional<double> before = detail::net_pct_ago(trail, horizon);
-                add(CftcDevelopmentKind::LargeMove, p->participant_key,
-                    cftc_text_tr("%1: %2 %3 (%4)")
-                        .arg(cftc_group_name(entry.family, p->participant_key),
-                             cftc_net_change_phrase(reading->net_flow, before, p->net_pct_oi), cftc_weeks_text(horizon),
-                             cftc_rank_comparison(cftc_text_tr("bigger"), reading->net_rank,
-                                                  cftc_text_tr("comparable changes"))));
-                break; // one horizon per group: the shorter large move
-            }
-        }
-        for (const auto& reading : result.open_interest_readings) {
-            if (reading.horizon_reports != 4 || !reading.evaluated || !reading.has_rank || !reading.has_oi_change ||
-                reading.rank < config.large_move_percentile)
-                continue;
-            add(CftcDevelopmentKind::MarketStructure, QString(),
-                cftc_text_tr("Open interest %1 %2 %3 (%4)")
-                    .arg(reading.oi_change >= 0.0 ? cftc_text_tr("up") : cftc_text_tr("down"),
-                         cftc_abs_pct(reading.oi_change), cftc_weeks_text(4),
-                         cftc_rank_comparison(cftc_text_tr("bigger"), reading.rank,
-                                              cftc_text_tr("comparable changes"))));
-        }
-        for (const auto& state : result.market_context) {
-            if (state.state_id != QLatin1String("HIGH_MARKET_CONCENTRATION"))
-                continue;
-            if (row.concentration_long && row.concentration_long_percentile)
-                add(CftcDevelopmentKind::MarketStructure, QString(),
-                    cftc_text_tr("Largest 4 long traders: %1 of open interest, %2")
-                        .arg(cftc_abs_pct(*row.concentration_long),
-                             cftc_rank_comparison(cftc_text_tr("higher"), *row.concentration_long_percentile,
-                                                  cftc_text_tr("earlier reports for this market"))));
-        }
-    }
-    return out;
 }
 
 // ── Single-market series ────────────────────────────────────────────────────
@@ -442,10 +351,11 @@ inline QVector<CftcSeriesPoint> cftc_net_pct_series(const QVector<services::Cftc
     return out;
 }
 
-/// The engine's strictly trailing 156-report percentile of one participant's
-/// Net %OI at every report (absent until 156 earlier valid readings exist).
+/// The engine's strictly trailing percentile of one participant's Net %OI at
+/// every report against the previous `window` valid readings (rule set v3: 52;
+/// absent until that many earlier valid readings exist).
 inline QVector<CftcSeriesPoint> cftc_percentile_series(const QVector<services::CftcObservation>& observations,
-                                                       int participant_index, int window = 156) {
+                                                       int participant_index, int window = 52) {
     QVector<CftcSeriesPoint> out;
     out.reserve(observations.size());
     const QVector<services::CftcDatedValue> series =
@@ -523,8 +433,8 @@ inline QVector<CftcFlowCell> cftc_weekly_flow_cells(const QVector<services::Cftc
 }
 
 /// Historical context of one participant over the full history and the last
-/// 156 reports: the range of Net %OI with dates, and how far back one has to
-/// go to find a reading beyond today's (for "largest since").
+/// 52 reports: the range of Net %OI with dates, and how far back one has to go
+/// to find a reading beyond today's (for "largest since").
 struct CftcHistoricalContext {
     bool available = false;
     double now = 0.0;
@@ -539,14 +449,14 @@ struct CftcHistoricalContext {
     QDate record_max_date;
     QDate history_start;
     /// The most recent earlier report with a reading at least as extreme in
-    /// today's direction (above today's when today is above the 156-report
+    /// today's direction (above today's when today is above the 52-report
     /// median, below otherwise); invalid when none exists in the history.
     QDate beyond_since;
     bool beyond_found = false;
 };
 
 inline CftcHistoricalContext cftc_historical_context(const QVector<services::CftcObservation>& observations,
-                                                     int participant_index, int window = 156) {
+                                                     int participant_index, int window = 52) {
     CftcHistoricalContext out;
     const QVector<services::CftcDatedValue> series =
         services::cftc_metric_series(observations, participant_index, services::CftcMetricKind::NetPctOi);

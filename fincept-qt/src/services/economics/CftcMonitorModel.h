@@ -283,8 +283,9 @@ inline QVector<CftcMonitorHistoryPoint> cftc_monitor_history_series(const QVecto
 /// One participant's recent Net %OI path and its historical percentile at the
 /// latest report and at 1, 4 and 13 reports earlier. Every percentile uses the
 /// engine's own strictly trailing helper (cftc_trailing_percentile_at over the
-/// previous 156 valid reports), so a past reading is what the engine would have
-/// reported on that date; a reading the history cannot form stays absent.
+/// previous config.history_window valid reports; 52 in rule set v3), so a past
+/// reading is what the engine would have reported on that date; a reading the
+/// history cannot form stays absent.
 struct CftcParticipantTrail {
     QString participant_key;
     QVector<CftcMonitorHistoryPoint> net_pct_oi; ///< ascending, at most kCftcMonitorHistoryMaxPoints
