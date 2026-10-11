@@ -1048,6 +1048,51 @@ inline QString cftc_side_flip_label(const CftcSideFlip& flip) {
     return {};
 }
 
+// ── Concentration ───────────────────────────────────────────────────────────
+
+/// "4 largest · long · gross": one of the CFTC's eight concentration figures.
+inline QString cftc_concentration_name(int traders, bool long_side, bool net) {
+    return cftc_text_tr("%1 largest · %2 · %3")
+        .arg(traders)
+        .arg(long_side ? cftc_text_tr("long") : cftc_text_tr("short"),
+             net ? cftc_text_tr("net") : cftc_text_tr("gross"));
+}
+
+/// One concentration figure as a sentence, for its tooltip: the share the
+/// CFTC publishes, its level among the previous reports, its one-week change
+/// with its size, and what gross or net means.
+inline QString cftc_concentration_statement(int traders, bool long_side, bool net,
+                                            const services::CftcConcentrationAssessment& a,
+                                            const services::CftcInterpretationConfig& config) {
+    if (!a.has_current)
+        return {};
+    const QString side = long_side ? cftc_text_tr("long") : cftc_text_tr("short");
+    QString text = cftc_text_tr("The %1 largest traders account for %2 of open interest on the %3 side (%4)")
+                       .arg(traders)
+                       .arg(cftc_abs_pct(a.current), side, net ? cftc_text_tr("net") : cftc_text_tr("gross"));
+    if (a.has_percentile)
+        text += QStringLiteral(" — ") + cftc_level_rank_text(a.percentile, a.percentile_reference_count);
+    text += QLatin1Char('.');
+    if (a.has_change) {
+        const QString amount = std::fabs(a.change) < 0.05
+                                   ? cftc_text_tr("about unchanged")
+                                   : (a.change > 0.0 ? QStringLiteral("+") : QString()) +
+                                         QString::number(a.change, 'f', 1) + cftc_text_tr(" percentage points");
+        text += QLatin1Char(' ') + cftc_text_tr("This week: %1").arg(amount);
+        if (a.has_change_rank)
+            text += QStringLiteral(" — ") +
+                    cftc_move_size_text(a.change_rank, 1, a.has_change_scale, a.change_scale, config);
+        text += QLatin1Char('.');
+    } else if (a.change_unavailable_reason != services::CftcUnavailableReason::None) {
+        text += QLatin1Char(' ') +
+                cftc_text_tr("One-week change: %1.").arg(cftc_unavailable_reason_wording(a.change_unavailable_reason));
+    }
+    text += QLatin1Char(' ') +
+            (net ? cftc_text_tr("Net: after offsetting each trader's own long and short positions against each other.")
+                 : cftc_text_tr("Gross: each trader's whole %1 position.").arg(side));
+    return text;
+}
+
 inline QString cftc_side_flip_reason(const CftcSideFlip& flip) {
     if (flip.direction == 0)
         return {};

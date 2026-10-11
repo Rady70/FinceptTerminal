@@ -125,6 +125,54 @@ class CftcPositioningMap : public CftcChart {
     int content_height() const;
 };
 
+// ── Overview: largest weekly changes ────────────────────────────────────────
+
+/// The speculators' largest one-week net changes across the markets shown:
+/// rises and falls side by side, ranked and drawn by the multiple of each
+/// market's typical one-week change, with the NOTABLE and LARGE guides. The
+/// change as a share of open interest is printed on every bar.
+class CftcMovesChart : public CftcChart {
+    Q_OBJECT
+  public:
+    explicit CftcMovesChart(QWidget* parent = nullptr);
+    void set_ranking(const CftcMoveRanking& ranking);
+    QSize sizeHint() const override;
+    int bar_count() const;
+
+  signals:
+    void marketActivated(const QString& market_key);
+
+  protected:
+    void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent* event) override;
+
+  private:
+    CftcMoveRanking ranking_;
+    QVector<QPair<QRectF, QString>> targets_;
+    int content_height() const;
+};
+
+// ── Detail: concentration ───────────────────────────────────────────────────
+
+/// The CFTC's eight concentration figures of the latest report: rows for the
+/// 4 and 8 largest traders, columns long gross / long net / short gross /
+/// short net; each cell shows the share of open interest, its 52-week level
+/// and its one-week change with its size.
+class CftcConcentrationGrid : public CftcChart {
+    Q_OBJECT
+  public:
+    explicit CftcConcentrationGrid(QWidget* parent = nullptr);
+    void set_cells(const QVector<CftcConcentrationCell>& cells);
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+  protected:
+    void paintEvent(QPaintEvent*) override;
+
+  private:
+    QVector<CftcConcentrationCell> cells_;
+};
+
 // ── Detail: readings grid ───────────────────────────────────────────────────
 
 /// One cell of the readings grid: an optional tag, a value and its tooltip.

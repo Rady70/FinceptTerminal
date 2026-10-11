@@ -167,6 +167,9 @@ class TstCftcResearch : public QObject {
     // Model.
     void rows_keep_availability_states_apart();
     void percentile_series_equals_the_engine_helper();
+    void concentration_cells_follow_the_engine();
+    void weekly_move_ranking_orders_by_size();
+    void market_table_carries_percentiles_and_concentration();
     void flow_cells_break_on_a_missing_weekly_step();
     void historical_context_finds_records_and_last_beyond();
 };
@@ -793,6 +796,173 @@ void TstCftcResearch::historical_context_finds_records_and_last_beyond() {
     QVERIFY(context.beyond_found);
     QCOMPARE(context.beyond_since, history.observations[5].date);
     QCOMPARE(context.history_start, history.observations.first().date);
+}
+
+void TstCftcResearch::concentration_cells_follow_the_engine() {
+    CftcInterpretationResult result;
+    CftcConcentrationAssessment gross_4_long;
+    gross_4_long.field_key = QStringLiteral("concentration_gross_4_long");
+    gross_4_long.has_current = true;
+    gross_4_long.current = 21.4;
+    gross_4_long.has_percentile = true;
+    gross_4_long.percentile = 0.82;
+    gross_4_long.percentile_reference_count = 52;
+    gross_4_long.has_change = true;
+    gross_4_long.change = 0.8;
+    gross_4_long.has_change_rank = true;
+    gross_4_long.change_rank = 0.80;
+    gross_4_long.has_change_scale = true;
+    gross_4_long.change_scale = 1.28;
+    CftcConcentrationAssessment net_8_short;
+    net_8_short.field_key = QStringLiteral("concentration_net_8_short");
+    net_8_short.has_current = true;
+    net_8_short.current = 30.0;
+    net_8_short.has_percentile = true;
+    net_8_short.percentile = 0.05;
+    net_8_short.percentile_reference_count = 52;
+    net_8_short.change_unavailable_reason = CftcUnavailableReason::BrokenReportSequence;
+    result.concentration << net_8_short << gross_4_long; // engine order does not matter
+    const QVector<CftcConcentrationCell> cells = cftc_concentration_cells(result);
+    QCOMPARE(cells.size(), 8);
+    // Panel order: 4 then 8 largest; long gross, long net, short gross, short net.
+    const QStringList keys{QStringLiteral("concentration_gross_4_long"),  QStringLiteral("concentration_net_4_long"),
+                           QStringLiteral("concentration_gross_4_short"), QStringLiteral("concentration_net_4_short"),
+                           QStringLiteral("concentration_gross_8_long"),  QStringLiteral("concentration_net_8_long"),
+                           QStringLiteral("concentration_gross_8_short"), QStringLiteral("concentration_net_8_short")};
+    for (int i = 0; i < 8; ++i)
+        QCOMPARE(cells[i].field_key, keys[i]);
+    QVERIFY(cells[0].has_value);
+    QCOMPARE(cells[0].band, std::optional<CftcLevelBand>(CftcLevelBand::High));
+    QCOMPARE(cells[0].size, CftcChangeSize::Notable);
+    QCOMPARE(cells[0].tooltip,
+             QStringLiteral(
+                 "The 4 largest traders account for 21.4% of open interest on the long side (gross) — higher than "
+                 "82% of the previous 52 weekly reports. This week: +0.8 percentage points — a notable "
+                 "change, 1.3 times the typical one-week change of the last 52 weeks. Gross: each "
+                 "trader's whole long position."));
+    QCOMPARE(cells[7].band, std::optional<CftcLevelBand>(CftcLevelBand::VeryLow));
+    QVERIFY(!cells[7].has_change);
+    QCOMPARE(cells[7].size, CftcChangeSize::Unavailable);
+    QVERIFY2(cells[7].tooltip.contains(QStringLiteral("One-week change: ")), qPrintable(cells[7].tooltip));
+    QVERIFY(cells[7].tooltip.endsWith(
+        QStringLiteral("Net: after offsetting each trader's own long and short positions against each other.")));
+    // A figure the report does not carry stays absent, never zero.
+    QVERIFY(!cells[2].has_value);
+    QVERIFY(!cells[2].band.has_value());
+    QVERIFY(cells[2].tooltip.isEmpty());
+    // Through the engine: a constant top-4 share is NORMAL and an ordinary
+    // (zero) change against a reference without any change.
+    const CftcHistory history = parse(trending_rows());
+    const CftcInterpretationResult engine = interpret(history, history.observations.last().date.addDays(3));
+    const QVector<CftcConcentrationCell> engine_cells = cftc_concentration_cells(engine);
+    QVERIFY(engine_cells[0].has_value);
+    QCOMPARE(engine_cells[0].value, 20.0);
+    QCOMPARE(engine_cells[0].band, std::optional<CftcLevelBand>(CftcLevelBand::Normal));
+    QCOMPARE(engine_cells[0].size, CftcChangeSize::Ordinary);
+    QVERIFY2(engine_cells[0].tooltip.contains(
+                 QStringLiteral("This week: about unchanged — no change, as in the previous 52 weeks.")),
+             qPrintable(engine_cells[0].tooltip));
+    QVERIFY(!engine_cells[1].has_value); // the fixture carries no net figures
+    for (const auto& cell : engine_cells)
+        QVERIFY(!forbidden_vocabulary().match(cell.tooltip).hasMatch());
+}
+
+void TstCftcResearch::weekly_move_ranking_orders_by_size() {
+    auto row = [](const QString& key, double flow, std::optional<double> scale, CftcChangeSize size,
+                  CftcRowAvailability availability = CftcRowAvailability::Current) {
+        CftcMarketRow r;
+        r.market_key = key;
+        r.label = key;
+        r.availability = availability;
+        r.net_flow_1w = flow;
+        r.rank_1w = scale ? std::erf(*scale / std::sqrt(2.0)) : 1.0;
+        r.scale_1w = scale;
+        r.size_1w = size;
+        r.flow_1w = CftcFlowType::Quiet;
+        r.size_text_1w = QStringLiteral("size");
+        return r;
+    };
+    QVector<CftcMarketRow> rows{
+        row(QStringLiteral("a"), 1.0, 2.0, CftcChangeSize::Large),
+        row(QStringLiteral("b"), 3.0, 1.2, CftcChangeSize::Notable),
+        row(QStringLiteral("c"), 0.5, std::nullopt, CftcChangeSize::Large), // after a year without any change
+        row(QStringLiteral("d"), -2.0, 1.7, CftcChangeSize::Large),
+        row(QStringLiteral("e"), -0.4, 0.3, CftcChangeSize::Ordinary),
+        row(QStringLiteral("j"), -1.0, 0.3, CftcChangeSize::Ordinary), // same multiple as e, larger change
+        row(QStringLiteral("old"), 5.0, 3.0, CftcChangeSize::Large, CftcRowAvailability::Old),
+        row(QStringLiteral("zero"), 0.0, 0.0, CftcChangeSize::Ordinary),
+        row(QStringLiteral("not_covered"), 1.0, 1.0, CftcChangeSize::Ordinary, CftcRowAvailability::NotCovered),
+    };
+    CftcMarketRow unsized = row(QStringLiteral("unsized"), 2.0, 1.0, CftcChangeSize::Unavailable);
+    unsized.rank_1w.reset();
+    rows << unsized;
+    const CftcMoveRanking ranking = cftc_weekly_move_ranking(rows);
+    QStringList rises;
+    for (const auto& bar : ranking.rises)
+        rises << bar.market_key;
+    QStringList falls;
+    for (const auto& bar : ranking.falls)
+        falls << bar.market_key;
+    QCOMPARE(rises, (QStringList{QStringLiteral("c"), QStringLiteral("a"), QStringLiteral("b")}));
+    QCOMPARE(falls, (QStringList{QStringLiteral("d"), QStringLiteral("j"), QStringLiteral("e")}));
+    QCOMPARE(ranking.rises[1].tooltip, QStringLiteral("a: net position +1.0% of open interest since the previous "
+                                                      "report (QUIET) — size."));
+    const CftcMoveRanking capped = cftc_weekly_move_ranking(rows, 2);
+    QCOMPARE(capped.rises.size(), 2);
+    QCOMPARE(capped.falls.size(), 2);
+    QCOMPARE(capped.rises.first().market_key, QStringLiteral("c"));
+    // Through the model: a steady +0.1 a week is one typical weekly change.
+    QJsonObject payload;
+    payload[QStringLiteral("report_family")] = QStringLiteral("legacy");
+    payload[QStringLiteral("report_basis")] = QStringLiteral("futures_only");
+    QJsonObject gold;
+    gold[QStringLiteral("market_key")] = QStringLiteral("gold");
+    gold[QStringLiteral("contract_code")] = QStringLiteral("088691");
+    gold[QStringLiteral("status")] = QStringLiteral("current");
+    gold[QStringLiteral("rows")] = trending_rows();
+    payload[QStringLiteral("markets")] = QJsonArray{gold};
+    const CftcMonitorModel model =
+        cftc_parse_monitor_payload(payload, CftcFamily::Legacy, true, QDate(2022, 1, 4).addDays(7 * 199 + 3),
+                                   cftc_principal_participant_key(CftcFamily::Legacy));
+    const CftcMoveRanking engine = cftc_weekly_move_ranking(cftc_market_rows(model.entries));
+    QCOMPARE(engine.rises.size(), 1);
+    QVERIFY(engine.falls.isEmpty());
+    QVERIFY(engine.rises.first().has_scale);
+    QVERIFY(qAbs(engine.rises.first().scale - 1.0) < 1e-9);
+    QVERIFY(qAbs(engine.rises.first().net_flow - 0.1) < 1e-9);
+    QCOMPARE(engine.rises.first().size, CftcChangeSize::Ordinary);
+}
+
+void TstCftcResearch::market_table_carries_percentiles_and_concentration() {
+    const CftcHistory history = parse(trending_rows(60));
+    const QStringList columns = cftc_market_table_columns(CftcFamily::Legacy);
+    QCOMPARE(columns.mid(0, 6),
+             (QStringList{QStringLiteral("date"), QStringLiteral("open interest"), QStringLiteral("Commercial long"),
+                          QStringLiteral("Commercial short"), QStringLiteral("Commercial net %OI"),
+                          QStringLiteral("Commercial 52-week percentile")}));
+    for (const QString& column :
+         {QStringLiteral("top-4 gross long %OI"), QStringLiteral("top-4 net short %OI"),
+          QStringLiteral("top-8 gross short %OI"), QStringLiteral("top-8 net long %OI"), QStringLiteral("traders")})
+        QVERIFY2(columns.contains(column), qPrintable(column));
+    const QJsonArray rows = cftc_market_table_rows(history.observations, CftcFamily::Legacy);
+    QCOMPARE(rows.size(), history.observations.size());
+    const QJsonObject newest = rows.first().toObject();
+    QCOMPARE(newest.value(QStringLiteral("date")).toString(), history.observations.last().date.toString(Qt::ISODate));
+    // The 52-week percentile is the engine helper's value, in percent.
+    const QVector<CftcSeriesPoint> series = cftc_percentile_series(history.observations, 1);
+    QVERIFY(series.last().has_value);
+    QCOMPARE(newest.value(QStringLiteral("Non-Commercial 52-week percentile")).toDouble(),
+             std::round(series.last().value * 1000.0) / 10.0);
+    QCOMPARE(newest.value(QStringLiteral("Non-Commercial 52-week percentile")).toDouble(), 100.0);
+    // Before 52 earlier readings exist there is no percentile: the key is absent, not zero.
+    const QJsonObject oldest = rows.last().toObject();
+    QVERIFY(!oldest.contains(QStringLiteral("Non-Commercial 52-week percentile")));
+    QVERIFY(rows.at(rows.size() - 53).toObject().contains(QStringLiteral("Non-Commercial 52-week percentile")));
+    QVERIFY(!rows.at(rows.size() - 52).toObject().contains(QStringLiteral("Non-Commercial 52-week percentile")));
+    // Concentration: the fixture's gross top-4 figures; net figures it does not carry are absent.
+    QCOMPARE(newest.value(QStringLiteral("top-4 gross long %OI")).toDouble(), 20.0);
+    QCOMPARE(newest.value(QStringLiteral("top-4 gross short %OI")).toDouble(), 30.0);
+    QVERIFY(!newest.contains(QStringLiteral("top-4 net long %OI")));
 }
 
 QTEST_GUILESS_MAIN(TstCftcResearch)

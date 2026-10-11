@@ -436,6 +436,20 @@ void CftcPanel::build_overview_page() {
     map_layout->addWidget(map_);
     layout->addWidget(map_card_);
 
+    moves_card_ = card(overview_content_, QStringLiteral("cftcMovesCard"));
+    auto* moves_layout = new QVBoxLayout(moves_card_);
+    moves_layout->setContentsMargins(12, 10, 12, 12);
+    moves_layout->setSpacing(6);
+    moves_title_ = heading(moves_card_, QString());
+    moves_hint_ = note(moves_card_);
+    moves_ = new CftcMovesChart(moves_card_);
+    moves_->setObjectName("cftcMoves");
+    connect(moves_, &CftcMovesChart::marketActivated, this, [this](const QString& key) { open_market(key, false); });
+    moves_layout->addWidget(moves_title_);
+    moves_layout->addWidget(moves_hint_);
+    moves_layout->addWidget(moves_);
+    layout->addWidget(moves_card_);
+
     auto* board_card = card(overview_content_, QStringLiteral("cftcBoardCard"));
     auto* board_layout = new QVBoxLayout(board_card);
     board_layout->setContentsMargins(12, 10, 12, 12);
@@ -554,6 +568,27 @@ void CftcPanel::build_market_page() {
     participants->addStretch(1);
     layout->addWidget(top);
     market_sections_ << top;
+
+    auto* concentration_card = card(market_content_, QStringLiteral("cftcConcentrationCard"));
+    auto* concentration = new QVBoxLayout(concentration_card);
+    concentration->setContentsMargins(14, 10, 14, 12);
+    concentration->setSpacing(6);
+    concentration_title_ = heading(concentration_card, QString());
+    concentration_hint_ = note(concentration_card, QStringLiteral("cftcConcentrationHint"));
+    concentration_scroll_ = new QScrollArea(concentration_card);
+    concentration_scroll_->setObjectName("cftcConcentrationScroll");
+    concentration_scroll_->setFrameShape(QFrame::NoFrame);
+    concentration_scroll_->setWidgetResizable(true);
+    concentration_scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    concentration_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    concentration_ = new CftcConcentrationGrid(concentration_scroll_);
+    concentration_->setObjectName("cftcConcentration");
+    concentration_scroll_->setWidget(concentration_);
+    concentration->addWidget(concentration_title_);
+    concentration->addWidget(concentration_hint_);
+    concentration->addWidget(concentration_scroll_);
+    layout->addWidget(concentration_card);
+    market_sections_ << concentration_card;
 
     auto* history_card = card(market_content_, QStringLiteral("cftcHistoryCard"));
     auto* history = new QVBoxLayout(history_card);
@@ -692,6 +727,17 @@ void CftcPanel::apply_texts() {
         map_hint_->setText(tr("Each tile is a market, placed by where the speculators' net position sits among its "
                               "previous 52 weekly reports. Left edge: green BULLISH, red BEARISH, grey NEUTRAL. "
                               "Hover a tile for the details; click it to open the market."));
+    if (moves_hint_)
+        moves_hint_->setText(tr("The speculators' net change since the previous report, ranked by how many typical "
+                                "weekly changes it is (the typical size of their previous 52 weekly changes). "
+                                "Guides: NOTABLE at about 1.15, LARGE at about 1.65. Each bar also shows the change as "
+                                "a share of open interest. Click a bar to open the market."));
+    if (concentration_hint_)
+        concentration_hint_->setText(tr("Share of open interest held by the largest traders, as the CFTC publishes "
+                                        "it for each report. Gross: each trader's whole position on that side. Net: "
+                                        "after offsetting each trader's own long and short positions against each "
+                                        "other. Level: against the previous 52 weekly reports. Change: since the "
+                                        "previous report, in percentage points."));
     if (board_title_)
         board_title_->setText(tr("ALL GROUPS"));
     if (board_hint_)
@@ -1033,7 +1079,7 @@ void CftcPanel::render_overview() {
         return row.availability == CftcRowAvailability::Current || row.availability == CftcRowAvailability::Stored ||
                row.availability == CftcRowAvailability::Old;
     });
-    for (QWidget* section : {kpi_row_, class_bar_, static_cast<QWidget*>(map_card_),
+    for (QWidget* section : {kpi_row_, class_bar_, static_cast<QWidget*>(map_card_), static_cast<QWidget*>(moves_card_),
                              overview_content_->findChild<QWidget*>(QStringLiteral("cftcBoardCard"))})
         if (section)
             section->setVisible(any_report);
@@ -1054,6 +1100,11 @@ void CftcPanel::render_overview() {
     const QVector<CftcMarketRow> shown = visible_rows();
     if (map_)
         map_->set_rows(shown, cftc_group_name(family_, cftc_principal_participant_key(family_)));
+    if (moves_) {
+        moves_title_->setText(tr("LARGEST WEEKLY CHANGES · %1 · SIZE AGAINST THE TYPICAL WEEKLY CHANGE")
+                                  .arg(cftc_group_name(family_, cftc_principal_participant_key(family_)).toUpper()));
+        moves_->set_ranking(cftc_weekly_move_ranking(shown));
+    }
     QVector<CftcBoardRow> board_rows;
     for (const QString& asset_class : services::cftc_asset_class_order()) {
         bool heading_added = false;
@@ -1298,7 +1349,7 @@ QJsonArray CftcPanel::overview_table_rows() const {
         if (row.oi_change_4r)
             object[tr("open interest 4w %")] = std::round(*row.oi_change_4r * 100.0) / 100.0;
         if (row.concentration_long)
-            object[tr("top-4 long %OI")] = *row.concentration_long;
+            object[tr("top-4 gross long %OI")] = *row.concentration_long;
         out.append(object);
     }
     return out;
@@ -1310,7 +1361,7 @@ QStringList CftcPanel::overview_table_columns() const {
         const QString name = cftc_group_name(family_, participant.key);
         columns << name + tr(" net %OI") << name + tr(" percentile");
     }
-    columns << tr("open interest") << tr("open interest 4w %") << tr("top-4 long %OI");
+    columns << tr("open interest") << tr("open interest 4w %") << tr("top-4 gross long %OI");
     return columns;
 }
 
@@ -1447,6 +1498,7 @@ void CftcPanel::render_market() {
     render_market_header();
     render_readings();
     render_participant_bars();
+    render_concentration();
     render_history();
     render_flows();
     render_tables();
@@ -1703,20 +1755,19 @@ void CftcPanel::render_participant_bars() {
                 oi += tr(" (%1 this week)").arg(cftc_signed_pct(reading.oi_change));
         meta << oi;
     }
-    if (latest.concentration_gross_4_long || latest.concentration_gross_4_short) {
-        QStringList conc;
-        if (latest.concentration_gross_4_long)
-            conc << tr("long %1").arg(cftc_abs_pct(*latest.concentration_gross_4_long));
-        if (latest.concentration_gross_4_short)
-            conc << tr("short %1").arg(cftc_abs_pct(*latest.concentration_gross_4_short));
-        meta << tr("4 largest traders: %1 of open interest").arg(conc.join(QStringLiteral(", ")));
-    }
     if (latest.traders_total)
         meta << tr("%1 reportable traders").arg(cftc_contracts(*latest.traders_total));
     meta << tr("Bars: long and short positions as a share of open interest; diamond = net. Track: percentile vs the "
                "previous 52 weekly reports (hollow = 4 and 13 weeks ago). 1W Δ: net change since the previous "
                "report, as a share of that report's open interest.");
     participants_meta_->setText(meta.join(QStringLiteral("  ·  ")));
+}
+
+void CftcPanel::render_concentration() {
+    concentration_->set_cells(cftc_concentration_cells(result_));
+    concentration_scroll_->setFixedHeight(concentration_->height() + 14); // room for the sideways scrollbar
+    concentration_title_->setText(tr("CONCENTRATION · REPORT OF %1 · LARGEST TRADERS' SHARE OF OPEN INTEREST")
+                                      .arg(result_.report_date.toString(Qt::ISODate)));
 }
 
 void CftcPanel::render_history() {
@@ -1956,43 +2007,11 @@ void CftcPanel::set_range(int years) {
 }
 
 QJsonArray CftcPanel::market_table_rows() const {
-    QJsonArray out;
-    const auto participants = services::cftc_family_participants(family_);
-    for (int r = history_.observations.size() - 1; r >= 0; --r) {
-        const CftcObservation& obs = history_.observations[r];
-        QJsonObject row;
-        row[QStringLiteral("date")] = obs.date.toString(Qt::ISODate);
-        if (obs.open_interest)
-            row[tr("open interest")] = *obs.open_interest;
-        for (int p = 0; p < participants.size(); ++p) {
-            const QString name = cftc_group_name(family_, participants[p].key);
-            const services::CftcPositionMetrics m = services::cftc_position_metrics(obs, p);
-            if (m.has_long)
-                row[name + tr(" long")] = m.long_leg;
-            if (m.has_short)
-                row[name + tr(" short")] = m.short_leg;
-            if (m.has_net_pct_oi)
-                row[name + tr(" net %OI")] = std::round(m.net_pct_oi * 100.0) / 100.0;
-        }
-        if (obs.concentration_gross_4_long)
-            row[tr("top-4 long %OI")] = *obs.concentration_gross_4_long;
-        if (obs.concentration_gross_4_short)
-            row[tr("top-4 short %OI")] = *obs.concentration_gross_4_short;
-        if (obs.traders_total)
-            row[tr("traders")] = *obs.traders_total;
-        out.append(row);
-    }
-    return out;
+    return cftc_market_table_rows(history_.observations, family_);
 }
 
 QStringList CftcPanel::market_table_columns() const {
-    QStringList columns{QStringLiteral("date"), tr("open interest")};
-    for (const auto& participant : services::cftc_family_participants(family_)) {
-        const QString name = cftc_group_name(family_, participant.key);
-        columns << name + tr(" long") << name + tr(" short") << name + tr(" net %OI");
-    }
-    columns << tr("top-4 long %OI") << tr("top-4 short %OI") << tr("traders");
-    return columns;
+    return cftc_market_table_columns(family_);
 }
 
 // ── Price context ───────────────────────────────────────────────────────────

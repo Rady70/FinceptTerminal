@@ -51,7 +51,9 @@ namespace fincept::screens {
 
 class CftcPositioningBoard;
 class CftcPositioningMap;
+class CftcMovesChart;
 class CftcReadingsGrid;
+class CftcConcentrationGrid;
 class CftcParticipantBars;
 class CftcHistoryChart;
 class CftcFlowStrip;
@@ -123,6 +125,7 @@ class CftcPanel : public EconPanelBase {
     void render_market_header();
     void render_readings();
     void render_participant_bars();
+    void render_concentration();
     void render_history();
     void render_flows();
     void render_tables();
@@ -217,6 +220,10 @@ class CftcPanel : public EconPanelBase {
     QLabel* map_title_ = nullptr;
     QLabel* map_hint_ = nullptr;
     CftcPositioningMap* map_ = nullptr;
+    QFrame* moves_card_ = nullptr;
+    QLabel* moves_title_ = nullptr;
+    QLabel* moves_hint_ = nullptr;
+    CftcMovesChart* moves_ = nullptr;
     QLabel* board_title_ = nullptr;
     QLabel* board_hint_ = nullptr;
     QScrollArea* board_scroll_ = nullptr;
@@ -238,6 +245,10 @@ class CftcPanel : public EconPanelBase {
     QLabel* conclusion_title_ = nullptr;
     CftcReadingsGrid* readings_ = nullptr;
     QScrollArea* readings_scroll_ = nullptr;
+    QLabel* concentration_title_ = nullptr;
+    QLabel* concentration_hint_ = nullptr;
+    QScrollArea* concentration_scroll_ = nullptr;
+    CftcConcentrationGrid* concentration_ = nullptr;
     QLabel* conclusion_footnote_ = nullptr;
     QFrame* participants_card_ = nullptr;
     QLabel* participants_title_ = nullptr;

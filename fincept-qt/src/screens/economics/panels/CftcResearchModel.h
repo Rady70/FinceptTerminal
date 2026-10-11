@@ -18,6 +18,8 @@
 
 #include <QCoreApplication>
 #include <QDate>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -73,7 +75,10 @@ struct CftcMarketRow {
     CftcSideFlip flip;
     CftcFlowType flow_1w = CftcFlowType::Unavailable;
     CftcChangeSize size_1w = CftcChangeSize::Unavailable;
-    bool turning = false; ///< the speculators moved out of, or fell back from, a 10% tail
+    std::optional<double> rank_1w;  ///< size rank of the one-week net change
+    std::optional<double> scale_1w; ///< |one-week net change| / typical one-week change
+    QString size_text_1w;           ///< the size in words, with its multiple
+    bool turning = false;           ///< the speculators moved out of, or fell back from, a 10% tail
     QString turning_reason;
 
     QVector<CftcMatrixCell> cells; ///< every participant, family order
@@ -185,8 +190,16 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
             if (reading.horizon_reports != 1)
                 continue;
             row.flow_1w = cftc_flow_type(reading, config);
-            if (reading.evaluated)
+            if (reading.evaluated) {
                 row.size_1w = cftc_change_size(reading.has_net_rank, reading.net_rank, config);
+                if (reading.has_net_rank) {
+                    row.rank_1w = reading.net_rank;
+                    row.size_text_1w =
+                        cftc_move_size_text(reading.net_rank, 1, reading.has_net_scale, reading.net_scale, config);
+                }
+                if (reading.has_net_scale)
+                    row.scale_1w = reading.net_scale;
+            }
         }
         if (const services::CftcParticipantTrail* trail = detail::entry_trail(entry, p.participant_key)) {
             row.percentile_1r = trail->percentile_1r;
@@ -327,6 +340,131 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
         }
     }
     return figures;
+}
+
+// ── Largest weekly changes ──────────────────────────────────────────────────
+
+/// One market of the weekly-change ranking: the speculators' one-week net
+/// change and its size against their typical one-week change.
+struct CftcMoveBar {
+    QString market_key;
+    QString label;
+    double net_flow = 0.0; ///< % of the previous report's open interest
+    double rank = 0.0;     ///< the engine's size rank
+    bool has_scale = false;
+    double scale = 0.0; ///< |net_flow| / typical one-week change
+    CftcChangeSize size = CftcChangeSize::Unavailable;
+    CftcFlowType flow = CftcFlowType::Unavailable;
+    QString tooltip;
+};
+
+struct CftcMoveRanking {
+    QVector<CftcMoveBar> rises; ///< net position rose (longs added or shorts covered), largest first
+    QVector<CftcMoveBar> falls; ///< net position fell, largest first
+};
+
+/// Ranks the markets' one-week net changes by size: the multiple of the
+/// typical one-week change, a change against a reference without any change
+/// first, then the larger change as a share of open interest. Markets without
+/// a current report (an old one is not this week's change) or without a sized
+/// one-week change are left out, and so is a change of exactly zero.
+inline CftcMoveRanking cftc_weekly_move_ranking(const QVector<CftcMarketRow>& rows, int per_side = 8) {
+    CftcMoveRanking out;
+    for (const auto& row : rows) {
+        if ((row.availability != CftcRowAvailability::Current && row.availability != CftcRowAvailability::Stored) ||
+            !row.net_flow_1w || *row.net_flow_1w == 0.0 || !row.rank_1w)
+            continue;
+        CftcMoveBar bar;
+        bar.market_key = row.market_key;
+        bar.label = row.label;
+        bar.net_flow = *row.net_flow_1w;
+        bar.rank = *row.rank_1w;
+        bar.has_scale = row.scale_1w.has_value();
+        bar.scale = row.scale_1w.value_or(0.0);
+        bar.size = row.size_1w;
+        bar.flow = row.flow_1w;
+        bar.tooltip = cftc_text_tr("%1: net position %2 of open interest since the previous report%3 — %4.")
+                          .arg(row.label, cftc_signed_pct(bar.net_flow),
+                               bar.flow == CftcFlowType::Unavailable
+                                   ? QString()
+                                   : QStringLiteral(" (") + cftc_flow_label(bar.flow) + QLatin1Char(')'),
+                               row.size_text_1w);
+        (bar.net_flow > 0.0 ? out.rises : out.falls) << bar;
+    }
+    auto larger = [](const CftcMoveBar& a, const CftcMoveBar& b) {
+        if (a.has_scale != b.has_scale)
+            return !a.has_scale; // a change after a year without any change
+        if (a.has_scale && a.scale != b.scale)
+            return a.scale > b.scale;
+        if (std::fabs(a.net_flow) != std::fabs(b.net_flow))
+            return std::fabs(a.net_flow) > std::fabs(b.net_flow);
+        return a.label < b.label;
+    };
+    for (QVector<CftcMoveBar>* side : {&out.rises, &out.falls}) {
+        std::sort(side->begin(), side->end(), larger);
+        if (side->size() > per_side)
+            side->resize(per_side);
+    }
+    return out;
+}
+
+// ── Concentration ───────────────────────────────────────────────────────────
+
+/// One of the CFTC's eight published concentration figures for the latest
+/// report: the share of open interest held by the 4 or 8 largest traders on
+/// one side, gross or net of each trader's own opposite positions, with the
+/// engine's level among the previous 52 reports and its one-week change.
+struct CftcConcentrationCell {
+    QString field_key;
+    int traders = 4;
+    bool long_side = true;
+    bool net = false;
+    bool has_value = false;
+    double value = 0.0; ///< % of open interest
+    std::optional<double> percentile;
+    std::optional<CftcLevelBand> band;
+    bool has_change = false;
+    double change = 0.0; ///< percentage points since the previous weekly report
+    CftcChangeSize size = CftcChangeSize::Unavailable;
+    QString tooltip;
+};
+
+/// The eight cells in panel order: the 4 then the 8 largest traders, each
+/// long gross, long net, short gross, short net. A figure the report does not
+/// carry stays absent.
+inline QVector<CftcConcentrationCell> cftc_concentration_cells(const services::CftcInterpretationResult& result) {
+    QVector<CftcConcentrationCell> out;
+    for (int traders : {4, 8}) {
+        for (bool long_side : {true, false}) {
+            for (bool net : {false, true}) {
+                CftcConcentrationCell cell;
+                cell.traders = traders;
+                cell.long_side = long_side;
+                cell.net = net;
+                cell.field_key = QStringLiteral("concentration_%1_%2_%3")
+                                     .arg(net ? QStringLiteral("net") : QStringLiteral("gross"))
+                                     .arg(traders)
+                                     .arg(long_side ? QStringLiteral("long") : QStringLiteral("short"));
+                for (const auto& a : result.concentration) {
+                    if (a.field_key != cell.field_key)
+                        continue;
+                    cell.has_value = a.has_current;
+                    cell.value = a.current;
+                    if (a.has_current && a.has_percentile) {
+                        cell.percentile = a.percentile;
+                        cell.band = cftc_level_band(a.percentile, result.config);
+                    }
+                    cell.has_change = a.has_change;
+                    cell.change = a.change;
+                    if (a.has_change)
+                        cell.size = cftc_change_size(a.has_change_rank, a.change_rank, result.config);
+                    cell.tooltip = cftc_concentration_statement(traders, long_side, net, a, result.config);
+                }
+                out << cell;
+            }
+        }
+    }
+    return out;
 }
 
 // ── Single-market series ────────────────────────────────────────────────────
@@ -504,6 +642,74 @@ inline CftcHistoricalContext cftc_historical_context(const QVector<services::Cft
             out.beyond_found = true;
             break;
         }
+    }
+    return out;
+}
+
+// ── Raw table ───────────────────────────────────────────────────────────────
+
+/// Column name of a concentration field in the raw table: "top-4 gross long %OI".
+inline QString cftc_concentration_column(const QString& field_key) {
+    // field keys: concentration_<gross|net>_<4|8>_<long|short>
+    const QStringList parts = field_key.split(QLatin1Char('_'));
+    if (parts.size() != 4)
+        return field_key;
+    return cftc_text_tr("top-%1 %2 %3 %OI").arg(parts[2], parts[1], parts[3]);
+}
+
+/// The market TABLE columns: date, open interest; for every group its long and
+/// short contracts, Net %OI and the 52-week percentile of Net %OI; the CFTC's
+/// eight concentration figures; reportable traders.
+inline QStringList cftc_market_table_columns(services::CftcFamily family) {
+    QStringList columns{QStringLiteral("date"), cftc_text_tr("open interest")};
+    for (const auto& participant : services::cftc_family_participants(family)) {
+        const QString name = cftc_group_name(family, participant.key);
+        columns << name + cftc_text_tr(" long") << name + cftc_text_tr(" short") << name + cftc_text_tr(" net %OI")
+                << name + cftc_text_tr(" 52-week percentile");
+    }
+    for (const QString& field : services::cftc_concentration_field_keys())
+        columns << cftc_concentration_column(field);
+    columns << cftc_text_tr("traders");
+    return columns;
+}
+
+/// The market TABLE rows, newest report first. The percentile is the engine's
+/// strictly trailing 52-report percentile (cftc_percentile_series), in
+/// percent; it is absent until 52 earlier readings exist. Absent values are
+/// left out of a row, never written as zero.
+inline QJsonArray cftc_market_table_rows(const QVector<services::CftcObservation>& observations,
+                                         services::CftcFamily family) {
+    QJsonArray out;
+    const auto participants = services::cftc_family_participants(family);
+    QVector<QVector<CftcSeriesPoint>> percentiles;
+    for (int p = 0; p < participants.size(); ++p)
+        percentiles << cftc_percentile_series(observations, p);
+    const QStringList fields = services::cftc_concentration_field_keys();
+    for (int r = static_cast<int>(observations.size()) - 1; r >= 0; --r) {
+        const services::CftcObservation& obs = observations[r];
+        QJsonObject row;
+        row[QStringLiteral("date")] = obs.date.toString(Qt::ISODate);
+        if (obs.open_interest)
+            row[cftc_text_tr("open interest")] = *obs.open_interest;
+        for (int p = 0; p < participants.size(); ++p) {
+            const QString name = cftc_group_name(family, participants[p].key);
+            const services::CftcPositionMetrics m = services::cftc_position_metrics(obs, p);
+            if (m.has_long)
+                row[name + cftc_text_tr(" long")] = m.long_leg;
+            if (m.has_short)
+                row[name + cftc_text_tr(" short")] = m.short_leg;
+            if (m.has_net_pct_oi)
+                row[name + cftc_text_tr(" net %OI")] = std::round(m.net_pct_oi * 100.0) / 100.0;
+            const CftcSeriesPoint& percentile = percentiles[p][r];
+            if (percentile.has_value)
+                row[name + cftc_text_tr(" 52-week percentile")] = std::round(percentile.value * 1000.0) / 10.0;
+        }
+        for (const QString& field : fields)
+            if (const std::optional<double> value = services::cftc_concentration_value(obs, field))
+                row[cftc_concentration_column(field)] = *value;
+        if (obs.traders_total)
+            row[cftc_text_tr("traders")] = *obs.traders_total;
+        out.append(row);
     }
     return out;
 }

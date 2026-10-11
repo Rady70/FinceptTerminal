@@ -733,6 +733,10 @@ struct CftcConcentrationAssessment {
     bool has_change_rank = false;
     double change_rank = 0.0;
     int change_reference_count = 0;
+    /// v3 size of the weekly change: |change| / typical one-report change
+    /// (absent for a reference without any change, and in the v2 preset).
+    bool has_change_scale = false;
+    double change_scale = 0.0;
 };
 
 struct CftcInterpretationInput {
@@ -2489,6 +2493,8 @@ inline void cftc_interpret_concentration(const QVector<CftcObservation>& history
                 if (rank.available) {
                     assessment.change_rank = rank.rank;
                     assessment.change_reference_count = rank.reference_count;
+                    assessment.has_change_scale = rank.has_scale;
+                    assessment.change_scale = rank.scale;
                 }
             }
         }
