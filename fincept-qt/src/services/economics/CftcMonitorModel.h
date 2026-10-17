@@ -280,6 +280,87 @@ inline QVector<CftcMonitorHistoryPoint> cftc_monitor_history_series(const QVecto
     return out;
 }
 
+/// One participant's recent Net %OI path and its historical percentile at the
+/// latest report and 1, 4 and 13 weeks earlier (absent unless every report in
+/// between is a weekly neighbour, so "4 weeks ago" is never further back than
+/// four weeks). Every percentile uses the
+/// engine's own strictly trailing helper (cftc_trailing_percentile_at over the
+/// previous config.history_window valid reports; 52 in rule set v3), so a past
+/// reading is what the engine would have reported on that date; a reading the
+/// history cannot form stays absent.
+struct CftcParticipantTrail {
+    QString participant_key;
+    QVector<CftcMonitorHistoryPoint> net_pct_oi; ///< ascending, at most kCftcMonitorHistoryMaxPoints
+    std::optional<double> percentile_now;
+    std::optional<double> percentile_1r;
+    std::optional<double> percentile_4r;
+    std::optional<double> percentile_13r;
+    /// Consecutive reports, ending at the latest, whose percentile is in the
+    /// same 10% tail as the latest one (0 when the latest is not in a tail).
+    int tail_run_reports = 0;
+    bool tail_run_capped = false; ///< the run reaches the start of the computable window
+};
+
+inline CftcParticipantTrail cftc_participant_trail(const QVector<CftcObservation>& observations, int participant_index,
+                                                   const QString& participant_key,
+                                                   const CftcInterpretationConfig& config) {
+    CftcParticipantTrail trail;
+    trail.participant_key = participant_key;
+    trail.net_pct_oi = cftc_monitor_history_series(observations, participant_index);
+    const int last = static_cast<int>(observations.size()) - 1;
+    if (last < 0)
+        return trail;
+    // One pass over the Net %OI series: the percentile of each of the last
+    // reports against its own previous `window` valid readings.
+    const QVector<CftcDatedValue> series =
+        cftc_metric_series(observations, participant_index, CftcMetricKind::NetPctOi);
+    auto percentile_of = [&](int index) -> std::optional<double> {
+        if (index < 0 || index > last)
+            return std::nullopt;
+        const CftcTrailingPercentile p =
+            cftc_trailing_percentile_at(series, observations[index].date, config.history_window);
+        return p.available ? std::optional<double>(p.percentile) : std::nullopt;
+    };
+    // The earlier readings are shown as "1, 4 and 13 weeks ago", so each needs
+    // an unbroken weekly run back to it (as every k-report flow does); across a
+    // gap the reading k reports back is not k weeks back and stays absent.
+    auto weeks_ago = [&](int weeks) -> std::optional<double> {
+        if (last - weeks < 0 || !cftc_report_sequence_continuous(observations, last - weeks, last))
+            return std::nullopt;
+        return percentile_of(last - weeks);
+    };
+    trail.percentile_now = percentile_of(last);
+    trail.percentile_1r = weeks_ago(1);
+    trail.percentile_4r = weeks_ago(4);
+    trail.percentile_13r = weeks_ago(13);
+    if (trail.percentile_now) {
+        const bool high = *trail.percentile_now >= config.extreme_percentile;
+        const bool low = *trail.percentile_now <= config.low_extreme_percentile;
+        if (high || low) {
+            int run = 0;
+            int index = last;
+            for (; index >= 0; --index) {
+                const std::optional<double> p = percentile_of(index);
+                if (!p)
+                    break; // the run reaches the start of the computable window
+                if ((high && *p < config.extreme_percentile) || (low && *p > config.low_extreme_percentile)) {
+                    index = -2; // ended by a report outside the tail
+                    break;
+                }
+                ++run;
+                // Consecutive means consecutive weekly reports.
+                if (index > 0 && !cftc_weekly_neighbour(observations[index - 1].date, observations[index].date)) {
+                    index = -2;
+                    break;
+                }
+            }
+            trail.tail_run_reports = run;
+            trail.tail_run_capped = index != -2;
+        }
+    }
+    return trail;
+}
+
 struct CftcMonitorEntry {
     QString market_key;
     QString label;
@@ -329,6 +410,17 @@ struct CftcMonitorEntry {
     QVector<CftcInterpretationState> market_states;
     QVector<CftcAlert> alerts;
     bool requires_attention = false;
+
+    /// The complete engine result for the latest report (every participant,
+    /// Open Interest, concentration and unavailable records). Empty when the
+    /// market was not interpreted.
+    CftcInterpretationResult result;
+    /// Per-participant Net %OI path and percentile trail, family order.
+    QVector<CftcParticipantTrail> trails;
+    /// Provider reports the parser set aside, each with its reason, and the
+    /// reports that did not state their basis (see cftc_apply_report_basis).
+    QVector<CftcSetAsideReport> set_aside;
+    int basis_inherited = 0;
 };
 
 struct CftcMonitorModel {
@@ -640,16 +732,19 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
             continue;
         }
 
-        const CftcHistory history = cftc_parse_history(rows, family);
+        CftcHistory history = cftc_parse_history(rows, family);
         if (!history.error.isEmpty()) {
             entry.status = CftcMonitorStatus::Unavailable;
             entry.status_detail = history.error;
+            entry.set_aside = history.set_aside;
             entry.alerts = cftc_build_alerts(entry);
             entry.requires_attention = !entry.alerts.isEmpty();
             model.entries.append(entry);
             continue;
         }
-        const QString basis_error = cftc_history_basis_error(history.observations, futures_only);
+        const QString basis_error = cftc_apply_report_basis(history, futures_only);
+        entry.set_aside = history.set_aside;
+        entry.basis_inherited = history.basis_inherited;
         if (!basis_error.isEmpty()) {
             entry.status = CftcMonitorStatus::Unavailable;
             entry.status_detail = basis_error;
@@ -706,6 +801,13 @@ inline CftcMonitorModel cftc_parse_monitor_payload(const QJsonObject& data, Cftc
         input.evaluation_date = evaluation_date;
         input.config = cftc_default_interpretation_config();
         const CftcInterpretationResult result = cftc_interpret(input);
+        entry.result = result;
+        {
+            const QVector<CftcParticipant> participants = cftc_family_participants(family);
+            entry.trails.reserve(participants.size());
+            for (int i = 0; i < participants.size(); ++i)
+                entry.trails.append(cftc_participant_trail(merged.observations, i, participants[i].key, input.config));
+        }
 
         entry.interpreted = true;
         entry.report_date = result.report_date;

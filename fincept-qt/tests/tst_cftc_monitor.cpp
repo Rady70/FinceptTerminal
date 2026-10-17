@@ -481,18 +481,22 @@ void TstCftcMonitor::payload_identity_fails_closed() {
                                         cftc_principal_participant_key(CftcFamily::Legacy))
                  .error.isEmpty());
 
-    // A duplicate report date in the rows makes the market unavailable.
+    // Two different rows for one report date: that report is set aside and
+    // named, and the market is still interpreted from its other reports.
     QJsonArray duplicated = to_array(rows, 0, 2);
-    duplicated.append(rows.first());
+    QJsonObject conflicting = rows.first();
+    conflicting[QStringLiteral("open_interest_all")] = 999999.0;
+    duplicated.append(conflicting);
     const CftcMonitorModel duplicate_model = cftc_parse_monitor_payload(
         make_payload(QJsonArray{make_market(QStringLiteral("gold"), QStringLiteral("updated"), duplicated)}),
         CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(duplicate_model.entries.size(), 1);
-    QCOMPARE(duplicate_model.entries.first().status, CftcMonitorStatus::Unavailable);
-    QVERIFY(!duplicate_model.entries.first().status_detail.isEmpty());
+    QCOMPARE(duplicate_model.entries.first().set_aside.size(), 1);
+    QVERIFY(duplicate_model.entries.first().interpreted);
 
-    // Rows without the published basis metadata are refused exactly as the
-    // detailed workspace refuses them.
+    // Rows without the published basis metadata come from a basis-specific
+    // source: they take its basis (counted) and the market is interpreted;
+    // the detailed workspace applies the same rule.
     QJsonArray missing_basis = to_array(rows, 0, 10);
     for (int i = 0; i < missing_basis.size(); ++i) {
         QJsonObject row = missing_basis.at(i).toObject();
@@ -503,7 +507,21 @@ void TstCftcMonitor::payload_identity_fails_closed() {
         make_payload(QJsonArray{make_market(QStringLiteral("gold"), QStringLiteral("updated"), missing_basis)}),
         CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
     QCOMPARE(basis_model.entries.size(), 1);
-    QCOMPARE(basis_model.entries.first().status, CftcMonitorStatus::Unavailable);
+    QCOMPARE(basis_model.entries.first().basis_inherited, 10);
+    QVERIFY(basis_model.entries.first().interpreted);
+    // Rows that state the other basis are set aside, never mixed in; with no
+    // row of the requested basis left the market is unavailable.
+    QJsonArray other_basis = to_array(rows, 0, 10);
+    for (int i = 0; i < other_basis.size(); ++i) {
+        QJsonObject row = other_basis.at(i).toObject();
+        row[QStringLiteral("futonly_or_combined")] = QStringLiteral("Combined");
+        other_basis.replace(i, row);
+    }
+    const CftcMonitorModel other_model = cftc_parse_monitor_payload(
+        make_payload(QJsonArray{make_market(QStringLiteral("gold"), QStringLiteral("updated"), other_basis)}),
+        CftcFamily::Legacy, true, evaluation_date, cftc_principal_participant_key(CftcFamily::Legacy));
+    QCOMPARE(other_model.entries.first().status, CftcMonitorStatus::Unavailable);
+    QCOMPARE(other_model.entries.first().set_aside.size(), 10);
 
     // The market entry's declared contract code must match every observation.
     QJsonArray wrong_history = to_array(rows, 0, 10);

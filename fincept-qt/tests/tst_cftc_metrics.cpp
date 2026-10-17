@@ -1152,20 +1152,22 @@ void TstCftcMetrics::parse_accepts_cftc_report_date_forms() {
     QVERIFY(plain.error.isEmpty());
     QCOMPARE(plain.observations.first().date, QDate(2026, 9, 8));
 
-    // The shared chart contract's coarser forms stay accepted so the core's
-    // own parser is a behaviour-preserving replacement.
-    const CftcHistory month = parse_single(QStringLiteral("2026-09"));
-    QVERIFY(month.error.isEmpty());
-    QCOMPARE(month.observations.first().date, QDate(2026, 9, 1));
-    const CftcHistory year = parse_single(QStringLiteral("2026"));
-    QVERIFY(year.error.isEmpty());
-    QCOMPARE(year.observations.first().date, QDate(2026, 1, 1));
+    // The older annual files' MM/DD/YYYY form is read too.
+    const CftcHistory slashed = parse_single(QStringLiteral("09/08/2026"));
+    QVERIFY(slashed.error.isEmpty());
+    QCOMPARE(slashed.observations.first().date, QDate(2026, 9, 8));
 
-    const CftcHistory junk = parse_single(QStringLiteral("not-a-date"));
-    QVERIFY(!junk.error.isEmpty());
-    QVERIFY(junk.observations.isEmpty());
-    const CftcHistory empty = parse_single(QString());
-    QVERIFY(!empty.error.isEmpty());
+    // A COT report is one dated weekly observation: completing a partial
+    // date would invent a report day, so "2026-09" and "2026" are unreadable
+    // and the report is set aside (here the only one, so nothing is usable).
+    for (const QString& text :
+         {QStringLiteral("2026-09"), QStringLiteral("2026"), QStringLiteral("not-a-date"), QString()}) {
+        const CftcHistory history = parse_single(text);
+        QVERIFY2(!history.error.isEmpty(), qPrintable(text));
+        QVERIFY(history.observations.isEmpty());
+        QCOMPARE(history.set_aside.size(), 1);
+        QVERIFY(history.set_aside.first().reason.contains(QStringLiteral("report date cannot be read")));
+    }
 }
 
 // ── Provider trader context ─────────────────────────────────────────────────
@@ -1213,26 +1215,30 @@ void TstCftcMetrics::trader_context_fields_parse_and_missing_stays_absent() {
 // ── Provider input validation (2026-09-24 audit corrections) ────────────────
 
 void TstCftcMetrics::parse_rejects_non_finite_values() {
-    // "nan" / "inf" are corrupt cells, never numbers and never silently missing.
+    // "nan" / "inf" are corrupt cells, never numbers and never silently
+    // missing: the report carrying one is set aside, named with the field, and
+    // the other reports are kept (2026-10: one corrupt report no longer hides
+    // the whole history).
     for (const QString& text : {QStringLiteral("nan"), QStringLiteral("inf"), QStringLiteral("-inf")}) {
         QJsonArray rows = legacy_rows_with_trader_context();
         QJsonObject row = rows.first().toObject();
         row[QStringLiteral("non_commercial_long")] = text;
         rows.replace(0, row);
         const CftcHistory history = cftc_parse_history(rows, CftcFamily::Legacy);
-        QVERIFY2(!history.error.isEmpty(), qPrintable(text));
-        QVERIFY(history.observations.isEmpty());
-        QVERIFY(history.error.contains(QStringLiteral("non-finite")));
+        QVERIFY2(history.set_aside.size() == 1, qPrintable(text));
+        QVERIFY(history.set_aside.first().reason.contains(QStringLiteral("non-finite")));
+        QVERIFY(history.set_aside.first().reason.contains(QStringLiteral("non_commercial_long")));
+        QCOMPARE(history.observations.size(), rows.size() - 1);
+        for (const auto& obs : history.observations)
+            QVERIFY(obs.date_label != row.value(QStringLiteral("report_date_as_yyyy_mm_dd")).toString());
     }
     QJsonArray rows = legacy_rows_with_trader_context();
     QJsonObject row = rows.first().toObject();
     row[QStringLiteral("open_interest_all")] = QStringLiteral("inf");
     rows.replace(0, row);
-    QVERIFY(!cftc_parse_history(rows, CftcFamily::Legacy).error.isEmpty());
+    QCOMPARE(cftc_parse_history(rows, CftcFamily::Legacy).set_aside.size(), 1);
 
-    // Every other retained numeric field too: a non-finite trader count or
-    // concentration cell rejects the payload, naming the field, instead of
-    // silently becoming a missing reading.
+    // Every other retained numeric field too, naming the field.
     for (const QString& key :
          {QStringLiteral("traders_total"), QStringLiteral("traders_reportable_long"),
           QStringLiteral("traders_reportable_short"), QStringLiteral("concentration_gross_4_long"),
@@ -1245,9 +1251,7 @@ void TstCftcMetrics::parse_rejects_non_finite_values() {
         field_row[key] = QStringLiteral("nan");
         field_rows.replace(field_rows.size() - 1, field_row);
         const CftcHistory history = cftc_parse_history(field_rows, CftcFamily::Legacy);
-        QVERIFY2(history.observations.isEmpty(), qPrintable(key));
-        QVERIFY2(history.error.contains(QStringLiteral("non-finite")) && history.error.contains(key),
-                 qPrintable(key + QStringLiteral(": ") + history.error));
+        QVERIFY2(history.set_aside.size() == 1 && history.set_aside.first().reason.contains(key), qPrintable(key));
     }
 
     QJsonObject bare;
@@ -1263,28 +1267,30 @@ void TstCftcMetrics::parse_rejects_impossible_positions() {
         rows.replace(0, row);
         return cftc_parse_history(rows, CftcFamily::Legacy);
     };
-    // A leg larger than the whole market's Open Interest (1000).
+    auto set_aside_for = [](const CftcHistory& history, const QString& text) {
+        return history.set_aside.size() == 1 && history.set_aside.first().reason.contains(text);
+    };
+    // A leg larger than the whole market's Open Interest (1000): the report is
+    // set aside (which figure is wrong cannot be known), never repaired.
     CftcHistory history = parse_with(QStringLiteral("non_commercial_long"), 24329.0);
-    QVERIFY(!history.error.isEmpty());
-    QVERIFY(history.error.contains(QStringLiteral("larger than the market's Open Interest")));
+    QVERIFY(set_aside_for(history, QStringLiteral("larger than Open Interest")));
     // A negative leg and a negative Open Interest.
     history = parse_with(QStringLiteral("commercial_short"), -5.0);
-    QVERIFY(!history.error.isEmpty());
-    QVERIFY(history.error.contains(QStringLiteral("negative")));
+    QVERIFY(set_aside_for(history, QStringLiteral("negative")));
     history = parse_with(QStringLiteral("open_interest_all"), -1.0);
-    QVERIFY(!history.error.isEmpty());
+    QVERIFY(set_aside_for(history, QStringLiteral("negative Open Interest")));
     // Combined reports round delta-adjusted options: two contracts of rounding
     // above Open Interest are tolerated, three are not.
     history = parse_with(QStringLiteral("non_commercial_long"), 1002.0);
-    QVERIFY2(history.error.isEmpty(), qPrintable(history.error));
+    QVERIFY(history.set_aside.isEmpty());
     history = parse_with(QStringLiteral("non_commercial_long"), 1003.0);
-    QVERIFY(!history.error.isEmpty());
+    QVERIFY(set_aside_for(history, QStringLiteral("larger than Open Interest")));
     // A missing Open Interest cannot be checked against and stays accepted.
     QJsonArray rows = legacy_rows_with_trader_context();
     QJsonObject row = rows.first().toObject();
     row.remove(QStringLiteral("open_interest_all"));
     rows.replace(0, row);
-    QVERIFY(cftc_parse_history(rows, CftcFamily::Legacy).error.isEmpty());
+    QVERIFY(cftc_parse_history(rows, CftcFamily::Legacy).set_aside.isEmpty());
 }
 
 void TstCftcMetrics::parse_rejects_rows_of_another_family() {
@@ -1345,23 +1351,25 @@ void TstCftcMetrics::parse_reads_and_checks_the_report_basis() {
     QCOMPARE(cftc_normalized_report_basis(QStringLiteral("FutOnly")), QStringLiteral("futures_only"));
     QCOMPARE(cftc_normalized_report_basis(QStringLiteral("Combined")), QStringLiteral("futures_and_options_combined"));
     QVERIFY(cftc_normalized_report_basis(QStringLiteral("Supplemental")).isEmpty());
-    QVERIFY(cftc_history_basis_error(history.observations, /*futures_only=*/true).isEmpty());
-    // Futures Only rows requested as Combined, and Combined rows requested as
-    // Futures Only, are both refused.
-    QVERIFY(!cftc_history_basis_error(history.observations, /*futures_only=*/false).isEmpty());
-    row[QStringLiteral("futonly_or_combined")] = QStringLiteral("Combined");
-    rows.replace(0, row);
-    history = cftc_parse_history(rows, CftcFamily::Legacy);
-    QVERIFY(cftc_history_basis_error(history.observations, /*futures_only=*/false).isEmpty());
-    const QString mislabelled = cftc_history_basis_error(history.observations, /*futures_only=*/true);
-    QVERIFY(!mislabelled.isEmpty());
-    QVERIFY(mislabelled.contains(QStringLiteral("Combined")));
-    // A row that does not state its basis cannot be verified.
+    // Futures Only rows of a Futures Only request are kept.
+    CftcHistory futures = history;
+    QVERIFY(cftc_apply_report_basis(futures, /*futures_only=*/true).isEmpty());
+    QCOMPARE(futures.observations.size(), history.observations.size());
+    // A row that states another basis is never mixed in: it is set aside.
+    CftcHistory requested_combined = history;
+    cftc_apply_report_basis(requested_combined, /*futures_only=*/false);
+    QCOMPARE(requested_combined.set_aside.size(), 1);
+    QVERIFY(requested_combined.set_aside.first().reason.contains(QStringLiteral("FutOnly")));
+    // A row that does not state its basis takes the basis of the source it was
+    // requested from (each CFTC resource holds one basis), counted.
     row.remove(QStringLiteral("futonly_or_combined"));
     rows.replace(0, row);
     history = cftc_parse_history(rows, CftcFamily::Legacy);
     QVERIFY(history.observations.first().report_basis.isEmpty());
-    QVERIFY(!cftc_history_basis_error(history.observations, /*futures_only=*/true).isEmpty());
+    QVERIFY(cftc_apply_report_basis(history, /*futures_only=*/true).isEmpty());
+    QVERIFY(history.basis_inherited >= 1);
+    for (const auto& obs : history.observations)
+        QVERIFY(!obs.report_basis.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TstCftcMetrics)

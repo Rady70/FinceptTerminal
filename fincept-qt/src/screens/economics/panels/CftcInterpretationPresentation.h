@@ -1910,8 +1910,13 @@ inline QVector<CftcEvidenceItem> cftc_build_evidence(const services::CftcInterpr
     if (has_oi_change) {
         add(oi_prefix, CftcEvidenceStatus::Available, signed_percent(oi_change->value, 2) + QLatin1Char('%'));
     } else if (oi_reading) {
-        add(oi_prefix, CftcEvidenceStatus::NoMaterialState,
-            signed_percent(oi_reading->oi_change, 2) + QLatin1Char('%') + cftc_below_threshold_suffix());
+        // A change formed before its size has a reference (a market's first
+        // year) was never compared with a threshold.
+        add(oi_prefix, oi_reading->has_rank ? CftcEvidenceStatus::NoMaterialState : CftcEvidenceStatus::Unavailable,
+            signed_percent(oi_reading->oi_change, 2) + QLatin1Char('%') +
+                (oi_reading->has_rank ? cftc_below_threshold_suffix()
+                                      : cftc_materiality_unavailable_suffix(cftc_unavailable_reason_wording(
+                                            services::CftcUnavailableReason::InsufficientHistory))));
     } else {
         add(oi_prefix, oi_record ? CftcEvidenceStatus::Unavailable : CftcEvidenceStatus::NoMaterialState,
             oi_record ? unavailable_text(cftc_unavailable_reason_wording(oi_record->reason)) : no_material);
@@ -2206,8 +2211,18 @@ inline QVector<CftcEvidenceItem> cftc_build_horizon_evidence(const services::Cft
     if (oi_value_available) {
         const CftcEvidenceStatus status =
             oi_state_fired ? CftcEvidenceStatus::Available : CftcEvidenceStatus::NoMaterialState;
-        add(cftc_presentation_tr("Open Interest change (% change) (%1)").arg(cftc_horizon_phrase(horizon)), status,
-            signed_percent(oi_value, 2) + QLatin1Char('%') + (oi_state_fired ? QString() : below_suffix), horizon);
+        // A change formed before its size has a reference (a market's first
+        // year) was never compared with a threshold.
+        const bool sized = oi_state_fired || !(oi_reading && oi_reading->evaluated && !oi_reading->has_rank);
+        QString suffix;
+        if (!sized)
+            suffix = cftc_materiality_unavailable_suffix(
+                cftc_unavailable_reason_wording(services::CftcUnavailableReason::InsufficientHistory));
+        else if (!oi_state_fired)
+            suffix = below_suffix;
+        add(cftc_presentation_tr("Open Interest change (% change) (%1)").arg(cftc_horizon_phrase(horizon)),
+            sized ? status : CftcEvidenceStatus::Unavailable, signed_percent(oi_value, 2) + QLatin1Char('%') + suffix,
+            horizon);
     } else {
         add(cftc_presentation_tr("Open Interest change (% change) (%1)").arg(cftc_horizon_phrase(horizon)), oi.status,
             oi.status == CftcEvidenceStatus::Unavailable ? unavailable_text(oi.unavailable_reason) : no_material,
@@ -2308,6 +2323,14 @@ inline QString cftc_outdated_report_sentence(const services::CftcInterpretationR
 /// than CFTC definitions.
 inline QString cftc_method_sentence(const services::CftcInterpretationResult& result) {
     const services::CftcInterpretationConfig& config = result.config;
+    if (config.move_size_method == services::CftcMoveSizeMethod::WeeklyScaled) {
+        return cftc_presentation_tr("Method: “material” means a move of at least %1 times the typical move of that "
+                                    "length (the root mean square of the previous %2 one-report moves x the square "
+                                    "root of the reports), and historical levels compare Net %OI with the previous "
+                                    "%2 reports. These thresholds are MarketLab heuristics, not CFTC definitions.")
+            .arg(QString::number(services::cftc_scaled_move_cutoff(config.material_move_percentile), 'f', 2))
+            .arg(config.history_window);
+    }
     return cftc_presentation_tr("Method: “material” means a move at or above the %1 percentile of the previous %2 "
                                 "comparable moves, and historical levels compare Net %OI with the previous %2 "
                                 "reports. These thresholds are MarketLab heuristics, not CFTC definitions.")

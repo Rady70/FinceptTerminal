@@ -508,7 +508,7 @@ void EconPanelBase::update_provenance_label() {
 
 // ── Display ───────────────────────────────────────────────────────────────────
 
-void EconPanelBase::display(const QJsonArray& rows, const QString& title) {
+void EconPanelBase::display(const QJsonArray& rows, const QString& title, const QStringList& column_order) {
     // A plain (non time-series) result cannot offer the chart view; make sure a
     // previous chart-first result does not leave the switcher pointing at a
     // stale chart page.
@@ -544,6 +544,17 @@ void EconPanelBase::display(const QJsonArray& rows, const QString& title) {
             columns_.move(idx, 1);
             break;
         }
+    }
+    // A caller-supplied order wins: those columns first, as listed.
+    if (!column_order.isEmpty()) {
+        QStringList ordered;
+        for (const auto& key : column_order)
+            if (columns_.contains(key) && !ordered.contains(key))
+                ordered << key;
+        for (const auto& key : std::as_const(columns_))
+            if (!ordered.contains(key))
+                ordered << key;
+        columns_ = ordered;
     }
 
     pager_->set_total(rows.size());

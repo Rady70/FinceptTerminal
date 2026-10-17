@@ -205,18 +205,32 @@ void TstCftcWorkspace::parse_rejects_unusable_date() {
     broken[QStringLiteral("report_date_as_yyyy_mm_dd")] = QStringLiteral("not-a-date");
     rows.replace(0, broken);
 
+    // The unreadable report is set aside and named; the other one is kept.
     const CftcHistory history = cftc_parse_history(rows, CftcFamily::Legacy);
-    QVERIFY(!history.error.isEmpty());
-    QVERIFY(history.observations.isEmpty());
+    QVERIFY(history.error.isEmpty());
+    QCOMPARE(history.observations.size(), 1);
+    QCOMPARE(history.set_aside.size(), 1);
 }
 
 void TstCftcWorkspace::parse_rejects_duplicate_report_dates() {
+    // An identical repeated row is kept once.
     QJsonArray rows = legacy_rows();
     rows.append(legacy_rows()[0]);
+    CftcHistory history = cftc_parse_history(rows, CftcFamily::Legacy);
+    QVERIFY(history.error.isEmpty());
+    QCOMPARE(history.observations.size(), 2);
+    QVERIFY(history.set_aside.isEmpty());
 
-    const CftcHistory history = cftc_parse_history(rows, CftcFamily::Legacy);
-    QVERIFY(!history.error.isEmpty());
-    QVERIFY(history.observations.isEmpty());
+    // Two different rows for one report date: which is right is unknown, so
+    // that report is set aside (never the first one silently).
+    QJsonObject conflicting = legacy_rows()[0].toObject();
+    conflicting[QStringLiteral("open_interest_all")] = 1234.0;
+    rows = legacy_rows();
+    rows.append(conflicting);
+    history = cftc_parse_history(rows, CftcFamily::Legacy);
+    QVERIFY(history.error.isEmpty());
+    QCOMPARE(history.observations.size(), 1);
+    QCOMPARE(history.set_aside.size(), 1);
 }
 
 void TstCftcWorkspace::parse_rejects_empty_payload() {

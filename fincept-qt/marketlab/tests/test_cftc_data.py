@@ -32,7 +32,7 @@ import types
 import unittest
 import urllib.parse
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1065,8 +1065,8 @@ class CftcBackfillMonitorTest(unittest.TestCase):
 
     def test_week_skipped_by_an_increment_is_read_again_in_full(self):
         # A full read, then an increment that skips a contradictory week and
-        # stores a newer one. An increment asks only from the newest stored
-        # date, so the skipped week would never be asked for again: the next
+        # stores a newer one. An increment re-reads only the last 13 stored
+        # weeks, so a skipped week could fall out of that window: the next
         # scan must read the contract in full.
         self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
         archive = self.wrapper._open_archive()
@@ -1075,12 +1075,89 @@ class CftcBackfillMonitorTest(unittest.TestCase):
                             raw_legacy_row(report_date="2026-09-08", oi="1000"),
                             raw_legacy_row(report_date="2026-09-08", oi="2000"),
                             raw_legacy_row(report_date="2026-09-15")])
-        self.assertIn(">= '2026-09-01'", urllib.parse.unquote(self.captured_urls[-1]))  # it was an increment
+        # It was an increment from 12 weeks before the newest stored report.
+        self.assertIn(">= '2026-06-09'", urllib.parse.unquote(self.captured_urls[-1]))
         self.assertIsNone(archive.full_history_at("legacy", "futures_only", "088691"))
         self._monitor_rows([raw_legacy_row(report_date="2026-09-08"), raw_legacy_row(report_date="2026-09-15")])
         self.assertNotIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))  # a full read
         self.assertEqual([row["report_date"] for row in self._archive_rows()],
                          ["2026-09-01", "2026-09-08", "2026-09-15"])
+
+    def test_increment_adopts_a_correction_of_a_recent_report(self):
+        # Reports of 1 Sep .. 6 Oct stored; the CFTC then corrects the 15 Sep
+        # report. The next increment re-reads the last 13 weeks, so the
+        # correction is adopted, not only a revision of the newest report.
+        dates = ["2026-09-01", "2026-09-08", "2026-09-15", "2026-09-22", "2026-09-29", "2026-10-06"]
+        self._monitor_rows([raw_legacy_row(report_date=d) for d in dates])
+        corrected = [raw_legacy_row(report_date=d, noncomm_long="455" if d == "2026-09-15" else "400")
+                     for d in dates]
+        market = self._monitor_rows(corrected)
+        self.assertIn(">= '2026-07-14'", urllib.parse.unquote(self.captured_urls[-1]))
+        self.assertEqual(market["status"], "updated")
+        self.assertEqual(market["updated"], 1)
+        stored = {row["report_date"]: json.loads(row["row_json"]) for row in self._archive_rows()}
+        self.assertEqual(stored["2026-09-15"]["non_commercial_long"], 455)
+        self.assertEqual(stored["2026-09-08"]["non_commercial_long"], 400)
+
+    def test_reread_never_erases_a_stored_value(self):
+        # A re-read in which a column could not be matched (a renamed provider
+        # column) carries the value as missing: the stored value of that
+        # report stays, a changed value is still adopted, and a report never
+        # stored before keeps the gap (it is not filled from elsewhere).
+        first = raw_legacy_row(report_date="2026-09-01")
+        self._monitor_rows([first])
+        renamed = raw_legacy_row(report_date="2026-09-01", comm_long="333")
+        renamed["noncomm_positions_long_all_renamed_beyond_matching"] = renamed.pop("noncomm_positions_long_all")
+        newer = raw_legacy_row(report_date="2026-09-08")
+        newer["noncomm_positions_long_all_renamed_beyond_matching"] = newer.pop("noncomm_positions_long_all")
+        market = self._monitor_rows([renamed, newer])
+        self.assertEqual(market["updated"], 1)
+        stored = {row["report_date"]: json.loads(row["row_json"]) for row in self._archive_rows()}
+        self.assertEqual(stored["2026-09-01"]["non_commercial_long"], 400)  # kept
+        self.assertEqual(stored["2026-09-01"]["commercial_long"], 333)      # adopted
+        self.assertIsNone(stored["2026-09-08"]["non_commercial_long"])      # never stored: a gap
+
+    def test_complete_history_is_read_again_after_a_year(self):
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
+        archive = self.wrapper._open_archive()
+        conn = sqlite3.connect(os.path.join(self.tmp, "cot_archive.db"))
+        try:
+            old = (datetime.now(timezone.utc) - timedelta(days=366)).isoformat(timespec="seconds")
+            conn.execute("UPDATE cot_contract_state SET full_history_fetched_at = ?", (old,))
+            conn.commit()
+        finally:
+            conn.close()
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01"), raw_legacy_row(report_date="2026-09-08")])
+        self.assertNotIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))  # a full read
+        self.assertNotEqual(archive.full_history_at("legacy", "futures_only", "088691"), old)
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-08")])
+        self.assertIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))  # increments again
+
+    def test_column_mapping_change_reads_every_history_in_full_again(self):
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
+        archive = self.wrapper._open_archive()
+        # The same mapping: nothing is withdrawn and the next read is an increment.
+        self.assertFalse(archive.adopt_column_mapping(self.wrapper._column_mapping_fingerprint()))
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
+        self.assertIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))
+        # Rows stored by an earlier mapping: every completeness claim is withdrawn.
+        conn = sqlite3.connect(os.path.join(self.tmp, "cot_archive.db"))
+        try:
+            conn.execute("UPDATE cot_reader_state SET value = 'an-earlier-mapping' WHERE key = 'column_mapping'")
+            conn.commit()
+        finally:
+            conn.close()
+        self._monitor_rows([raw_legacy_row(report_date="2026-09-01")])
+        self.assertNotIn(">= '", urllib.parse.unquote(self.captured_urls[-1]))  # a full read
+        self.assertIsNotNone(archive.full_history_at("legacy", "futures_only", "088691"))
+        # A mapping change must change the fingerprint.
+        original = cftc_data.CFTCDataWrapper._CONCENTRATION_FIELDS
+        try:
+            cftc_data.CFTCDataWrapper._CONCENTRATION_FIELDS = original + (("extra", ("extra_column",)),)
+            changed = cftc_data.CFTCDataWrapper._column_mapping_fingerprint()
+        finally:
+            cftc_data.CFTCDataWrapper._CONCENTRATION_FIELDS = original
+        self.assertNotEqual(changed, cftc_data.CFTCDataWrapper._column_mapping_fingerprint())
 
     def test_archive_upsert_collapses_identical_duplicates_and_rejects_conflicts(self):
         archive = self.wrapper._open_archive()
@@ -1399,6 +1476,29 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(second["data"]["rows_updated"], 0)
         self.assertEqual(len(self._archive_rows()), 1)
 
+    @unittest.skipUnless(hasattr(cftc_data.requests.exceptions, "ConnectionError"), "requests is not installed")
+    def test_failed_read_reason_is_short_and_never_shows_the_token(self):
+        # A failed provider read is named once per market in the workspace: the
+        # kind of failure, never the request URL, which carries the app token.
+        self.wrapper.app_token = "SECRET-TOKEN-123"
+        url = ("https://publicreporting.cftc.gov/resource/6dca-aqww.json?$limit=25000&"
+               "$$app_token=SECRET-TOKEN-123")
+        unreachable = cftc_data.requests.exceptions.ConnectionError(
+            f"HTTPSConnectionPool(host='publicreporting.cftc.gov', port=443): Max retries exceeded with url: {url}")
+        self._serve_monitor([], fail=None)
+        self.wrapper._monitor_get = mock.Mock(side_effect=unreachable)
+        result = self.wrapper.get_cot_monitor("legacy", True, ["gold"], 25000, refresh=True)
+        market = result["data"]["markets"][0]
+        self.assertEqual(market["refresh_error"], "the CFTC could not be reached")
+        self.assertEqual(self.wrapper._readable_fetch_error(cftc_data.requests.exceptions.ReadTimeout(url)),
+                         "the CFTC did not answer in time")
+        other = self.wrapper._readable_fetch_error(RuntimeError(f"unexpected page with url: {url} (token SECRET-TOKEN-123)"))
+        self.assertNotIn("SECRET-TOKEN-123", other)
+        self.assertNotIn("$limit", other)
+        self.assertEqual(self.wrapper._readable_fetch_error(RuntimeError("HTTP 503")), "HTTP 503")
+        not_found = self.wrapper._readable_fetch_error(RuntimeError(f"404 Client Error: Not Found for URL: {url}"))
+        self.assertEqual(not_found, "404 Client Error: Not Found")
+
     def test_monitor_wrong_contract_code_fails_the_market_and_writes_nothing(self):
         wrong = raw_legacy_row(report_date="2026-09-01", code="999999")
         self._serve_monitor([wrong])
@@ -1454,9 +1554,9 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(again["status"], "current")
         self.assertEqual(again["inserted"], 0)
         self.assertEqual(len(self._archive_rows()), 2)
-        # The second read is a bounded increment from the stored latest date,
-        # not another full-history download.
-        self.assertIn(">= '2024-06-25'", urllib.parse.unquote(self.captured_urls[-1]))
+        # The second read is a bounded increment re-reading the last 13 stored
+        # weeks (from 12 weeks before the newest), not another full download.
+        self.assertIn(">= '2024-04-02'", urllib.parse.unquote(self.captured_urls[-1]))
 
     def test_monitor_row_problems_are_left_out_alone(self):
         # An undated provider row is left out and an identical repeated row kept
@@ -1609,6 +1709,172 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertEqual(status["data"]["groups"][0]["report_basis"], "futures_only")
         runs = status["data"]["recent_backfill_runs"]
         self.assertTrue(any(run["status"] == "ok" for run in runs))
+
+    # ── tolerance to provider format changes (2026-10 workspace audit) ─────
+
+    def test_renamed_socrata_columns_are_read_by_meaning(self):
+        # The same report published under drifted column spellings: case,
+        # the "postions" typo fixed, the doubled underscore removed and the
+        # "_all" suffix added or dropped. Every value must still be read.
+        exact = raw_disaggregated_row()
+        exact.update({"swap_positions_long_all": "111", "swap__positions_short_all": "222",
+                      "swap__positions_spread_all": "33", "other_rept_positions_long": "44",
+                      "other_rept_positions_short": "55", "conc_gross_le_4_tdr_long": "12.5"})
+        drifted = {
+            "report_date_as_yyyy_mm_dd": exact["report_date_as_yyyy_mm_dd"],
+            "market_and_exchange_names": exact["market_and_exchange_names"],
+            "cftc_contract_market_code": exact["cftc_contract_market_code"],
+            "futonly_or_combined": "FutOnly",
+            "Open_Interest_ALL": exact["open_interest_all"],
+            "prod_merc_positions_long_all": exact["prod_merc_positions_long"],
+            "Prod_Merc_Positions_Short": exact["prod_merc_positions_short"],
+            "swap_positions_long": "111",
+            "swap_positions_short_all": "222",
+            "swap_positions_spread_all": "33",
+            "m_money_positions_long": exact["m_money_positions_long_all"],
+            "M_MONEY_POSITIONS_SHORT_ALL": exact["m_money_positions_short_all"],
+            "other_rept_positions_long_all": "44",
+            "other_rept_positions_short_all": "55",
+            "nonrept_positions_long": exact["nonrept_positions_long_all"],
+            "nonrept_positions_short": exact["nonrept_positions_short_all"],
+            "conc_gross_le_4_tdr_long_all": "12.5",
+        }
+        reference = self.wrapper._canonical_history_row(exact, "disaggregated", True)
+        tolerant = self.wrapper._canonical_history_row(drifted, "disaggregated", True)
+        self.assertEqual(tolerant, reference)
+        self.assertEqual(tolerant["swap_dealer_short"], 222)
+        self.assertEqual(tolerant["swap_dealer_spread"], 33)
+        self.assertEqual(tolerant["concentration_gross_4_long"], 12.5)
+
+    def test_old_and_other_crop_columns_never_stand_in_for_all(self):
+        # Legacy `noncomm_positions_spread` is the Old crop-year spread and the
+        # `_1` / `_2` / `_old` / `_other` columns are Old/Other aggregates: when
+        # the "(All)" cell is absent they must not be used in its place.
+        legacy = raw_legacy_row()
+        legacy["noncomm_positions_spread"] = "348763"
+        legacy["noncomm_positions_long_old"] = "569806"
+        del legacy["noncomm_positions_long_all"]
+        row = self.wrapper._canonical_history_row(legacy, "legacy", True)
+        self.assertIsNone(row["non_commercial_spread"])
+        self.assertIsNone(row["non_commercial_long"])
+        disagg = raw_disaggregated_row()
+        disagg["m_money_positions_spread_1"] = "251864"
+        disagg["m_money_positions_spread_2"] = "875"
+        row = self.wrapper._canonical_history_row(disagg, "disaggregated", True)
+        self.assertIsNone(row["managed_money_spread"])
+
+    def test_non_finite_cells_stay_missing_without_failing_the_row(self):
+        legacy = raw_legacy_row()
+        legacy["comm_positions_long_all"] = "inf"
+        legacy["traders_tot_all"] = "nan"
+        row = self.wrapper._canonical_history_row(legacy, "legacy", True)
+        self.assertIsNone(row["commercial_long"])
+        self.assertIsNone(row["traders_total"])
+        self.assertEqual(row["commercial_short"], 100)
+        self.assertIsNone(cftc_data.CFTCDataWrapper._to_int(float("inf")))
+
+    def test_missing_basis_is_the_basis_of_the_resource_read(self):
+        unstated = raw_legacy_row()
+        del unstated["futonly_or_combined"]
+        self.assertEqual(self.wrapper._canonical_history_row(unstated, "legacy", True)["futonly_or_combined"],
+                         "FutOnly")
+        self.assertEqual(self.wrapper._canonical_history_row(unstated, "legacy", False)["futonly_or_combined"],
+                         "Combined")
+        stated = raw_legacy_row()
+        stated["futonly_or_combined"] = "Combined"
+        # A stated basis is never overwritten; a contradiction is set aside later.
+        self.assertEqual(self.wrapper._canonical_history_row(stated, "legacy", True)["futonly_or_combined"],
+                         "Combined")
+
+    def test_annual_headers_match_without_case_or_punctuation(self):
+        record = legacy_annual_record()
+        reference_zip = annual_zip("legacy", [record])
+        drifted_header = [column.upper().replace(" ", "_").replace("(", "").replace(")", "")
+                          for column in ANNUAL_LEGACY_HEADER]
+        drifted_header.reverse()
+        drifted_record = {drifted: record.get(original, "")
+                          for original, drifted in zip(reversed(ANNUAL_LEGACY_HEADER), drifted_header)}
+        self._serve_annual(reference_zip)
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        expected = json.loads(self._archive_rows()[0]["row_json"])
+        other = cftc_data.CFTCDataWrapper(archive_dir=os.path.join(self.tmp, "drifted"))
+        other._download_annual = lambda url, timeout=180: annual_zip(
+            "legacy", [drifted_record], header=drifted_header)
+        result = other.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        self.assertEqual(result["data"]["years"][0]["status"], "ok", result)
+        conn = sqlite3.connect(os.path.join(self.tmp, "drifted", "cot_archive.db"))
+        try:
+            stored = json.loads(conn.execute("SELECT row_json FROM cot_observations").fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(stored, expected)
+
+    def test_annual_year_missing_one_participant_keeps_the_rest(self):
+        header = [column for column in ANNUAL_LEGACY_HEADER
+                  if not column.startswith("Nonreportable Positions")]
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()], header=header))
+        result = self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        year = result["data"]["years"][0]
+        self.assertEqual(year["status"], "ok", year)
+        self.assertEqual(year["missing_columns"], ["non_reportable_long", "non_reportable_short"])
+        row = json.loads(self._archive_rows()[0]["row_json"])
+        self.assertIsNone(row["non_reportable_long"])
+        self.assertEqual(row["non_commercial_long"], 284885)
+        run = self.wrapper.cot_archive_status()["data"]["recent_backfill_runs"][0]
+        self.assertEqual(run["detail"]["missing_columns"], ["non_reportable_long", "non_reportable_short"])
+
+    def test_annual_two_digit_years_before_2000(self):
+        self.assertEqual(cftc_data.CFTCDataWrapper._annual_report_date("870227"), "1987-02-27")
+        self.assertEqual(cftc_data.CFTCDataWrapper._annual_report_date("240625"), "2024-06-25")
+        record = legacy_annual_record()
+        record.pop("As of Date in Form YYYY-MM-DD")
+        record["As of Date in Form YYMMDD"] = "870227"
+        header = [column for column in ANNUAL_LEGACY_HEADER if column != "As of Date in Form YYYY-MM-DD"]
+        self._serve_annual(annual_zip("legacy", [record], header=header))
+        self.wrapper.cot_backfill("legacy", True, 1987, 1987, ["gold"])
+        self.assertEqual([row["report_date"] for row in self._archive_rows()], ["1987-02-27"])
+
+    def test_cot_market_returns_every_stored_row_and_keeps_them_on_failure(self):
+        rows = []
+        report_date = datetime(2020, 1, 7)
+        for _ in range(260):
+            rows.append(raw_legacy_row(report_date=report_date.strftime("%Y-%m-%d")))
+            report_date += timedelta(days=7)
+        self._serve_monitor(rows)
+        first = self.wrapper.get_cot_market("gold", "legacy", True, refresh=True)
+        self.assertTrue(first.get("success"), first)
+        self.assertEqual(len(first["data"]), 260, "the detailed workspace receives the whole stored history")
+        self.assertEqual(first["parameters"]["status"], "updated")
+        self.assertIsNotNone(first["parameters"]["full_history_fetched_at"])
+        # A later provider failure still returns the stored history, labelled.
+        self._serve_monitor([], fail="provider offline")
+        second = self.wrapper.get_cot_market("gold", "legacy", True, refresh=True)
+        self.assertTrue(second.get("success"), second)
+        self.assertEqual(second["parameters"]["status"], "archive_only")
+        self.assertIn("provider offline", second["parameters"]["refresh_note"])
+        self.assertEqual(len(second["data"]), 260)
+        # refresh=false never asks the provider.
+        self.captured_urls = []
+        third = self.wrapper.get_cot_market("gold", "legacy", True, refresh=False)
+        self.assertEqual(self.captured_urls, [])
+        self.assertEqual(third["parameters"]["status"], "archive_only")
+
+    def test_cot_market_without_history_is_an_error_with_the_reason(self):
+        self._serve_monitor([])
+        result = self.wrapper.get_cot_market("euro", "disaggregated", True, refresh=True)
+        self.assertIn("publishes no Disaggregated report", result["error"]["error"])
+        self.assertIn("Unknown market", self.wrapper.get_cot_market("micro_gold", "legacy", True)["error"]["error"])
+
+    def test_cli_monitor_refresh_flag_reads_stored_data_only(self):
+        self._serve_annual(annual_zip("legacy", [legacy_annual_record()]))
+        self.wrapper.cot_backfill("legacy", True, 2024, 2024, ["gold"])
+        captured = io.StringIO()
+        with mock.patch.object(cftc_data, "CFTCDataWrapper", return_value=self.wrapper), \
+                mock.patch("sys.stdout", captured):
+            self.wrapper._monitor_get = lambda url: self.fail("refresh=false must not request")
+            cftc_data.main(["cot_monitor", "legacy", "true", "gold", "25000", "false"])
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(payload["data"]["markets"][0]["status"], "archive_only")
 
     # ── catalog consistency ─────────────────────────────────────────────────
 

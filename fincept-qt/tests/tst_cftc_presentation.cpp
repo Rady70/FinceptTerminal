@@ -1354,9 +1354,15 @@ void TstCftcPresentation::visible_range_does_not_change_interpretation() {
     const CftcInterpretationView full_view = cftc_compose_interpretation(full_result);
     const CftcInterpretationView window_view = cftc_compose_interpretation(window_result);
     QVERIFY(full_view.headline.contains(QStringLiteral("historically severe net long")));
-    QVERIFY(!window_view.headline.contains(QStringLiteral("crowded")));
-    QVERIFY(!window_view.headline.contains(QStringLiteral("severe")));
-    QVERIFY(full_view.headline != window_view.headline);
+    // Rule set v3 compares the latest level with the previous 52 reports, which
+    // a one-year window still holds, but a move size needs 52 earlier weekly
+    // moves, which it does not: the two results differ.
+    const CftcParticipantInterpretation* full_nc = find_participant(full_result, QStringLiteral("non_commercial"));
+    const CftcParticipantInterpretation* window_nc = find_participant(window_result, QStringLiteral("non_commercial"));
+    QVERIFY(full_nc && window_nc);
+    QVERIFY(full_nc->flow_readings.first().has_net_rank);
+    QVERIFY(!window_nc->flow_readings.first().has_net_rank);
+    QVERIFY(full_view.sentences != window_view.sentences);
 
     // The panel builds the engine input from the full validated history: the
     // constructor takes that full vector and has no range parameter, so a range
@@ -1938,6 +1944,13 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
                     CftcUnavailableReason::InsufficientHistory, 4, QStringLiteral("SHORT_COVERING"));
     add_unavailable(result, QStringLiteral("NET_SHIFT"), primary->participant_key,
                     CftcUnavailableReason::InsufficientHistory, 4);
+    // The Open Interest change of a market's first year: formed, never sized.
+    CftcOpenInterestReading oi;
+    oi.horizon_reports = 4;
+    oi.evaluated = true;
+    oi.has_oi_change = true;
+    oi.oi_change = 0.8957;
+    result.open_interest_readings << oi;
 
     const QString reason = QStringLiteral("fewer than the 156 prior reports this reference requires are available");
     auto row = [](const CftcInterpretationView& view, const QString& label) -> const CftcEvidenceItem* {
@@ -1968,6 +1981,12 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
     QCOMPARE(rank_row->status, CftcEvidenceStatus::Unavailable);
     QVERIFY(rank_row->value.contains(reason));
     QVERIFY(!rank_row->value.contains(QStringLiteral("no material state")));
+    const CftcEvidenceItem* oi_row =
+        row(horizon_view, QStringLiteral("Open Interest change (% change) (four reports)"));
+    QVERIFY(oi_row != nullptr);
+    QCOMPARE(oi_row->status, CftcEvidenceStatus::Unavailable);
+    QVERIFY(oi_row->value.startsWith(QStringLiteral("+0.90% (materiality unavailable")));
+    QVERIFY(!oi_row->value.contains(QStringLiteral("below threshold")));
 
     // The combined contract view carries the same truthful wording.
     const CftcInterpretationView combined = cftc_compose_interpretation(result);
@@ -1975,6 +1994,9 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
     QVERIFY(combined_net != nullptr);
     QCOMPARE(combined_net->status, CftcEvidenceStatus::Unavailable);
     QCOMPARE(combined_net->value, QStringLiteral("+2.01% (materiality unavailable — ") + reason + QLatin1Char(')'));
+    for (const auto& item : combined.evidence)
+        if (item.label.startsWith(QStringLiteral("Open Interest change")))
+            QVERIFY2(!item.value.contains(QStringLiteral("below threshold")), qPrintable(item.value));
 }
 
 void TstCftcPresentation::net_delta_reason_never_comes_from_price() {
@@ -2375,6 +2397,14 @@ void TstCftcPresentation::heuristic_thresholds_are_labelled_inline() {
     QVERIFY(view.sentences.first().contains(
         QStringLiteral("(Net %OI in the top 10% of its previous 156 reports; MarketLab threshold)")));
     QCOMPARE(view.sentences.last(),
+             QStringLiteral("Method: “material” means a move of at least 1.15 times the typical move of that length "
+                            "(the root mean square of the previous 52 one-report moves x the square root of the "
+                            "reports), and historical levels compare Net %OI with the previous 52 reports. These "
+                            "thresholds are MarketLab heuristics, not CFTC definitions."));
+    // The v2 preset states its own trailing-rank method.
+    CftcInterpretationResult v2_result = result;
+    v2_result.config = cftc_v2_interpretation_config();
+    QCOMPARE(cftc_compose_horizon_interpretation(v2_result, 4).sentences.last(),
              QStringLiteral("Method: “material” means a move at or above the 75th percentile of the previous 156 "
                             "comparable moves, and historical levels compare Net %OI with the previous 156 reports. "
                             "These thresholds are MarketLab heuristics, not CFTC definitions."));
@@ -2571,16 +2601,24 @@ void TstCftcPresentation::golden_real_gold_legacy_report() {
     // path (provider-shaped rows -> parser -> basis check -> engine ->
     // composer). Every expected value below was computed independently from
     // the raw CFTC rows by a separate implementation of the v2 rules (exact
-    // rational ranks), not taken from this engine's output.
+    // rational ranks), not taken from this engine's output, so the engine runs
+    // the v2 preset here; rule set v3 is covered by tst_cftc_interpretation and
+    // by the control repository's independent recomputation on real data.
     const CftcHistory history = cftc_parse_history(gold_legacy_futures_only_rows(), CftcFamily::Legacy);
     QVERIFY2(history.error.isEmpty(), qPrintable(history.error));
     QCOMPARE(history.observations.size(), 200);
-    QVERIFY(cftc_history_basis_error(history.observations, /*futures_only=*/true).isEmpty());
-    QVERIFY(!cftc_history_basis_error(history.observations, /*futures_only=*/false).isEmpty());
+    {
+        CftcHistory futures = history;
+        QVERIFY(cftc_apply_report_basis(futures, /*futures_only=*/true).isEmpty());
+        QVERIFY(futures.set_aside.isEmpty());
+        CftcHistory combined = history;
+        QVERIFY(!cftc_apply_report_basis(combined, /*futures_only=*/false).isEmpty());
+    }
 
-    const CftcInterpretationInput input =
+    CftcInterpretationInput input =
         cftc_make_interpretation_input(CftcFamily::Legacy, history.observations, QStringLiteral("futures_only"), {},
                                        QString(), false, false, QDate(2026, 9, 24));
+    input.config = cftc_v2_interpretation_config();
     const CftcInterpretationResult result = cftc_interpret(input);
     QCOMPARE(result.rule_set_version, QStringLiteral("cftc-descriptive-interpretation-v2"));
     QCOMPARE(result.report_date, QDate(2026, 9, 15));
