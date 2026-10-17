@@ -90,11 +90,13 @@ QColor cftc_group_color(int index) {
 
 QColor cftc_bias_color(CftcBias bias) {
     using namespace ui::colors;
+    // The long/short colours of the rest of the workspace, not the
+    // gain/loss green and red: the lean describes positions, not prices.
     switch (bias) {
-        case CftcBias::Bullish:
-            return QColor(POSITIVE());
-        case CftcBias::Bearish:
-            return QColor(NEGATIVE());
+        case CftcBias::LeaningLong:
+            return QColor(AMBER());
+        case CftcBias::LeaningShort:
+            return QColor(CYAN());
         default:
             return QColor(TEXT_SECONDARY());
     }
@@ -134,6 +136,12 @@ QColor cftc_tag_color(const QString& tag) {
     if (tag.startsWith(QCoreApplication::translate("CftcResearch", "FLIPPED")) ||
         tag == QCoreApplication::translate("CftcResearch", "TURNING"))
         return QColor(INFO());
+    // A caveat on the lean, not an event: drawn quietly.
+    if (tag == QCoreApplication::translate("CftcResearch", "ONE-SIDED"))
+        return QColor(TEXT_SECONDARY());
+    if (tag == QCoreApplication::translate("CftcResearch", "BEHIND") ||
+        tag == QCoreApplication::translate("CftcResearch", "OLD REPORT"))
+        return QColor(WARNING());
     return QColor(TEXT_PRIMARY());
 }
 
@@ -204,7 +212,7 @@ constexpr int kCotBoardHeader = 40;
 constexpr int kCotBoardRow = 25;
 constexpr int kCotBoardHeading = 26;
 constexpr double kCotLabelW = 168;
-constexpr double kCotBiasW = 84;
+constexpr double kCotBiasW = 108; // "LEANING SHORT"
 constexpr double kCotFlowW = 204; // "LONG LIQUIDATION" with its size
 constexpr double kCotNetW = 66;
 constexpr double kCotDeltaW = 62;
@@ -332,7 +340,7 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
     p.setPen(QColor(TEXT_SECONDARY()));
     const double head_text_y = 4;
     p.drawText(QRectF(10, head_text_y, kCotLabelW - 10, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("MARKET"));
-    p.drawText(QRectF(x_bias, head_text_y, kCotBiasW - 6, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("BIAS"));
+    p.drawText(QRectF(x_bias, head_text_y, kCotBiasW - 6, 18), Qt::AlignLeft | Qt::AlignVCenter, tr("LEAN"));
     p.drawText(QRectF(x_track, head_text_y, track_w, 18), Qt::AlignLeft | Qt::AlignVCenter,
                tr("%1 · 52-WEEK RANGE").arg(cftc_group_name(family_, principal_key_).toUpper()));
     p.drawText(QRectF(x_net, head_text_y, kCotNetW - 6, 18), Qt::AlignRight | Qt::AlignVCenter, tr("NET %OI"));
@@ -395,7 +403,9 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
         p.setPen(QColor(TEXT_PRIMARY()));
         p.drawText(QRectF(10, y, kCotLabelW - 14, kCotBoardRow), Qt::AlignLeft | Qt::AlignVCenter, m.label);
         QString availability;
-        if (m.availability == CftcRowAvailability::Stored)
+        if (m.behind)
+            availability = tr("behind");
+        else if (m.availability == CftcRowAvailability::Stored)
             availability = tr("stored");
         else if (m.availability == CftcRowAvailability::Old)
             availability = tr("old");
@@ -410,6 +420,8 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
         cot_draw_tail_zones(p, track);
         QStringList tooltip;
         tooltip << m.label;
+        if (m.behind)
+            tooltip << tr("Behind: %1").arg(m.behind_note);
         if (m.availability == CftcRowAvailability::Unavailable) {
             p.setFont(chart_font(10));
             p.setPen(QColor(TEXT_SECONDARY()));
@@ -563,6 +575,8 @@ void CftcPositioningBoard::paintEvent(QPaintEvent*) {
             tag_tips << cftc_side_flip_reason(m.flip);
         if (m.turning)
             tag_tips << m.turning_reason;
+        if (!m.one_sided_reason.isEmpty())
+            tag_tips << m.one_sided_reason;
         QStringList shown = m.tags;
         shown.removeAll(tr("LARGE MOVE")); // the 1W FLOW column shows the size
         cot_draw_tags(
@@ -1484,6 +1498,11 @@ void CftcPositioningMap::paintEvent(QPaintEvent*) {
                                     m.bias != CftcBias::Neutral, tag_font) +
                       4;
             QStringList extra;
+            // A tile whose figures are from an earlier week says so first.
+            if (m.behind)
+                extra << cftc_text_tr("BEHIND");
+            else if (m.availability == CftcRowAvailability::Old)
+                extra << cftc_text_tr("OLD REPORT");
             if (!size_inline)
                 extra << size_label;
             if (m.flow_1w != CftcFlowType::Unavailable && m.flow_1w != CftcFlowType::Quiet)
@@ -1503,9 +1522,15 @@ void CftcPositioningMap::paintEvent(QPaintEvent*) {
                 [](const QString&) { return false; }, tag_font);
             QStringList tip;
             tip << QStringLiteral("%1 · %2").arg(m.label, group_name_);
+            if (m.behind)
+                tip << tr("Behind: %1").arg(m.behind_note);
+            else if (m.availability == CftcRowAvailability::Old || m.availability == CftcRowAvailability::Stored)
+                tip << m.availability_note;
             tip << tr("%1 — %2").arg(cftc_net_position_text(m.net_pct_oi), cftc_level_rank_text(*m.percentile, 52));
             if (!m.bias_reason.isEmpty())
                 tip << m.bias_reason;
+            if (!m.one_sided_reason.isEmpty())
+                tip << m.one_sided_reason;
             if (m.flow_1w != CftcFlowType::Unavailable)
                 tip << tr("This week: %1%2")
                            .arg(cftc_flow_label(m.flow_1w),
@@ -1655,13 +1680,13 @@ void CftcReadingsGrid::paintEvent(QPaintEvent*) {
         cot_draw_tags(
             p, x_tags, width() - 4, y, kCotGridRow, row.tags,
             [](const QString& tag) {
-                return tag == cftc_bias_label(CftcBias::Bullish)   ? cftc_bias_color(CftcBias::Bullish)
-                       : tag == cftc_bias_label(CftcBias::Bearish) ? cftc_bias_color(CftcBias::Bearish)
-                       : tag == cftc_bias_label(CftcBias::Neutral) ? cftc_bias_color(CftcBias::Neutral)
-                                                                   : cftc_tag_color(tag);
+                return tag == cftc_bias_label(CftcBias::LeaningLong)    ? cftc_bias_color(CftcBias::LeaningLong)
+                       : tag == cftc_bias_label(CftcBias::LeaningShort) ? cftc_bias_color(CftcBias::LeaningShort)
+                       : tag == cftc_bias_label(CftcBias::Neutral)      ? cftc_bias_color(CftcBias::Neutral)
+                                                                        : cftc_tag_color(tag);
             },
             [](const QString& tag) {
-                return tag == cftc_bias_label(CftcBias::Bullish) || tag == cftc_bias_label(CftcBias::Bearish);
+                return tag == cftc_bias_label(CftcBias::LeaningLong) || tag == cftc_bias_label(CftcBias::LeaningShort);
             },
             tag_font);
         if (!row.tags_tooltip.isEmpty())

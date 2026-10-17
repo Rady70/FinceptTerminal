@@ -21,6 +21,7 @@
 #include <QHeaderView>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QPair>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -712,7 +713,7 @@ void CftcPanel::apply_texts() {
         nav_table_->setText(tr("TABLE"));
         nav_table_->setToolTip(tr("The exact rows behind this view, newest first; CSV exports them"));
     }
-    const QStringList captions = {tr("LATEST REPORT"), tr("SPECULATOR BIAS"), tr("CROWDED"), tr("FLIPPED THIS WEEK"),
+    const QStringList captions = {tr("LATEST REPORT"), tr("SPECULATORS' LEAN"), tr("CROWDED"), tr("FLIPPED THIS WEEK"),
                                   tr("LARGE WEEKLY MOVES")};
     for (int i = 0; i < kpis_.size(); ++i)
         kpis_[i].caption->setText(captions.value(i));
@@ -725,8 +726,8 @@ void CftcPanel::apply_texts() {
     // The map title names the family's speculators; render_overview() sets it.
     if (map_hint_)
         map_hint_->setText(tr("Each tile is a market, placed by where the speculators' net position sits among its "
-                              "previous 52 weekly reports. Left edge: green BULLISH, red BEARISH, grey NEUTRAL. "
-                              "Hover a tile for the details; click it to open the market."));
+                              "previous 52 weekly reports. Left edge: amber LEANING LONG, cyan LEANING SHORT, grey "
+                              "NEUTRAL. Hover a tile for the details; click it to open the market."));
     if (moves_hint_)
         moves_hint_->setText(tr("The speculators' net change since the previous report, ranked by how many typical "
                                 "weekly changes it is (the typical size of their previous 52 weekly changes). "
@@ -741,7 +742,7 @@ void CftcPanel::apply_texts() {
     if (board_title_)
         board_title_->setText(tr("ALL GROUPS"));
     if (board_hint_)
-        board_hint_->setText(tr("Bias and 52-week range of the speculators, then every group's net position as a "
+        board_hint_->setText(tr("Lean and 52-week range of the speculators, then every group's net position as a "
                                 "share of open interest, shaded amber toward the top of its 52 weeks and cyan toward "
                                 "the bottom. 1W Δ: the net change since the previous report, as a share of that "
                                 "report's open interest."));
@@ -991,14 +992,9 @@ void CftcPanel::request_overview(bool refresh) {
 }
 
 bool CftcPanel::overview_refresh_due() const {
-    QDate latest;
-    for (const auto& row : rows_) {
-        if (row.availability == CftcRowAvailability::NotCovered || row.availability == CftcRowAvailability::Unavailable)
-            continue;
-        if (row.report_date.isValid() && row.report_date > latest)
-            latest = row.report_date;
-    }
-    return cot_next_report_due(latest, QDateTime::currentDateTimeUtc());
+    // Due as soon as any market's own next report is due (see
+    // cftc_overview_oldest_report); at most once an hour per report.
+    return cot_next_report_due(cftc_overview_oldest_report(rows_), QDateTime::currentDateTimeUtc());
 }
 
 void CftcPanel::accept_overview(const services::EconomicsResult& result, bool refresh) {
@@ -1047,18 +1043,27 @@ void CftcPanel::accept_overview(const services::EconomicsResult& result, bool re
     } else {
         int updated = 0;
         int failed = 0;
+        int read = 0;
         for (const auto& entry : entries_) {
             if (entry.provider_status == QLatin1String("updated"))
                 ++updated;
             else if (entry.status == services::CftcMonitorStatus::ArchiveOnly ||
                      entry.status == services::CftcMonitorStatus::Unavailable)
                 ++failed;
+            if (entry.provider_status == QLatin1String("updated") || entry.provider_status == QLatin1String("current"))
+                ++read;
         }
+        // "Refreshed" only when the CFTC was actually read for some market;
+        // a refresh that failed everywhere leaves the stored copy as it was.
+        overview_from_refresh_ = read > 0;
         const QString when = QDateTime::currentDateTimeUtc().toString(QStringLiteral("HH:mm 'UTC'"));
-        QString text =
-            updated > 0
-                ? tr("Refreshed from the CFTC at %1: new or revised reports for %2 markets.").arg(when).arg(updated)
-                : tr("Refreshed from the CFTC at %1: the stored reports were already current.").arg(when);
+        QString text;
+        if (updated > 0)
+            text = tr("Refreshed from the CFTC at %1: new or revised reports for %2 markets.").arg(when).arg(updated);
+        else if (read > 0)
+            text = tr("Refreshed from the CFTC at %1: the stored reports were already current.").arg(when);
+        else
+            text = tr("The CFTC could not be read at %1.").arg(when);
         if (failed > 0)
             text +=
                 QLatin1Char(' ') + tr("%1 markets could not be refreshed; their stored reports are shown.").arg(failed);
@@ -1198,14 +1203,25 @@ void CftcPanel::render_kpis() {
         report_sub += QLatin1Char(' ') + tr("· refresh failed for %1").arg(figures.markets_stored);
     if (figures.markets_old > 0)
         report_sub += QLatin1Char(' ') + tr("· %1 with an old report").arg(figures.markets_old);
+    if (figures.markets_behind > 0)
+        report_sub += QLatin1Char(' ') +
+                      tr("· %1 behind (an earlier report): %2").arg(figures.markets_behind).arg(names(figures.behind));
     set(0, figures.latest_report.isValid() ? figures.latest_report.toString(QStringLiteral("d MMM yyyy")) : tr("none"),
         report_sub);
     const QString group = cftc_group_name(family_, cftc_principal_participant_key(family_));
-    set(1, tr("▲ %1   ▼ %2   = %3").arg(figures.bullish.size()).arg(figures.bearish.size()).arg(figures.neutral.size()),
-        tr("%1 positioning over 52 weeks: BULLISH / BEARISH / NEUTRAL").arg(group));
+    QString lean_sub = tr("%1 over 52 weeks: LEANING LONG / LEANING SHORT / NEUTRAL").arg(group);
+    if (!figures.one_sided.isEmpty())
+        lean_sub += QLatin1Char(' ') + tr("· %1 ONE-SIDED (the same side for 3 years)").arg(figures.one_sided.size());
+    set(1,
+        tr("▲ %1   ▼ %2   = %3")
+            .arg(figures.leaning_long.size())
+            .arg(figures.leaning_short.size())
+            .arg(figures.neutral.size()),
+        lean_sub);
     kpis_[1].frame->setToolTip(
-        tr("BULLISH: %1\nBEARISH: %2\nNEUTRAL: %3\n\n%4")
-            .arg(names(figures.bullish), names(figures.bearish), names(figures.neutral), cftc_method_note()));
+        tr("LEANING LONG: %1\nLEANING SHORT: %2\nNEUTRAL: %3\nONE-SIDED: %4\n\n%5")
+            .arg(names(figures.leaning_long), names(figures.leaning_short), names(figures.neutral),
+                 figures.one_sided.isEmpty() ? tr("none") : names(figures.one_sided), cftc_method_note()));
     set(2, tr("L %1 · S %2").arg(figures.crowded_long.size()).arg(figures.crowded_short.size()),
         figures.crowded_long.isEmpty() && figures.crowded_short.isEmpty()
             ? tr("no market has %1 crowded long or crowded short").arg(group)
@@ -1255,16 +1271,36 @@ void CftcPanel::render_overview_notes() {
         return;
     QStringList notes;
     QStringList not_covered;
-    QStringList stored;
     QStringList old_reports;
     QStringList unavailable;
+    // Markets sharing one reason (a refresh that failed everywhere, markets
+    // one report behind) are named once with it, not the reason once each.
+    QVector<QPair<QString, QStringList>> stored;
+    QVector<QPair<QString, QStringList>> behind;
+    auto group = [](QVector<QPair<QString, QStringList>>& groups, const QString& reason, const QString& label) {
+        for (auto& item : groups) {
+            if (item.first == reason) {
+                item.second << label;
+                return;
+            }
+        }
+        groups.append({reason, QStringList{label}});
+    };
+    auto grouped = [](const QVector<QPair<QString, QStringList>>& groups) {
+        QStringList parts;
+        for (const auto& item : groups)
+            parts << QStringLiteral("%1 (%2)").arg(item.second.join(QStringLiteral(", ")), item.first);
+        return parts.join(QStringLiteral("; "));
+    };
     for (const auto& row : rows_) {
+        if (row.behind)
+            group(behind, row.behind_note, row.label);
         switch (row.availability) {
             case CftcRowAvailability::NotCovered:
                 not_covered << row.label;
                 break;
             case CftcRowAvailability::Stored:
-                stored << QStringLiteral("%1 (%2)").arg(row.label, row.availability_note);
+                group(stored, row.availability_note, row.label);
                 break;
             case CftcRowAvailability::Old:
                 old_reports << QStringLiteral("%1 (%2)").arg(row.label, row.availability_note);
@@ -1290,7 +1326,12 @@ void CftcPanel::render_overview_notes() {
                      .toHtmlEscaped();
     if (!stored.isEmpty())
         notes << tr("The last refresh failed for these markets; their stored reports are shown: %1.")
-                     .arg(stored.join(QStringLiteral("; ")))
+                     .arg(grouped(stored))
+                     .toHtmlEscaped();
+    if (!behind.isEmpty())
+        notes << tr("Behind the other markets (REFRESH reads their newer reports; this week's changes and the "
+                    "weekly ranking leave them out until then): %1.")
+                     .arg(grouped(behind))
                      .toHtmlEscaped();
     if (!not_covered.isEmpty())
         notes << tr("Not part of the %1 report (the CFTC does not publish it for these markets): %2.")
@@ -1333,10 +1374,11 @@ QJsonArray CftcPanel::overview_table_rows() const {
         QJsonObject object;
         object[QStringLiteral("market")] = row.label;
         object[QStringLiteral("date")] = row.report_date.isValid() ? row.report_date.toString(Qt::ISODate) : QString();
-        object[QStringLiteral("data")] = row.availability == CftcRowAvailability::Current  ? tr("current")
-                                         : row.availability == CftcRowAvailability::Stored ? tr("stored")
-                                         : row.availability == CftcRowAvailability::Old    ? tr("old report")
-                                                                                           : tr("unavailable");
+        object[QStringLiteral("data")] = row.behind                                         ? tr("behind")
+                                         : row.availability == CftcRowAvailability::Current ? tr("current")
+                                         : row.availability == CftcRowAvailability::Stored  ? tr("stored")
+                                         : row.availability == CftcRowAvailability::Old     ? tr("old report")
+                                                                                            : tr("unavailable");
         for (const auto& cell : row.cells) {
             const QString name = cftc_group_name(family_, cell.participant_key);
             if (cell.has_value)
@@ -1568,7 +1610,7 @@ void CftcPanel::render_market_header() {
         }
         if (p.has_net_pct_oi && p.historical_percentile_available) {
             const CftcLevelBand band = cftc_level_band(p.percentile, result_.config);
-            tags << tag(cftc_level_band_label(band), cftc_band_color(band), false);
+            tags << tag(cftc_level_band_side_label(band, p.net_pct_oi), cftc_band_color(band), false);
         }
         const CftcCrowding crowding = cftc_crowding(p);
         if (crowding != CftcCrowding::None) {
@@ -1580,6 +1622,11 @@ void CftcPanel::render_market_header() {
             if (flip.direction != 0) {
                 tags << tag(cftc_side_flip_label(flip), cftc_tag_color(cftc_side_flip_label(flip)), false);
                 tips << cftc_side_flip_reason(flip);
+            }
+            const CftcOneSided one_sided = cftc_one_sided(trail->net_pct_oi);
+            if (one_sided.direction != 0) {
+                tags << tag(cftc_one_sided_label(one_sided), cftc_tag_color(cftc_one_sided_label(one_sided)), false);
+                tips << cftc_one_sided_reason(one_sided);
             }
         }
     }
@@ -1615,7 +1662,7 @@ void CftcPanel::render_readings() {
         }
         if (p.has_net_pct_oi && p.historical_percentile_available) {
             const CftcLevelBand band = cftc_level_band(p.percentile, config);
-            row.level.tag = cftc_level_band_label(band);
+            row.level.tag = cftc_level_band_side_label(band, p.net_pct_oi);
             row.level.tag_color = cftc_band_color(band);
             row.level.value = cftc_percentile_ordinal(p.percentile);
             row.level.tooltip = cftc_level_statement(family_, p, trail, config, 4, /*include_usual_range=*/true);
@@ -1658,6 +1705,11 @@ void CftcPanel::render_readings() {
                 if (flip.direction != 0) {
                     row.tags << cftc_side_flip_label(flip);
                     tips << cftc_side_flip_reason(flip);
+                }
+                const CftcOneSided one_sided = cftc_one_sided(trail->net_pct_oi);
+                if (one_sided.direction != 0) {
+                    row.tags << cftc_one_sided_label(one_sided);
+                    tips << cftc_one_sided_reason(one_sided);
                 }
             }
         }
@@ -1982,8 +2034,7 @@ void CftcPanel::render_market_notes() {
         QStringList items;
         for (const auto& item : std::as_const(history_.set_aside))
             items << QStringLiteral("%1 (%2)").arg(item.date_label.left(10), item.reason);
-        lines << tr("Reports set aside because their own published figures are inconsistent (all other reports are "
-                    "used): %1.")
+        lines << tr("Reports set aside, each with its reason (all other reports are used): %1.")
                      .arg(items.join(QStringLiteral("; ")))
                      .toHtmlEscaped();
     }

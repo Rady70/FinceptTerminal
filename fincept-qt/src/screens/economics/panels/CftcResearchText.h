@@ -7,7 +7,7 @@
 // are the basis) into
 //   * a small fixed vocabulary of labels the workspace shows as tags, so
 //     markets and groups can be compared at a glance (level band, flow type,
-//     change size, the speculators' positioning bias, CROWDED, side flips);
+//     change size, the speculators' lean, ONE-SIDED, CROWDED, side flips);
 //   * short statements a reader can check, shown as the labels' tooltips:
 //     every statement carries the reading it rests on and the comparison
 //     behind it.
@@ -15,11 +15,13 @@
 // sizes are the engine's own percentiles and size ranks with the engine's
 // thresholds (10% / 90% tails, 75% notable and 90% large changes).
 //
-// The positioning bias (BULLISH / BEARISH / NEUTRAL) describes how the
-// speculative group is positioned and moving over the last year; it does not
-// predict prices. CROWDED LONG / SHORT is the engine's CROWDED_LONG /
-// CROWDED_SHORT state (speculative group net long in the top 10%, or net short
-// in the bottom 10%, of the previous 52 reports).
+// The speculators' lean (LEANING LONG / LEANING SHORT / NEUTRAL) describes how
+// the speculative group is positioned and moving over the last year. It uses
+// no price words: tested against later prices it showed no predictive value,
+// and ONE-SIDED marks a market whose speculators have held the same side for
+// three years, where the side alone says little. CROWDED LONG / SHORT is the
+// engine's CROWDED_LONG / CROWDED_SHORT state (speculative group net long in
+// the top 10%, or net short in the bottom 10%, of the previous 52 reports).
 //
 // Rules the statements follow:
 //   * numbers first: "net long 38.2% of open interest, higher than 96% of the
@@ -747,22 +749,24 @@ inline QString cftc_method_note() {
     return cftc_text_tr(
         "Basis: the previous 52 weekly reports. Net position = long minus short, as a share of open interest.\n"
         "LEVEL: VERY LOW = bottom 10% of the previous 52 reports, LOW = up to 30%, NORMAL, HIGH = from 70%, VERY "
-        "HIGH = top 10%.\n"
+        "HIGH = top 10%. For a net-short group a high level is a smaller net short (VERY HIGH = least short).\n"
         "NOTABLE / LARGE: a change of about 1.15 / 1.65 times the typical change of that length (the typical "
         "size of the previous 52 weekly changes x the square root of the weeks).\n"
         "FLOW: the side that moved notably: LONG BUILD, LONG LIQUIDATION, SHORT BUILD, SHORT COVERING, BOTH "
-        "ADDING, BOTH CUTTING, or QUIET.\n"
-        "BULLISH / BEARISH / NEUTRAL (speculators: Non-Commercial, Managed Money, Leveraged Funds): BULLISH = "
-        "net long, at or above the middle of their year and not cutting sharply over 4 weeks; BEARISH = the "
-        "mirror image; otherwise NEUTRAL.\n"
+        "ADDING, BOTH CUTTING; when only the net change is notable, the side that moved it most; otherwise "
+        "QUIET.\n"
+        "LEANING LONG / LEANING SHORT / NEUTRAL (speculators: Non-Commercial, Managed Money, Leveraged Funds): "
+        "LEANING LONG = net long, at or above the middle of their year and not cutting sharply over 4 weeks; "
+        "LEANING SHORT = the mirror image; otherwise NEUTRAL. ONE-SIDED: on the same side in each of the previous "
+        "156 reports (about 3 years), so the side alone says little.\n"
         "CROWDED LONG / SHORT: speculators net long in the top 10% / net short in the bottom 10% of the year. In "
         "the official reports since 1988 such episodes lasted a median of 2 weeks, 38% lasted 4 weeks or more, "
         "and 44% were crowded on the same side 4 weeks after they began.\n"
         "FLIPPED LONG / SHORT: the net position changed side since the previous weekly report. TURNING: moved "
         "out of the 10% tail this week, or fell back after at least 3 weeks in it within the last 13 (overview: "
         "the speculators). LARGE MOVE: the speculators' one-week change is LARGE.\n"
-        "These are MarketLab conventions that describe reported positions, not prices; they are not CFTC "
-        "definitions.");
+        "These are MarketLab conventions that describe reported positions, not prices, and not CFTC definitions. "
+        "Tested against later prices (2001-2026), the lean and CROWDED showed no predictive value.");
 }
 
 // ── Standard labels ─────────────────────────────────────────────────────────
@@ -798,9 +802,44 @@ inline QString cftc_level_band_label(CftcLevelBand band) {
     return {};
 }
 
+/// The level in words of the group's side, because a high level of a net-short
+/// group is a smaller net short: "least short" (VERY HIGH), "less short"
+/// (HIGH), "more short" (LOW), "most short" (VERY LOW), and the long-side
+/// mirror "most long", "more long", "less long", "least long". Empty for
+/// NORMAL and for a flat position.
+inline QString cftc_level_side_text(CftcLevelBand band, double net_pct_oi) {
+    if (net_pct_oi == 0.0)
+        return {};
+    const bool long_side = net_pct_oi > 0.0;
+    switch (band) {
+        case CftcLevelBand::VeryHigh:
+            return long_side ? cftc_text_tr("most long") : cftc_text_tr("least short");
+        case CftcLevelBand::High:
+            return long_side ? cftc_text_tr("more long") : cftc_text_tr("less short");
+        case CftcLevelBand::Low:
+            return long_side ? cftc_text_tr("less long") : cftc_text_tr("more short");
+        case CftcLevelBand::VeryLow:
+            return long_side ? cftc_text_tr("least long") : cftc_text_tr("most short");
+        case CftcLevelBand::Normal:
+            break;
+    }
+    return {};
+}
+
+/// The level band as a tag that also names the side: "VERY HIGH · LEAST SHORT".
+inline QString cftc_level_band_side_label(CftcLevelBand band, double net_pct_oi) {
+    const QString side = cftc_level_side_text(band, net_pct_oi);
+    return side.isEmpty() ? cftc_level_band_label(band)
+                          : cftc_level_band_label(band) + QStringLiteral(" · ") + side.toUpper();
+}
+
 /// Which side of a group moved notably over a horizon. A leg moved notably when
 /// its size rank is at least the engine's materiality cut-off (0.75). When
 /// both legs moved notably in opposite directions, the larger one names it.
+/// When neither leg alone moved notably but the net change did (a moderate
+/// rise of the longs together with a moderate fall of the shorts), the side
+/// that moved the net position most names it; QUIET is left for a net change
+/// below the cut-off as well.
 enum class CftcFlowType {
     Unavailable,
     Quiet,
@@ -819,10 +858,22 @@ inline CftcFlowType cftc_flow_type(const services::CftcHorizonFlowReading& readi
         return CftcFlowType::Unavailable;
     const bool long_moved = reading.long_flow != 0.0 && reading.long_rank >= config.material_move_percentile;
     const bool short_moved = reading.short_flow != 0.0 && reading.short_rank >= config.material_move_percentile;
-    if (!long_moved && !short_moved)
-        return CftcFlowType::Quiet;
     auto long_type = [&] { return reading.long_flow > 0.0 ? CftcFlowType::LongBuild : CftcFlowType::LongLiquidation; };
     auto short_type = [&] { return reading.short_flow > 0.0 ? CftcFlowType::ShortBuild : CftcFlowType::ShortCovering; };
+    if (!long_moved && !short_moved) {
+        if (!reading.has_net_flow || !reading.has_net_rank || reading.net_flow == 0.0 ||
+            reading.net_rank < config.material_move_percentile)
+            return CftcFlowType::Quiet;
+        // What each leg added to the net change: longs up and shorts down
+        // both raise it. At least one of them points the net change's way.
+        const double from_long = reading.long_flow;
+        const double from_short = -reading.short_flow;
+        const bool rising = reading.net_flow > 0.0;
+        auto pushes = [rising](double part) { return rising ? part > 0.0 : part < 0.0; };
+        const bool long_drives =
+            pushes(from_long) && (!pushes(from_short) || std::fabs(from_long) >= std::fabs(from_short));
+        return long_drives ? long_type() : short_type();
+    }
     if (long_moved && !short_moved)
         return long_type();
     if (short_moved && !long_moved)
@@ -896,12 +947,13 @@ inline QString cftc_change_size_label(CftcChangeSize size) {
     }
 }
 
-/// The speculative group's positioning bias over the last year. BULLISH: net
-/// long and at or above the middle of the previous 52 reports, unless its net
-/// position fell by a LARGE amount over 4 weeks; BEARISH: net short and at or
+/// The speculative group's lean over the last year. LEANING LONG: net long and
+/// at or above the middle of the previous 52 reports, unless its net position
+/// fell by a LARGE amount over 4 weeks; LEANING SHORT: net short and at or
 /// below the middle, unless it rose by a LARGE amount over 4 weeks; NEUTRAL
-/// otherwise. It describes positions, not prices.
-enum class CftcBias { Unavailable, Bullish, Bearish, Neutral };
+/// otherwise. It describes positions, not prices: tested against later prices
+/// (2001-2026) it showed no predictive value, so it carries no price words.
+enum class CftcBias { Unavailable, LeaningLong, LeaningShort, Neutral };
 
 inline CftcBias cftc_positioning_bias(const services::CftcParticipantInterpretation& p,
                                       const services::CftcInterpretationConfig& config) {
@@ -916,18 +968,18 @@ inline CftcBias cftc_positioning_bias(const services::CftcParticipantInterpretat
     const bool sharp_rise = four && four->evaluated && four->has_net_flow && four->has_net_rank &&
                             four->net_flow > 0.0 && four->net_rank >= config.large_move_percentile;
     if (p.net_pct_oi > 0.0 && p.percentile >= 0.5)
-        return sharp_fall ? CftcBias::Neutral : CftcBias::Bullish;
+        return sharp_fall ? CftcBias::Neutral : CftcBias::LeaningLong;
     if (p.net_pct_oi < 0.0 && p.percentile <= 0.5)
-        return sharp_rise ? CftcBias::Neutral : CftcBias::Bearish;
+        return sharp_rise ? CftcBias::Neutral : CftcBias::LeaningShort;
     return CftcBias::Neutral;
 }
 
 inline QString cftc_bias_label(CftcBias bias) {
     switch (bias) {
-        case CftcBias::Bullish:
-            return cftc_text_tr("BULLISH");
-        case CftcBias::Bearish:
-            return cftc_text_tr("BEARISH");
+        case CftcBias::LeaningLong:
+            return cftc_text_tr("LEANING LONG");
+        case CftcBias::LeaningShort:
+            return cftc_text_tr("LEANING SHORT");
         case CftcBias::Neutral:
             return cftc_text_tr("NEUTRAL");
         case CftcBias::Unavailable:
@@ -944,13 +996,13 @@ inline QString cftc_bias_reason(CftcBias bias, const services::CftcParticipantIn
         return {};
     const QString side = cftc_net_position_text(p.net_pct_oi);
     const QString level = cftc_level_rank_text(p.percentile, config.history_window);
-    if (bias == CftcBias::Bullish)
-        return cftc_text_tr("BULLISH positioning: %1, %2, and the net long has not shrunk by a large amount over 4 "
-                            "weeks. It describes positions, not prices.")
+    if (bias == CftcBias::LeaningLong)
+        return cftc_text_tr("LEANING LONG: %1, %2, and the net long has not shrunk by a large amount over 4 weeks. "
+                            "It describes positions, not prices.")
             .arg(side, level);
-    if (bias == CftcBias::Bearish)
-        return cftc_text_tr("BEARISH positioning: %1, %2, and the net short has not shrunk by a large amount over 4 "
-                            "weeks. It describes positions, not prices.")
+    if (bias == CftcBias::LeaningShort)
+        return cftc_text_tr("LEANING SHORT: %1, %2, and the net short has not shrunk by a large amount over 4 weeks. "
+                            "It describes positions, not prices.")
             .arg(side, level);
     if (p.net_pct_oi > 0.0 && p.percentile >= 0.5)
         return cftc_text_tr("NEUTRAL: %1, %2, but the net long shrank by a large amount over 4 weeks.")
@@ -962,6 +1014,52 @@ inline QString cftc_bias_reason(CftcBias bias, const services::CftcParticipantIn
         return cftc_text_tr("NEUTRAL: %1.").arg(side);
     return cftc_text_tr("NEUTRAL: %1, but %2 — the side and the level of the year point different ways.")
         .arg(side, level);
+}
+
+/// A speculative group whose net position was on its current side in each of
+/// the previous `reports` reports (156, about 3 years): in such a market the
+/// side is the usual state, so LEANING LONG / SHORT says little on its own and
+/// the level carries the information. A report without a net position, a flat
+/// one or a shorter history never qualifies.
+struct CftcOneSided {
+    int direction = 0; ///< +1 always net long, -1 always net short, 0 not one-sided
+    int reports = 0;
+};
+
+inline constexpr int kCftcOneSidedReports = 156;
+
+inline CftcOneSided cftc_one_sided(const QVector<services::CftcMonitorHistoryPoint>& path,
+                                   int reports = kCftcOneSidedReports) {
+    CftcOneSided out;
+    const int n = static_cast<int>(path.size());
+    if (reports < 1 || n < reports + 1)
+        return out;
+    const auto& now = path[n - 1];
+    if (!now.has_net_pct_oi || now.net_pct_oi == 0.0)
+        return out;
+    const bool long_side = now.net_pct_oi > 0.0;
+    for (int i = n - 1 - reports; i < n - 1; ++i) {
+        const auto& point = path[i];
+        if (!point.has_net_pct_oi || point.net_pct_oi == 0.0 || (point.net_pct_oi > 0.0) != long_side)
+            return out;
+    }
+    out.direction = long_side ? 1 : -1;
+    out.reports = reports;
+    return out;
+}
+
+inline QString cftc_one_sided_label(const CftcOneSided& one_sided) {
+    return one_sided.direction != 0 ? cftc_text_tr("ONE-SIDED") : QString();
+}
+
+inline QString cftc_one_sided_reason(const CftcOneSided& one_sided) {
+    if (one_sided.direction == 0)
+        return {};
+    return cftc_text_tr("ONE-SIDED: net %1 in each of the previous %2 weekly reports (about 3 years). In this market "
+                        "the side is the usual state, so the side alone says little; the level shows whether the "
+                        "position is larger or smaller than usual.")
+        .arg(one_sided.direction > 0 ? cftc_text_tr("long") : cftc_text_tr("short"))
+        .arg(one_sided.reports);
 }
 
 /// The engine's CROWDED_LONG / CROWDED_SHORT state of a speculative group.

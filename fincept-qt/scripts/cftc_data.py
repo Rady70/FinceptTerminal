@@ -102,6 +102,14 @@ class CftcCotArchive:
             PRIMARY KEY (report_family, report_basis, contract_code)
         )
         """,
+        # Facts about how the stored rows were read (the column mapping's
+        # fingerprint); see adopt_column_mapping.
+        """
+        CREATE TABLE IF NOT EXISTS cot_reader_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
     )
 
     def __init__(self, path: Union[str, Path]):
@@ -137,6 +145,12 @@ class CftcCotArchive:
         other's rows forever without any analytical change. The stored row and
         the first/last writer provenance are kept as written; a later writer
         whose analytical fields are identical does not churn them.
+
+        A re-read never erases a stored value: a field the new row lacks (None
+        or absent) keeps the value already stored for that report, while a
+        changed value is adopted. A provider column renamed beyond what the
+        reader can match therefore leaves a gap only in reports never stored
+        before, not in the reports a refresh re-reads.
         """
         inserted = updated = unchanged = 0
         if not rows:
@@ -160,7 +174,7 @@ class CftcCotArchive:
             codes = sorted({str(row.get("cftc_contract_market_code") or "") for row in rows})
             dates = [row.get("report_date_as_yyyy_mm_dd") for row in rows
                      if row.get("report_date_as_yyyy_mm_dd")]
-            existing: Dict[Tuple[str, str], str] = {}
+            existing: Dict[Tuple[str, str], Dict[str, Any]] = {}
             if codes and dates:
                 placeholders = ",".join("?" for _ in codes)
                 for record in conn.execute(
@@ -168,18 +182,20 @@ class CftcCotArchive:
                         f"WHERE report_family = ? AND report_basis = ? AND report_date BETWEEN ? AND ? "
                         f"AND contract_code IN ({placeholders})",
                         [report_family, report_basis, min(dates), max(dates), *codes]):
-                    existing[(record["report_date"], record["contract_code"])] = self._comparison_key(
-                        json.loads(record["row_json"]))
+                    existing[(record["report_date"], record["contract_code"])] = json.loads(record["row_json"])
             for row in rows:
-                payload = json.dumps(row, sort_keys=True, separators=(",", ":"))
-                comparison = self._comparison_key(row)
                 date = row.get("report_date_as_yyyy_mm_dd")
                 code = str(row.get("cftc_contract_market_code") or "")
+                stored = existing.get((date, code))
+                if stored is not None:
+                    row = self._keep_stored_values(row, stored)
+                payload = json.dumps(row, sort_keys=True, separators=(",", ":"))
+                comparison = self._comparison_key(row)
                 name = row.get("market_and_exchange_names")
                 units = row.get("contract_units")
                 basis_text = row.get("futonly_or_combined") or ""
-                if (date, code) in existing:
-                    if existing[(date, code)] == comparison:
+                if stored is not None:
+                    if self._comparison_key(stored) == comparison:
                         unchanged += 1
                         continue
                     conn.execute(
@@ -212,6 +228,43 @@ class CftcCotArchive:
         finally:
             conn.close()
         return inserted, updated, unchanged
+
+    @staticmethod
+    def _keep_stored_values(row: Dict[str, Any], stored: Dict[str, Any]) -> Dict[str, Any]:
+        """The re-read row, with every value it lacks taken from the stored
+        row of the same report (see upsert_observations)."""
+        merged = dict(row)
+        for key, value in stored.items():
+            if value is not None and merged.get(key) is None:
+                merged[key] = value
+        return merged
+
+    def adopt_column_mapping(self, fingerprint: str) -> bool:
+        """Record the reader's column mapping; withdraw completeness on a change.
+
+        When the fingerprint differs from the one the stored rows were read
+        with, every contract's complete-history claim is withdrawn, so the
+        next scan reads each history in full with the new mapping and repairs
+        values the older mapping could not find (a renamed provider column,
+        for instance). An archive without a recorded fingerprint simply
+        records it. Returns whether claims were withdrawn.
+        """
+        conn = self._connect()
+        try:
+            record = conn.execute(
+                "SELECT value FROM cot_reader_state WHERE key = 'column_mapping'").fetchone()
+            if record is not None and record["value"] == fingerprint:
+                return False
+            if record is not None:
+                conn.execute("DELETE FROM cot_contract_state")
+            conn.execute(
+                "INSERT INTO cot_reader_state (key, value) VALUES ('column_mapping', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (fingerprint,))
+            conn.commit()
+            return record is not None
+        finally:
+            conn.close()
 
     @staticmethod
     def _comparison_key(row: Dict[str, Any]) -> str:
@@ -520,7 +573,7 @@ class CFTCDataWrapper:
             return data
 
         except requests.exceptions.RequestException as e:
-            raise Exception(f"HTTP request failed: {str(e)}")
+            raise Exception(f"HTTP request failed: {self._without_token(str(e))}")
         except json.JSONDecodeError as e:
             raise Exception(f"JSON decode error: {str(e)}")
 
@@ -1348,7 +1401,56 @@ class CFTCDataWrapper:
     def _open_archive(self) -> CftcCotArchive:
         archive = CftcCotArchive(self._archive_path())
         archive.ensure_schema()
+        archive.adopt_column_mapping(self._column_mapping_fingerprint())
         return archive
+
+    # How stored reports are kept current. An increment re-reads the newest
+    # stored report and the 12 before it (13 weekly reports, about a quarter),
+    # so a CFTC correction of a recent report, or a value an earlier read
+    # missed, is adopted at the next refresh. The complete history is read
+    # again once it is a year old, and whenever the column mapping below
+    # changes (adopt_column_mapping), which repairs older reports too.
+    REREAD_REPORTS = 13
+    FULL_REREAD_DAYS = 365
+    # Part of the fingerprint: change it when the reading logic changes in a
+    # way the alias tables do not show (for example the column-name token).
+    _READER_REVISION = "2026-10-17"
+
+    @classmethod
+    def _column_mapping_fingerprint(cls) -> str:
+        """A short digest of everything that decides which provider column
+        becomes which canonical value."""
+        import hashlib
+        parts = (cls._READER_REVISION, cls._PARTICIPANT_FIELDS, cls._SPREAD_FIELDS,
+                 cls._PARTICIPANT_TRADER_FIELDS, cls._TRADER_CONTEXT_FIELDS, cls._CONCENTRATION_FIELDS,
+                 cls._HISTORY_METADATA_KEYS, cls._AGGREGATE_SUFFIXES, sorted(cls._AGGREGATE_COLUMNS),
+                 sorted(cls._STRING_METADATA_KEYS))
+        return hashlib.sha256(repr(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _increment_since(self, latest: Optional[str]) -> Optional[str]:
+        """The first report date an increment asks for (see REREAD_REPORTS)."""
+        if not latest:
+            return None
+        try:
+            newest = datetime.strptime(str(latest)[:10], "%Y-%m-%d")
+        except ValueError:
+            return latest
+        return (newest - timedelta(days=7 * (self.REREAD_REPORTS - 1))).strftime("%Y-%m-%d")
+
+    def _full_read_due(self, archive: CftcCotArchive, family: str, basis_code: str, code: str) -> bool:
+        """Whether this contract's next read must be its complete history: it
+        was never read in full, the claim was withdrawn, or the full read is
+        older than FULL_REREAD_DAYS."""
+        fetched_at = archive.full_history_at(family, basis_code, code)
+        if fetched_at is None:
+            return True
+        try:
+            when = datetime.fromisoformat(str(fetched_at))
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - when > timedelta(days=self.FULL_REREAD_DAYS)
 
     def _cot_code_values(self) -> frozenset:
         cache = getattr(self, "_cot_code_value_cache", None)
@@ -1916,12 +2018,13 @@ class CFTCDataWrapper:
         """Canonical rows for one contract from the current API path.
 
         Without `since_date` this is the contract's complete history, paginated
-        to the end and failing closed at the cap. With a `since_date` (the
-        archive's latest stored report date, included so a revision of that
-        report is adopted) it is a single bounded increment. The monitor
-        performs the full read once per contract and then increments; a bounded
-        backfill therefore still triggers one full read before incremental
-        scans begin.
+        to the end and failing closed at the cap. With a `since_date` (12 weeks
+        before the archive's latest stored report, see REREAD_REPORTS, so a
+        revision of a recent report is adopted) it is a single bounded
+        increment. The monitor performs the full read once per contract (again
+        yearly and after a column-mapping change) and increments otherwise; a
+        bounded backfill therefore still triggers one full read before
+        incremental scans begin.
         """
         import urllib.parse
 
@@ -2150,7 +2253,28 @@ class CFTCDataWrapper:
                     "row_note": row_note, "complete": complete}
         except Exception as exc:
             return {"market_key": key, "contract_code": code, "fetched": None,
-                    "fetch_ok": False, "fetch_error": str(exc), "full_history": full_required}
+                    "fetch_ok": False, "fetch_error": self._readable_fetch_error(exc),
+                    "full_history": full_required}
+
+    def _without_token(self, text: str) -> str:
+        """The text with the app token (part of every request URL) hidden."""
+        if self.app_token:
+            text = text.replace(self.app_token, "[token]")
+        return text
+
+    def _readable_fetch_error(self, exc: Exception) -> str:
+        """A short reason for a failed provider read, shown to the user once per
+        market: the kind of failure, never the request URL (which can carry
+        the app token) or the library's connection-pool text."""
+        errors = requests.exceptions
+        if isinstance(exc, getattr(errors, "Timeout", ())):
+            return "the CFTC did not answer in time"
+        if isinstance(exc, getattr(errors, "ConnectionError", ())):
+            return "the CFTC could not be reached"
+        if isinstance(exc, getattr(errors, "HTTPError", ())) and getattr(exc, "response", None) is not None:
+            return f"the CFTC answered HTTP {exc.response.status_code}"
+        text = re.sub(r"\s*(?:with )?url: \S+", "", self._without_token(str(exc))).strip()
+        return text if len(text) <= 300 else text[:297] + "..."
 
     def _store_market_refresh(self, archive: CftcCotArchive, family: str, basis_code: str, code: str,
                               resource_id: str, refresh: bool, result: Dict[str, Any],
@@ -2181,8 +2305,8 @@ class CFTCDataWrapper:
                     retrieval_time=retrieved_at)
                 # A read that left rows out (a contradictory or undated
                 # report) is not the complete history. An increment only
-                # asks from the newest stored date, so a week it skipped
-                # would never be asked for again: the completeness claim
+                # re-reads the last 13 stored weeks, so an older week it
+                # skipped would not be asked for again: the completeness claim
                 # is withdrawn and the next scan reads the contract in
                 # full, full read or increment alike.
                 if fetch_ok and not result.get("complete", True):
@@ -2214,9 +2338,10 @@ class CFTCDataWrapper:
         """One market's complete stored history, refreshed from the current API.
 
         The detailed workspace's acquisition path. It shares the monitor's
-        archive and rules: the contract's full official history is read once,
-        later reads are increments from the newest stored report, and every row
-        is kept in the durable archive. When the provider read fails the stored
+        archive and rules: the contract's full official history is read once
+        (again yearly and after a column-mapping change), later reads are
+        increments that re-read the last 13 stored reports, and every row is
+        kept in the durable archive. When the provider read fails the stored
         history is still returned with status `archive_only`, so a provider
         outage never blanks history that was already validated and stored.
         Unlike the monitor transport, every stored row is returned.
@@ -2238,10 +2363,10 @@ class CFTCDataWrapper:
             resource_id = self.reports_dict.get(family + suffix)
             basis_code = "futures_only" if futures_only else "futures_and_options_combined"
             archive = self._open_archive()
-            full_required = archive.full_history_at(family, basis_code, code) is None
-            result = self._monitor_market(key, code, family, resource_id, int(max_rows), bool(refresh),
-                                          full_required, archive.latest_report_date(family, basis_code, code),
-                                          bool(futures_only))
+            full_required = self._full_read_due(archive, family, basis_code, code)
+            result = self._monitor_market(
+                key, code, family, resource_id, int(max_rows), bool(refresh), full_required,
+                self._increment_since(archive.latest_report_date(family, basis_code, code)), bool(futures_only))
             retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             rows, status, note, inserted, updated = self._store_market_refresh(
                 archive, family, basis_code, code, resource_id, bool(refresh), result, retrieved_at)
@@ -2318,8 +2443,8 @@ class CFTCDataWrapper:
                 # bounded backfill never claims completeness, so it triggers
                 # that full read on the next scan.
                 plan = {
-                    key: (archive.latest_report_date(family, basis_code, code),
-                          archive.full_history_at(family, basis_code, code) is None)
+                    key: (self._increment_since(archive.latest_report_date(family, basis_code, code)),
+                          self._full_read_due(archive, family, basis_code, code))
                     for key, code in resolved
                 }
                 workers = min(8, max(1, len(resolved)))
@@ -2336,7 +2461,7 @@ class CFTCDataWrapper:
                         except Exception as exc:
                             fetched_by_key[key] = {
                                 "market_key": key, "contract_code": None,
-                                "fetched": None, "fetch_error": str(exc)}
+                                "fetched": None, "fetch_error": self._readable_fetch_error(exc)}
 
             retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             markets_payload: List[Dict[str, Any]] = []

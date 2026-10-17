@@ -5,9 +5,10 @@
 // interpolated line), and every mark has a hover text with the exact values.
 // Colours come from the active theme tokens: amber means "toward long / high
 // in its history", cyan "toward short / low in its history". The standard
-// labels (CftcResearchText.h) are drawn as tags: BULLISH green, BEARISH red,
-// NEUTRAL grey, CROWDED in the warning colour, flips and turns in the info
-// colour, flows by the direction they move the net position.
+// labels (CftcResearchText.h) are drawn as tags: LEANING LONG amber, LEANING
+// SHORT cyan, NEUTRAL and ONE-SIDED grey, CROWDED, BEHIND and OLD REPORT in the
+// warning colour, flips and turns in the info colour, flows by the direction
+// they move the net position.
 #pragma once
 
 #include "screens/economics/panels/CftcResearchModel.h"

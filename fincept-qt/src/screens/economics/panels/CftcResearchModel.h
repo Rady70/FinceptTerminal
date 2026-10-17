@@ -54,6 +54,11 @@ struct CftcMarketRow {
     CftcRowAvailability availability = CftcRowAvailability::Unavailable;
     QString availability_note; ///< short reason for Stored / Old / Unavailable
     QDate report_date;
+    /// The market's latest stored report is older than the newest report
+    /// another market of this overview already has (a partial refresh, or a
+    /// refresh not yet run): its figures are a week or more behind the rest.
+    bool behind = false;
+    QString behind_note;
 
     QString principal_key;
     bool has_reading = false; ///< principal Net %OI present at the latest report
@@ -80,6 +85,8 @@ struct CftcMarketRow {
     QString size_text_1w;           ///< the size in words, with its multiple
     bool turning = false;           ///< the speculators moved out of, or fell back from, a 10% tail
     QString turning_reason;
+    CftcOneSided one_sided; ///< the speculators held one side in each of the previous 156 reports
+    QString one_sided_reason;
 
     QVector<CftcMatrixCell> cells; ///< every participant, family order
 
@@ -91,8 +98,15 @@ struct CftcMarketRow {
     std::optional<double> concentration_long; ///< top-4 gross long, % of OI
     std::optional<double> concentration_long_percentile;
 
-    QStringList tags; ///< standard tags in display order: CROWDED, FLIPPED, TURNING, LARGE MOVE
+    QStringList tags; ///< standard tags in display order: CROWDED, FLIPPED, TURNING, ONE-SIDED, LARGE MOVE
 };
+
+/// Whether a row carries this week's figures: a report that is neither old
+/// nor behind the overview's newest report.
+inline bool cftc_row_at_newest_report(const CftcMarketRow& row) {
+    return (row.availability == CftcRowAvailability::Current || row.availability == CftcRowAvailability::Stored) &&
+           !row.behind;
+}
 
 /// The engine's one-report net flow of a group: the change in net contracts
 /// since the previous weekly report, as a share of that report's Open
@@ -207,6 +221,8 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
             row.percentile_13r = trail->percentile_13r;
             row.tail_run = trail->tail_run_reports;
             row.flip = cftc_side_flip(trail->net_pct_oi);
+            row.one_sided = cftc_one_sided(trail->net_pct_oi);
+            row.one_sided_reason = cftc_one_sided_reason(row.one_sided);
         }
     }
     row.has_open_interest = result.open_interest_available;
@@ -247,9 +263,53 @@ inline CftcMarketRow cftc_market_row(const services::CftcMonitorEntry& entry, in
         row.tags << cftc_side_flip_label(row.flip);
     if (row.turning)
         row.tags << cftc_text_tr("TURNING");
+    if (row.one_sided.direction != 0)
+        row.tags << cftc_one_sided_label(row.one_sided);
     if (row.size_1w == CftcChangeSize::Large)
         row.tags << cftc_text_tr("LARGE MOVE");
     return row;
+}
+
+/// The report date that decides when the overview refreshes itself: the oldest
+/// latest report among the markets that have one. The stored copy can hold
+/// markets at different reports (a read of only some markets), and each of
+/// them is due its next report ten days after its own; the newest date alone
+/// would leave the others a week behind until REFRESH. An old report (a
+/// contract that may no longer be reported) counts too; the panel's hourly
+/// limit keeps that from repeating the read.
+inline QDate cftc_overview_oldest_report(const QVector<CftcMarketRow>& rows) {
+    QDate oldest;
+    for (const auto& row : rows) {
+        if (row.availability == CftcRowAvailability::NotCovered || row.availability == CftcRowAvailability::Unavailable)
+            continue;
+        if (row.report_date.isValid() && (!oldest.isValid() || row.report_date < oldest))
+            oldest = row.report_date;
+    }
+    return oldest;
+}
+
+/// Marks the rows whose latest report is older than the newest report among
+/// the rows with a current or stored one. The CFTC publishes every market of a
+/// report on the same day, so an older date means this copy was not refreshed
+/// for that market (for example a read of only some markets); the row is
+/// named as behind instead of being mixed silently with this week's figures.
+inline void cftc_mark_behind(QVector<CftcMarketRow>& rows) {
+    QDate newest;
+    for (const auto& row : rows)
+        if ((row.availability == CftcRowAvailability::Current || row.availability == CftcRowAvailability::Stored) &&
+            row.report_date.isValid() && row.report_date > newest)
+            newest = row.report_date;
+    for (auto& row : rows) {
+        row.behind = false;
+        row.behind_note.clear();
+        if ((row.availability != CftcRowAvailability::Current && row.availability != CftcRowAvailability::Stored) ||
+            !row.report_date.isValid() || !newest.isValid() || row.report_date >= newest)
+            continue;
+        row.behind = true;
+        row.behind_note = cftc_text_tr("report of %1; other markets already have the report of %2")
+                              .arg(row.report_date.toString(QStringLiteral("d MMM yyyy")),
+                                   newest.toString(QStringLiteral("d MMM yyyy")));
+    }
 }
 
 /// Overview rows in catalog order (asset class, then catalog position), with
@@ -268,27 +328,31 @@ inline QVector<CftcMarketRow> cftc_market_rows(const QVector<services::CftcMonit
     std::stable_sort(rows.begin(), rows.end(), [&position](const CftcMarketRow& a, const CftcMarketRow& b) {
         return position(a.market_key) < position(b.market_key);
     });
+    cftc_mark_behind(rows);
     return rows;
 }
 
 // ── Key figures ─────────────────────────────────────────────────────────────
 
 struct CftcOverviewFigures {
-    QDate latest_report;     ///< the most common latest report date among current markets
+    QDate latest_report;     ///< the most common report date among the markets at the newest report
     int markets_listed = 0;  ///< markets the selected report covers
     int markets_current = 0; ///< with the latest report
     int markets_stored = 0;  ///< stored data only (refresh failed)
     int markets_old = 0;     ///< latest report older than the freshness limit
+    int markets_behind = 0;  ///< a report older than other markets' newest (counted in current/stored too)
     int markets_unavailable = 0;
     int markets_not_covered = 0;
-    QStringList bullish; ///< speculators' positioning bias
-    QStringList bearish;
+    QStringList leaning_long; ///< speculators' lean
+    QStringList leaning_short;
     QStringList neutral;
+    QStringList one_sided; ///< speculators on one side in each of the previous 156 reports
+    QStringList behind;
     QStringList crowded_long;
     QStringList crowded_short;
-    QStringList flipped;            ///< speculators' net position changed side this week
+    QStringList flipped;            ///< speculators' net position changed side this week (newest report only)
     QStringList turning_markets;    ///< speculators moved out of / fell back from a tail
-    QStringList large_move_markets; ///< speculators' one-week net change LARGE
+    QStringList large_move_markets; ///< speculators' one-week net change LARGE (newest report only)
 };
 
 inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& rows) {
@@ -313,23 +377,32 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
                 break;
         }
         ++figures.markets_listed;
-        if (row.report_date.isValid() && row.availability != CftcRowAvailability::Old)
+        const bool this_week = cftc_row_at_newest_report(row);
+        if (row.behind) {
+            ++figures.markets_behind;
+            figures.behind << row.label;
+        }
+        if (row.report_date.isValid() && this_week)
             dates[row.report_date] += 1;
-        if (row.bias == CftcBias::Bullish)
-            figures.bullish << row.label;
-        else if (row.bias == CftcBias::Bearish)
-            figures.bearish << row.label;
+        if (row.bias == CftcBias::LeaningLong)
+            figures.leaning_long << row.label;
+        else if (row.bias == CftcBias::LeaningShort)
+            figures.leaning_short << row.label;
         else if (row.bias == CftcBias::Neutral)
             figures.neutral << row.label;
+        if (row.one_sided.direction != 0)
+            figures.one_sided << row.label;
         if (row.crowding == CftcCrowding::Long)
             figures.crowded_long << row.label;
         else if (row.crowding == CftcCrowding::Short)
             figures.crowded_short << row.label;
-        if (row.flip.direction != 0)
+        // This week's changes come only from markets at the newest report: an
+        // old or behind market's latest change is from an earlier week.
+        if (row.flip.direction != 0 && this_week)
             figures.flipped << row.label;
         if (row.turning)
             figures.turning_markets << row.label;
-        if (row.size_1w == CftcChangeSize::Large)
+        if (row.size_1w == CftcChangeSize::Large && this_week)
             figures.large_move_markets << row.label;
     }
     int best = 0;
@@ -366,13 +439,13 @@ struct CftcMoveRanking {
 /// Ranks the markets' one-week net changes by size: the multiple of the
 /// typical one-week change, a change against a reference without any change
 /// first, then the larger change as a share of open interest. Markets without
-/// a current report (an old one is not this week's change) or without a sized
-/// one-week change are left out, and so is a change of exactly zero.
+/// the newest report (an old or behind one is not this week's change) or
+/// without a sized one-week change are left out, and so is a change of exactly
+/// zero.
 inline CftcMoveRanking cftc_weekly_move_ranking(const QVector<CftcMarketRow>& rows, int per_side = 8) {
     CftcMoveRanking out;
     for (const auto& row : rows) {
-        if ((row.availability != CftcRowAvailability::Current && row.availability != CftcRowAvailability::Stored) ||
-            !row.net_flow_1w || *row.net_flow_1w == 0.0 || !row.rank_1w)
+        if (!cftc_row_at_newest_report(row) || !row.net_flow_1w || *row.net_flow_1w == 0.0 || !row.rank_1w)
             continue;
         CftcMoveBar bar;
         bar.market_key = row.market_key;

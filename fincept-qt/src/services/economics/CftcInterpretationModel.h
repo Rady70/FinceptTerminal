@@ -2390,8 +2390,9 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
         const CftcTrailingMoveRank rank = cftc_move_size(
             cftc_flow_move_series(history, -1, CftcFlowMetric::OpenInterest, horizon),
             cftc_flow_move_series(history, -1, CftcFlowMetric::OpenInterest, 1), horizon, current_date, config);
-        if (reason == CftcUnavailableReason::None && !rank.available)
-            reason = CftcUnavailableReason::InsufficientHistory;
+        // The change needs only its two reports; its size needs the reference
+        // history. Like a participant's flow reading, a change formed in a
+        // market's first year is reported unsized instead of withheld.
         CftcOpenInterestReading reading;
         reading.horizon_reports = horizon;
         reading.evaluated = reason == CftcUnavailableReason::None;
@@ -2399,15 +2400,19 @@ inline void cftc_interpret_open_interest(const QVector<CftcObservation>& history
         if (reading.evaluated) {
             reading.has_oi_change = true;
             reading.oi_change = flow.oi_change;
-            reading.has_rank = true;
-            reading.rank = rank.rank;
-            reading.rank_reference_count = rank.reference_count;
-            reading.has_scale = rank.has_scale;
-            reading.scale = rank.scale;
-            reading.typical = rank.typical;
-            reading.material = flow.oi_change != 0.0 && rank.rank >= config.material_move_percentile;
-            reading.move_large = rank.rank >= config.large_move_percentile;
+            if (rank.available) {
+                reading.has_rank = true;
+                reading.rank = rank.rank;
+                reading.rank_reference_count = rank.reference_count;
+                reading.has_scale = rank.has_scale;
+                reading.scale = rank.scale;
+                reading.typical = rank.typical;
+                reading.material = flow.oi_change != 0.0 && rank.rank >= config.material_move_percentile;
+                reading.move_large = rank.rank >= config.large_move_percentile;
+            }
         }
+        if (reason == CftcUnavailableReason::None && !rank.available)
+            reason = CftcUnavailableReason::InsufficientHistory;
         result.open_interest_readings.append(reading);
         if (reason != CftcUnavailableReason::None) {
             result.unavailable.append(cftc_unavailable_record(QStringLiteral("OI_CONTEXT"), QString(), true, horizon,

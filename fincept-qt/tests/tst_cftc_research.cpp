@@ -5,8 +5,8 @@
 // (services/economics/CftcMonitorModel.h), the plain-language conclusions
 // (screens/economics/panels/CftcResearchText.h) and the overview / market
 // projections (screens/economics/panels/CftcResearchModel.h), and the standard
-// labels (level band, flow type, change size, positioning bias, crowding, side
-// flip) under rule set v3 (52-report basis). Header-only over Qt Core; no app
+// labels (level band, flow type, change size, the speculators' lean,
+// one-sided markets, crowding, side flip) under rule set v3 (52-report basis). Header-only over Qt Core; no app
 // sources (tests/ HARD RULE).
 #include "screens/economics/panels/CftcResearchModel.h"
 #include "screens/economics/panels/CftcResearchText.h"
@@ -77,7 +77,7 @@ QVector<CftcParticipantTrail> trails_of(const CftcHistory& history, const CftcIn
 const QRegularExpression& forbidden_vocabulary() {
     static const QRegularExpression pattern(
         QStringLiteral("\\b(buy|sell|hold|signal|forecast|predict|expect|likely|should|squeeze|overbought|oversold|"
-                       "reversal|opportunit|conviction|recommend|target|smart money)\\b"),
+                       "reversal|opportunit|conviction|recommend|target|smart money|bullish|bearish)\\b"),
         QRegularExpression::CaseInsensitiveOption);
     return pattern;
 }
@@ -85,7 +85,7 @@ const QRegularExpression& forbidden_vocabulary() {
 /// The standard label words: they belong to the labels, their definitions and
 /// their tooltips, never to the numbers-first statements.
 const QRegularExpression& label_vocabulary() {
-    static const QRegularExpression pattern(QStringLiteral("\\b(bullish|bearish|crowded)\\b"),
+    static const QRegularExpression pattern(QStringLiteral("\\b(leaning|crowded|one-sided)\\b"),
                                             QRegularExpression::CaseInsensitiveOption);
     return pattern;
 }
@@ -150,6 +150,7 @@ class TstCftcResearch : public QObject {
     // Trail.
     void trail_matches_the_engine_percentile_rule();
     void tail_run_counts_consecutive_weeks_and_breaks_on_gaps();
+    void weeks_ago_readings_need_an_unbroken_weekly_run();
     // Text.
     void tail_wording_follows_the_net_sign();
     void percentile_text_never_rounds_onto_a_limit();
@@ -159,13 +160,17 @@ class TstCftcResearch : public QObject {
     void no_forecast_or_recommendation_vocabulary();
     // Labels.
     void level_band_boundaries();
+    void level_side_text_names_the_side();
     void flow_type_names_the_side_that_moved();
+    void quiet_legs_with_a_notable_net_change_name_the_driver();
     void change_size_follows_the_engine_cut_offs();
     void positioning_bias_rule_and_reasons();
+    void one_sided_needs_three_years_on_one_side();
     void crowding_follows_the_engine_state_and_carries_the_caveat();
     void side_flip_counts_the_weeks_on_the_other_side();
     // Model.
     void rows_keep_availability_states_apart();
+    void behind_markets_are_named_and_left_out_of_this_week();
     void percentile_series_equals_the_engine_helper();
     void concentration_cells_follow_the_engine();
     void weekly_move_ranking_orders_by_size();
@@ -337,6 +342,25 @@ void TstCftcResearch::tail_run_counts_consecutive_weeks_and_breaks_on_gaps() {
     QVERIFY(trails[2].percentile_now.has_value());
 }
 
+void TstCftcResearch::weeks_ago_readings_need_an_unbroken_weekly_run() {
+    // "4 weeks ago" counts weeks: across a gap the reading 4 reports back is
+    // further back than 4 weeks and is absent, as every 4-week flow is.
+    QJsonArray gapped = trending_rows();
+    gapped.removeAt(197); // two reports before the latest
+    const CftcHistory history = parse(gapped);
+    const CftcInterpretationResult result = interpret(history, history.observations.last().date);
+    const QVector<CftcParticipantTrail> trails = trails_of(history, result);
+    QVERIFY(trails[1].percentile_now.has_value());
+    QVERIFY(trails[1].percentile_1r.has_value()); // the last step is weekly
+    QVERIFY(!trails[1].percentile_4r.has_value());
+    QVERIFY(!trails[1].percentile_13r.has_value());
+    // Without a gap all three exist.
+    const CftcHistory full = parse(trending_rows());
+    const QVector<CftcParticipantTrail> full_trails = trails_of(full, interpret(full, full.observations.last().date));
+    QVERIFY(full_trails[1].percentile_4r.has_value());
+    QVERIFY(full_trails[1].percentile_13r.has_value());
+}
+
 // ── Text ────────────────────────────────────────────────────────────────────
 
 void TstCftcResearch::tail_wording_follows_the_net_sign() {
@@ -478,6 +502,11 @@ void TstCftcResearch::no_forecast_or_recommendation_vocabulary() {
     for (int type = 0; type <= static_cast<int>(CftcFlowType::BothCutting); ++type)
         labels << cftc_flow_label(static_cast<CftcFlowType>(type));
     labels << cftc_side_flip_reason({1, 12, false}) << cftc_side_flip_reason({-1, 3, true});
+    labels << cftc_one_sided_label({1, 156}) << cftc_one_sided_reason({1, 156}) << cftc_one_sided_reason({-1, 156});
+    for (double net : {5.0, -5.0})
+        for (CftcLevelBand band : {CftcLevelBand::VeryLow, CftcLevelBand::Low, CftcLevelBand::Normal,
+                                   CftcLevelBand::High, CftcLevelBand::VeryHigh})
+            labels << cftc_level_band_side_label(band, net);
     for (const QString& text : std::as_const(labels))
         QVERIFY2(!forbidden_vocabulary().match(text).hasMatch(), qPrintable(text));
 }
@@ -500,6 +529,20 @@ void TstCftcResearch::level_band_boundaries() {
     QCOMPARE(cftc_level_band_label(CftcLevelBand::VeryHigh), QStringLiteral("VERY HIGH"));
     QCOMPARE(cftc_level_band_label(CftcLevelBand::Normal), QStringLiteral("NORMAL"));
     QCOMPARE(cftc_level_band_label(CftcLevelBand::VeryLow), QStringLiteral("VERY LOW"));
+}
+
+void TstCftcResearch::level_side_text_names_the_side() {
+    // A high level of a net-short group is a smaller net short.
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::VeryHigh, -12.0), QStringLiteral("least short"));
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::High, -12.0), QStringLiteral("less short"));
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::Low, -12.0), QStringLiteral("more short"));
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::VeryLow, -12.0), QStringLiteral("most short"));
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::VeryHigh, 12.0), QStringLiteral("most long"));
+    QCOMPARE(cftc_level_side_text(CftcLevelBand::VeryLow, 12.0), QStringLiteral("least long"));
+    QVERIFY(cftc_level_side_text(CftcLevelBand::Normal, -12.0).isEmpty());
+    QVERIFY(cftc_level_side_text(CftcLevelBand::VeryHigh, 0.0).isEmpty());
+    QCOMPARE(cftc_level_band_side_label(CftcLevelBand::VeryHigh, -3.0), QStringLiteral("VERY HIGH · LEAST SHORT"));
+    QCOMPARE(cftc_level_band_side_label(CftcLevelBand::Normal, -3.0), QStringLiteral("NORMAL"));
 }
 
 void TstCftcResearch::flow_type_names_the_side_that_moved() {
@@ -534,6 +577,31 @@ void TstCftcResearch::flow_type_names_the_side_that_moved() {
     QCOMPARE(cftc_flow_direction(CftcFlowType::Quiet), 0);
 }
 
+void TstCftcResearch::quiet_legs_with_a_notable_net_change_name_the_driver() {
+    const CftcInterpretationConfig config;
+    auto with_net = [](double long_flow, double long_rank, double short_flow, double short_rank, double net_rank) {
+        CftcHorizonFlowReading reading = flow_reading(long_flow, long_rank, short_flow, short_rank);
+        reading.has_net_rank = true;
+        reading.net_rank = net_rank;
+        return reading;
+    };
+    // The official Australian dollar Commercial reading of 6 Oct 2026: longs
+    // +9.2% (rank 0.68), shorts -3.3% (rank 0.26), net +12.5% LARGE. Not QUIET:
+    // the longs moved the net position most.
+    QCOMPARE(cftc_flow_type(with_net(9.2, 0.68, -3.3, 0.26, 0.93), config), CftcFlowType::LongBuild);
+    // The shorts drove it.
+    QCOMPARE(cftc_flow_type(with_net(0.3, 0.40, -0.9, 0.70, 0.80), config), CftcFlowType::ShortCovering);
+    QCOMPARE(cftc_flow_type(with_net(-0.2, 0.30, 0.9, 0.70, 0.80), config), CftcFlowType::ShortBuild);
+    QCOMPARE(cftc_flow_type(with_net(-0.9, 0.70, 0.2, 0.30, 0.80), config), CftcFlowType::LongLiquidation);
+    // Both legs added; the longs added more, so the net rose through them.
+    QCOMPARE(cftc_flow_type(with_net(0.9, 0.70, 0.2, 0.30, 0.80), config), CftcFlowType::LongBuild);
+    // A net change below NOTABLE stays QUIET; so does a reading without a net size.
+    QCOMPARE(cftc_flow_type(with_net(9.2, 0.68, -3.3, 0.26, 0.74), config), CftcFlowType::Quiet);
+    QCOMPARE(cftc_flow_type(flow_reading(9.2, 0.68, -3.3, 0.26), config), CftcFlowType::Quiet);
+    // Equal contributions: the longs name it.
+    QCOMPARE(cftc_flow_type(with_net(0.5, 0.50, -0.5, 0.50, 0.80), config), CftcFlowType::LongBuild);
+}
+
 void TstCftcResearch::change_size_follows_the_engine_cut_offs() {
     const CftcInterpretationConfig config;
     QCOMPARE(cftc_change_size(false, 0.99, config), CftcChangeSize::Unavailable);
@@ -555,16 +623,16 @@ void TstCftcResearch::positioning_bias_rule_and_reasons() {
     const CftcInterpretationConfig config;
     auto bias = [&](const CftcParticipantInterpretation& p) { return cftc_positioning_bias(p, config); };
     // Net long at or above the middle of the year.
-    QCOMPARE(bias(speculator(12.0, 0.8)), CftcBias::Bullish);
-    QCOMPARE(bias(speculator(12.0, 0.5)), CftcBias::Bullish);
-    QCOMPARE(bias(speculator(12.0, 0.8, 3.0, 0.99)), CftcBias::Bullish);  // adding sharply
-    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.89)), CftcBias::Bullish); // cutting, but not by a LARGE amount
-    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.90)), CftcBias::Neutral); // cutting by a LARGE amount
-    QCOMPARE(bias(speculator(12.0, 0.49)), CftcBias::Neutral);            // long, but low for the year
+    QCOMPARE(bias(speculator(12.0, 0.8)), CftcBias::LeaningLong);
+    QCOMPARE(bias(speculator(12.0, 0.5)), CftcBias::LeaningLong);
+    QCOMPARE(bias(speculator(12.0, 0.8, 3.0, 0.99)), CftcBias::LeaningLong);  // adding sharply
+    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.89)), CftcBias::LeaningLong); // cutting, but not by a LARGE amount
+    QCOMPARE(bias(speculator(12.0, 0.8, -3.0, 0.90)), CftcBias::Neutral);     // cutting by a LARGE amount
+    QCOMPARE(bias(speculator(12.0, 0.49)), CftcBias::Neutral);                // long, but low for the year
     // The mirror image.
-    QCOMPARE(bias(speculator(-8.0, 0.2)), CftcBias::Bearish);
-    QCOMPARE(bias(speculator(-8.0, 0.5)), CftcBias::Bearish);
-    QCOMPARE(bias(speculator(-8.0, 0.2, -2.0, 0.99)), CftcBias::Bearish);
+    QCOMPARE(bias(speculator(-8.0, 0.2)), CftcBias::LeaningShort);
+    QCOMPARE(bias(speculator(-8.0, 0.5)), CftcBias::LeaningShort);
+    QCOMPARE(bias(speculator(-8.0, 0.2, -2.0, 0.99)), CftcBias::LeaningShort);
     QCOMPARE(bias(speculator(-8.0, 0.2, 2.0, 0.95)), CftcBias::Neutral);
     QCOMPARE(bias(speculator(-8.0, 0.5, 2.0, 0.95)), CftcBias::Neutral);
     QCOMPARE(bias(speculator(-8.0, 0.51)), CftcBias::Neutral);
@@ -572,7 +640,7 @@ void TstCftcResearch::positioning_bias_rule_and_reasons() {
     // No 4-week reading: the level alone decides.
     CftcParticipantInterpretation no_four = speculator(12.0, 0.8, -3.0, 0.99);
     no_four.flow_readings[0].evaluated = false;
-    QCOMPARE(bias(no_four), CftcBias::Bullish);
+    QCOMPARE(bias(no_four), CftcBias::LeaningLong);
     // Without a year of history there is no bias.
     CftcParticipantInterpretation young = speculator(12.0, 0.8);
     young.historical_percentile_available = false;
@@ -582,11 +650,11 @@ void TstCftcResearch::positioning_bias_rule_and_reasons() {
     // Each reason restates the rule branch that applied.
     auto reason = [&](const CftcParticipantInterpretation& p) { return cftc_bias_reason(bias(p), p, config); };
     QCOMPARE(reason(speculator(12.0, 0.8)),
-             QStringLiteral("BULLISH positioning: net long 12.0% of open interest, higher than 80% of the previous 52 "
+             QStringLiteral("LEANING LONG: net long 12.0% of open interest, higher than 80% of the previous 52 "
                             "weekly reports, and the net long has not shrunk by a large amount over 4 weeks. It "
                             "describes positions, not prices."));
     QCOMPARE(reason(speculator(-8.0, 0.2)),
-             QStringLiteral("BEARISH positioning: net short 8.0% of open interest, lower than 80% of the previous 52 "
+             QStringLiteral("LEANING SHORT: net short 8.0% of open interest, lower than 80% of the previous 52 "
                             "weekly reports, and the net short has not shrunk by a large amount over 4 weeks. It "
                             "describes positions, not prices."));
     QVERIFY(reason(speculator(12.0, 0.8, -3.0, 0.95))
@@ -597,6 +665,36 @@ void TstCftcResearch::positioning_bias_rule_and_reasons() {
              QStringLiteral("NEUTRAL: net long 12.0% of open interest, but lower than 70% of the previous 52 weekly "
                             "reports — the side and the level of the year point different ways."));
     QCOMPARE(reason(speculator(0.0, 0.5)), QStringLiteral("NEUTRAL: flat (long equals short)."));
+}
+
+void TstCftcResearch::one_sided_needs_three_years_on_one_side() {
+    QVector<double> values(157, -4.0);
+    CftcOneSided one = cftc_one_sided(weekly_path(values));
+    QCOMPARE(one.direction, -1);
+    QCOMPARE(one.reports, 156);
+    QCOMPARE(cftc_one_sided_label(one), QStringLiteral("ONE-SIDED"));
+    QCOMPARE(cftc_one_sided_reason(one),
+             QStringLiteral("ONE-SIDED: net short in each of the previous 156 weekly reports (about 3 years). In this "
+                            "market the side is the usual state, so the side alone says little; the level shows "
+                            "whether the position is larger or smaller than usual."));
+    // One report on the other side, a flat or a missing report, or fewer than
+    // 157 reports: not one-sided.
+    QVector<double> crossed = values;
+    crossed[0] = 0.5;
+    QCOMPARE(cftc_one_sided(weekly_path(crossed)).direction, 0);
+    QVector<double> flat = values;
+    flat[80] = 0.0;
+    QCOMPARE(cftc_one_sided(weekly_path(flat)).direction, 0);
+    QVector<CftcMonitorHistoryPoint> missing = weekly_path(values);
+    missing[10].has_net_pct_oi = false;
+    QCOMPARE(cftc_one_sided(missing).direction, 0);
+    QCOMPARE(cftc_one_sided(weekly_path(QVector<double>(156, -4.0))).direction, 0);
+    // A crossing older than the window does not count.
+    QVector<double> older(170, 3.0);
+    older[5] = -1.0;
+    QCOMPARE(cftc_one_sided(weekly_path(older)).direction, 1);
+    QVERIFY(cftc_one_sided_label({}).isEmpty());
+    QVERIFY(cftc_one_sided_reason({}).isEmpty());
 }
 
 void TstCftcResearch::crowding_follows_the_engine_state_and_carries_the_caveat() {
@@ -724,8 +822,12 @@ void TstCftcResearch::rows_keep_availability_states_apart() {
     QCOMPARE(rows[0].tail, CftcLevelTail::High);
     // The speculators' labels: highest of the year, net long and adding.
     QCOMPARE(rows[0].band, std::optional<CftcLevelBand>(CftcLevelBand::VeryHigh));
-    QCOMPARE(rows[0].bias, CftcBias::Bullish);
-    QVERIFY(rows[0].bias_reason.startsWith(QStringLiteral("BULLISH positioning: net long 29.9% of open interest")));
+    QCOMPARE(rows[0].bias, CftcBias::LeaningLong);
+    QVERIFY(rows[0].bias_reason.startsWith(QStringLiteral("LEANING LONG: net long 29.9% of open interest")));
+    // Net long in all 200 reports: ONE-SIDED, with its reason.
+    QCOMPARE(rows[0].one_sided.direction, 1);
+    QVERIFY(rows[0].one_sided_reason.startsWith(QStringLiteral("ONE-SIDED: net long in each of the previous 156 "
+                                                               "weekly reports")));
     QCOMPARE(rows[0].crowding, CftcCrowding::Long);
     QVERIFY(rows[0].crowding_reason.contains(QStringLiteral("broad non-commercial category")));
     QCOMPARE(rows[0].flip.direction, 0);
@@ -733,18 +835,85 @@ void TstCftcResearch::rows_keep_availability_states_apart() {
     // A steady +0.1 a week is one typical weekly change: quiet and ordinary.
     QCOMPARE(rows[0].flow_1w, CftcFlowType::Quiet);
     QCOMPARE(rows[0].size_1w, CftcChangeSize::Ordinary);
-    QCOMPARE(rows[0].tags, QStringList{QStringLiteral("CROWDED LONG")});
+    QCOMPARE(rows[0].tags, (QStringList{QStringLiteral("CROWDED LONG"), QStringLiteral("ONE-SIDED")}));
+    QVERIFY(!rows[0].behind && !rows[1].behind); // both at the same report
     const CftcOverviewFigures figures = cftc_overview_figures(rows);
     QCOMPARE(figures.markets_listed, 2); // a market the report does not publish is not listed
     QCOMPARE(figures.markets_not_covered, 1);
     QCOMPARE(figures.markets_current, 1);
     QCOMPARE(figures.markets_stored, 1);
-    QCOMPARE(figures.bullish.size(), 2);
-    QVERIFY(figures.bearish.isEmpty());
+    QCOMPARE(figures.leaning_long.size(), 2);
+    QVERIFY(figures.leaning_short.isEmpty());
+    QCOMPARE(figures.one_sided.size(), 2);
+    QCOMPARE(figures.markets_behind, 0);
     QCOMPARE(figures.crowded_long.size(), 2);
     QVERIFY(figures.crowded_short.isEmpty());
     QVERIFY(figures.flipped.isEmpty());
     QVERIFY(figures.large_move_markets.isEmpty());
+}
+
+void TstCftcResearch::behind_markets_are_named_and_left_out_of_this_week() {
+    // Gold has the report of week 199, Silver only week 198 (a read of some
+    // markets only): Silver is behind, named, and left out of this week's
+    // figures and ranking; the latest report is Gold's.
+    QJsonObject payload;
+    payload[QStringLiteral("report_family")] = QStringLiteral("legacy");
+    payload[QStringLiteral("report_basis")] = QStringLiteral("futures_only");
+    auto market = [](const QString& key, const QString& code, const QJsonArray& rows) {
+        QJsonObject m;
+        m[QStringLiteral("market_key")] = key;
+        m[QStringLiteral("contract_code")] = code;
+        m[QStringLiteral("status")] = QStringLiteral("current");
+        m[QStringLiteral("rows")] = rows;
+        return m;
+    };
+    QJsonArray silver = trending_rows(199);
+    for (int i = 0; i < silver.size(); ++i) {
+        QJsonObject row = silver[i].toObject();
+        row[QStringLiteral("cftc_contract_market_code")] = QStringLiteral("084691");
+        silver.replace(i, row);
+    }
+    payload[QStringLiteral("markets")] =
+        QJsonArray{market(QStringLiteral("gold"), QStringLiteral("088691"), trending_rows()),
+                   market(QStringLiteral("silver"), QStringLiteral("084691"), silver)};
+    const QDate newest = QDate(2022, 1, 4).addDays(7 * 199);
+    const CftcMonitorModel model = cftc_parse_monitor_payload(payload, CftcFamily::Legacy, true, newest.addDays(3),
+                                                              cftc_principal_participant_key(CftcFamily::Legacy));
+    QVERIFY2(model.error.isEmpty(), qPrintable(model.error));
+    const QVector<CftcMarketRow> rows = cftc_market_rows(model.entries);
+    QCOMPARE(rows.size(), 2);
+    const CftcMarketRow& gold = rows[0].market_key == QLatin1String("gold") ? rows[0] : rows[1];
+    const CftcMarketRow& behind = rows[0].market_key == QLatin1String("gold") ? rows[1] : rows[0];
+    QCOMPARE(behind.availability, CftcRowAvailability::Current); // ten days old: not an old report
+    QVERIFY(behind.behind);
+    QVERIFY(!gold.behind);
+    QCOMPARE(behind.behind_note, QStringLiteral("report of %1; other markets already have the report of %2")
+                                     .arg(newest.addDays(-7).toString(QStringLiteral("d MMM yyyy")),
+                                          newest.toString(QStringLiteral("d MMM yyyy"))));
+    QVERIFY(!cftc_row_at_newest_report(behind));
+    const CftcOverviewFigures figures = cftc_overview_figures(rows);
+    QCOMPARE(figures.latest_report, newest);
+    QCOMPARE(figures.markets_behind, 1);
+    QCOMPARE(figures.behind, QStringList{behind.label});
+    QCOMPARE(figures.leaning_long.size(), 2); // positions are counted, with the market named as behind
+    const CftcMoveRanking ranking = cftc_weekly_move_ranking(rows);
+    QCOMPARE(ranking.rises.size(), 1);
+    QCOMPARE(ranking.rises.first().market_key, QStringLiteral("gold"));
+    // The automatic refresh is due by the market that is behind, not by Gold.
+    QCOMPARE(cftc_overview_oldest_report(rows), newest.addDays(-7));
+    QVector<CftcMarketRow> unavailable = rows;
+    unavailable[0].availability = CftcRowAvailability::Unavailable;
+    unavailable[0].report_date = newest.addDays(-700);
+    QCOMPARE(cftc_overview_oldest_report(unavailable), unavailable[1].report_date);
+    QVERIFY(!cftc_overview_oldest_report({}).isValid());
+    // A market that is old is old, not behind.
+    QVector<CftcMarketRow> with_old = rows;
+    for (auto& row : with_old)
+        if (row.market_key == QLatin1String("silver"))
+            row.availability = CftcRowAvailability::Old;
+    cftc_mark_behind(with_old);
+    for (const auto& row : with_old)
+        QVERIFY(!row.behind);
 }
 
 void TstCftcResearch::percentile_series_equals_the_engine_helper() {

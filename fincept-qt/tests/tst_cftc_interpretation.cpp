@@ -456,6 +456,7 @@ class TstCftcInterpretation : public QObject {
     void below_threshold_flow_reading_keeps_its_value();
     void positioning_measurement_survives_missing_price();
     void open_interest_readings_are_emitted();
+    void open_interest_change_is_shown_unsized_in_the_first_year();
     void participant_terminology_maps_each_family();
     void terminology_caveats_are_exposed();
     void legacy_disaggregated_tff_applicability();
@@ -2556,6 +2557,34 @@ void TstCftcInterpretation::open_interest_readings_are_emitted() {
         }
     }
     QVERIFY(saw_evaluated);
+}
+
+void TstCftcInterpretation::open_interest_change_is_shown_unsized_in_the_first_year() {
+    // Four reports with a 4-report reference window: the one-report change is
+    // formed, but there are only two earlier one-report changes to size it
+    // against. The change is reported unsized (as a group's flow is), never
+    // withheld, and the OI_CONTEXT record still says why it has no size.
+    QVector<CftcObservation> history = legacy_series({500.0, 510.0, 520.0, 530.0}, {400.0, 400.0, 400.0, 400.0});
+    history[3].open_interest = 1100.0;
+    const CftcInterpretationResult result = cftc_interpret(legacy_input(history));
+    const CftcOpenInterestReading* one = nullptr;
+    for (const auto& reading : result.open_interest_readings)
+        if (reading.horizon_reports == 1)
+            one = &reading;
+    QVERIFY(one);
+    QVERIFY(one->evaluated);
+    QVERIFY(one->has_oi_change);
+    QVERIFY(qAbs(one->oi_change - 10.0) < 1e-9);
+    QVERIFY(!one->has_rank);
+    QVERIFY(!one->has_scale);
+    QVERIFY(!one->material);
+    bool recorded = false;
+    for (const auto& record : result.unavailable)
+        if (record.state_family == QLatin1String("OI_CONTEXT") && record.has_horizon && record.horizon_reports == 1)
+            recorded = record.reason == CftcUnavailableReason::InsufficientHistory;
+    QVERIFY(recorded);
+    for (const auto& state : result.market_context)
+        QVERIFY(state.state_id != QLatin1String("OI_EXPANSION") && state.state_id != QLatin1String("OI_CONTRACTION"));
 }
 
 // ── Rule set v2: 2026-09-24 audit corrections ───────────────────────────────

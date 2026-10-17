@@ -281,7 +281,9 @@ inline QVector<CftcMonitorHistoryPoint> cftc_monitor_history_series(const QVecto
 }
 
 /// One participant's recent Net %OI path and its historical percentile at the
-/// latest report and at 1, 4 and 13 reports earlier. Every percentile uses the
+/// latest report and 1, 4 and 13 weeks earlier (absent unless every report in
+/// between is a weekly neighbour, so "4 weeks ago" is never further back than
+/// four weeks). Every percentile uses the
 /// engine's own strictly trailing helper (cftc_trailing_percentile_at over the
 /// previous config.history_window valid reports; 52 in rule set v3), so a past
 /// reading is what the engine would have reported on that date; a reading the
@@ -319,10 +321,18 @@ inline CftcParticipantTrail cftc_participant_trail(const QVector<CftcObservation
             cftc_trailing_percentile_at(series, observations[index].date, config.history_window);
         return p.available ? std::optional<double>(p.percentile) : std::nullopt;
     };
+    // The earlier readings are shown as "1, 4 and 13 weeks ago", so each needs
+    // an unbroken weekly run back to it (as every k-report flow does); across a
+    // gap the reading k reports back is not k weeks back and stays absent.
+    auto weeks_ago = [&](int weeks) -> std::optional<double> {
+        if (last - weeks < 0 || !cftc_report_sequence_continuous(observations, last - weeks, last))
+            return std::nullopt;
+        return percentile_of(last - weeks);
+    };
     trail.percentile_now = percentile_of(last);
-    trail.percentile_1r = percentile_of(last - 1);
-    trail.percentile_4r = percentile_of(last - 4);
-    trail.percentile_13r = percentile_of(last - 13);
+    trail.percentile_1r = weeks_ago(1);
+    trail.percentile_4r = weeks_ago(4);
+    trail.percentile_13r = weeks_ago(13);
     if (trail.percentile_now) {
         const bool high = *trail.percentile_now >= config.extreme_percentile;
         const bool low = *trail.percentile_now <= config.low_extreme_percentile;
