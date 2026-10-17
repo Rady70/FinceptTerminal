@@ -1496,6 +1496,8 @@ class CftcBackfillMonitorTest(unittest.TestCase):
         self.assertNotIn("SECRET-TOKEN-123", other)
         self.assertNotIn("$limit", other)
         self.assertEqual(self.wrapper._readable_fetch_error(RuntimeError("HTTP 503")), "HTTP 503")
+        not_found = self.wrapper._readable_fetch_error(RuntimeError(f"404 Client Error: Not Found for URL: {url}"))
+        self.assertEqual(not_found, "404 Client Error: Not Found")
 
     def test_monitor_wrong_contract_code_fails_the_market_and_writes_nothing(self):
         wrong = raw_legacy_row(report_date="2026-09-01", code="999999")

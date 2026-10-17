@@ -674,7 +674,7 @@ void TstCftcResearch::one_sided_needs_three_years_on_one_side() {
     QCOMPARE(one.reports, 156);
     QCOMPARE(cftc_one_sided_label(one), QStringLiteral("ONE-SIDED"));
     QCOMPARE(cftc_one_sided_reason(one),
-             QStringLiteral("ONE-SIDED: net short in each of the previous 156 weekly reports (about 3 years). In this "
+             QStringLiteral("ONE-SIDED: net short in each of the previous 156 reports (about 3 years). In this "
                             "market the side is the usual state, so the side alone says little; the level shows "
                             "whether the position is larger or smaller than usual."));
     // One report on the other side, a flat or a missing report, or fewer than
@@ -827,7 +827,7 @@ void TstCftcResearch::rows_keep_availability_states_apart() {
     // Net long in all 200 reports: ONE-SIDED, with its reason.
     QCOMPARE(rows[0].one_sided.direction, 1);
     QVERIFY(rows[0].one_sided_reason.startsWith(QStringLiteral("ONE-SIDED: net long in each of the previous 156 "
-                                                               "weekly reports")));
+                                                               "reports")));
     QCOMPARE(rows[0].crowding, CftcCrowding::Long);
     QVERIFY(rows[0].crowding_reason.contains(QStringLiteral("broad non-commercial category")));
     QCOMPARE(rows[0].flip.direction, 0);
@@ -896,6 +896,23 @@ void TstCftcResearch::behind_markets_are_named_and_left_out_of_this_week() {
     QCOMPARE(figures.markets_behind, 1);
     QCOMPARE(figures.behind, QStringList{behind.label});
     QCOMPARE(figures.leaning_long.size(), 2); // positions are counted, with the market named as behind
+    QCOMPARE(figures.markets_at_newest, 1);
+    QVERIFY(!figures.latest_report_behind);
+    // A behind market's flip and LARGE change are from its own, earlier week:
+    // this week's figures leave them out.
+    QVector<CftcMarketRow> tagged = rows;
+    for (auto& row : tagged) {
+        row.flip.direction = 1;
+        row.size_1w = CftcChangeSize::Large;
+    }
+    const CftcOverviewFigures tagged_figures = cftc_overview_figures(tagged);
+    QCOMPARE(tagged_figures.flipped, QStringList{gold.label});
+    QCOMPARE(tagged_figures.large_move_markets, QStringList{gold.label});
+    // An asset-class tab holding only behind markets still names their report, as behind.
+    const CftcOverviewFigures behind_only = cftc_overview_figures(QVector<CftcMarketRow>{behind});
+    QCOMPARE(behind_only.latest_report, newest.addDays(-7));
+    QVERIFY(behind_only.latest_report_behind);
+    QCOMPARE(behind_only.markets_at_newest, 0);
     const CftcMoveRanking ranking = cftc_weekly_move_ranking(rows);
     QCOMPARE(ranking.rises.size(), 1);
     QCOMPARE(ranking.rises.first().market_key, QStringLiteral("gold"));

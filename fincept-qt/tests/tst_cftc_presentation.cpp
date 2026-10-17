@@ -1944,6 +1944,13 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
                     CftcUnavailableReason::InsufficientHistory, 4, QStringLiteral("SHORT_COVERING"));
     add_unavailable(result, QStringLiteral("NET_SHIFT"), primary->participant_key,
                     CftcUnavailableReason::InsufficientHistory, 4);
+    // The Open Interest change of a market's first year: formed, never sized.
+    CftcOpenInterestReading oi;
+    oi.horizon_reports = 4;
+    oi.evaluated = true;
+    oi.has_oi_change = true;
+    oi.oi_change = 0.8957;
+    result.open_interest_readings << oi;
 
     const QString reason = QStringLiteral("fewer than the 156 prior reports this reference requires are available");
     auto row = [](const CftcInterpretationView& view, const QString& label) -> const CftcEvidenceItem* {
@@ -1974,6 +1981,12 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
     QCOMPARE(rank_row->status, CftcEvidenceStatus::Unavailable);
     QVERIFY(rank_row->value.contains(reason));
     QVERIFY(!rank_row->value.contains(QStringLiteral("no material state")));
+    const CftcEvidenceItem* oi_row =
+        row(horizon_view, QStringLiteral("Open Interest change (% change) (four reports)"));
+    QVERIFY(oi_row != nullptr);
+    QCOMPARE(oi_row->status, CftcEvidenceStatus::Unavailable);
+    QVERIFY(oi_row->value.startsWith(QStringLiteral("+0.90% (materiality unavailable")));
+    QVERIFY(!oi_row->value.contains(QStringLiteral("below threshold")));
 
     // The combined contract view carries the same truthful wording.
     const CftcInterpretationView combined = cftc_compose_interpretation(result);
@@ -1981,6 +1994,9 @@ void TstCftcPresentation::raw_reading_without_materiality_reference_is_not_below
     QVERIFY(combined_net != nullptr);
     QCOMPARE(combined_net->status, CftcEvidenceStatus::Unavailable);
     QCOMPARE(combined_net->value, QStringLiteral("+2.01% (materiality unavailable — ") + reason + QLatin1Char(')'));
+    for (const auto& item : combined.evidence)
+        if (item.label.startsWith(QStringLiteral("Open Interest change")))
+            QVERIFY2(!item.value.contains(QStringLiteral("below threshold")), qPrintable(item.value));
 }
 
 void TstCftcPresentation::net_delta_reason_never_comes_from_price() {

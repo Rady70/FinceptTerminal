@@ -2273,7 +2273,7 @@ class CFTCDataWrapper:
             return "the CFTC could not be reached"
         if isinstance(exc, getattr(errors, "HTTPError", ())) and getattr(exc, "response", None) is not None:
             return f"the CFTC answered HTTP {exc.response.status_code}"
-        text = re.sub(r"\s*(?:with )?url: \S+", "", self._without_token(str(exc))).strip()
+        text = re.sub(r"\s*(?:for |with )?url: \S+", "", self._without_token(str(exc)), flags=re.IGNORECASE).strip()
         return text if len(text) <= 300 else text[:297] + "..."
 
     def _store_market_refresh(self, archive: CftcCotArchive, family: str, basis_code: str, code: str,

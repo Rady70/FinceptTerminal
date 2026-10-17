@@ -766,7 +766,8 @@ inline QString cftc_method_note() {
         "out of the 10% tail this week, or fell back after at least 3 weeks in it within the last 13 (overview: "
         "the speculators). LARGE MOVE: the speculators' one-week change is LARGE.\n"
         "These are MarketLab conventions that describe reported positions, not prices, and not CFTC definitions. "
-        "Tested against later prices (2001-2026), the lean and CROWDED showed no predictive value.");
+        "Tested against later prices (29 markets, futures-only reports, spot and ETF prices, 2001-2026), the lean "
+        "and CROWDED showed no predictive value.");
 }
 
 // ── Standard labels ─────────────────────────────────────────────────────────
@@ -1055,7 +1056,7 @@ inline QString cftc_one_sided_label(const CftcOneSided& one_sided) {
 inline QString cftc_one_sided_reason(const CftcOneSided& one_sided) {
     if (one_sided.direction == 0)
         return {};
-    return cftc_text_tr("ONE-SIDED: net %1 in each of the previous %2 weekly reports (about 3 years). In this market "
+    return cftc_text_tr("ONE-SIDED: net %1 in each of the previous %2 reports (about 3 years). In this market "
                         "the side is the usual state, so the side alone says little; the level shows whether the "
                         "position is larger or smaller than usual.")
         .arg(one_sided.direction > 0 ? cftc_text_tr("long") : cftc_text_tr("short"))

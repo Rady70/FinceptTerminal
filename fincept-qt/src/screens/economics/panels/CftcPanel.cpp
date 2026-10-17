@@ -1206,6 +1206,9 @@ void CftcPanel::render_kpis() {
     if (figures.markets_behind > 0)
         report_sub += QLatin1Char(' ') +
                       tr("· %1 behind (an earlier report): %2").arg(figures.markets_behind).arg(names(figures.behind));
+    if (figures.latest_report_behind)
+        report_sub = tr("No market of this tab has the newest report; this is the latest it has.") + QLatin1Char(' ') +
+                     report_sub;
     set(0, figures.latest_report.isValid() ? figures.latest_report.toString(QStringLiteral("d MMM yyyy")) : tr("none"),
         report_sub);
     const QString group = cftc_group_name(family_, cftc_principal_participant_key(family_));
@@ -1228,13 +1231,24 @@ void CftcPanel::render_kpis() {
             : tr("long: %1 · short: %2")
                   .arg(figures.crowded_long.isEmpty() ? tr("none") : names(figures.crowded_long),
                        figures.crowded_short.isEmpty() ? tr("none") : names(figures.crowded_short)));
+    // This week's figures count only the markets at the newest report; say
+    // so whenever others (behind or old) are on screen with their own tags.
+    const int not_counted = figures.markets_behind + figures.markets_old;
+    const QString scope =
+        not_counted > 0
+            ? QLatin1Char(' ') + tr("(over the %1 markets at the newest report; %2 behind or old not counted)")
+                                     .arg(figures.markets_at_newest)
+                                     .arg(not_counted)
+            : QString();
     set(3, QString::number(figures.flipped.size()),
-        figures.flipped.isEmpty() ? tr("%1 kept its side in every market").arg(group)
-                                  : tr("%1 net position changed side: %2").arg(group, names(figures.flipped)));
+        (figures.flipped.isEmpty() ? tr("%1 kept its side in every market").arg(group)
+                                   : tr("%1 net position changed side: %2").arg(group, names(figures.flipped))) +
+            scope);
     set(4, QString::number(figures.large_move_markets.size()),
-        figures.large_move_markets.isEmpty()
-            ? tr("no LARGE one-week change of %1").arg(group)
-            : tr("%1 one-week change LARGE: %2").arg(group, names(figures.large_move_markets)));
+        (figures.large_move_markets.isEmpty()
+             ? tr("no LARGE one-week change of %1").arg(group)
+             : tr("%1 one-week change LARGE: %2").arg(group, names(figures.large_move_markets))) +
+            scope);
 }
 
 void CftcPanel::select_asset_class(int id) {

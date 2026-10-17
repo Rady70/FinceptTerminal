@@ -335,12 +335,16 @@ inline QVector<CftcMarketRow> cftc_market_rows(const QVector<services::CftcMonit
 // ── Key figures ─────────────────────────────────────────────────────────────
 
 struct CftcOverviewFigures {
-    QDate latest_report;     ///< the most common report date among the markets at the newest report
-    int markets_listed = 0;  ///< markets the selected report covers
-    int markets_current = 0; ///< with the latest report
-    int markets_stored = 0;  ///< stored data only (refresh failed)
-    int markets_old = 0;     ///< latest report older than the freshness limit
-    int markets_behind = 0;  ///< a report older than other markets' newest (counted in current/stored too)
+    QDate latest_report;       ///< the most common report date among the markets at the newest report
+    int markets_listed = 0;    ///< markets the selected report covers
+    int markets_current = 0;   ///< with the latest report
+    int markets_stored = 0;    ///< stored data only (refresh failed)
+    int markets_old = 0;       ///< latest report older than the freshness limit
+    int markets_behind = 0;    ///< a report older than other markets' newest (counted in current/stored too)
+    int markets_at_newest = 0; ///< the markets this week's figures (FLIPPED, LARGE) are counted over
+    /// No market of these rows has the newest report (every one is behind or
+    /// old): latest_report is then the newest date they have.
+    bool latest_report_behind = false;
     int markets_unavailable = 0;
     int markets_not_covered = 0;
     QStringList leaning_long; ///< speculators' lean
@@ -358,6 +362,7 @@ struct CftcOverviewFigures {
 inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& rows) {
     CftcOverviewFigures figures;
     QHash<QDate, int> dates;
+    QDate fallback; ///< the newest report among old or behind markets
     for (const auto& row : rows) {
         switch (row.availability) {
             case CftcRowAvailability::NotCovered:
@@ -382,8 +387,13 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
             ++figures.markets_behind;
             figures.behind << row.label;
         }
+        if (this_week)
+            ++figures.markets_at_newest;
         if (row.report_date.isValid() && this_week)
             dates[row.report_date] += 1;
+        if (row.report_date.isValid() && (row.availability == CftcRowAvailability::Old || row.behind) &&
+            (!fallback.isValid() || row.report_date > fallback))
+            fallback = row.report_date;
         if (row.bias == CftcBias::LeaningLong)
             figures.leaning_long << row.label;
         else if (row.bias == CftcBias::LeaningShort)
@@ -411,6 +421,12 @@ inline CftcOverviewFigures cftc_overview_figures(const QVector<CftcMarketRow>& r
             best = it.value();
             figures.latest_report = it.key();
         }
+    }
+    // An asset-class tab whose markets are all behind (or old) still names
+    // the report it shows, marked as behind.
+    if (!figures.latest_report.isValid() && fallback.isValid()) {
+        figures.latest_report = fallback;
+        figures.latest_report_behind = true;
     }
     return figures;
 }
