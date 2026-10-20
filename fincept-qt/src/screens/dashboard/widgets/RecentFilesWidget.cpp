@@ -5,6 +5,8 @@
 #include "ui/theme/Theme.h"
 
 #include <QDateTime>
+#include <QFileInfo>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QScrollArea>
@@ -92,11 +94,15 @@ void RecentFilesWidget::refresh_data() {
         rl->setContentsMargins(8, 5, 8, 5);
         rl->setSpacing(6);
 
-        // MIME badge
-        QString mime = f["type"].toString();
-        QString badge_text = mime.section('/', 1, 1).left(3).toUpper();
+        // File-type badge: the file's extension (IPYNB, CSV, PDF). The MIME
+        // subtype it used before read "PLA" for text/plain notebooks.
+        const QString mime = f["type"].toString();
+        QString badge_text = QFileInfo(f["originalName"].toString()).suffix().toUpper().left(5);
+        if (badge_text.isEmpty())
+            badge_text = mime.section('/', 1, 1).left(4).toUpper();
         auto* badge = new QLabel(badge_text);
-        badge->setFixedWidth(28);
+        badge->setToolTip(mime);
+        badge->setMinimumWidth(QFontMetrics(badge->font()).horizontalAdvance(QStringLiteral("IPYNB")) + 6);
         badge->setAlignment(Qt::AlignCenter);
         badge->setStyleSheet(
             QString("color:%1;font-size:9px;font-weight:700;background:transparent;%2").arg(ui::colors::AMBER(), MF));

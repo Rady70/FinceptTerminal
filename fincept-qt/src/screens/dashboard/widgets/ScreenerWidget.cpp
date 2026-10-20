@@ -33,7 +33,8 @@ ScreenerWidget::ScreenerWidget(QWidget* parent) : BaseWidget(tr("STOCK SCREENER"
     fl->addWidget(filter_lbl_);
 
     filter_combo_ = new QComboBox;
-    filter_combo_->addItems({tr("% CHANGE ↑"), tr("% CHANGE ↓"), tr("VOLUME ↓"), tr("PRICE ↓"), tr("PRICE ↑")});
+    filter_combo_->addItems({tr("% CHANGE: HIGH → LOW"), tr("% CHANGE: LOW → HIGH"), tr("VOLUME: HIGH → LOW"),
+                             tr("PRICE: HIGH → LOW"), tr("PRICE: LOW → HIGH")});
     fl->addWidget(filter_combo_);
     fl->addStretch();
 
@@ -123,20 +124,20 @@ void ScreenerWidget::apply_styles() {
     // arriving symbol (42 of them). All of it is now one stylesheet, set here
     // and only re-set on a theme change; rows just carry object names.
     if (list_widget_) {
-        list_widget_->setStyleSheet(
-            QString("#screenerList{background:transparent;}"
-                    "#screenerList QWidget#scRow{background:transparent;}"
-                    "#screenerList QWidget#scRowAlt{background:%1;}"
-                    "#screenerList QLabel{font-size:10px;background:transparent;}"
-                    "#screenerList QLabel#scSym{color:%2;font-weight:bold;}"
-                    "#screenerList QLabel#scPrice{color:%3;}"
-                    "#screenerList QLabel#scChgPos{color:%4;font-weight:bold;}"
-                    "#screenerList QLabel#scChgNeg{color:%5;font-weight:bold;}"
-                    "#screenerList QLabel#scChgFlat{color:%3;font-weight:bold;}"
-                    "#screenerList QLabel#scVol{color:%6;}"
-                    "#screenerList QLabel#scEmpty{color:%7;font-size:11px;padding:20px;}")
-                .arg(ui::colors::BG_RAISED(), ui::colors::INFO(), ui::colors::TEXT_PRIMARY(), ui::colors::POSITIVE(),
-                     ui::colors::NEGATIVE(), ui::colors::TEXT_SECONDARY(), ui::colors::TEXT_TERTIARY()));
+        list_widget_->setStyleSheet(QString("#screenerList{background:transparent;}"
+                                            "#screenerList QWidget#scRow{background:transparent;}"
+                                            "#screenerList QWidget#scRowAlt{background:%1;}"
+                                            "#screenerList QLabel{font-size:10px;background:transparent;}"
+                                            "#screenerList QLabel#scSym{color:%2;font-weight:bold;}"
+                                            "#screenerList QLabel#scPrice{color:%3;}"
+                                            "#screenerList QLabel#scChgPos{color:%4;font-weight:bold;}"
+                                            "#screenerList QLabel#scChgNeg{color:%5;font-weight:bold;}"
+                                            "#screenerList QLabel#scChgFlat{color:%3;font-weight:bold;}"
+                                            "#screenerList QLabel#scVol{color:%6;}"
+                                            "#screenerList QLabel#scEmpty{color:%7;font-size:11px;padding:20px;}")
+                                        .arg(ui::colors::BG_RAISED(), ui::colors::INFO(), ui::colors::TEXT_PRIMARY(),
+                                             ui::colors::POSITIVE(), ui::colors::NEGATIVE(),
+                                             ui::colors::TEXT_SECONDARY(), ui::colors::TEXT_TERTIARY()));
     }
 
     // Re-render data rows with current tokens if data exists
@@ -170,36 +171,27 @@ void ScreenerWidget::refresh_data() {
 }
 
 void ScreenerWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), kScreenerSymbols.size());
-    for (const auto& sym : kScreenerSymbols) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), kScreenerSymbols.size());
-            // One sort + 20-row redraw per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_all_quotes(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(kScreenerSymbols), static_cast<int>(kScreenerSymbols.size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, kScreenerSymbols, [this]() { schedule_render([this]() { rebuild_all_quotes(); }); });
     hub_active_ = true;
 }
 
 void ScreenerWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void ScreenerWidget::rebuild_all_quotes() {
     all_quotes_.clear();
-    all_quotes_.reserve(row_cache_.size());
+    all_quotes_.reserve(feed_.cache().size());
     for (const auto& sym : kScreenerSymbols) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             all_quotes_.append(it.value());
     }
     apply_filter();
+    show_feed_status(this, feed_.summary(kScreenerSymbols), static_cast<int>(kScreenerSymbols.size()));
 }
 
 void ScreenerWidget::apply_filter() {
@@ -227,10 +219,10 @@ void ScreenerWidget::apply_filter() {
     };
 
     switch (idx) {
-        case 0: // % change asc (top gainers first)
+        case 0: // % change, high to low (top gainers first)
             sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; }, true);
             break;
-        case 1: // % change desc (top losers first)
+        case 1: // % change, low to high (top losers first)
             sort_rows([](const auto& q) { return q.has_change_pct; }, [](const auto& q) { return q.change_pct; },
                       false);
             break;
@@ -347,7 +339,8 @@ void ScreenerWidget::retranslateUi() {
         header_labels_[i]->setText(hdrs[i]);
     if (filter_combo_) {
         const int cur = filter_combo_->currentIndex();
-        const QStringList items = {tr("% CHANGE ↑"), tr("% CHANGE ↓"), tr("VOLUME ↓"), tr("PRICE ↓"), tr("PRICE ↑")};
+        const QStringList items = {tr("% CHANGE: HIGH → LOW"), tr("% CHANGE: LOW → HIGH"), tr("VOLUME: HIGH → LOW"),
+                                   tr("PRICE: HIGH → LOW"), tr("PRICE: LOW → HIGH")};
         for (int i = 0; i < filter_combo_->count() && i < items.size(); ++i)
             filter_combo_->setItemText(i, items[i]);
         filter_combo_->setCurrentIndex(cur);

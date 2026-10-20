@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "screens/portfolio/PortfolioTypes.h"
 #include "services/markets/MarketDataService.h"
 
@@ -53,11 +54,17 @@ class PortfolioSummaryWidget : public BaseWidget {
     void hub_resubscribe(const QVector<Holding>& holdings);
     void hub_unsubscribe_all();
 
-    /// Rebuild quotes vector from `row_cache_` in `last_holdings_` order
-    /// and re-render.
+    /// Re-render from `feed_` in `last_holdings_` order.
     void rebuild_from_cache();
 
-    void render(const QVector<Holding>& holdings, const QVector<services::QuoteData>& quotes);
+    /// Subscribe to the FX quotes the holdings' currencies need once those
+    /// currencies are known (resolved asynchronously).
+    void ensure_fx_subscriptions();
+
+    /// The holding's quote currency (empty while unknown).
+    QString holding_currency(const QString& symbol) const;
+
+    void render();
 
     /// Render the "no portfolios / no holdings" placeholder + zero out the
     /// summary metric cards. Idempotent.
@@ -96,9 +103,10 @@ class PortfolioSummaryWidget : public BaseWidget {
 
     // ── Cached for theme-change re-render ──────────────────────────────────
     QVector<Holding> last_holdings_;
-    QVector<services::QuoteData> last_quotes_;
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< holdings' quotes and the FX rates, with failures
+    QStringList holding_symbols_;
+    QStringList fx_symbols_; ///< "<FROM><TO>=X" rates already subscribed
     bool hub_active_ = false;
 };
 

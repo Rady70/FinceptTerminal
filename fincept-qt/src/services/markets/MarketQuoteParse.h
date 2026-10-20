@@ -133,6 +133,14 @@ inline const char* quote_status(int missing, bool stale) {
     return missing > 0 ? kQuoteStatusPartial : kQuoteStatusOk;
 }
 
+/// The session date, change basis and futures contract of a quote payload or
+/// cache envelope. Absent keys leave the fields empty (unknown), never "today".
+inline void take_session_fields(const QJsonObject& o, QuoteData& q) {
+    q.session_date = QDate::fromString(o.value(QLatin1String("session_date")).toString(), Qt::ISODate);
+    q.day_basis = o.value(QLatin1String("day_basis")).toString();
+    q.contract = o.value(QLatin1String("contract")).toString();
+}
+
 /// yfinance quote object → QuoteData with per-field presence preserved.
 /// Shared by the batch_all and batch_quotes branches, which read the same
 /// payload shape and differ only in what they do with the result.
@@ -147,6 +155,10 @@ inline QuoteData parse_quote_object(const QJsonObject& q, const QString& source,
     missing += take_num(q, "high", out.high, out.has_high) ? 0 : 1;
     missing += take_num(q, "low", out.low, out.has_low) ? 0 : 1;
     missing += take_volume(q, out.volume, out.has_volume) ? 0 : 1;
+    // Not counted toward PARTIAL: older payloads never carried them.
+    take_num(q, "open", out.open, out.has_open);
+    take_num(q, "previous_close", out.prev_close, out.has_prev_close);
+    take_session_fields(q, out);
     // Provenance, stamped at the branch that actually produced the row rather
     // than assumed later from a log line.
     out.source = source;
@@ -167,6 +179,14 @@ inline QJsonObject quote_to_cache(const QuoteData& q) {
     o["high"] = num_or_null(q.high, q.has_high);
     o["low"] = num_or_null(q.low, q.has_low);
     o["volume"] = num_or_null(q.volume, q.has_volume);
+    o["open"] = num_or_null(q.open, q.has_open);
+    o["previous_close"] = num_or_null(q.prev_close, q.has_prev_close);
+    if (q.session_date.isValid())
+        o["session_date"] = q.session_date.toString(Qt::ISODate);
+    if (!q.day_basis.isEmpty())
+        o["day_basis"] = q.day_basis;
+    if (!q.contract.isEmpty())
+        o["contract"] = q.contract;
     // CacheManager exposes no insert time, so the retrieval time rides in the
     // envelope; without it a cache hit could only ever report when it was read
     // back, which is a different fact.
@@ -198,6 +218,9 @@ inline QuoteData quote_from_cache(const QJsonObject& o, bool stale) {
     missing += take_num(o, "high", q.high, q.has_high) ? 0 : 1;
     missing += take_num(o, "low", q.low, q.has_low) ? 0 : 1;
     missing += take_volume(o, q.volume, q.has_volume) ? 0 : 1;
+    take_num(o, "open", q.open, q.has_open);
+    take_num(o, "previous_close", q.prev_close, q.has_prev_close);
+    take_session_fields(o, q);
 
     q.source = cache_source_label(o["source"].toString());
     q.retrieved_at = static_cast<qint64>(o["retrieved_at"].toDouble());

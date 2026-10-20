@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
@@ -35,7 +36,7 @@ PerformanceWidget::PerformanceWidget(QWidget* parent)
         rl->addWidget(mr.label);
         rl->addStretch();
 
-        mr.period = new QLabel(tr("TODAY"));
+        mr.period = new QLabel(QStringLiteral("--"));
         rl->addWidget(mr.period);
 
         mr.value = new QLabel("--");
@@ -90,37 +91,28 @@ void PerformanceWidget::refresh_data() {
 }
 
 void PerformanceWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), kPerfSymbols.size());
-    for (const auto& sym : kPerfSymbols) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), kPerfSymbols.size());
-            // One redraw per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(kPerfSymbols), static_cast<int>(kPerfSymbols.size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, kPerfSymbols, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
 }
 
 void PerformanceWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void PerformanceWidget::rebuild_from_cache() {
     QVector<services::QuoteData> quotes;
-    quotes.reserve(row_cache_.size());
+    quotes.reserve(feed_.cache().size());
     for (const auto& sym : kPerfSymbols) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             quotes.append(it.value());
     }
     if (!quotes.isEmpty())
         populate(quotes);
+    show_feed_status(this, feed_.summary(kPerfSymbols), static_cast<int>(kPerfSymbols.size()));
 }
 
 void PerformanceWidget::populate(const QVector<services::QuoteData>& quotes) {
@@ -169,9 +161,12 @@ void PerformanceWidget::populate(const QVector<services::QuoteData>& quotes) {
     if (map.contains("^VIX") && map["^VIX"]->has_price && rows_.size() > 6) {
         const double vix = map["^VIX"]->price;
         rows_[6].value->setText(QString::number(vix, 'f', 2));
-        const QString color = vix > 25   ? ui::colors::NEGATIVE()
-                              : vix > 18 ? ui::colors::WARNING()
-                                         : ui::colors::POSITIVE();
+        // Same regime rule as Risk Metrics and Market Sentiment.
+        const auto tone = gauges::vix_tone(gauges::vix_regime(vix));
+        const QString color = tone == gauges::Tone::Negative   ? ui::colors::NEGATIVE()
+                              : tone == gauges::Tone::Warning  ? ui::colors::WARNING()
+                              : tone == gauges::Tone::Positive ? ui::colors::POSITIVE()
+                                                               : ui::colors::TEXT_PRIMARY();
         rows_[6].value->setStyleSheet(
             QString("color: %1; font-size: 11px; font-weight: bold; background: transparent;").arg(color));
     } else if (rows_.size() > 6) {
@@ -182,6 +177,25 @@ void PerformanceWidget::populate(const QVector<services::QuoteData>& quotes) {
 
     // Gold daily
     set_row(7, has_pct("GC=F"), has_pct("GC=F") ? pct("GC=F") : 0.0);
+
+    // The period column names the trading day each row belongs to instead of
+    // "TODAY": before the US open the US rows are the previous session while
+    // gold is already today's. A spread names its first leg's day, or both
+    // when the legs belong to different days.
+    auto day = [&](const QString& sym) {
+        return map.contains(sym) ? fincept::screens::quote_session_text(map[sym]->session_date) : QString();
+    };
+    auto pair_day = [&](const QString& a, const QString& b) {
+        const QString da = day(a), db = day(b);
+        return (da == db || db.isEmpty()) ? da : (da.isEmpty() ? db : da + QStringLiteral("/") + db);
+    };
+    const QStringList period = {
+        day("^GSPC"), day("^IXIC"), day("^DJI"), day("^RUT"), pair_day("^GSPC", "^DJI"), pair_day("^IXIC", "^GSPC"),
+        day("^VIX"),  day("GC=F")};
+    for (int i = 0; i < rows_.size() && i < period.size(); ++i) {
+        rows_[i].period->setText(period[i].isEmpty() ? QStringLiteral("--") : period[i].toUpper());
+        rows_[i].period->setToolTip(tr("Trading day of this reading"));
+    }
 }
 
 void PerformanceWidget::retranslateUi() {

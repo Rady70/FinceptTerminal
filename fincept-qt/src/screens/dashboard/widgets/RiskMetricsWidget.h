@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QHash>
@@ -31,7 +32,7 @@ class RiskMetricsWidget : public BaseWidget {
 
     void hub_subscribe_all();
     void hub_unsubscribe_all();
-    /// Rebuild a QVector<QuoteData> from `row_cache_` and hand to `populate()`.
+    /// Rebuild a QVector<QuoteData> from `feed_` and hand to `populate()`.
     void rebuild_from_cache();
 
     // VIX section
@@ -63,7 +64,7 @@ class RiskMetricsWidget : public BaseWidget {
     QLabel* spy_iwm_spread_ = nullptr;
     QLabel* equity_bond_lbl_ = nullptr; // SPY vs TLT proxy
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

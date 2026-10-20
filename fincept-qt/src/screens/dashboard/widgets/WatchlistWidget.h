@@ -1,4 +1,5 @@
 #pragma once
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "screens/dashboard/widgets/QuoteTableWidget.h"
 
 #include <QHash>
@@ -38,7 +39,7 @@ class WatchlistWidget : public BaseWidget {
     void hub_resubscribe();
     /// Tear down all hub subscriptions for this widget.
     void hub_unsubscribe_all();
-    /// Redraw the table from `row_cache_` in `symbols_` order.
+    /// Redraw the table from `feed_` in `symbols_` order.
     void render_from_cache();
 
     QLineEdit* symbols_input_ = nullptr;
@@ -47,7 +48,7 @@ class WatchlistWidget : public BaseWidget {
     ui::DataTable* table_ = nullptr;
     QStringList symbols_;
 
-    QHash<QString, fincept::services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

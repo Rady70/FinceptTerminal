@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QLineEdit>
+#include <QPointer>
 
 namespace fincept::screens::widgets {
 
@@ -202,20 +203,34 @@ void StockQuoteWidget::refresh_data() {
 }
 
 void StockQuoteWidget::hub_resubscribe() {
-    auto& hub = datahub::DataHub::instance();
-    hub.unsubscribe(this);
-    const QString topic = QStringLiteral("market:quote:") + symbol_;
-    hub.subscribe(this, topic, [this](const QVariant& v) {
-        if (!v.canConvert<services::QuoteData>())
-            return;
-        set_loading(false);
-        populate(v.value<services::QuoteData>());
+    QuoteSubscriptions::unsubscribe(this);
+    feed_.clear();
+    const QStringList symbols{symbol_};
+    feed_.subscribe(this, symbols, [this, symbols]() {
+        show_feed_status(this, feed_.summary(symbols), 1);
+        if (const auto* q = feed_.quote(symbol_)) {
+            set_loading(false);
+            populate(*q);
+        } else if (!feed_.error(symbol_).isEmpty()) {
+            // A symbol that cannot be quoted says so instead of spinning.
+            set_loading(false);
+            price_label_->setText(tr("No quote"));
+            change_label_->setText(feed_.error(symbol_).left(80));
+        }
+    });
+    // Quote currency for the price prefix (resolved once, cached on disk).
+    QPointer<StockQuoteWidget> self = this;
+    services::MarketDataService::instance().resolve_names(symbols, [self](const QHash<QString, QString>&) {
+        if (self) {
+            if (const auto* q = self->feed_.quote(self->symbol_))
+                self->populate(*q);
+        }
     });
     hub_active_ = true;
 }
 
 void StockQuoteWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
@@ -240,12 +255,15 @@ void StockQuoteWidget::populate(const services::QuoteData& q) {
                           : arrow_value < 0 ? QString(QChar(0x25BC))
                                             : QString(QChar(0x2022));
 
-    price_label_->setText(fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")));
+    const QString currency = services::MarketDataService::instance().currency_prefix(q.symbol);
+    const int decimals =
+        fincept::screens::quote_price_decimals(q.has_price, q.price, q.symbol.endsWith(QLatin1String("=X")) ? 4 : 2);
+    price_label_->setText(fincept::screens::quote_field_text(q.has_price, q.price, decimals, currency));
     arrow_label_->setText(arrow);
     arrow_label_->setStyleSheet(
         QString("color: %1; font-size: 12px; background: transparent;").arg(dir_color(has_arrow, arrow_value)));
 
-    const QString abs_text = fincept::screens::quote_signed_text(q.has_change, q.change, 2);
+    const QString abs_text = fincept::screens::quote_signed_text(q.has_change, q.change, decimals);
     const QString pct_text =
         fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"));
     change_label_->setText(QStringLiteral("<span style='color:%1;'>%2</span> "
@@ -267,13 +285,18 @@ void StockQuoteWidget::populate(const services::QuoteData& q) {
     // session open. Showing `high` here (as this did previously) prints a
     // wrong number under an "OPEN" heading — on a trading terminal that is
     // worse than showing nothing.
-    open_val_->setText(QStringLiteral("--"));
-    open_val_->setToolTip(tr("Session open is not available in the batch quote feed"));
-    high_val_->setText(fincept::screens::quote_field_text(q.has_high, q.high, 2, QStringLiteral("$")));
-    low_val_->setText(fincept::screens::quote_field_text(q.has_low, q.low, 2, QStringLiteral("$")));
-    prev_val_->setText(q.has_price && q.has_change
-                           ? fincept::screens::quote_field_text(true, q.price - q.change, 2, QStringLiteral("$"))
-                           : QStringLiteral("--"));
+    open_val_->setText(fincept::screens::quote_field_text(q.has_open, q.open, decimals, currency));
+    open_val_->setToolTip(QString());
+    high_val_->setText(fincept::screens::quote_field_text(q.has_high, q.high, decimals, currency));
+    low_val_->setText(fincept::screens::quote_field_text(q.has_low, q.low, decimals, currency));
+    // The reference the change is measured against (previous close, previous
+    // settlement, or 00:00 Helsinki for forex) — reported by the feed.
+    prev_val_->setText(q.has_prev_close
+                           ? fincept::screens::quote_field_text(true, q.prev_close, decimals, currency)
+                           : (q.has_price && q.has_change
+                                  ? fincept::screens::quote_field_text(true, q.price - q.change, decimals, currency)
+                                  : QStringLiteral("--")));
+    prev_val_->setToolTip(fincept::screens::quote_basis_text(q));
 
     // Format volume; missing stays "--" and a genuine zero is "0". A negative
     // volume is malformed and renders unavailable, never as a real zero.

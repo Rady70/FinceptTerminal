@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QGridLayout>
@@ -67,6 +68,7 @@ class StockQuoteWidget : public BaseWidget {
     QStringList stat_label_keys_;
 
     bool hub_active_ = false;
+    QuoteSubscriptions feed_; ///< this symbol's quote + last failure
 };
 
 } // namespace fincept::screens::widgets

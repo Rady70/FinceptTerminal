@@ -47,10 +47,20 @@ class BaseWidget : public QFrame {
     void set_error(const QString& error);
     void set_title(const QString& title);
 
+    /// A one-line note under the content: the date the data belongs to and any
+    /// symbols that failed or were not refreshed. Empty text hides it; `warn`
+    /// colours it as a warning. The tooltip carries the per-symbol detail.
+    void set_footer(const QString& text, const QString& tooltip = {}, bool warn = false);
+
     /// External-trigger entry point — emits `refresh_requested` so the
     /// widget runs the same refresh path as a user clicking the title-bar
     /// refresh button. Used by the dashboard "REFRESH ALL" toolbar button.
     void request_refresh() { emit refresh_requested(); }
+
+    /// The dashboard's REFRESH ALL. Default: the same as the refresh button.
+    /// Widgets whose own refresh starts a long acquisition (CFTC, FedWatch)
+    /// override it to re-read their stored data only.
+    virtual void request_bulk_refresh() { emit refresh_requested(); }
 
     /// Current per-instance config. Default: empty — subclasses override to
     /// return their live state (symbol, broker id, filters, etc.).
@@ -120,6 +130,8 @@ class BaseWidget : public QFrame {
     QLabel* title_label_ = nullptr;
     QLabel* accent_bar_ = nullptr;
     QLabel* loading_label_ = nullptr;
+    QLabel* footer_label_ = nullptr;
+    bool footer_warn_ = false;
     QWidget* content_ = nullptr;
     QVBoxLayout* content_layout_ = nullptr;
     QPushButton* refresh_btn_ = nullptr;

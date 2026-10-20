@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/tables/DataTable.h"
 
@@ -59,10 +60,10 @@ class QuoteTableWidget : public BaseWidget {
     int price_decimals_;
     ui::DataTable* table_ = nullptr;
 
-    /// Per-symbol latest quote, keyed by raw symbol. Used to rebuild the
-    /// table preserving the declared symbol order when any one row
+    /// Per-symbol latest quote and last failure, keyed by raw symbol. Used to
+    /// rebuild the table preserving the declared symbol order when any one row
     /// updates.
-    QHash<QString, fincept::services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_;
     bool hub_active_ = false;
 };
 

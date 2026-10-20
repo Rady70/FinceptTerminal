@@ -25,12 +25,16 @@ struct PresetChannel {
     const char* accent;
 };
 
+// Channel "/live" addresses follow whatever stream the channel is running now.
+// Fixed video ids went dead whenever a broadcaster restarted its stream (3 of 5
+// presets failed on 2026-10-20). CNBC does not stream on YouTube, so it was
+// replaced by DW News.
 static const PresetChannel kPresets[] = {
-    {"Bloomberg TV", "https://www.youtube.com/watch?v=iEpJwprxDdk", "Global business & markets", "#9D4EDD"},
-    {"CNBC Live", "https://www.youtube.com/watch?v=rGgBsS3cm7E", "US market coverage", "#2563eb"},
+    {"Bloomberg TV", "https://www.youtube.com/@markets/live", "Global business & markets", "#9D4EDD"},
     {"Yahoo Finance", "https://www.youtube.com/@YahooFinance/live", "Market analysis", "#16a34a"},
-    {"NDTV Profit", "https://www.youtube.com/watch?v=kf8tVmwfUHI", "India business & markets", "#0891b2"},
-    {"Al Jazeera", "https://www.youtube.com/watch?v=gCNeDWCI0vo", "World news & finance", "#d97706"},
+    {"NDTV Profit", "https://www.youtube.com/@NDTVProfitIndia/live", "India business & markets", "#0891b2"},
+    {"DW News", "https://www.youtube.com/@dwnews/live", "World news & business", "#2563eb"},
+    {"Al Jazeera", "https://www.youtube.com/@aljazeeraenglish/live", "World news & finance", "#d97706"},
 };
 
 static constexpr int kPresetCount = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));

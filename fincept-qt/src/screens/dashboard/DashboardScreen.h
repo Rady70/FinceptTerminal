@@ -15,6 +15,8 @@ class NotifToast;
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QSplitter>
+#include <QStackedWidget>
+#include <QTabBar>
 #include <QTimer>
 #include <QWidget>
 
@@ -39,9 +41,34 @@ class DashboardScreen : public QWidget {
 
   private:
     void refresh_theme();
-    void build_default_layout();
+    void build_default_layout(DashboardCanvas* canvas);
     void save_layout();
     void restore_layout();
+
+    // ── Pages ────────────────────────────────────────────────────────────────
+    // The dashboard holds several pages, each its own canvas with its own saved
+    // layout. The first page keeps the original settings key, so an existing
+    // layout opens unchanged as page 1.
+    struct Page {
+        QString id;
+        QString name;
+        QScrollArea* scroll = nullptr;
+        DashboardCanvas* canvas = nullptr;
+        bool restored = false; ///< its stored layout has been read (safe to save)
+    };
+    void build_page_bar();
+    int add_page(const QString& id, const QString& name);
+    void switch_to_page(int index);
+    void new_page();
+    void rename_page(int index);
+    void delete_page(int index);
+    void show_page_menu(int index, const QPoint& global_pos);
+    void show_tile_menu(DashboardCanvas* canvas, const QString& instance_id, const QPoint& global_pos);
+    void move_widget_to_page(DashboardCanvas* from, const QString& instance_id, int target);
+    void restore_page_layout(int index, bool default_if_empty);
+    void sync_page_tabs();
+    int page_index(const DashboardCanvas* canvas) const;
+    static QString layout_key(const QString& page_id);
     void refresh_ticker();
     void on_refresh_clicked();
 
@@ -51,8 +78,13 @@ class DashboardScreen : public QWidget {
 
     DashboardToolBar* toolbar_ = nullptr;
     TickerBar* ticker_bar_ = nullptr;
-    QScrollArea* scroll_area_ = nullptr;
-    DashboardCanvas* canvas_ = nullptr;
+    QScrollArea* scroll_area_ = nullptr; ///< the current page's scroll area
+    DashboardCanvas* canvas_ = nullptr;  ///< the current page's canvas
+    QWidget* page_bar_ = nullptr;
+    QTabBar* page_tabs_ = nullptr;
+    QStackedWidget* pages_stack_ = nullptr;
+    QVector<Page> pages_;
+    int current_page_ = -1;
     QSplitter* content_split_ = nullptr;
     MarketPulsePanel* market_pulse_ = nullptr;
     DashboardStatusBar* status_bar_ = nullptr;

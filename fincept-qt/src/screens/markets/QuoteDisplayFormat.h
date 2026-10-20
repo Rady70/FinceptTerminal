@@ -18,8 +18,13 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QHash>
+#include <QLocale>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 
+#include <algorithm>
 #include <cmath>
 
 namespace fincept::screens {
@@ -145,6 +150,135 @@ inline QString quote_provenance_text(const services::QuoteData& q) {
             QCoreApplication::translate("QuoteDisplayFormat", "The refresh failed; this row is the last cached value.");
     }
     return text;
+}
+
+/// Decimals for a price cell: `base`, or enough for four significant digits
+/// below 1 — 0.0793 → "0.07930", 0.00000712 → "0.000007120" — so a small
+/// price and its change never collapse to 0.00 (capped at 10 decimals).
+inline int quote_price_decimals(bool has, double price, int base) {
+    if (!has || price == 0.0 || std::abs(price) >= 1.0)
+        return base;
+    const int leading = static_cast<int>(std::floor(std::log10(std::abs(price)))); // -1 for 0.2, -6 for 7e-6
+    return std::clamp(3 - leading, base, 10);
+}
+
+/// Whether a delivered quote clears a recorded refresh failure. The hub
+/// re-delivers the last value it holds whenever a widget subscribes again
+/// (e.g. on a page switch); that is not a new reading and must not hide the
+/// failure. Only a value retrieved later than the one already shown clears it
+/// (or any value when nothing was shown, or when retrieval times are unknown).
+inline bool quote_value_clears_error(const services::QuoteData* shown, const services::QuoteData& delivered) {
+    if (!shown)
+        return true;
+    if (shown->retrieved_at <= 0 || delivered.retrieved_at <= 0)
+        return true;
+    return delivered.retrieved_at > shown->retrieved_at;
+}
+
+/// "19 Oct" — the trading day a price belongs to; empty when unknown.
+inline QString quote_session_text(const QDate& date) {
+    return date.isValid() ? QLocale::c().toString(date, QStringLiteral("d MMM")) : QString();
+}
+
+/// What a quote's daily change is measured against, in words.
+inline QString quote_basis_text(const services::QuoteData& q) {
+    const QString b = q.day_basis;
+    if (b == QLatin1String("helsinki_midnight"))
+        return QCoreApplication::translate("QuoteDisplayFormat", "change since 00:00 Helsinki time");
+    if (b == QLatin1String("prior_settlement"))
+        return q.contract.isEmpty()
+                   ? QCoreApplication::translate("QuoteDisplayFormat", "change vs previous settlement")
+                   : QCoreApplication::translate("QuoteDisplayFormat", "change vs previous settlement of %1")
+                         .arg(q.contract);
+    if (b == QLatin1String("prior_bar_close_unverified"))
+        return QCoreApplication::translate("QuoteDisplayFormat",
+                                           "change vs previous daily bar (settlement unavailable; may span a "
+                                           "contract roll)");
+    if (b == QLatin1String("prior_session_close"))
+        return QCoreApplication::translate("QuoteDisplayFormat", "change vs previous session close");
+    if (b == QLatin1String("provider_previous_close"))
+        // The one-by-one fallback: Yahoo's own previous close, which for forex
+        // is not 00:00 Helsinki and for futures may not be the settlement.
+        return QCoreApplication::translate("QuoteDisplayFormat",
+                                           "change vs Yahoo's reported previous close (fallback)");
+    return QCoreApplication::translate("QuoteDisplayFormat", "change reference not reported");
+}
+
+/// One symbol's line in a widget footer tooltip.
+inline QString quote_status_line(const QString& symbol, const services::QuoteData* q, const QString& error) {
+    QString line = symbol + QStringLiteral(" — ");
+    if (!q)
+        return line + QCoreApplication::translate("QuoteDisplayFormat", "failed: %1").arg(error);
+    QStringList parts;
+    const QString day = quote_session_text(q->session_date);
+    parts << (day.isEmpty() ? QCoreApplication::translate("QuoteDisplayFormat", "session date unknown") : day);
+    parts << quote_basis_text(*q);
+    if (q->retrieved_at > 0)
+        parts << QCoreApplication::translate("QuoteDisplayFormat", "fetched %1")
+                     .arg(QDateTime::fromSecsSinceEpoch(q->retrieved_at).toString(QStringLiteral("HH:mm")));
+    if (!error.isEmpty())
+        parts << QCoreApplication::translate("QuoteDisplayFormat", "last refresh failed: %1").arg(error);
+    return line + parts.join(QStringLiteral(" · "));
+}
+
+/// The footer a quote widget shows: which trading day(s) its numbers belong
+/// to, which symbols failed (no value at all) and which kept an older value
+/// after a failed refresh. `warn` is set when anything failed.
+struct QuoteFeedSummary {
+    QString text;
+    QString tooltip;
+    bool warn = false;
+    QStringList failed;      ///< no value, last request failed
+    QStringList not_updated; ///< showing an older value, last refresh failed
+    int settled = 0;         ///< symbols with a value or a failure (for the loading progress)
+};
+
+inline QuoteFeedSummary quote_feed_summary(const QStringList& symbols, const QHash<QString, services::QuoteData>& cache,
+                                           const QHash<QString, QString>& errors) {
+    QuoteFeedSummary out;
+    QVector<QDate> days;
+    QStringList lines;
+    for (const QString& sym : symbols) {
+        const auto it = cache.constFind(sym);
+        const services::QuoteData* q = it == cache.constEnd() ? nullptr : &it.value();
+        const QString err = errors.value(sym);
+        if (!q && err.isEmpty())
+            continue;
+        ++out.settled;
+        if (!q)
+            out.failed << sym;
+        else if (!err.isEmpty())
+            out.not_updated << sym;
+        if (q && q->session_date.isValid() && !days.contains(q->session_date))
+            days << q->session_date;
+        lines << quote_status_line(sym, q, err);
+    }
+    std::sort(days.begin(), days.end());
+    QStringList parts;
+    if (!days.isEmpty()) {
+        QStringList names;
+        const int first = std::max<int>(0, static_cast<int>(days.size()) - 3);
+        for (int i = first; i < days.size(); ++i)
+            names << quote_session_text(days[i]);
+        parts << QCoreApplication::translate("QuoteDisplayFormat", "Data: %1")
+                     .arg((first > 0 ? QStringLiteral("… ") : QString()) + names.join(QStringLiteral(" · ")));
+    }
+    auto named = [](const QStringList& list) {
+        QStringList shown = list.mid(0, 3);
+        return shown.join(QStringLiteral(", ")) + (list.size() > 3 ? QStringLiteral(" …") : QString());
+    };
+    if (!out.failed.isEmpty())
+        parts << QCoreApplication::translate("QuoteDisplayFormat", "%1 failed: %2")
+                     .arg(out.failed.size())
+                     .arg(named(out.failed));
+    if (!out.not_updated.isEmpty())
+        parts << QCoreApplication::translate("QuoteDisplayFormat", "%1 not refreshed: %2")
+                     .arg(out.not_updated.size())
+                     .arg(named(out.not_updated));
+    out.text = parts.join(QStringLiteral(" · "));
+    out.tooltip = lines.join(QLatin1Char('\n'));
+    out.warn = !out.failed.isEmpty() || !out.not_updated.isEmpty();
+    return out;
 }
 
 } // namespace fincept::screens

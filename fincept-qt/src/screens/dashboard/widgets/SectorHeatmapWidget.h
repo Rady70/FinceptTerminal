@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QFrame>
@@ -14,7 +15,7 @@ namespace fincept::screens::widgets {
 /// and renders a color-intensity grid.
 ///
 /// Subscribes to `market:quote:<ETF>` on the DataHub for each sector ETF.
-/// On every delivery the grid is rebuilt from `row_cache_` so intensity
+/// On every delivery the grid is rebuilt from `feed_` so intensity
 /// tints stay in sync.
 class SectorHeatmapWidget : public BaseWidget {
     Q_OBJECT
@@ -58,7 +59,7 @@ class SectorHeatmapWidget : public BaseWidget {
     static QStringList sector_symbols();
     static QMap<QString, QString> sector_labels();
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

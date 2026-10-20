@@ -3,6 +3,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "screens/dashboard/widgets/LoadingOverlay.h"
+#include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/theme/Theme.h"
@@ -850,7 +851,7 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
             ++nasdaq_obs;
         else
             ++nyse_obs;
-        if (q.change_pct > 0.3) {
+        if (gauges::classify_move(q.change_pct) > 0) {
             if (in_sp)
                 ++sp500_adv;
             else if (in_nq)
@@ -858,7 +859,7 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
             else
                 ++nyse_adv;
             ++bullish;
-        } else if (q.change_pct < -0.3) {
+        } else if (gauges::classify_move(q.change_pct) < 0) {
             if (in_sp)
                 ++sp500_dec;
             else if (in_nq)
@@ -929,39 +930,14 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
         }
         return;
     }
-    int score = 50 + static_cast<int>(((bullish - bearish) / static_cast<double>(total_stocks)) * 50);
-    if (vix > 0) {
-        if (vix > 30)
-            score -= 20;
-        else if (vix > 25)
-            score -= 10;
-        else if (vix < 15)
-            score += 10;
-    }
-    score = qBound(0, score, 100);
-
-    QString sentiment_text, sentiment_color, sentiment_key;
-    if (score <= 20) {
-        sentiment_key = QStringLiteral("EXTREME FEAR");
-        sentiment_text = tr("EXTREME FEAR");
-        sentiment_color = ui::colors::NEGATIVE();
-    } else if (score <= 40) {
-        sentiment_key = QStringLiteral("FEAR");
-        sentiment_text = tr("FEAR");
-        sentiment_color = ui::colors::WARNING();
-    } else if (score <= 60) {
-        sentiment_key = QStringLiteral("NEUTRAL");
-        sentiment_text = tr("NEUTRAL");
-        sentiment_color = ui::colors::WARNING();
-    } else if (score <= 80) {
-        sentiment_key = QStringLiteral("GREED");
-        sentiment_text = tr("GREED");
-        sentiment_color = ui::colors::POSITIVE();
-    } else {
-        sentiment_key = QStringLiteral("EXTREME GREED");
-        sentiment_text = tr("EXTREME GREED");
-        sentiment_color = ui::colors::POSITIVE();
-    }
+    const auto scored =
+        gauges::basket_score(bullish, bearish, neutral_count, vix > 0 ? std::optional<double>(vix) : std::nullopt);
+    const int score = scored->score; // total_stocks > 0, so a score exists
+    const QString sentiment_key = QString::fromLatin1(scored->key);
+    const QString sentiment_text = tr(scored->key);
+    const QString sentiment_color = scored->tone == gauges::Tone::Positive   ? ui::colors::POSITIVE()
+                                    : scored->tone == gauges::Tone::Negative ? ui::colors::NEGATIVE()
+                                                                             : ui::colors::WARNING();
     fg_sentiment_key_ = sentiment_key;
 
     if (fg_score_val_)

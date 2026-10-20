@@ -131,46 +131,53 @@ void QuoteTableWidget::refresh_data() {
 }
 
 void QuoteTableWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), symbols_.size());
-    for (const auto& sym : symbols_) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), symbols_.size());
-            // One render per delivery burst, not one per symbol (P9/P10).
-            schedule_render([this]() { render_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
+    // One render per delivery burst, not one per symbol (P9/P10).
+    feed_.subscribe(this, symbols_, [this]() { schedule_render([this]() { render_from_cache(); }); });
     hub_active_ = true;
 }
 
 void QuoteTableWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
-    // Keep row_cache_ so a quick hide/show doesn't flash an empty table —
+    // Keep the cache so a quick hide/show doesn't flash an empty table —
     // the first hub delivery on re-subscribe will refresh it anyway.
 }
 
 void QuoteTableWidget::render_from_cache() {
     table_->clear_data();
     for (const auto& sym : symbols_) {
-        auto it = row_cache_.constFind(sym);
-        if (it == row_cache_.constEnd())
+        const services::QuoteData* quote = feed_.quote(sym);
+        const QString error = feed_.error(sym);
+        if (!quote) {
+            if (error.isEmpty())
+                continue; // not answered yet
+            // A failed symbol keeps its row so it does not silently disappear.
+            table_->add_row({label_map_.value(sym, sym), QStringLiteral("--"), QStringLiteral("--"), tr("failed")});
+            const int row = table_->rowCount() - 1;
+            table_->set_cell_color(row, 3, ui::colors::WARNING);
+            for (int c = 0; c < table_->columnCount(); ++c)
+                if (auto* item = table_->item(row, c))
+                    item->setToolTip(fincept::screens::quote_status_line(sym, nullptr, error));
             continue;
-        const auto& q = it.value();
+        }
+        const auto& q = *quote;
         QString display_name = label_map_.value(q.symbol, q.symbol);
         // Missing fields render as "--"; a genuine zero is a reading and keeps
         // its number. A zero change is neutral, never painted as an upward move.
-        const QString price_str = fincept::screens::quote_field_text(q.has_price, q.price, price_decimals_);
-        const QString chg_str = fincept::screens::quote_signed_text(q.has_change, q.change, price_decimals_);
+        // A price below 1 gets at least four decimals (0.0793, not 0.08).
+        const int decimals = fincept::screens::quote_price_decimals(q.has_price, q.price, price_decimals_);
+        const QString price_str = fincept::screens::quote_field_text(q.has_price, q.price, decimals);
+        const QString chg_str = fincept::screens::quote_signed_text(q.has_change, q.change, decimals);
         const QString pct_str =
             fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"));
 
         table_->add_row({display_name, price_str, chg_str, pct_str});
         int row = table_->rowCount() - 1;
+        const QString tip = fincept::screens::quote_status_line(sym, &q, error);
+        for (int c = 0; c < table_->columnCount(); ++c)
+            if (auto* item = table_->item(row, c))
+                item->setToolTip(tip);
         // Each displayed field is coloured from its own flag and value; a
         // missing CHG cell is never painted with the CHG% direction, and a
         // genuine zero is neutral rather than a move.
@@ -186,6 +193,7 @@ void QuoteTableWidget::render_from_cache() {
         table_->set_cell_color(row, 2, move_color(q.has_change, q.change));
         table_->set_cell_color(row, 3, move_color(q.has_change_pct, q.change_pct));
     }
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
     // A vertical scrollbar can appear once the rows arrive and shave width off
     // the viewport; re-fit after the fill so all four columns stay visible.
     fit_columns();

@@ -147,6 +147,28 @@ void DashboardCanvas::apply_template(const QString& template_id) {
 }
 
 void DashboardCanvas::add_widget(const QString& widget_type_id) {
+    add_widget_with_config(widget_type_id, QJsonObject());
+}
+
+bool DashboardCanvas::item_info(const QString& instance_id, QString* type_id, QJsonObject* config,
+                                GridCell* cell) const {
+    const GridLayout canonical = canonical_layout();
+    for (const auto& item : canonical.items) {
+        if (item.instance_id != instance_id)
+            continue;
+        if (type_id)
+            *type_id = item.id;
+        if (config)
+            *config = item.config;
+        if (cell)
+            *cell = item.cell;
+        return true;
+    }
+    return false;
+}
+
+void DashboardCanvas::add_widget_with_config(const QString& widget_type_id, const QJsonObject& config, int w_keep,
+                                             int h_keep) {
     const WidgetMeta* meta = WidgetRegistry::instance().find(widget_type_id);
     if (!meta)
         return;
@@ -158,11 +180,12 @@ void DashboardCanvas::add_widget(const QString& widget_type_id) {
     GridItem item;
     item.id = widget_type_id;
     item.instance_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    int w = std::min(meta->default_w, layout_.cols);
-    int h = meta->default_h;
+    int w = std::min(w_keep > 0 ? std::max(w_keep, meta->min_w) : meta->default_w, layout_.cols);
+    int h = h_keep > 0 ? std::max(h_keep, meta->min_h) : meta->default_h;
     item.cell = find_first_fit(layout_.items, w, h, layout_.cols);
     item.cell.min_w = meta->min_w;
     item.cell.min_h = meta->min_h;
+    item.config = config;
 
     auto* widget = meta->factory(item.config);
     if (!widget) {
@@ -612,6 +635,8 @@ void DashboardCanvas::connect_tile(WidgetTile* tile) {
     connect(tile, &WidgetTile::resize_moved, this, &DashboardCanvas::on_resize_moved);
     connect(tile, &WidgetTile::resize_released, this, &DashboardCanvas::on_resize_released);
     connect(tile, &WidgetTile::close_requested, this, &DashboardCanvas::on_tile_close);
+    connect(tile, &WidgetTile::context_menu_requested, this,
+            [this](WidgetTile* t, QPoint global_pos) { emit tile_menu_requested(t->instance_id(), global_pos); });
 
     // Per-instance widget config changes (gear-icon dialog) — persist into GridItem
     // and emit layout_changed so the DashboardScreen writes it through to sqlite.

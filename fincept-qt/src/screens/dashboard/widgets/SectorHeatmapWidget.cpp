@@ -86,38 +86,28 @@ void SectorHeatmapWidget::refresh_data() {
 }
 
 void SectorHeatmapWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    const auto syms = sector_symbols();
-    set_loading_progress(row_cache_.size(), syms.size());
-    for (const auto& sym : syms) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym, total = syms.size()](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), total);
-            // One grid update per delivery burst, not one per sector ETF.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(sector_symbols()), static_cast<int>(sector_symbols().size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, sector_symbols(), [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
 }
 
 void SectorHeatmapWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void SectorHeatmapWidget::rebuild_from_cache() {
     QVector<services::QuoteData> quotes;
-    quotes.reserve(row_cache_.size());
+    quotes.reserve(feed_.cache().size());
     for (const auto& sym : sector_symbols()) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             quotes.append(it.value());
     }
     if (!quotes.isEmpty())
         populate(quotes);
+    show_feed_status(this, feed_.summary(sector_symbols()), static_cast<int>(sector_symbols().size()));
 }
 
 SectorHeatmapWidget::Cell& SectorHeatmapWidget::cell_at(int index) {

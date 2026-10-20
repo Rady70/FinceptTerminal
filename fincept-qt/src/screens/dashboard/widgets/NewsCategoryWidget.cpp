@@ -5,6 +5,7 @@
 #include "services/news/NewsService.h"
 #include "ui/theme/Theme.h"
 
+#include <QDate>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -14,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QSpinBox>
 
 namespace fincept::screens::widgets {
@@ -51,9 +53,12 @@ QJsonObject NewsCategoryWidget::config() const {
 }
 
 void NewsCategoryWidget::apply_config(const QJsonObject& cfg) {
-    category_ = cfg.value("category").toString("markets").trimmed();
+    // NewsService publishes `news:category:<CATEGORY>` with the feed's
+    // upper-case category (MARKETS, CRYPTO, ...). Topics are case-sensitive, so
+    // the old default "markets" never matched and the tile stayed empty.
+    category_ = cfg.value("category").toString(QStringLiteral("MARKETS")).trimmed().toUpper();
     if (category_.isEmpty())
-        category_ = "markets";
+        category_ = QStringLiteral("MARKETS");
     max_rows_ = qBound(3, cfg.value("max_rows").toInt(12), 50);
     badge_->setText(category_.toUpper());
     list_->clear();
@@ -70,6 +75,8 @@ void NewsCategoryWidget::hub_resubscribe() {
     const QVariant snap = hub.peek(topic);
     if (snap.isValid())
         on_articles(snap);
+    else
+        set_loading(true); // the watchdog says so if the category never publishes
     hub_active_ = true;
 }
 
@@ -97,13 +104,22 @@ void NewsCategoryWidget::on_articles(const QVariant& v) {
 
     list_->clear();
     int n = std::min<int>(max_rows_, articles.size());
+    const QDate today = QDate::currentDate();
     for (int i = 0; i < n; ++i) {
         const auto& a = articles[i];
-        const QString time = (a.sort_ts > 0) ? QDateTime::fromSecsSinceEpoch(a.sort_ts).toString("HH:mm") : a.time;
+        // A time alone made yesterday's headline look like today's.
+        QString time = a.time;
+        if (a.sort_ts > 0) {
+            const QDateTime local = QDateTime::fromSecsSinceEpoch(a.sort_ts);
+            time = local.date() == today ? local.toString(QStringLiteral("HH:mm"))
+                                         : QLocale::c().toString(local, QStringLiteral("d MMM HH:mm"));
+        }
         const QString line = QString("[%1]  %2").arg(time, a.headline);
         auto* item = new QListWidgetItem(line, list_);
         item->setToolTip(a.summary.isEmpty() ? a.headline : a.summary);
     }
+    if (n == 0)
+        new QListWidgetItem(tr("No headlines in this category yet."), list_);
     set_loading(false);
 }
 
@@ -114,7 +130,8 @@ QDialog* NewsCategoryWidget::make_config_dialog(QWidget* parent) {
 
     auto* edit = new QLineEdit(dlg);
     edit->setText(category_);
-    edit->setPlaceholderText(tr("markets | geopolitics | crypto | …"));
+    edit->setPlaceholderText(
+        tr("MARKETS | ECONOMIC | CRYPTO | ENERGY | TECH | EARNINGS | GEOPOLITICS | DEFENSE | REGULATORY"));
     form->addRow(tr("Category"), edit);
 
     auto* spin = new QSpinBox(dlg);
@@ -127,7 +144,7 @@ QDialog* NewsCategoryWidget::make_config_dialog(QWidget* parent) {
 
     connect(buttons, &QDialogButtonBox::accepted, dlg, [this, dlg, edit, spin]() {
         QJsonObject cfg;
-        cfg.insert("category", edit->text().trimmed());
+        cfg.insert("category", edit->text().trimmed().toUpper());
         cfg.insert("max_rows", spin->value());
         apply_config(cfg);
         emit config_changed(cfg);

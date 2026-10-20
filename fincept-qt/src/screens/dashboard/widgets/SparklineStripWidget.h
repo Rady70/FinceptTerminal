@@ -43,12 +43,16 @@ class SparklineStripWidget : public BaseWidget {
     void build_rows();
     void apply_styles();
     void on_points(const QString& symbol, const QVector<double>& points);
+    /// Re-draw every row from the cached series and failures, plus the footer.
+    void render_all();
     void hub_resubscribe();
     void hub_unsubscribe_all();
 
     QStringList symbols_;
     QHash<QString, Row> rows_;
-    QSet<QString> received_; // symbols whose sparkline has rendered at least once
+    QSet<QString> received_;                 // symbols whose sparkline has rendered at least once
+    QHash<QString, QVector<double>> points_; // latest series per symbol (survives a row rebuild)
+    QHash<QString, QString> errors_;         // last failure per symbol
     bool hub_active_ = false;
 };
 

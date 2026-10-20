@@ -10,15 +10,27 @@
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QLineEdit>
+#include <QLocale>
 #include <QPainter>
+#include <QTimeZone>
 
 #include <algorithm>
+#include <cmath>
 
 namespace fincept::screens::widgets {
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  CandleCanvas — QPainter candlestick chart (candles + price axis + time axis)
 // ══════════════════════════════════════════════════════════════════════════════
+
+/// The trading day of a daily bar. Yahoo stamps a daily bar at the
+/// exchange's local midnight, which in UTC (and in Helsinki time) is the
+/// previous evening for Asian exchanges — a Tokyo bar of 20 Oct is
+/// 19 Oct 15:00 UTC. 13.5 hours later is inside the right day for every
+/// exchange from UTC−10 to UTC+13 (New Zealand in summer included).
+static QDateTime daily_bar_day(qint64 timestamp) {
+    return QDateTime::fromSecsSinceEpoch(timestamp + 13 * 3600 + 1800, QTimeZone::UTC);
+}
 
 CandleCanvas::CandleCanvas(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(120);
@@ -87,15 +99,25 @@ void CandleCanvas::rebuild_cache() {
     // would peg `lo` at zero and squash a year of prices into a few pixels
     // under a plausible-looking axis ladder — so an absent extreme takes no
     // part in the range at all.
-    double lo = 1e18, hi = 0.0;
+    // The range covers every drawn value: a bar without a high/low still
+    // draws its close (and open), which must not fall off the axis.
+    double lo = 1e18, hi = -1e18;
     for (int i = start; i < total; ++i) {
-        if (candles_[i].has_low)
-            lo = std::min(lo, candles_[i].low);
-        if (candles_[i].has_high)
-            hi = std::max(hi, candles_[i].high);
+        const auto& c = candles_[i];
+        lo = std::min(lo, c.has_low ? c.low : c.close);
+        hi = std::max(hi, c.has_high ? c.high : c.close);
+        if (c.has_open) {
+            lo = std::min(lo, c.open);
+            hi = std::max(hi, c.open);
+        }
     }
-    if (lo >= hi)
+    if (lo > hi)
         return;
+    if (lo == hi) { // a flat series still draws, centred
+        const double pad = std::max(std::abs(lo) * 0.01, 1e-6);
+        lo -= pad;
+        hi += pad;
+    }
 
     const double margin = (hi - lo) * 0.06;
     lo -= margin;
@@ -194,7 +216,7 @@ void CandleCanvas::rebuild_cache() {
 
     for (int i = 0; i < count; i += label_step) {
         const auto& c = candles_[start + i];
-        QDateTime dt = QDateTime::fromSecsSinceEpoch(c.timestamp);
+        const QDateTime dt = daily_bar_day(c.timestamp);
         QString label = span_sec > 365LL * 86400 ? dt.toString("MMM yy") : dt.toString("dd MMM");
 
         int lx = static_cast<int>((i + 0.5) * slot_w);
@@ -301,11 +323,24 @@ void DashboardCandleWidget::hideEvent(QHideEvent* e) {
 void DashboardCandleWidget::hub_resubscribe() {
     auto& hub = datahub::DataHub::instance();
     hub.unsubscribe(this);
-    hub.subscribe<QVector<services::HistoryPoint>>(this, history_topic(),
-                                                   [this](const QVector<services::HistoryPoint>& pts) {
-                                                       set_loading(false);
-                                                       canvas_->set_candles(pts);
-                                                   });
+    hub.subscribe<QVector<services::HistoryPoint>>(
+        this, history_topic(), [this](const QVector<services::HistoryPoint>& pts) {
+            set_loading(false);
+            canvas_->set_candles(pts);
+            if (pts.isEmpty()) {
+                set_footer(tr("No daily bars for %1").arg(symbol_), QString(), true);
+                return;
+            }
+            const auto& last = pts.last();
+            set_footer(
+                tr("Daily bars, 1 year · last %1 · close %2")
+                    .arg(QLocale::c().toString(daily_bar_day(last.timestamp).date(), QStringLiteral("d MMM yyyy")),
+                         QString::number(last.close, 'f', std::abs(last.close) < 1 ? 4 : 2)));
+        });
+    hub.subscribe_errors(this, history_topic(), [this](const QString& error) {
+        set_loading(false);
+        set_footer(tr("History for %1 failed: %2").arg(symbol_, error.left(120)), error, true);
+    });
     hub_active_ = true;
 }
 

@@ -1,10 +1,13 @@
 ﻿#include "screens/dashboard/canvas/WidgetRegistry.h"
 
 #include "screens/dashboard/widgets/CommoditiesWidget.h"
+#include "screens/dashboard/widgets/CotHighlightsWidget.h"
 #include "screens/dashboard/widgets/CryptoTickerWidget.h"
 #include "screens/dashboard/widgets/CryptoWidget.h"
 #include "screens/dashboard/widgets/DashboardCandleWidget.h"
 #include "screens/dashboard/widgets/EconomicCalendarWidget.h"
+#include "screens/dashboard/widgets/EtfFlowHighlightsWidget.h"
+#include "screens/dashboard/widgets/FedWatchHighlightsWidget.h"
 #include "screens/dashboard/widgets/ForexWidget.h"
 #include "screens/dashboard/widgets/GeopoliticsEventsWidget.h"
 #include "screens/dashboard/widgets/IndicesWidget.h"
@@ -88,7 +91,8 @@ WidgetRegistry::WidgetRegistry() {
     register_widget({"sentiment", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Sentiment"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Bull/bear score over a fixed 25-symbol basket; not an external index"),
+                                       "0-100 score from moves beyond ±0.3% in a fixed 24-stock basket, adjusted "
+                                       "for VIX; not an external index"),
                      4, 4, 2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
 
     // ── Research ──────────────────────────────────────────────────────────────
@@ -121,6 +125,27 @@ WidgetRegistry::WidgetRegistry() {
     // MarketLab: the hosted Economic Calendar widget is removed
     // (FINCEPT_FORK_PLAN.md §5.3, §6).
 
+    // MarketLab research highlights: each reads the stored data of its own
+    // research screen (no acquisition on open) and summarises it.
+    register_widget({"fedwatch", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "FedWatch Highlights"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Fed target, next FOMC outcome odds (futures and Polymarket) and the rate path"),
+                     4, 7, 3, 5, [](const QJsonObject&) { return new widgets::FedWatchHighlightsWidget; }});
+
+    register_widget(
+        {"cot_positioning", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "COT Positioning"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                           "Speculators' positioning: leaning, crowded, flipped and largest weekly changes"),
+         4, 7, 3, 5, [](const QJsonObject&) { return new widgets::CotHighlightsWidget; }});
+
+    register_widget({"etf_flows", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "ETF Flow Highlights"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Research"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "Largest measured and estimated ETF flows, sector tilt and breadth"),
+                     4, 7, 3, 5, [](const QJsonObject&) { return new widgets::EtfFlowHighlightsWidget; }});
+
     // ── Portfolio ─────────────────────────────────────────────────────────────
     register_widget({"watchlist", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Watchlist"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
@@ -142,7 +167,14 @@ WidgetRegistry::WidgetRegistry() {
     register_widget({"portfolio_summary", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio Summary"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Portfolio"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Holdings value and P&L"), 6, 4, 2, 3,
-                     [](const QJsonObject&) { return new widgets::PortfolioSummaryWidget; }});
+                     [](const QJsonObject& cfg) {
+                         // The picked portfolio rides in the tile config; without
+                         // applying it every restart (and every move to another
+                         // page) fell back to the first portfolio.
+                         auto* w = new widgets::PortfolioSummaryWidget;
+                         w->apply_config(cfg);
+                         return w;
+                     }});
 
     register_widget(
         {"risk_metrics", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Risk Metrics"),
