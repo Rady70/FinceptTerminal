@@ -34,6 +34,9 @@ class DashboardCanvas : public QWidget {
     bool item_info(const QString& instance_id, QString* type_id, QJsonObject* config, GridCell* cell = nullptr) const;
     void remove_widget(const QString& instance_id);
     void set_row_height(int px);
+    /// Lock or unlock every tile (and tiles added later).
+    void set_locked(bool locked);
+    bool locked() const { return locked_; }
 
     int tile_count() const { return tiles_.size(); }
 
@@ -77,6 +80,7 @@ class DashboardCanvas : public QWidget {
 
     GridLayout layout_;
     QVector<WidgetTile*> tiles_;
+    bool locked_ = false;
     PlaceholderOverlay* placeholder_ = nullptr;
 
     // Drag state

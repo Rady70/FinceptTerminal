@@ -43,6 +43,9 @@ class WidgetTile : public QWidget {
 
     void set_dragging(bool dragging);
     void set_resizing(bool resizing);
+    /// A locked tile cannot be dragged, resized or closed.
+    void set_locked(bool locked);
+    bool locked() const { return locked_; }
 
   signals:
     void drag_started(WidgetTile* self, QPoint canvas_pos);
@@ -76,6 +79,7 @@ class WidgetTile : public QWidget {
     ResizeGrip* grip_ = nullptr;
     bool dragging_ = false;
     bool resizing_ = false;
+    bool locked_ = false;
 
     // Edge-resize state (right/bottom edge detection)
     bool edge_resizing_ = false;

@@ -164,6 +164,9 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
 
     connect(toolbar_, &DashboardToolBar::refresh_clicked, this, &DashboardScreen::on_refresh_clicked);
 
+    connect(toolbar_, &DashboardToolBar::toggle_lock_clicked, this,
+            [this]() { set_layout_locked(!layout_locked_, /*persist=*/true); });
+
     connect(toolbar_, &DashboardToolBar::toggle_compact_clicked, this, [this]() {
         compact_rows_ = !compact_rows_;
         for (const auto& page : pages_)
@@ -184,7 +187,12 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     };
     add_shortcut(QKeySequence(Qt::Key_F5), [this]() { on_refresh_clicked(); });
     add_shortcut(QKeySequence(QKeySequence::Save), [this]() { save_layout(); });
-    add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_N), open_add_widget);
+    add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_N), [this, open_add_widget]() {
+        if (!layout_locked_)
+            open_add_widget();
+    });
+    add_shortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_L),
+                 [this]() { set_layout_locked(!layout_locked_, /*persist=*/true); });
     add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_P), toggle_pulse);
     add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), [this]() {
         if (pages_.size() > 1)
@@ -462,11 +470,14 @@ void DashboardScreen::restore_layout() {
     QPointer<DashboardScreen> self = this;
     (void)QtConcurrent::run([self]() {
         auto result = fincept::SettingsRepository::instance().get(pages::kPagesKey);
+        const auto lock = fincept::SettingsRepository::instance().get("dashboard_layout_locked");
+        const bool locked = lock.is_ok() && lock.value() == QLatin1String("true");
         QMetaObject::invokeMethod(
             self,
-            [self, result]() {
+            [self, result, locked]() {
                 if (!self)
                     return;
+                self->set_layout_locked(locked, /*persist=*/false);
                 if (result.is_err()) {
                     // The page list could not be READ (as opposed to never
                     // saved): show the first page, and save nothing this
@@ -585,7 +596,8 @@ void DashboardScreen::build_page_bar() {
     page_tabs_->setToolTip(tr("Dashboard pages — right-click a page to rename or delete it; drag to reorder"));
     hl->addWidget(page_tabs_);
 
-    auto* add_btn = new QToolButton(page_bar_);
+    add_page_btn_ = new QToolButton(page_bar_);
+    auto* add_btn = add_page_btn_;
     add_btn->setText(tr("+ PAGE"));
     add_btn->setToolTip(tr("Add a dashboard page"));
     add_btn->setAccessibleName(tr("Add a dashboard page"));
@@ -610,7 +622,7 @@ void DashboardScreen::build_page_bar() {
         save_timer_->start();
     });
     connect(page_tabs_, &QTabBar::tabBarDoubleClicked, this, [this](int index) {
-        if (index >= 0)
+        if (index >= 0 && !layout_locked_)
             rename_page(index);
     });
     connect(page_tabs_, &QTabBar::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -650,10 +662,11 @@ int DashboardScreen::add_page(const QString& id, const QString& name) {
                 show_tile_menu(canvas, instance_id, global_pos);
             });
 
+    page.canvas->set_locked(layout_locked_);
     pages_.append(page);
     {
         const QSignalBlocker block(page_tabs_);
-        page_tabs_->addTab(name.toUpper());
+        page_tabs_->addTab(QString(name.toUpper()).replace(QLatin1Char('&'), QStringLiteral("&&")));
     }
     refresh_theme();
     return static_cast<int>(pages_.size()) - 1;
@@ -662,7 +675,7 @@ int DashboardScreen::add_page(const QString& id, const QString& name) {
 void DashboardScreen::sync_page_tabs() {
     const QSignalBlocker block(page_tabs_);
     for (int i = 0; i < pages_.size() && i < page_tabs_->count(); ++i)
-        page_tabs_->setTabText(i, pages_[i].name.toUpper());
+        page_tabs_->setTabText(i, QString(pages_[i].name.toUpper()).replace(QLatin1Char('&'), QStringLiteral("&&")));
     if (current_page_ >= 0)
         page_tabs_->setCurrentIndex(current_page_);
 }
@@ -690,6 +703,8 @@ void DashboardScreen::switch_to_page(int index) {
 }
 
 void DashboardScreen::new_page() {
+    if (layout_locked_)
+        return;
     bool ok = false;
     const QString suggested = tr("Page %1").arg(pages_.size() + 1);
     const QString name =
@@ -705,6 +720,8 @@ void DashboardScreen::new_page() {
 }
 
 void DashboardScreen::rename_page(int index) {
+    if (layout_locked_)
+        return;
     if (index < 0 || index >= pages_.size())
         return;
     bool ok = false;
@@ -719,6 +736,8 @@ void DashboardScreen::rename_page(int index) {
 }
 
 void DashboardScreen::delete_page(int index) {
+    if (layout_locked_)
+        return;
     if (index < 0 || index >= pages_.size() || pages_.size() <= 1)
         return;
     const Page page = pages_[index];
@@ -755,9 +774,14 @@ void DashboardScreen::delete_page(int index) {
 
 void DashboardScreen::show_page_menu(int index, const QPoint& global_pos) {
     QMenu menu(this);
-    menu.addAction(tr("Rename…"), this, [this, index]() { rename_page(index); });
+    auto* ren = menu.addAction(tr("Rename…"), this, [this, index]() { rename_page(index); });
     auto* del = menu.addAction(tr("Delete page…"), this, [this, index]() { delete_page(index); });
-    del->setEnabled(pages_.size() > 1 && pages_[index].id != QLatin1String(pages::kFirstPageId));
+    ren->setEnabled(!layout_locked_);
+    del->setEnabled(!layout_locked_ && pages_.size() > 1 && pages_[index].id != QLatin1String(pages::kFirstPageId));
+    if (layout_locked_) {
+        menu.addSeparator();
+        menu.addAction(tr("Unlock layout"), this, [this]() { set_layout_locked(false, /*persist=*/true); });
+    }
     menu.exec(global_pos);
 }
 
@@ -770,6 +794,13 @@ int DashboardScreen::page_index(const DashboardCanvas* canvas) const {
 
 void DashboardScreen::show_tile_menu(DashboardCanvas* canvas, const QString& instance_id, const QPoint& global_pos) {
     QMenu menu(this);
+    if (layout_locked_) {
+        auto* note = menu.addAction(tr("The layout is locked"));
+        note->setEnabled(false);
+        menu.addAction(tr("Unlock layout"), this, [this]() { set_layout_locked(false, /*persist=*/true); });
+        menu.exec(global_pos);
+        return;
+    }
     auto* move = menu.addMenu(tr("Move to page"));
     const int from = page_index(canvas);
     for (int i = 0; i < pages_.size(); ++i) {
@@ -788,8 +819,24 @@ void DashboardScreen::show_tile_menu(DashboardCanvas* canvas, const QString& ins
     menu.exec(global_pos);
 }
 
+void DashboardScreen::set_layout_locked(bool locked, bool persist) {
+    layout_locked_ = locked;
+    for (const auto& page : pages_)
+        page.canvas->set_locked(locked);
+    if (page_tabs_)
+        page_tabs_->setMovable(!locked);
+    if (add_page_btn_)
+        add_page_btn_->setVisible(!locked);
+    toolbar_->set_locked(locked);
+    if (persist) {
+        const QString value = locked ? QStringLiteral("true") : QStringLiteral("false");
+        (void)QtConcurrent::run(
+            [value]() { fincept::SettingsRepository::instance().set("dashboard_layout_locked", value, "dashboard"); });
+    }
+}
+
 void DashboardScreen::move_widget_to_page(DashboardCanvas* from, const QString& instance_id, int target) {
-    if (!from || target < 0 || target >= pages_.size() || pages_[target].canvas == from)
+    if (layout_locked_ || !from || target < 0 || target >= pages_.size() || pages_[target].canvas == from)
         return;
     if (!pages_[target].restored) {
         // Its stored layout is still being read: the read would replace the

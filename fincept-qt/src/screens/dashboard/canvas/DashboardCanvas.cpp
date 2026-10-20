@@ -235,6 +235,12 @@ void DashboardCanvas::remove_widget(const QString& instance_id) {
     emit layout_changed(layout_);
 }
 
+void DashboardCanvas::set_locked(bool locked) {
+    locked_ = locked;
+    for (auto* t : tiles_)
+        t->set_locked(locked);
+}
+
 void DashboardCanvas::set_row_height(int px) {
     layout_.row_h = px;
     reflow_tiles(true);
@@ -628,6 +634,7 @@ void DashboardCanvas::rebuild_grid_cache() {
 }
 
 void DashboardCanvas::connect_tile(WidgetTile* tile) {
+    tile->set_locked(locked_); // every tile, loaded or added, follows the lock
     connect(tile, &WidgetTile::drag_started, this, &DashboardCanvas::on_drag_started);
     connect(tile, &WidgetTile::drag_moved, this, &DashboardCanvas::on_drag_moved);
     connect(tile, &WidgetTile::drag_released, this, &DashboardCanvas::on_drag_released);
