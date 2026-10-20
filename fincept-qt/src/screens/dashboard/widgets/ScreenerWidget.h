@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QComboBox>
@@ -14,7 +15,7 @@ namespace fincept::screens::widgets {
 /// Fetches live data via yfinance batch_quotes and sorts/filters client-side.
 ///
 /// Subscribes to `market:quote:<sym>` on the DataHub for the fixed
-/// screener basket. Each delivery updates `row_cache_`;
+/// screener basket. Each delivery updates `feed_`;
 /// `rebuild_all_quotes()` rebuilds `all_quotes_` and re-applies the current
 /// filter so the sorted/top-20 view stays live.
 class ScreenerWidget : public BaseWidget {
@@ -36,7 +37,7 @@ class ScreenerWidget : public BaseWidget {
 
     void hub_subscribe_all();
     void hub_unsubscribe_all();
-    /// Recompute `all_quotes_` from `row_cache_` then `apply_filter()`.
+    /// Recompute `all_quotes_` from `feed_` then `apply_filter()`.
     void rebuild_all_quotes();
 
     QComboBox* filter_combo_ = nullptr;
@@ -57,7 +58,7 @@ class ScreenerWidget : public BaseWidget {
     /// Placeholder shown when the screener has no data yet / all rows filtered.
     QLabel* empty_lbl_ = nullptr;
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

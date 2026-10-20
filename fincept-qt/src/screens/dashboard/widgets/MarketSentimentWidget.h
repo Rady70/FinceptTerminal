@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QFrame>
@@ -52,7 +53,7 @@ class MarketSentimentWidget : public BaseWidget {
     QLabel* vix_title_label_ = nullptr;
     QLabel* breadth_title_label_ = nullptr;
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

@@ -231,6 +231,10 @@ void WebScraperWidget::build_ui() {
     status_label_ = new QLabel(tr("Configure a URL via the gear icon"));
     status_label_->setObjectName("scraperStatus");
     status_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // Wrap instead of clipping on a narrow tile; the full text is the tooltip.
+    status_label_->setWordWrap(true);
+    status_label_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    status_label_->setToolTip(status_label_->text());
     header_row->addWidget(status_label_, 2);
 
     vl->addLayout(header_row);
@@ -381,14 +385,12 @@ void WebScraperWidget::start_fetch() {
     // The whole body is buffered in memory, and the URL is user-configured, so
     // an oversized endpoint would inflate process RSS without bound. Abort as
     // soon as either the advertised or the received size crosses the cap.
-    connect(reply, &QNetworkReply::downloadProgress, reply,
-            [reply](qint64 received, qint64 total) {
-                if (received > kMaxHtmlBytes || total > kMaxHtmlBytes) {
-                    LOG_WARN("WebScraper", QString("Response exceeds %1 bytes — aborting")
-                                               .arg(kMaxHtmlBytes));
-                    reply->abort();
-                }
-            });
+    connect(reply, &QNetworkReply::downloadProgress, reply, [reply](qint64 received, qint64 total) {
+        if (received > kMaxHtmlBytes || total > kMaxHtmlBytes) {
+            LOG_WARN("WebScraper", QString("Response exceeds %1 bytes — aborting").arg(kMaxHtmlBytes));
+            reply->abort();
+        }
+    });
 }
 
 void WebScraperWidget::handle_reply(QNetworkReply* reply) {
@@ -546,6 +548,7 @@ void WebScraperWidget::set_status(const QString& msg, bool error) {
     if (!status_label_)
         return;
     status_label_->setText(msg);
+    status_label_->setToolTip(msg);
     const QColor c = error ? ui::colors::NEGATIVE() : ui::colors::TEXT_TERTIARY();
     status_label_->setStyleSheet(QString("color:%1;font-size:11px;background:transparent;").arg(c.name()));
 }

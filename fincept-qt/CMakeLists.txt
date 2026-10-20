@@ -1588,6 +1588,9 @@ set(SCREEN_SOURCES
     src/screens/dashboard/widgets/GeopoliticsEventsWidget.cpp
     src/screens/dashboard/widgets/MaritimeVesselsWidget.cpp
     src/screens/dashboard/widgets/NotesWidget.cpp
+    src/screens/dashboard/widgets/FedWatchHighlightsWidget.cpp
+    src/screens/dashboard/widgets/CotHighlightsWidget.cpp
+    src/screens/dashboard/widgets/EtfFlowHighlightsWidget.cpp
     # ReportBuilderScreen split; see header.
     src/screens/report_builder/ReportBuilderScreen.cpp
     src/screens/report_builder/ReportBuilderScreen_Components.cpp

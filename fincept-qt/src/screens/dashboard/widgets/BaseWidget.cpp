@@ -131,6 +131,15 @@ BaseWidget::BaseWidget(const QString& title, QWidget* parent, const QString& acc
 
     vl->addWidget(content_, 1);
 
+    // ── Footer (data date / failures) ──
+    footer_label_ = new QLabel(this);
+    footer_label_->setObjectName("dashboardWidgetFooter");
+    footer_label_->setTextFormat(Qt::PlainText);
+    footer_label_->setWordWrap(true); // a long note wraps instead of being cut off
+    footer_label_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    footer_label_->setVisible(false);
+    vl->addWidget(footer_label_);
+
     // ── Loading overlay ──
     // Lives as a child of the content area so it covers exactly the data
     // region (not the title bar). Sized via an event filter on `content_`.
@@ -172,6 +181,11 @@ void BaseWidget::refresh_base_theme() {
     if (loading_label_)
         loading_label_->setStyleSheet(
             QString("color:%1;font-size:9px;background:transparent;").arg(ui::colors::AMBER()));
+    if (footer_label_)
+        footer_label_->setStyleSheet(QString("color:%1;font-size:9px;padding:2px 8px;background:%2;"
+                                             "border-top:1px solid %3;")
+                                         .arg(footer_warn_ ? ui::colors::WARNING() : ui::colors::TEXT_TERTIARY(),
+                                              ui::colors::BG_SURFACE(), ui::colors::BORDER_DIM()));
     if (refresh_btn_)
         refresh_btn_->setStyleSheet(
             QString("QPushButton{color:%1;background:%2;border:1px solid %3;border-radius:2px;padding:0;}"
@@ -236,6 +250,21 @@ void BaseWidget::set_error(const QString& error) {
     err_label->setStyleSheet(
         QString("color: %1; font-size: 9px; padding: 16px; background: transparent;").arg(ui::colors::NEGATIVE()));
     content_layout_->addWidget(err_label);
+}
+
+void BaseWidget::set_footer(const QString& text, const QString& tooltip, bool warn) {
+    if (!footer_label_)
+        return;
+    footer_label_->setText(text);
+    footer_label_->setToolTip(tooltip);
+    footer_label_->setVisible(!text.isEmpty());
+    if (warn != footer_warn_ || footer_label_->styleSheet().isEmpty()) {
+        footer_warn_ = warn;
+        footer_label_->setStyleSheet(QString("color:%1;font-size:9px;padding:2px 8px;background:%2;"
+                                             "border-top:1px solid %3;")
+                                         .arg(warn ? ui::colors::WARNING() : ui::colors::TEXT_TERTIARY(),
+                                              ui::colors::BG_SURFACE(), ui::colors::BORDER_DIM()));
+    }
 }
 
 void BaseWidget::set_title(const QString& title) {

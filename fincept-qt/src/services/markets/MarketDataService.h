@@ -2,6 +2,7 @@
 #include "core/result/Result.h"
 #include "datahub/Producer.h"
 
+#include <QDate>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
@@ -50,6 +51,20 @@ struct QuoteData {
     bool has_high = false;
     bool has_low = false;
     bool has_volume = false;
+
+    // ── Session and change reference (MarketLab, 2026-10-20) ──────────────────
+    // Appended for the same aggregate-initialisation reason as the blocks above.
+    // `session_date` is the trading day the price belongs to (exchange-local;
+    // the Helsinki day for forex); `day_basis` names what `change` is measured
+    // against (see yfinance_data.py DAY_BASIS_*); `contract` is the futures
+    // contract a continuous symbol currently points to.
+    double open = 0;
+    double prev_close = 0;
+    bool has_open = false;
+    bool has_prev_close = false;
+    QDate session_date;
+    QString day_basis;
+    QString contract;
 };
 
 /// Retrieval status tokens for QuoteData::status. Deliberately untranslated:
@@ -230,6 +245,10 @@ class MarketDataService : public QObject, public fincept::datahub::Producer {
     /// `resolve_names` and read from the same disk-backed cache, so this is a
     /// cheap synchronous lookup.
     QString currency_prefix(const QString& symbol);
+
+    /// The raw quote currency code (e.g. "USD", "EUR", "GBp"), or empty when
+    /// unknown or not meaningful — the same cache as currency_prefix().
+    QString currency_code(const QString& symbol);
 
     static QVector<MarketCategory> default_global_markets();
     static QVector<RegionalMarket> default_regional_markets();

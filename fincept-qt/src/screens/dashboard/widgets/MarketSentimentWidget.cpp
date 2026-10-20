@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
@@ -68,15 +69,15 @@ MarketSentimentWidget::MarketSentimentWidget(QWidget* parent) : BaseWidget(tr("M
     auto* bll = new QHBoxLayout(bar_labels);
     bll->setContentsMargins(0, 0, 0, 0);
 
-    bull_label_ = new QLabel(tr("-- BULL"));
+    bull_label_ = new QLabel(tr("-- UP"));
     bll->addWidget(bull_label_);
     bll->addStretch();
 
-    neutral_label_ = new QLabel(tr("-- NEUTRAL"));
+    neutral_label_ = new QLabel(tr("-- FLAT"));
     bll->addWidget(neutral_label_);
     bll->addStretch();
 
-    bear_label_ = new QLabel(tr("-- BEAR"));
+    bear_label_ = new QLabel(tr("-- DOWN"));
     bll->addWidget(bear_label_);
 
     vl->addWidget(bar_labels);
@@ -107,7 +108,7 @@ MarketSentimentWidget::MarketSentimentWidget(QWidget* parent) : BaseWidget(tr("M
     };
 
     make_stat_row(tr("VIX (Fear Gauge)"), vix_title_label_, vix_label_);
-    make_stat_row(tr("Advance/Decline"), breadth_title_label_, breadth_label_);
+    make_stat_row(tr("Up / down (beyond ±0.3%)"), breadth_title_label_, breadth_label_);
 
     vl->addWidget(stats);
     vl->addStretch();
@@ -178,41 +179,32 @@ void MarketSentimentWidget::refresh_data() {
 }
 
 void MarketSentimentWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), kSentimentSymbols.size());
-    for (const auto& sym : kSentimentSymbols) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), kSentimentSymbols.size());
-            // One redraw per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(kSentimentSymbols), static_cast<int>(kSentimentSymbols.size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, kSentimentSymbols, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
 }
 
 void MarketSentimentWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void MarketSentimentWidget::rebuild_from_cache() {
     QVector<services::QuoteData> quotes;
-    quotes.reserve(row_cache_.size());
+    quotes.reserve(feed_.cache().size());
     for (const auto& sym : kSentimentSymbols) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             quotes.append(it.value());
     }
     if (!quotes.isEmpty())
         populate(quotes);
+    show_feed_status(this, feed_.summary(kSentimentSymbols), static_cast<int>(kSentimentSymbols.size()));
 }
 
 void MarketSentimentWidget::populate(const QVector<services::QuoteData>& quotes) {
-    int bullish = 0, bearish = 0, neutral = 0;
+    int up = 0, down = 0, flat = 0;
     bool has_vix = false;
     double vix_price = 0.0;
 
@@ -226,25 +218,38 @@ void MarketSentimentWidget::populate(const QVector<services::QuoteData>& quotes)
         // it is not an observation, and must not pad the total.
         if (!q.has_change_pct)
             continue;
-        if (q.change_pct > 0.5)
-            ++bullish;
-        else if (q.change_pct < -0.5)
-            ++bearish;
+        const int move = gauges::classify_move(q.change_pct);
+        if (move > 0)
+            ++up;
+        else if (move < 0)
+            ++down;
         else
-            ++neutral;
+            ++flat;
     }
 
     const QString dim = ui::colors::TEXT_DIM();
+    auto tone_color = [](gauges::Tone t) -> QString {
+        switch (t) {
+            case gauges::Tone::Positive:
+                return ui::colors::POSITIVE();
+            case gauges::Tone::Negative:
+                return ui::colors::NEGATIVE();
+            case gauges::Tone::Warning:
+                return ui::colors::WARNING();
+            case gauges::Tone::Neutral:
+                break;
+        }
+        return ui::colors::TEXT_PRIMARY();
+    };
 
     // VIX first — independent of the breadth observation set. A missing price
-    // is unavailable, never "VIX 0.00".
+    // is unavailable, never "VIX 0.00". Same regime rule as Risk Metrics.
     if (has_vix) {
-        vix_label_->setText(QString::number(vix_price, 'f', 2));
-        const QString vix_color = vix_price > 25   ? ui::colors::NEGATIVE()
-                                  : vix_price > 18 ? ui::colors::WARNING()
-                                                   : ui::colors::POSITIVE();
-        vix_label_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(vix_color));
+        const auto regime = gauges::vix_regime(vix_price);
+        vix_label_->setText(
+            QString("%1  %2").arg(QString::number(vix_price, 'f', 2), tr(gauges::vix_regime_key(regime))));
+        vix_label_->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
+                                      .arg(tone_color(gauges::vix_tone(regime))));
     } else {
         vix_label_->setText(QStringLiteral("--"));
         vix_label_->setStyleSheet(
@@ -253,8 +258,8 @@ void MarketSentimentWidget::populate(const QVector<services::QuoteData>& quotes)
 
     auto* bar_layout = qobject_cast<QHBoxLayout*>(bull_bar_->parentWidget()->layout());
 
-    const int total = bullish + bearish + neutral;
-    if (total == 0) {
+    const auto scored = gauges::basket_score(up, down, flat, has_vix ? std::optional<double>(vix_price) : std::nullopt);
+    if (!scored) {
         // No observations: no score, no verdict, and no directional breadth.
         score_label_->setText(QStringLiteral("--"));
         score_label_->setStyleSheet(
@@ -267,63 +272,47 @@ void MarketSentimentWidget::populate(const QVector<services::QuoteData>& quotes)
             bar_layout->setStretch(1, 1);
             bar_layout->setStretch(2, 1);
         }
-        bull_label_->setText(QString("%1 -- ").arg(QChar(0x25B2)) + tr("BULL"));
-        neutral_label_->setText("-- " + tr("NEUTRAL"));
-        bear_label_->setText(QString("%1 -- ").arg(QChar(0x25BC)) + tr("BEAR"));
+        bull_label_->setText(QString("%1 -- ").arg(QChar(0x25B2)) + tr("UP"));
+        neutral_label_->setText("-- " + tr("FLAT"));
+        bear_label_->setText(QString("%1 -- ").arg(QChar(0x25BC)) + tr("DOWN"));
         breadth_label_->setText(QStringLiteral("--"));
         breadth_label_->setStyleSheet(
             QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(dim));
         return;
     }
 
-    // Score: (bullish - bearish) / total * 100
-    int score = static_cast<int>(((bullish - bearish) / static_cast<double>(total)) * 100);
-
-    // Adjust score based on VIX if available
-    if (has_vix) {
-        if (vix_price > 30)
-            score -= 20;
-        else if (vix_price > 25)
-            score -= 10;
-        else if (vix_price < 15)
-            score += 10;
-    }
-    score = qBound(-100, score, 100);
-
-    // Update UI
-    const QString score_color = score > 20    ? ui::colors::POSITIVE()
-                                : score < -20 ? ui::colors::NEGATIVE()
-                                              : ui::colors::WARNING();
-    const QString verdict = score > 40    ? tr("STRONGLY BULLISH")
-                            : score > 20  ? tr("BULLISH")
-                            : score > -20 ? tr("NEUTRAL")
-                            : score > -40 ? tr("BEARISH")
-                                          : tr("STRONGLY BEARISH");
-
-    score_label_->setText(QString("%1%2").arg(score > 0 ? "+" : "").arg(score));
+    // Same 0..100 basket score and verdict words as the Market Pulse panel.
+    const QString score_color = tone_color(scored->tone);
+    score_label_->setText(QString("%1 /100").arg(scored->score));
     score_label_->setStyleSheet(
         QString("color: %1; font-size: 24px; font-weight: bold; background: transparent;").arg(score_color));
-
-    verdict_label_->setText(verdict);
+    verdict_label_->setText(tr(scored->key));
     verdict_label_->setStyleSheet(
         QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;").arg(score_color));
+    arrow_label_->setText(up > down   ? QString(QChar(0x25B2))
+                          : up < down ? QString(QChar(0x25BC))
+                                      : QString(QChar(0x2022)));
 
-    // Update bar proportions
+    // Bar proportions. A zero stretch would fall back to the size hint and
+    // still draw a sliver, so an empty group is hidden instead.
     if (bar_layout) {
-        bar_layout->setStretch(0, bullish);
-        bar_layout->setStretch(1, neutral);
-        bar_layout->setStretch(2, bearish);
+        bar_layout->setStretch(0, up);
+        bar_layout->setStretch(1, flat);
+        bar_layout->setStretch(2, down);
     }
+    bull_bar_->setVisible(up > 0);
+    neutral_bar_->setVisible(flat > 0);
+    bear_bar_->setVisible(down > 0);
 
-    bull_label_->setText(QString("%1 %2 ").arg(QChar(0x25B2)).arg(bullish) + tr("BULL"));
-    neutral_label_->setText(QString::number(neutral) + " " + tr("NEUTRAL"));
-    bear_label_->setText(QString("%1 %2 ").arg(QChar(0x25BC)).arg(bearish) + tr("BEAR"));
+    bull_label_->setText(QString("%1 %2 ").arg(QChar(0x25B2)).arg(up) + tr("UP"));
+    neutral_label_->setText(QString::number(flat) + " " + tr("FLAT"));
+    bear_label_->setText(QString("%1 %2 ").arg(QChar(0x25BC)).arg(down) + tr("DOWN"));
 
-    // Breadth — an exact tie is neutral, not a bearish claim.
-    const QString breadth_color = bullish > bearish   ? ui::colors::POSITIVE()
-                                  : bullish < bearish ? ui::colors::NEGATIVE()
-                                                      : ui::colors::TEXT_PRIMARY();
-    breadth_label_->setText(QString("%1A / %2D").arg(bullish).arg(bearish));
+    // An exact tie is neutral, not a bearish claim.
+    const QString breadth_color = up > down   ? ui::colors::POSITIVE()
+                                  : up < down ? ui::colors::NEGATIVE()
+                                              : ui::colors::TEXT_PRIMARY();
+    breadth_label_->setText(QString("%1 / %2").arg(up).arg(down));
     breadth_label_->setStyleSheet(
         QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(breadth_color));
 }

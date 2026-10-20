@@ -7,6 +7,7 @@
 
 #include <QJsonArray>
 #include <QLabel>
+#include <QPointer>
 
 namespace fincept::screens::widgets {
 
@@ -67,7 +68,7 @@ void WatchlistWidget::commit_symbols() {
     symbols_ = next;
     // Dynamic symbol set: drop any cached rows for symbols no longer
     // tracked, then rewire subscriptions to the new set.
-    row_cache_.clear();
+    feed_.clear();
     table_->clear_data();
     hub_resubscribe();
     // Persist through the canvas so the edited list survives a restart.
@@ -96,7 +97,7 @@ void WatchlistWidget::apply_config(const QJsonObject& cfg) {
     symbols_ = next;
     if (symbols_input_)
         symbols_input_->setText(symbols_.join(", "));
-    row_cache_.clear();
+    feed_.clear();
     if (table_)
         table_->clear_data();
     if (isVisible())
@@ -146,60 +147,70 @@ void WatchlistWidget::refresh_data() {
 }
 
 void WatchlistWidget::hub_resubscribe() {
-    auto& hub = datahub::DataHub::instance();
-    // Drop old subscriptions wholesale — symbol set may have changed.
-    hub.unsubscribe(this);
-    // Kick off the determinate loading overlay — count is the live symbol
-    // count, not a hardcoded constant, so adding/removing symbols via the
-    // GO button updates the denominator correctly.
-    set_loading_progress(row_cache_.size(), symbols_.size());
-    for (const auto& sym : symbols_) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            // Numerator = unique symbols delivered so far; the overlay
-            // animates the count up and fades out when row_cache_ is full.
-            set_loading_progress(row_cache_.size(), symbols_.size());
-            // One render per delivery burst, not one per symbol.
-            schedule_render([this]() { render_from_cache(); });
-        });
-    }
+    QuoteSubscriptions::unsubscribe(this);
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
+    feed_.subscribe(this, symbols_, [this]() { schedule_render([this]() { render_from_cache(); }); });
     hub_active_ = true;
+    // Quote currencies (USD, EUR, ...) come from the shared name/currency cache;
+    // re-render once they resolve so a European listing is not shown with "$".
+    QPointer<WatchlistWidget> self = this;
+    services::MarketDataService::instance().resolve_names(symbols_, [self](const QHash<QString, QString>&) {
+        if (self)
+            self->schedule_render([w = self.data()]() { w->render_from_cache(); });
+    });
 }
 
 void WatchlistWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void WatchlistWidget::render_from_cache() {
     table_->clear_data();
+    auto move_color = [](bool has, double value) -> QString {
+        if (!has)
+            return ui::colors::TEXT_DIM;
+        if (value > 0)
+            return ui::colors::POSITIVE;
+        if (value < 0)
+            return ui::colors::NEGATIVE;
+        return ui::colors::TEXT_PRIMARY;
+    };
+    auto& market = services::MarketDataService::instance();
     for (const auto& sym : symbols_) {
-        auto it = row_cache_.constFind(sym);
-        if (it == row_cache_.constEnd())
+        const services::QuoteData* quote = feed_.quote(sym);
+        const QString error = feed_.error(sym);
+        if (!quote && error.isEmpty())
+            continue; // not answered yet
+        if (!quote) {
+            // A symbol that failed keeps its row, so a typo or a delisted
+            // ticker is visible instead of silently missing.
+            table_->add_row({sym, QStringLiteral("--"), QStringLiteral("--"), tr("failed")});
+            const int row = table_->rowCount() - 1;
+            table_->set_cell_color(row, 3, ui::colors::WARNING);
+            for (int c = 0; c < table_->columnCount(); ++c)
+                if (auto* item = table_->item(row, c))
+                    item->setToolTip(fincept::screens::quote_status_line(sym, nullptr, error));
             continue;
-        const auto& q = it.value();
-        table_->add_row({q.symbol, fincept::screens::quote_field_text(q.has_price, q.price, 2, QStringLiteral("$")),
-                         fincept::screens::quote_signed_text(q.has_change, q.change, 2),
-                         fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))});
+        }
+        const auto& q = *quote;
+        // Forex pairs carry no currency (the price is a rate); everything else
+        // gets its own quote currency, never an assumed "$".
+        const int base = sym.endsWith(QLatin1String("=X")) ? 4 : 2;
+        const int decimals = fincept::screens::quote_price_decimals(q.has_price, q.price, base);
+        table_->add_row(
+            {q.symbol, fincept::screens::quote_field_text(q.has_price, q.price, decimals, market.currency_prefix(sym)),
+             fincept::screens::quote_signed_text(q.has_change, q.change, decimals),
+             fincept::screens::quote_signed_text(q.has_change_pct, q.change_pct, 2, QStringLiteral("%"))});
         int row = table_->rowCount() - 1;
-        // Each displayed field is coloured from its own flag and value; a
-        // missing CHG cell is never painted with the CHG% direction, and a
-        // genuine zero is neutral rather than a move.
-        auto move_color = [](bool has, double value) -> QString {
-            if (!has)
-                return ui::colors::TEXT_DIM;
-            if (value > 0)
-                return ui::colors::POSITIVE;
-            if (value < 0)
-                return ui::colors::NEGATIVE;
-            return ui::colors::TEXT_PRIMARY;
-        };
         table_->set_cell_color(row, 2, move_color(q.has_change, q.change));
         table_->set_cell_color(row, 3, move_color(q.has_change_pct, q.change_pct));
+        const QString tip = fincept::screens::quote_status_line(sym, &q, error);
+        for (int c = 0; c < table_->columnCount(); ++c)
+            if (auto* item = table_->item(row, c))
+                item->setToolTip(tip);
     }
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
 }
 
 void WatchlistWidget::retranslateUi() {

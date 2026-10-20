@@ -166,7 +166,12 @@ void TickerBar::rebuild_entry_cache() {
 
     total_width_ = 0;
     for (auto& e : entries_) {
-        e.price_text = e.has_price ? QString::number(e.price, 'f', 2) : QStringLiteral("--");
+        // Forex rates and sub-1 prices need more than two decimals (1.1213,
+        // 0.0793); the same rule as the dashboard quote widgets.
+        const int decimals = e.symbol.endsWith(QLatin1String("=X"))                       ? 4
+                             : (e.has_price && e.price != 0.0 && std::abs(e.price) < 1.0) ? 4
+                                                                                          : 2;
+        e.price_text = e.has_price ? QString::number(e.price, 'f', decimals) : QStringLiteral("--");
         // The percent reading is preferred when it arrived; otherwise the
         // absolute change is shown *without* a "%" so the unit matches the
         // number. Zero is neutral (no "+", no colour), missing is dim.
@@ -183,10 +188,10 @@ void TickerBar::rebuild_entry_cache() {
             }
         } else if (e.has_change) {
             if (e.change > 0) {
-                e.change_text = QStringLiteral("+%1").arg(e.change, 0, 'f', 2);
+                e.change_text = QStringLiteral("+%1").arg(e.change, 0, 'f', decimals);
                 e.change_col = QColor(ui::colors::POSITIVE());
             } else if (e.change < 0) {
-                e.change_text = QStringLiteral("%1").arg(e.change, 0, 'f', 2);
+                e.change_text = QStringLiteral("%1").arg(e.change, 0, 'f', decimals);
                 e.change_col = QColor(ui::colors::NEGATIVE());
             } else {
                 e.change_text = QStringLiteral("0.00");

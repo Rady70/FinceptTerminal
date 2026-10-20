@@ -55,6 +55,8 @@ class WidgetTile : public QWidget {
 
     void close_requested(WidgetTile* self);
     void refresh_requested(WidgetTile* self);
+    /// Right-click on the title bar (e.g. "Move to page").
+    void context_menu_requested(WidgetTile* self, QPoint global_pos);
 
   protected:
     void resizeEvent(QResizeEvent* e) override;

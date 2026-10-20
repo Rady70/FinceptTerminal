@@ -74,38 +74,29 @@ void TopMoversWidget::refresh_data() {
 }
 
 void TopMoversWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), symbols_.size());
-    for (const auto& sym : symbols_) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), symbols_.size());
-            // One sort + redraw per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, symbols_, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
 }
 
 void TopMoversWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void TopMoversWidget::rebuild_from_cache() {
     all_quotes_.clear();
-    all_quotes_.reserve(row_cache_.size());
+    all_quotes_.reserve(feed_.cache().size());
     for (const auto& sym : symbols_) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             all_quotes_.append(it.value());
     }
     std::sort(all_quotes_.begin(), all_quotes_.end(),
               [](const auto& a, const auto& b) { return a.change_pct > b.change_pct; });
     show_tab(showing_gainers_);
+    show_feed_status(this, feed_.summary(symbols_), static_cast<int>(symbols_.size()));
 }
 
 void TopMoversWidget::show_tab(bool gainers) {

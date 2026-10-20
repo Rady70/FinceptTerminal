@@ -58,7 +58,9 @@ DashboardToolBar::DashboardToolBar(QWidget* parent) : QWidget(parent) {
 
     make_sep(ll);
 
-    status_text_ = new QLabel(tr("LIVE"));
+    status_text_ = new QLabel(tr("ONLINE"));
+    status_text_->setToolTip(tr("The market-data provider answered its health check. Quotes are delayed; each "
+                                "widget's footer names the trading day of its numbers."));
     status_text_->setObjectName("dtStatus");
     ll->addWidget(status_text_);
 
@@ -262,7 +264,7 @@ void DashboardToolBar::set_widget_count(int count) {
 
 void DashboardToolBar::set_connected(bool connected) {
     connected_ = connected;
-    status_text_->setText(connected ? tr("LIVE") : tr("OFFLINE"));
+    status_text_->setText(connected ? tr("ONLINE") : tr("OFFLINE"));
     // refresh_theme handles the base color; override just this label dynamically
     status_text_->setStyleSheet(QString("color:%1;font-weight:bold;background:transparent;")
                                     .arg(connected ? ui::colors::POSITIVE() : ui::colors::NEGATIVE()));
@@ -276,7 +278,7 @@ void DashboardToolBar::changeEvent(QEvent* event) {
 
 void DashboardToolBar::retranslateUi() {
     if (status_text_)
-        status_text_->setText(connected_ ? tr("LIVE") : tr("OFFLINE"));
+        status_text_->setText(connected_ ? tr("ONLINE") : tr("OFFLINE"));
     if (clock_btn_)
         clock_btn_->setToolTip(tr("Click to toggle UTC / local time"));
     if (widget_count_)

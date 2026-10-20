@@ -96,8 +96,13 @@ void SparklineStripWidget::apply_config(const QJsonObject& cfg) {
     if (next.isEmpty())
         next = kDefaultSymbols;
 
+    if (next != symbols_) {
+        points_.clear();
+        errors_.clear();
+    }
     symbols_ = next;
     build_rows();
+    render_all();
 
     if (isVisible())
         hub_resubscribe();
@@ -154,7 +159,13 @@ void SparklineStripWidget::hub_resubscribe() {
         hub.subscribe(this, topic, [this, sym_copy](const QVariant& v) {
             if (!v.canConvert<QVector<double>>())
                 return;
+            errors_.remove(sym_copy);
             on_points(sym_copy, v.value<QVector<double>>());
+        });
+        hub.subscribe_errors(this, topic, [this, sym_copy](const QString& error) {
+            errors_.insert(sym_copy, error.isEmpty() ? QStringLiteral("refresh failed") : error);
+            received_.insert(sym_copy);
+            schedule_render([this]() { render_all(); });
         });
     }
     hub_active_ = true;
@@ -181,9 +192,58 @@ void SparklineStripWidget::on_points(const QString& symbol, const QVector<double
     auto it = rows_.find(symbol);
     if (it == rows_.end() || points.isEmpty())
         return;
+    points_.insert(symbol, points);
     it->spark->set_points(points);
-    it->last->setText(QString::number(points.last(), 'f', 2));
+    // The right-hand figure is the change across the drawn line (first to last
+    // hourly close), not a price: the last hourly close is not the quote other
+    // widgets show, so printing it as "the price" put two prices on screen.
+    const double first = points.first();
+    const double last = points.last();
+    if (points.size() >= 2 && first != 0.0) {
+        const double pct = (last - first) / first * 100.0;
+        it->last->setText(QStringLiteral("%1%2%").arg(pct > 0 ? QStringLiteral("+") : QString()).arg(pct, 0, 'f', 2));
+        it->last->setStyleSheet(QString("color:%1;font-size:10px;font-weight:600;background:transparent;")
+                                    .arg(pct > 0   ? ui::colors::POSITIVE()
+                                         : pct < 0 ? ui::colors::NEGATIVE()
+                                                   : ui::colors::TEXT_PRIMARY()));
+    } else {
+        it->last->setText(QStringLiteral("--"));
+    }
+    const QString tip = tr("%1: change over the last 5 days of hourly closes, %2 → %3")
+                            .arg(symbol, QString::number(first, 'g', 8), QString::number(last, 'g', 8));
+    it->last->setToolTip(tip);
+    it->spark->setToolTip(tip);
     received_.insert(symbol);
+    set_loading_progress(received_.size(), symbols_.size());
+    schedule_render([this]() { render_all(); });
+}
+
+void SparklineStripWidget::render_all() {
+    QStringList failed;
+    for (const auto& sym : symbols_) {
+        auto it = rows_.find(sym);
+        if (it == rows_.end())
+            continue;
+        if (points_.contains(sym))
+            continue; // drawn by on_points()
+        if (errors_.contains(sym)) {
+            failed << sym;
+            it->last->setText(tr("failed"));
+            it->last->setToolTip(errors_.value(sym));
+            it->last->setStyleSheet(
+                QString("color:%1;font-size:10px;font-weight:600;background:transparent;").arg(ui::colors::WARNING()));
+        }
+    }
+    QStringList stale;
+    for (auto e = errors_.cbegin(); e != errors_.cend(); ++e)
+        if (points_.contains(e.key()))
+            stale << e.key();
+    QString text = tr("5-day change of hourly closes");
+    if (!failed.isEmpty())
+        text += QStringLiteral(" · ") + tr("%1 failed: %2").arg(failed.size()).arg(failed.join(QStringLiteral(", ")));
+    if (!stale.isEmpty())
+        text += QStringLiteral(" · ") + tr("%1 not refreshed").arg(stale.size());
+    set_footer(text, QString(), !failed.isEmpty() || !stale.isEmpty());
     set_loading_progress(received_.size(), symbols_.size());
 }
 
@@ -241,6 +301,9 @@ void SparklineStripWidget::retranslateUi() {
     BaseWidget::retranslateUi();
     set_title(tr("SPARKLINES"));
     build_rows(); // re-renders row labels in the new language
+    for (auto it = points_.cbegin(); it != points_.cend(); ++it)
+        on_points(it.key(), it.value()); // ...and puts the cached series back
+    render_all();
 }
 
 } // namespace fincept::screens::widgets

@@ -828,6 +828,11 @@ void MarketDataService::persist_name_cache() {
     settings.set("market_symbol_currencies", dump(currency_cache_), "market_data");
 }
 
+QString MarketDataService::currency_code(const QString& symbol) {
+    load_name_cache();
+    return currency_cache_.value(symbol);
+}
+
 // ISO 4217 code → display symbol. Falls back to "<CODE> " so an unmapped but
 // valid currency still reads sensibly (e.g. "SEK 142.50").
 QString MarketDataService::currency_prefix(const QString& symbol) {
@@ -835,6 +840,11 @@ QString MarketDataService::currency_prefix(const QString& symbol) {
     const QString code = currency_cache_.value(symbol);
     if (code.isEmpty())
         return {};
+    // Minor units (London pence "GBp", Johannesburg cents "ZAc", Tel Aviv
+    // agorot "ILA") must not take the major currency's symbol: 2450 GBp is
+    // £24.50, not "£2450".
+    if (code == QLatin1String("GBp") || code == QLatin1String("ZAc") || code == QLatin1String("ILA"))
+        return code + QLatin1Char(' ');
 
     static const QHash<QString, QString> kSymbols = {
         {"USD", "$"},    {"EUR", "€"},  {"GBP", "£"},   {"JPY", "¥"},  {"CNY", "CN¥"}, {"INR", "₹"},  {"HKD", "HK$"},

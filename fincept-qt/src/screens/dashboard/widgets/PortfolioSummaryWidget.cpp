@@ -3,6 +3,8 @@
 #include "core/currency/Currency.h"
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/dashboard/widgets/PortfolioValuation.h"
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/portfolio/PortfolioService.h"
 #include "storage/repositories/PortfolioRepository.h"
 #include "ui/theme/Theme.h"
@@ -15,6 +17,8 @@
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLocale>
+#include <QPointer>
 #include <QScrollArea>
 
 namespace fincept::screens::widgets {
@@ -205,8 +209,8 @@ void PortfolioSummaryWidget::apply_styles() {
 
 void PortfolioSummaryWidget::on_theme_changed() {
     apply_styles();
-    if (!last_holdings_.isEmpty() && !last_quotes_.isEmpty())
-        render(last_holdings_, last_quotes_);
+    if (!last_holdings_.isEmpty())
+        rebuild_from_cache();
 }
 
 void PortfolioSummaryWidget::refresh_portfolio_cache() {
@@ -273,8 +277,8 @@ void PortfolioSummaryWidget::load_holdings() {
 
 void PortfolioSummaryWidget::render_empty(const QString& message) {
     set_loading(false);
+    set_footer(QString());
     last_holdings_.clear();
-    last_quotes_.clear();
     hub_unsubscribe_all();
 
     // Wipe rows + zero the summary counters so old numbers don't linger
@@ -313,60 +317,87 @@ void PortfolioSummaryWidget::render_empty(const QString& message) {
 }
 
 void PortfolioSummaryWidget::hub_resubscribe(const QVector<Holding>& holdings) {
-    auto& hub = datahub::DataHub::instance();
     // Holdings set may have changed since last subscribe — wipe all and
     // re-register so we don't leave stale topic subs behind.
-    hub.unsubscribe(this);
-    row_cache_.clear();
-    for (const auto& h : holdings) {
-        const QString sym = h.symbol;
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading(false);
-            // One holdings-table rebuild per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    QuoteSubscriptions::unsubscribe(this);
+    feed_.clear();
+    fx_symbols_.clear();
+    holding_symbols_.clear();
+    for (const auto& h : holdings)
+        holding_symbols_ << h.symbol;
+    // One holdings-table rebuild per delivery burst, not one per symbol.
+    feed_.subscribe(this, holding_symbols_, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
+    // Each holding's quote currency decides whether (and which) FX rate it needs.
+    QPointer<PortfolioSummaryWidget> self = this;
+    services::MarketDataService::instance().resolve_names(holding_symbols_, [self](const QHash<QString, QString>&) {
+        if (self)
+            self->ensure_fx_subscriptions();
+    });
 }
 
 void PortfolioSummaryWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
-void PortfolioSummaryWidget::rebuild_from_cache() {
-    QVector<services::QuoteData> quotes;
-    quotes.reserve(row_cache_.size());
-    for (const auto& h : last_holdings_) {
-        auto it = row_cache_.constFind(h.symbol);
-        if (it != row_cache_.constEnd())
-            quotes.append(it.value());
-    }
-    if (!quotes.isEmpty())
-        render(last_holdings_, quotes);
+QString PortfolioSummaryWidget::holding_currency(const QString& symbol) const {
+    QString code = services::MarketDataService::instance().currency_code(symbol);
+    // A forex pair has no quote currency in the name cache (its price is a
+    // rate); the quote side of "EURUSD=X" is USD.
+    if (code.isEmpty() && symbol.endsWith(QLatin1String("=X")) && symbol.size() >= 8)
+        code = symbol.mid(3, 3);
+    return code;
 }
 
-void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVector<services::QuoteData>& quotes) {
-    last_holdings_ = holdings;
-    last_quotes_ = quotes;
+void PortfolioSummaryWidget::ensure_fx_subscriptions() {
+    const QString pc = selected_portfolio_currency_.trimmed().toUpper();
+    QStringList wanted;
+    for (const auto& sym : holding_symbols_) {
+        const QString code = holding_currency(sym);
+        if (code.isEmpty())
+            continue;
+        const QString major = valuation::normalize_currency(code).code;
+        if (major == pc)
+            continue;
+        const QString fx = valuation::fx_symbol(major, pc);
+        if (!fx_symbols_.contains(fx) && !wanted.contains(fx))
+            wanted << fx;
+    }
+    if (!wanted.isEmpty()) {
+        fx_symbols_ << wanted;
+        feed_.subscribe(this, wanted, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
+    }
+    schedule_render([this]() { rebuild_from_cache(); });
+}
 
-    // Portfolio's own currency symbol (intrinsic — not the global preference,
-    // and values are not converted: symbol-only).
-    const QString sym = cur::symbol_for(selected_portfolio_currency_);
+void PortfolioSummaryWidget::rebuild_from_cache() {
+    if (last_holdings_.isEmpty())
+        return;
+    bool any = false;
+    for (const auto& h : last_holdings_)
+        any = any || feed_.quote(h.symbol) || !feed_.error(h.symbol).isEmpty();
+    if (any) {
+        set_loading(false);
+        render();
+    }
+}
 
-    QMap<QString, const services::QuoteData*> qmap;
-    for (const auto& q : last_quotes_)
-        qmap[q.symbol] = &q;
+void PortfolioSummaryWidget::render() {
+    const QVector<Holding>& holdings = last_holdings_;
+    auto& market = services::MarketDataService::instance();
+    // Totals are in the portfolio's own currency: every holding is converted
+    // from its quote currency first (PortfolioValuation.h).
+    const QString pc = selected_portfolio_currency_.trimmed().toUpper();
+    const QString sym = cur::symbol_for(pc);
 
     double total_value = 0;
     double total_cost = 0;
     double day_pnl = 0;
     int change_readings = 0;
     int priced_count = 0;
+    int converted_count = 0;
+    QStringList left_out;
 
     // Clear list
     while (list_layout_->count() > 0) {
@@ -376,27 +407,51 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
         delete item;
     }
 
+    auto money = [&sym](double v, bool sign) {
+        const QString body = sym + QLocale(QLocale::English).toString(std::abs(v), 'f', 0);
+        if (!sign)
+            return (v < 0 ? QStringLiteral("-") : QString()) + body;
+        return v > 0 ? QStringLiteral("+") + body : v < 0 ? QStringLiteral("-") + body : sym + QStringLiteral("0");
+    };
+
     bool alt = false;
     for (const auto& h : holdings) {
-        const services::QuoteData* q = qmap.value(h.symbol, nullptr);
-        // A stale cached row is a value served after a failed refresh — not a
-        // current price — so it falls into the same average-cost fallback as a
-        // missing quote and never counts as a priced/day-change observation.
-        const bool current = q && q->has_price && q->status != QLatin1String(services::kQuoteStatusStale);
-        const bool priced = current;
-        if (priced)
+        const services::QuoteData* q = feed_.quote(h.symbol);
+        // A value kept after a failed refresh is not a current price: it falls
+        // into the same average-cost fallback as a missing quote.
+        const bool current = q && q->has_price && feed_.error(h.symbol).isEmpty();
+        if (current)
             ++priced_count;
-        const double price = priced ? q->price : h.avg_cost;
-        const double value = price * h.shares;
-        const double cost = h.avg_cost * h.shares;
-        const double pnl = value - cost;
-        if (current && q->has_change) {
-            day_pnl += q->change * h.shares;
-            ++change_readings;
-        }
 
-        total_value += value;
-        total_cost += cost;
+        valuation::HoldingInput in;
+        in.shares = h.shares;
+        in.avg_cost = h.avg_cost;
+        in.has_price = current;
+        in.price = current ? q->price : 0.0;
+        in.has_change = current && q->has_change;
+        in.change = in.has_change ? q->change : 0.0;
+        in.quote_currency = holding_currency(h.symbol);
+        std::optional<double> rate;
+        if (!in.quote_currency.isEmpty()) {
+            const QString major = valuation::normalize_currency(in.quote_currency).code;
+            if (major == pc) {
+                rate = 1.0;
+            } else if (const auto* fx = feed_.quote(valuation::fx_symbol(major, pc)); fx && fx->has_price) {
+                rate = fx->price;
+            }
+        }
+        const valuation::HoldingValue hv = valuation::value_holding(in, pc, rate);
+        if (hv.converted) {
+            ++converted_count;
+            total_value += hv.value;
+            total_cost += hv.cost;
+            if (hv.day) {
+                day_pnl += *hv.day;
+                ++change_readings;
+            }
+        } else {
+            left_out << QStringLiteral("%1 (%2)").arg(h.symbol, hv.why_not);
+        }
 
         // No setStyleSheet in this loop — colours come from the single
         // stylesheet on list_widget_ (see apply_styles) via these object names.
@@ -412,63 +467,61 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
             rl->addWidget(lbl, 1);
         };
 
+        const int decimals = fincept::screens::quote_price_decimals(current, in.price, 2);
         cell(h.symbol, Qt::AlignLeft, QStringLiteral("psSym"));
-        cell(QString::number(h.shares, 'f', h.shares == (int)h.shares ? 0 : 2), Qt::AlignRight,
-             QStringLiteral("psShares"));
-        cell(priced ? sym + QString::number(price, 'f', 2) : QStringLiteral("--"), Qt::AlignRight,
+        cell(valuation::shares_text(h.shares), Qt::AlignRight, QStringLiteral("psShares"));
+        // The price stays in the holding's own currency; value and P&L are in
+        // the portfolio's currency.
+        cell(current ? market.currency_prefix(h.symbol) + QString::number(in.price, 'f', decimals)
+                     : QStringLiteral("--"),
+             Qt::AlignRight, QStringLiteral("psNum"));
+        cell(current && hv.converted ? money(hv.value, false) : QStringLiteral("--"), Qt::AlignRight,
              QStringLiteral("psNum"));
-        cell(priced ? sym + QString::number(value, 'f', 0) : QStringLiteral("--"), Qt::AlignRight,
-             QStringLiteral("psNum"));
-
-        if (!priced) {
+        if (!current || !hv.converted) {
             cell(QStringLiteral("--"), Qt::AlignRight, QStringLiteral("psNum"));
         } else {
-            const QString pnl_str = pnl > 0   ? QStringLiteral("+") + sym + QString::number(pnl, 'f', 0)
-                                    : pnl < 0 ? QStringLiteral("-") + sym + QString::number(-pnl, 'f', 0)
-                                              : sym + QStringLiteral("0");
-            cell(pnl_str, Qt::AlignRight,
+            const double pnl = hv.value - hv.cost;
+            cell(money(pnl, true), Qt::AlignRight,
                  pnl > 0   ? QStringLiteral("psPnlPos")
                  : pnl < 0 ? QStringLiteral("psPnlNeg")
                            : QStringLiteral("psNum"));
         }
+        row->setToolTip(hv.converted ? (q ? fincept::screens::quote_status_line(h.symbol, q, feed_.error(h.symbol))
+                                          : tr("%1 — no current quote; valued at average cost").arg(h.symbol))
+                                     : tr("%1 — left out of the totals: %2").arg(h.symbol, hv.why_not));
 
         list_layout_->addWidget(row);
         alt = !alt;
     }
     list_layout_->addStretch();
 
-    // Coverage: the headline totals include unpriced holdings at average cost,
-    // and the day total sums only holdings with a change reading. Both are
-    // labelled partial when the required inputs are incomplete instead of
-    // being presented as fully observed values.
-    const bool value_partial = priced_count < holdings.size();
-    const bool day_partial = change_readings > 0 && change_readings < holdings.size();
+    // Coverage: unpriced holdings are valued at average cost, holdings whose
+    // currency or FX rate is not known are left out, and the day total sums
+    // only holdings with a change reading — each shown as partial.
+    const int n = static_cast<int>(holdings.size());
+    const bool value_partial = priced_count < n || converted_count < n;
+    const bool day_partial = change_readings > 0 && change_readings < n;
 
-    total_value_lbl_->setText(sym + QString::number(total_value, 'f', 0) +
-                              (value_partial ? tr(" (partial)") : QString()));
-    total_value_lbl_->setToolTip(
-        value_partial ? tr("Holdings without a current quote are valued at average cost and are included in this "
-                           "total.")
-                      : QString());
-    num_holdings_lbl_->setText(QString::number(holdings.size()));
+    total_value_lbl_->setText(money(total_value, false) + (value_partial ? tr(" (partial)") : QString()));
+    QStringList why;
+    if (priced_count < n)
+        why << tr("Holdings without a current quote are valued at average cost.");
+    if (!left_out.isEmpty())
+        why << tr("Not in the totals: %1.").arg(left_out.join(QStringLiteral(", ")));
+    total_value_lbl_->setToolTip(why.join(QLatin1Char(' ')));
+    num_holdings_lbl_->setText(QString::number(n));
 
     const double total_pnl = total_value - total_cost;
-    const QString day_str = change_readings == 0
-                                ? QStringLiteral("--")
-                                : (day_pnl > 0   ? QStringLiteral("+") + sym + QString::number(day_pnl, 'f', 0)
-                                   : day_pnl < 0 ? QStringLiteral("-") + sym + QString::number(-day_pnl, 'f', 0)
-                                                 : sym + QStringLiteral("0")) +
-                                      (day_partial ? tr(" (partial)") : QString());
-    const QString tot_str = (total_pnl > 0   ? QStringLiteral("+") + sym + QString::number(total_pnl, 'f', 0)
-                             : total_pnl < 0 ? QStringLiteral("-") + sym + QString::number(-total_pnl, 'f', 0)
-                                             : sym + QStringLiteral("0")) +
-                            (value_partial ? tr(" (partial)") : QString());
+    const QString day_str = change_readings == 0 ? QStringLiteral("--")
+                                                 : money(day_pnl, true) + (day_partial ? tr(" (partial)") : QString());
+    const QString tot_str = money(total_pnl, true) + (value_partial ? tr(" (partial)") : QString());
 
     day_pnl_lbl_->setText(day_str);
     day_pnl_lbl_->setToolTip(
-        day_partial
-            ? tr("Only %1 of %2 holdings carried a day-change reading.").arg(change_readings).arg(holdings.size())
-            : QString());
+        day_partial ? tr("Only %1 of %2 holdings carried a day-change reading.").arg(change_readings).arg(n)
+                    : tr("Sum of each holding's change since its previous close (or 00:00 Helsinki for forex, "
+                         "previous settlement for futures), converted to %1.")
+                          .arg(pc));
     day_pnl_lbl_->setStyleSheet(QString("color: %1; font-size: 13px; font-weight: bold; background: transparent;")
                                     .arg(change_readings == 0 ? ui::colors::TEXT_DIM()
                                          : day_pnl > 0        ? ui::colors::POSITIVE()
@@ -476,10 +529,21 @@ void PortfolioSummaryWidget::render(const QVector<Holding>& holdings, const QVec
                                                               : ui::colors::TEXT_PRIMARY()));
 
     total_pnl_lbl_->setText(tot_str);
+    total_pnl_lbl_->setToolTip(total_value_lbl_->toolTip());
     total_pnl_lbl_->setStyleSheet(QString("color: %1; font-size: 13px; font-weight: bold; background: transparent;")
                                       .arg(total_pnl > 0   ? ui::colors::POSITIVE()
                                            : total_pnl < 0 ? ui::colors::NEGATIVE()
                                                            : ui::colors::TEXT_PRIMARY()));
+
+    QStringList feed_symbols = holding_symbols_;
+    feed_symbols << fx_symbols_;
+    auto summary = feed_.summary(feed_symbols);
+    if (!left_out.isEmpty()) {
+        summary.text +=
+            (summary.text.isEmpty() ? QString() : QStringLiteral(" · ")) + tr("%1 not in totals").arg(left_out.size());
+        summary.warn = true;
+    }
+    set_footer(summary.text, summary.tooltip, summary.warn);
 }
 
 QDialog* PortfolioSummaryWidget::make_config_dialog(QWidget* parent) {

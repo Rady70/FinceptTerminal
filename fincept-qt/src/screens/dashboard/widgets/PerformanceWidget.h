@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
 #include <QHash>
@@ -40,7 +41,7 @@ class PerformanceWidget : public BaseWidget {
     };
     QVector<MetricRow> rows_;
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     bool hub_active_ = false;
 };
 

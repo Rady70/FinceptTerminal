@@ -3,6 +3,7 @@
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <QContextMenuEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
@@ -258,6 +259,10 @@ void WidgetTile::mouseReleaseEvent(QMouseEvent* e) {
 // Defined outside the class body but still in the .cpp, after the namespace
 
 bool fincept::screens::WidgetTile::eventFilter(QObject* obj, QEvent* event) {
+    if (event->type() == QEvent::ContextMenu) {
+        emit context_menu_requested(this, static_cast<QContextMenuEvent*>(event)->globalPos());
+        return true;
+    }
     if (event->type() == QEvent::MouseButtonPress) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {

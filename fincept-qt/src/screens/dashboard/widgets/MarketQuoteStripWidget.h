@@ -7,6 +7,7 @@
 // When no config is supplied, defaults to a tech-index starter set.
 
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 
 #include <QHash>
 #include <QSet>
@@ -46,12 +47,14 @@ class MarketQuoteStripWidget : public BaseWidget {
     void build_rows();
     void apply_styles();
     void on_quote(const fincept::services::QuoteData& q);
+    /// Every row from the cache: a quote, a failure, or the placeholder.
+    void render_all();
     void hub_resubscribe();
     void hub_unsubscribe_all();
 
     QStringList symbols_;
     QHash<QString, Row> rows_; // symbol → widgets
-    QSet<QString> received_;   // symbols that have published at least once — used to drive the loading overlay
+    QuoteSubscriptions feed_;  // per-symbol quote + last failure (drives rows, footer and loading overlay)
     bool hub_active_ = false;
 };
 

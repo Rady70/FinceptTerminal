@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/tables/DataTable.h"
 
@@ -33,7 +34,7 @@ class TopMoversWidget : public BaseWidget {
 
     void hub_subscribe_all();
     void hub_unsubscribe_all();
-    /// Recompute `all_quotes_` from `row_cache_`, sort, and redraw the tab.
+    /// Recompute `all_quotes_` from `feed_`, sort, and redraw the tab.
     void rebuild_from_cache();
 
     ui::DataTable* table_ = nullptr;
@@ -45,7 +46,7 @@ class TopMoversWidget : public BaseWidget {
     /// hub delivery but the button CSS only changes with tab/theme.
     bool tab_style_applied_ = false;
 
-    QHash<QString, services::QuoteData> row_cache_;
+    QuoteSubscriptions feed_; ///< per-symbol quote + last failure
     QStringList symbols_;
     bool hub_active_ = false;
 };

@@ -38,7 +38,7 @@ except (TypeError, ValueError):
     _NET_TIMEOUT = 15.0
 
 
-def _num(value, digits=2):
+def _num(value, digits=6):
     """`round(float(value), digits)`, or None when the cell is NaN / NA / None.
 
     yfinance returns NaN cells routinely: halted sessions, missing intraday
@@ -125,6 +125,8 @@ def get_quote(symbol):
             "low": _num(hist['Low'].iloc[-1]),
             "open": _num(hist['Open'].iloc[-1]),
             "previous_close": previous_close,
+            "day_basis": "provider_previous_close",
+            "session_date": hist.index[-1].date().isoformat(),
             "timestamp": int(datetime.now().timestamp()),
             "exchange": info.get('exchange', '')
         }
@@ -339,80 +341,228 @@ def get_financials(symbol):
     except Exception as e:
         return {"error": str(e), "symbol": symbol}
 
-def get_batch_quotes(symbols):
-    """Fetch quotes for multiple symbols at once using yfinance batch download"""
+# ── Daily-change rules ───────────────────────────────────────────────────────
+# MarketLab: a quote's "change" is measured against a stated reference, and the
+# reference depends on the instrument (owner decision 2026-10-20):
+#   * forex (=X)    — the last price before 00:00 Europe/Helsinki of the quote's
+#                     Helsinki day (DST-aware), from hourly bars;
+#   * futures (=F)  — the exchange's previous settlement for the CURRENT
+#                     contract (Yahoo quoteSummary), because the continuous
+#                     daily series switches contract at a roll and its prior
+#                     bar is then a different contract;
+#   * everything else — the previous daily bar's close (crypto: UTC day).
+# The basis is returned with every quote ("day_basis") together with the
+# session date the price belongs to, so the host can say what "today" means.
+DAY_BASIS_SESSION = "prior_session_close"
+DAY_BASIS_HELSINKI = "helsinki_midnight"
+DAY_BASIS_SETTLEMENT = "prior_settlement"
+DAY_BASIS_PRIOR_BAR = "prior_bar_close_unverified"
+
+_HELSINKI_TZ = "Europe/Helsinki"
+_SETTLEMENT_TTL_SEC = 600
+_settlement_cache = {}  # symbol -> (expires_epoch, previous_settlement, contract)
+
+
+def _is_fx(symbol):
+    return symbol.upper().endswith("=X")
+
+
+def _is_future(symbol):
+    return symbol.upper().endswith("=F")
+
+
+def _symbol_frame(data, symbol):
+    """One symbol's OHLCV frame out of a yf.download result, or None."""
+    if data is None or data.empty:
+        return None
+    if not isinstance(data.columns, pd.MultiIndex):
+        return data  # flat columns (single symbol)
+    # MultiIndex columns — detect (Ticker, Price) vs (Price, Ticker)
+    level0 = data.columns.get_level_values(0).unique().tolist()
+    level1 = data.columns.get_level_values(1).unique().tolist()
+    if symbol in level0:
+        return data[symbol]
+    if symbol in level1:
+        return data.xs(symbol, axis=1, level=1)
+    return None
+
+
+def helsinki_day_change(frame, bar=pd.Timedelta(hours=1)):
+    """Forex day measured from 00:00 Europe/Helsinki (DST-aware).
+
+    `frame` holds intraday OHLC bars indexed by tz-aware bar START times.
+    The Helsinki day is the day of the latest bar; its reference is the close
+    of the last bar that ENDED at or before that day's 00:00 Helsinki (the
+    last price before midnight). Saturday and Sunday in Helsinki time carry no
+    forex session (the market opens at Monday 00:00 Helsinki in both winter
+    and summer time), so stray weekend bars are ignored.
+
+    Returns a dict (price, previous_close, open, high, low, session_date,
+    price_time) or None when the frame has no usable close.
+    """
+    if frame is None or frame.empty or "Close" not in frame:
+        return None
+    f = frame[frame["Close"].notna()]
+    if f.empty:
+        return None
+    idx = f.index
+    if getattr(idx, "tz", None) is None:
+        idx = idx.tz_localize("UTC")
+    hel = idx.tz_convert(_HELSINKI_TZ)
+    weekday = pd.Series(hel.weekday, index=f.index)
+    keep = (weekday < 5).to_numpy()
+    f, hel = f[keep], hel[keep]
+    if f.empty:
+        return None
+    day_start = hel[-1].normalize()
+    ended = (hel + bar) <= day_start
+    previous = float(f["Close"][ended].iloc[-1]) if ended.any() else None
+    today = f[hel >= day_start]
+    return {
+        "price": float(f["Close"].iloc[-1]),
+        "previous_close": previous,
+        "open": float(today["Open"].dropna().iloc[0]) if today["Open"].notna().any() else None,
+        "high": float(today["High"].max()) if today["High"].notna().any() else None,
+        "low": float(today["Low"].min()) if today["Low"].notna().any() else None,
+        "session_date": day_start.date().isoformat(),
+        "price_time": int(idx[keep][-1].timestamp()),
+    }
+
+
+def _previous_settlement(symbol, info_reader=None):
+    """(previous settlement, contract) of a futures symbol's current contract.
+
+    Read from Yahoo's quote summary, which names the contract the continuous
+    symbol currently points to; cached briefly in the long-running worker.
+    Returns (None, '') when it cannot be read.
+    """
+    now = datetime.now().timestamp()
+    hit = _settlement_cache.get(symbol)
+    if hit and hit[0] > now:
+        return hit[1], hit[2]
+    prev, contract = None, ""
+    try:
+        if info_reader is not None:
+            info = info_reader(symbol)
+        else:
+            import io, contextlib
+            _buf = io.StringIO()
+            with contextlib.redirect_stdout(_buf), contextlib.redirect_stderr(_buf):
+                info = yf.Ticker(symbol).info or {}
+        prev = _num(info.get("regularMarketPreviousClose"), 6)
+        if prev is None:
+            prev = _num(info.get("previousClose"), 6)
+        contract = str(info.get("underlyingSymbol") or "")
+    except Exception:
+        prev, contract = None, ""
+    if prev is not None and prev > 0:
+        _settlement_cache[symbol] = (now + _SETTLEMENT_TTL_SEC, prev, contract)
+        return prev, contract
+    return None, ""
+
+
+def _quote_row(symbol, price, previous_close, basis, session_date, open_=None, high=None, low=None,
+               volume=None, contract="", price_time=None):
+    """One quote dict. The change is derived from the unrounded values and
+    rounded once; a missing or zero reference leaves it missing (a gap, not a
+    0.00 move)."""
+    current = _num(price, 6)
+    prev = _num(previous_close, 6)
+    raw_change = float(price) - float(previous_close) if current is not None and prev is not None else None
+    row = {
+        "symbol": symbol,
+        "price": current,
+        "change": _num(raw_change, 6),
+        "change_percent": (_num(raw_change / float(previous_close) * 100, 4)
+                           if raw_change is not None and prev else None),
+        # None, not 0, throughout: a cell yfinance did not return is
+        # an absent reading, and the host renders it as such.
+        "volume": volume,
+        "high": _num(high, 6),
+        "low": _num(low, 6),
+        "open": _num(open_, 6),
+        "previous_close": prev,
+        "day_basis": basis,
+        "session_date": session_date,
+        "timestamp": int(datetime.now().timestamp()),
+        "exchange": "",
+    }
+    if contract:
+        row["contract"] = contract
+    if price_time is not None:
+        row["price_time"] = price_time
+    return row
+
+
+def _daily_quote(symbol, hist, info_reader=None):
+    """Quote from a symbol's daily bars (stocks, indices, crypto, futures)."""
+    hist = hist.dropna(how='all') if hist is not None else None
+    if hist is None or hist.empty:
+        return None
+    hist = hist[hist['Close'].notna()]
+    if hist.empty:
+        return None
+    raw_close = hist['Close'].iloc[-1]
+    last_day = hist.index[-1]
+    session_date = last_day.date().isoformat() if hasattr(last_day, "date") else None
+    contract = ""
+    if _is_future(symbol):
+        prev, contract = _previous_settlement(symbol, info_reader)
+        basis = DAY_BASIS_SETTLEMENT
+        if prev is None:
+            # The settlement could not be read: the prior bar may belong to the
+            # previous contract after a roll, so the basis says it is unverified.
+            prev = hist['Close'].iloc[-2] if len(hist) >= 2 else None
+            basis = DAY_BASIS_PRIOR_BAR
+    else:
+        # Previous trading day close. period="5d" normally leaves >= 2 rows,
+        # but a freshly listed instrument arrives with one -- and one row is no
+        # prior close, not a prior close that happens to equal today's.
+        prev = hist['Close'].iloc[-2] if len(hist) >= 2 else None
+        basis = DAY_BASIS_SESSION
+    return _quote_row(symbol, raw_close, prev, basis, session_date, open_=hist['Open'].iloc[-1],
+                      high=hist['High'].iloc[-1], low=hist['Low'].iloc[-1], volume=_int(hist['Volume'].iloc[-1]),
+                      contract=contract)
+
+
+def get_batch_quotes(symbols, info_reader=None):
+    """Fetch quotes for multiple symbols at once using yfinance batch download.
+
+    Every requested symbol gets a row: a quote, or {"symbol", "error"}.
+    """
     try:
         import io, contextlib
+        fx = [s for s in symbols if _is_fx(s)]
+        daily = [s for s in symbols if not _is_fx(s)]
         # Suppress any stdout noise from yfinance (progress bars, deprecation notices)
         # that would corrupt the JSON output parsed by the host
         _buf = io.StringIO()
+        data = hourly = None
         with contextlib.redirect_stdout(_buf):
             # Use 5d period to guarantee at least 2 trading days for futures/commodities
-            data = yf.download(symbols, period="5d", group_by='ticker', progress=False, threads=True,
-                               auto_adjust=True, timeout=_NET_TIMEOUT)
-
-        if data is None or data.empty:
-            return []
+            if daily:
+                data = yf.download(daily, period="5d", group_by='ticker', progress=False, threads=True,
+                                   auto_adjust=True, timeout=_NET_TIMEOUT)
+            if fx:
+                hourly = yf.download(fx, period="5d", interval="1h", group_by='ticker', progress=False,
+                                     threads=True, auto_adjust=True, timeout=_NET_TIMEOUT)
 
         results = []
         for symbol in symbols:
             try:
-                if not isinstance(data.columns, pd.MultiIndex):
-                    # Flat columns (rare): use directly
-                    hist = data
+                if _is_fx(symbol):
+                    day = helsinki_day_change(_symbol_frame(hourly, symbol))
+                    row = None if day is None else _quote_row(
+                        symbol, day["price"], day["previous_close"], DAY_BASIS_HELSINKI, day["session_date"],
+                        open_=day["open"], high=day["high"], low=day["low"], price_time=day["price_time"])
                 else:
-                    # MultiIndex columns — detect (Ticker, Price) vs (Price, Ticker)
-                    level0 = data.columns.get_level_values(0).unique().tolist()
-                    level1 = data.columns.get_level_values(1).unique().tolist()
-                    if symbol in level0:
-                        # (Ticker, Price) ordering
-                        hist = data[symbol]
-                    elif symbol in level1:
-                        # (Price, Ticker) ordering
-                        hist = data.xs(symbol, axis=1, level=1)
-                    else:
-                        continue
-
-                if hist.empty or hist.dropna(how='all').empty:
-                    continue
-
-                hist = hist.dropna(how='all')
-                raw_close = hist['Close'].iloc[-1]
-                current_price = _num(raw_close)
-                if current_price is None:
-                    continue
-                # Previous trading day close, for the daily change. period="5d"
-                # normally leaves >= 2 rows, but a freshly listed or freshly
-                # rolled instrument arrives with one -- and one row is no prior
-                # close, not a prior close that happens to equal today's.
-                # Substituting the current price manufactured a 0.00 / 0.00%
-                # move; see get_quote for why that, and a zero previous close,
-                # are gaps rather than readings. Same rounding discipline too:
-                # derive from the unrounded closes, round once.
-                raw_prev = hist['Close'].iloc[-2] if len(hist) >= 2 else None
-                previous_close = _num(raw_prev)
-                raw_change = float(raw_close) - float(raw_prev) if previous_close is not None else None
-                change = _num(raw_change)
-                change_percent = (_num(raw_change / float(raw_prev) * 100)
-                                  if raw_change is not None and previous_close else None)
-
-                results.append({
-                    "symbol": symbol,
-                    "price": current_price,
-                    "change": change,
-                    "change_percent": change_percent,
-                    # None, not 0, throughout: a cell yfinance did not return is
-                    # an absent reading, and the host renders it as such.
-                    "volume": _int(hist['Volume'].iloc[-1]),
-                    "high": _num(hist['High'].iloc[-1]),
-                    "low": _num(hist['Low'].iloc[-1]),
-                    "open": _num(hist['Open'].iloc[-1]),
-                    "previous_close": previous_close,
-                    "timestamp": int(datetime.now().timestamp()),
-                    "exchange": ""
-                })
-            except Exception:
-                continue
+                    row = _daily_quote(symbol, _symbol_frame(data, symbol), info_reader)
+                if row is None or row["price"] is None:
+                    results.append({"symbol": symbol, "error": "no data"})
+                else:
+                    results.append(row)
+            except Exception as e:
+                results.append({"symbol": symbol, "error": str(e)[:200]})
 
         return results
     except Exception as e:
@@ -517,7 +667,7 @@ def get_batch_sparklines(symbols, period="5d", interval="1h"):
                 closes = hist['Close'].dropna()
                 if closes.empty:
                     continue
-                result[symbol] = [round(float(v), 4) for v in closes.tolist()]
+                result[symbol] = [round(float(v), 6) for v in closes.tolist()]
             except Exception:
                 continue
 

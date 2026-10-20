@@ -2,6 +2,7 @@
 
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
+#include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/markets/QuoteDisplayFormat.h"
 #include "ui/theme/Theme.h"
 
@@ -200,37 +201,28 @@ void RiskMetricsWidget::refresh_data() {
 }
 
 void RiskMetricsWidget::hub_subscribe_all() {
-    auto& hub = datahub::DataHub::instance();
-    set_loading_progress(row_cache_.size(), kRiskSymbols.size());
-    for (const auto& sym : kRiskSymbols) {
-        const QString topic = QStringLiteral("market:quote:") + sym;
-        hub.subscribe(this, topic, [this, sym](const QVariant& v) {
-            if (!v.canConvert<services::QuoteData>())
-                return;
-            row_cache_.insert(sym, v.value<services::QuoteData>());
-            set_loading_progress(row_cache_.size(), kRiskSymbols.size());
-            // One redraw per delivery burst, not one per symbol.
-            schedule_render([this]() { rebuild_from_cache(); });
-        });
-    }
+    show_feed_status(this, feed_.summary(kRiskSymbols), static_cast<int>(kRiskSymbols.size()));
+    // One redraw per delivery burst, not one per symbol.
+    feed_.subscribe(this, kRiskSymbols, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
     hub_active_ = true;
 }
 
 void RiskMetricsWidget::hub_unsubscribe_all() {
-    datahub::DataHub::instance().unsubscribe(this);
+    QuoteSubscriptions::unsubscribe(this);
     hub_active_ = false;
 }
 
 void RiskMetricsWidget::rebuild_from_cache() {
     QVector<services::QuoteData> quotes;
-    quotes.reserve(row_cache_.size());
+    quotes.reserve(feed_.cache().size());
     for (const auto& sym : kRiskSymbols) {
-        auto it = row_cache_.constFind(sym);
-        if (it != row_cache_.constEnd())
+        auto it = feed_.cache().constFind(sym);
+        if (it != feed_.cache().constEnd())
             quotes.append(it.value());
     }
     if (!quotes.isEmpty())
         populate(quotes);
+    show_feed_status(this, feed_.summary(kRiskSymbols), static_cast<int>(kRiskSymbols.size()));
 }
 
 void RiskMetricsWidget::populate(const QVector<services::QuoteData>& quotes) {
@@ -242,23 +234,14 @@ void RiskMetricsWidget::populate(const QVector<services::QuoteData>& quotes) {
     if (map.contains("^VIX") && map["^VIX"]->has_price) {
         double vix = map["^VIX"]->price;
         vix_value_->setText(QString::number(vix, 'f', 2));
-        QString regime, color;
-        if (vix < 15) {
-            regime = tr("LOW VOLATILITY");
-            color = ui::colors::POSITIVE();
-        } else if (vix < 20) {
-            regime = tr("NORMAL");
-            color = ui::colors::TEXT_PRIMARY();
-        } else if (vix < 30) {
-            regime = tr("ELEVATED");
-            color = ui::colors::WARNING();
-        } else if (vix < 40) {
-            regime = tr("HIGH STRESS");
-            color = ui::colors::NEGATIVE();
-        } else {
-            regime = tr("EXTREME FEAR");
-            color = ui::colors::NEGATIVE();
-        }
+        // The dashboard's one VIX regime rule (MarketGauges.h).
+        const auto vix_state = gauges::vix_regime(vix);
+        const QString regime = tr(gauges::vix_regime_key(vix_state));
+        const auto tone = gauges::vix_tone(vix_state);
+        const QString color = tone == gauges::Tone::Positive   ? ui::colors::POSITIVE()
+                              : tone == gauges::Tone::Warning  ? ui::colors::WARNING()
+                              : tone == gauges::Tone::Negative ? ui::colors::NEGATIVE()
+                                                               : ui::colors::TEXT_PRIMARY();
         vix_value_->setStyleSheet(
             QString("color: %1; font-size: 22px; font-weight: bold; background: transparent;").arg(color));
         vix_regime_->setText(regime);

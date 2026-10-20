@@ -16,16 +16,28 @@
 #include "ui/widgets/NotifToast.h"
 
 #include <QDataStream>
-#include <QJsonDocument>
 #include <QEvent>
+#include <QHBoxLayout>
 #include <QHideEvent>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QKeySequence>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMenu>
+#include <QMessageBox>
 #include <QPalette>
 #include <QPointer>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QSignalBlocker>
+#include <QToolButton>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
+
+#include <algorithm>
 
 namespace {
 
@@ -65,32 +77,23 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     // When user saves a new symbol list, re-fetch quotes immediately.
     connect(ticker_bar_, &TickerBar::symbols_changed, this, &DashboardScreen::refresh_ticker);
 
-    // ── Main Content: Canvas (in scroll) + Market Pulse ──
+    // ── Page bar ──
+    build_page_bar();
+    vl->addWidget(page_bar_);
+
+    // ── Main Content: pages (each a canvas in a scroll area) + Market Pulse ──
     content_split_ = new QSplitter(Qt::Horizontal);
     content_split_->setHandleWidth(1);
     content_split_->setStyleSheet(QString("QSplitter::handle{background:%1;}QSplitter::handle:hover{background:%2;}")
                                       .arg(ui::colors::BORDER_DIM(), ui::colors::BORDER_MED()));
 
-    canvas_ = new DashboardCanvas;
-
-    // Scroll area wraps canvas — provides vertical scroll when content exceeds viewport
-    scroll_area_ = new QScrollArea;
-    scroll_area_->setWidgetResizable(false); // canvas controls its own size
-    scroll_area_->setMinimumWidth(0);        // allow ADS to shrink this panel freely
-    scroll_area_->setWidget(canvas_);
-    scroll_area_->setStyleSheet(QString("QScrollArea{border:none;background:%1;}"
-                                        "QScrollBar:vertical{width:6px;background:transparent;}"
-                                        "QScrollBar::handle:vertical{background:%2;border-radius:3px;min-height:20px;}"
-                                        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
-                                    .arg(ui::colors::BG_BASE(), ui::colors::BORDER_MED()));
-    scroll_area_->viewport()->setStyleSheet(QString("background:%1;").arg(ui::colors::BG_BASE()));
-
-    // Sync canvas width to scroll viewport via event filter
-    scroll_area_->viewport()->installEventFilter(this);
+    // Pages are created by restore_layout() from the saved page list.
+    pages_stack_ = new QStackedWidget;
+    pages_stack_->setMinimumWidth(0);
 
     market_pulse_ = new MarketPulsePanel;
 
-    content_split_->addWidget(scroll_area_);
+    content_split_->addWidget(pages_stack_);
     content_split_->addWidget(market_pulse_);
     content_split_->setStretchFactor(0, 3);
     content_split_->setStretchFactor(1, 1);
@@ -116,13 +119,10 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     save_timer_->setInterval(800);
     connect(save_timer_, &QTimer::timeout, this, &DashboardScreen::save_layout);
 
-    // ── Canvas signals → toolbar/statusbar ──
-    connect(canvas_, &DashboardCanvas::widget_count_changed, toolbar_, &DashboardToolBar::set_widget_count);
-    connect(canvas_, &DashboardCanvas::widget_count_changed, status_bar_, &DashboardStatusBar::set_widget_count);
+    // ── Canvas signals → toolbar/statusbar are wired per page (add_page) ──
     // The toolbar's LIVE badge was hardcoded — set_connected() had no caller
     // anywhere in the codebase. Drive it from the status bar's API health probe.
     connect(status_bar_, &DashboardStatusBar::connectivity_changed, toolbar_, &DashboardToolBar::set_connected);
-    connect(canvas_, &DashboardCanvas::layout_changed, this, [this](const GridLayout&) { save_timer_->start(); });
 
     // ── Toolbar buttons ──
     // Kept as named lambdas so the keyboard shortcuts below drive exactly the
@@ -132,6 +132,8 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
         market_pulse_->setVisible(pulse_visible_);
     };
     auto open_add_widget = [this]() {
+        if (!canvas_)
+            return;
         auto* dlg = new AddWidgetDialog(this);
         connect(dlg, &AddWidgetDialog::widget_selected, canvas_, &DashboardCanvas::add_widget);
         dlg->exec();
@@ -145,9 +147,12 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     connect(toolbar_, &DashboardToolBar::reset_layout_clicked, this, [this]() {
         auto* dlg = new TemplatePicker(this);
         connect(dlg, &TemplatePicker::template_selected, this, [this](const QString& tid) {
-            // Clear saved state so fresh template is used
-            (void)QtConcurrent::run(
-                []() { fincept::SettingsRepository::instance().remove("dashboard_canvas_layout"); });
+            if (!canvas_ || current_page_ < 0)
+                return;
+            // The template replaces the CURRENT page only; its saved state is
+            // cleared so the fresh template is used.
+            const QString key = layout_key(pages_[current_page_].id);
+            (void)QtConcurrent::run([key]() { fincept::SettingsRepository::instance().remove(key); });
             canvas_->apply_template(tid);
         });
         dlg->exec();
@@ -160,7 +165,8 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
 
     connect(toolbar_, &DashboardToolBar::toggle_compact_clicked, this, [this]() {
         compact_rows_ = !compact_rows_;
-        canvas_->set_row_height(compact_rows_ ? 40 : 60);
+        for (const auto& page : pages_)
+            page.canvas->set_row_height(compact_rows_ ? 40 : 60);
     });
 
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this,
@@ -179,6 +185,14 @@ DashboardScreen::DashboardScreen(QWidget* parent) : QWidget(parent) {
     add_shortcut(QKeySequence(QKeySequence::Save), [this]() { save_layout(); });
     add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_N), open_add_widget);
     add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_P), toggle_pulse);
+    add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), [this]() {
+        if (pages_.size() > 1)
+            switch_to_page((current_page_ + 1) % pages_.size());
+    });
+    add_shortcut(QKeySequence(Qt::CTRL | Qt::Key_PageUp), [this]() {
+        if (pages_.size() > 1)
+            switch_to_page((current_page_ + pages_.size() - 1) % pages_.size());
+    });
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -194,17 +208,30 @@ void DashboardScreen::refresh_theme() {
             QString("QSplitter{background:%1;}QSplitter::handle{background:%2;}QSplitter::handle:hover{background:%3;}")
                 .arg(ui::colors::BG_BASE(), ui::colors::BORDER_DIM(), ui::colors::BORDER_MED()));
     }
-    if (scroll_area_) {
-        apply_solid_background(scroll_area_, bg);
-        scroll_area_->setStyleSheet(
-            QString("QScrollArea{border:none;background:%1;}"
-                    "QScrollBar:vertical{width:6px;background:transparent;}"
-                    "QScrollBar::handle:vertical{background:%2;border-radius:3px;min-height:20px;}"
-                    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
-                .arg(ui::colors::BG_BASE(), ui::colors::BORDER_MED()));
+    for (const auto& page : pages_) {
+        QScrollArea* area = page.scroll;
+        apply_solid_background(area, bg);
+        area->setStyleSheet(QString("QScrollArea{border:none;background:%1;}"
+                                    "QScrollBar:vertical{width:6px;background:transparent;}"
+                                    "QScrollBar::handle:vertical{background:%2;border-radius:3px;min-height:20px;}"
+                                    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}")
+                                .arg(ui::colors::BG_BASE(), ui::colors::BORDER_MED()));
         // Ensure viewport doesn't paint its own opaque background over the canvas
-        apply_solid_background(scroll_area_->viewport(), bg);
-        scroll_area_->viewport()->setStyleSheet(QString("background:%1;").arg(ui::colors::BG_BASE()));
+        apply_solid_background(area->viewport(), bg);
+        area->viewport()->setStyleSheet(QString("background:%1;").arg(ui::colors::BG_BASE()));
+    }
+    if (page_bar_) {
+        page_bar_->setStyleSheet(
+            QString("#dashPageBar{background:%1;border-bottom:1px solid %2;}"
+                    "#dashPageBar QTabBar::tab{background:transparent;color:%3;padding:3px 14px;border:none;"
+                    "font-size:10px;font-weight:bold;letter-spacing:0.5px;}"
+                    "#dashPageBar QTabBar::tab:selected{color:%4;border-bottom:2px solid %4;}"
+                    "#dashPageBar QTabBar::tab:hover{color:%5;}"
+                    "#dashPageBar QToolButton{background:transparent;color:%3;border:1px solid %2;border-radius:2px;"
+                    "padding:1px 8px;font-size:10px;font-weight:bold;}"
+                    "#dashPageBar QToolButton:hover{color:%5;border-color:%4;}")
+                .arg(ui::colors::BG_RAISED(), ui::colors::BORDER_DIM(), ui::colors::TEXT_TERTIARY(),
+                     ui::colors::AMBER(), ui::colors::TEXT_PRIMARY()));
     }
 }
 
@@ -363,18 +390,22 @@ void DashboardScreen::hub_unsubscribe_ticker() {
 // ── Event filter: sync canvas width to scroll viewport ────────────────────────
 
 bool DashboardScreen::eventFilter(QObject* obj, QEvent* event) {
-    if (obj == scroll_area_->viewport() && event->type() == QEvent::Resize) {
-        int vp_w = scroll_area_->viewport()->width();
+    for (const auto& page : pages_) {
+        if (obj != page.scroll->viewport() || event->type() != QEvent::Resize)
+            continue;
+        DashboardCanvas* canvas = page.canvas;
+        int vp_w = page.scroll->viewport()->width();
         // Only update if width actually changed — avoids triggering
         // resizeEvent → rebuild_grid_cache → reflow_tiles on every scroll tick.
         // Use setMaximumWidth + resize instead of setFixedWidth so the canvas
         // never imposes a minimum-width constraint that fights ADS splitters
         // when two screens are placed side-by-side.
-        if (vp_w > 0 && vp_w != canvas_->width()) {
-            canvas_->setMinimumWidth(0);
-            canvas_->setMaximumWidth(QWIDGETSIZE_MAX);
-            canvas_->resize(vp_w, canvas_->height());
+        if (vp_w > 0 && vp_w != canvas->width()) {
+            canvas->setMinimumWidth(0);
+            canvas->setMaximumWidth(QWIDGETSIZE_MAX);
+            canvas->resize(vp_w, canvas->height());
         }
+        break;
     }
     return QWidget::eventFilter(obj, event);
 }
@@ -397,17 +428,14 @@ constexpr quint32 kDashLayoutVersion = 1;
 constexpr const char* kDashLayoutLoadFailedProp = "fincept_dash_layout_load_failed";
 } // namespace
 
-void DashboardScreen::save_layout() {
-    save_timer_->stop();
+namespace {
 
-    if (property(kDashLayoutLoadFailedProp).toBool()) {
-        LOG_WARN("Dashboard", "Skipping layout save — the stored layout could not be read this session, so the "
-                              "on-screen default must not overwrite it");
-        return;
-    }
+/// Settings keys. The first page keeps the original layout key, so an existing
+/// dashboard opens unchanged as page 1 and an older build still reads it.
+constexpr const char* kPagesKey = "dashboard_pages";
+constexpr const char* kFirstPageId = "main";
 
-    GridLayout layout = canvas_->canonical_layout();
-
+QString encode_layout(const GridLayout& layout) {
     // Serialize: magic+version, cols, row_h, margin, item count, then each item
     // (including its per-instance config — dropping it reverted every configured
     // widget to defaults on restart).
@@ -422,33 +450,184 @@ void DashboardScreen::save_layout() {
         stream << item.cell.min_w << item.cell.min_h;
         stream << QJsonDocument(item.config).toJson(QJsonDocument::Compact);
     }
+    return QString::fromLatin1(buf.toBase64());
+}
 
-    QString encoded = buf.toBase64();
-    (void)QtConcurrent::run(
-        [encoded]() { fincept::SettingsRepository::instance().set("dashboard_canvas_layout", encoded, "dashboard"); });
+/// Decode a stored layout; false for an absent, empty or corrupt blob.
+bool decode_layout(const QString& encoded, GridLayout& layout) {
+    if (encoded.isEmpty())
+        return false;
+    QByteArray payload = QByteArray::fromBase64(encoded.toUtf8());
+    QDataStream stream(&payload, QIODevice::ReadOnly);
+
+    int count = 0;
+    // Detect the format: a leading magic means the config-carrying
+    // blob; otherwise the 4 bytes we read were the legacy `cols`.
+    quint32 lead = 0;
+    stream >> lead;
+    const bool has_config = (lead == kDashLayoutMagic);
+    if (has_config) {
+        quint32 version = 0;
+        stream >> version; // reserved for future migrations
+        stream >> layout.cols >> layout.row_h >> layout.margin >> count;
+    } else {
+        layout.cols = static_cast<int>(lead);
+        stream >> layout.row_h >> layout.margin >> count;
+    }
+    if (count <= 0 || count > 100)
+        return false;
+
+    // Clamp the grid geometry before anything downstream uses it.
+    // A truncated / corrupted blob previously produced items with
+    // cols == 0 or w == 0, which grid_to_rect() turns into
+    // zero-width tiles and compact_vertical() spins over.
+    layout.cols = qBound(1, layout.cols, 48);
+    layout.row_h = qBound(10, layout.row_h, 400);
+    layout.margin = qBound(0, layout.margin, 64);
+
+    for (int i = 0; i < count; ++i) {
+        GridItem item;
+        stream >> item.id >> item.instance_id;
+        stream >> item.cell.x >> item.cell.y >> item.cell.w >> item.cell.h;
+        stream >> item.cell.min_w >> item.cell.min_h;
+        if (has_config) {
+            QByteArray cfg_bytes;
+            stream >> cfg_bytes;
+            const auto doc = QJsonDocument::fromJson(cfg_bytes);
+            if (doc.isObject())
+                item.config = doc.object();
+        }
+        // Stop at the first short read rather than appending
+        // default-constructed garbage for the remaining items.
+        if (stream.status() != QDataStream::Ok)
+            break;
+        if (item.id.isEmpty() || item.instance_id.isEmpty())
+            continue;
+        item.cell.min_w = qBound(1, item.cell.min_w, layout.cols);
+        item.cell.min_h = qBound(1, item.cell.min_h, 64);
+        item.cell.w = qBound(item.cell.min_w, item.cell.w, layout.cols);
+        item.cell.h = qBound(item.cell.min_h, item.cell.h, 64);
+        item.cell.x = qBound(0, item.cell.x, layout.cols - item.cell.w);
+        item.cell.y = qBound(0, item.cell.y, 999);
+        layout.items.append(item);
+    }
+    return !layout.items.isEmpty();
+}
+
+} // namespace
+
+QString DashboardScreen::layout_key(const QString& page_id) {
+    return page_id == QLatin1String(kFirstPageId) ? QStringLiteral("dashboard_canvas_layout")
+                                                  : QStringLiteral("dashboard_canvas_layout:") + page_id;
+}
+
+void DashboardScreen::save_layout() {
+    save_timer_->stop();
+    if (pages_.isEmpty())
+        return; // not restored yet: nothing on screen may replace the stored pages
+
+    if (property(kDashLayoutLoadFailedProp).toBool()) {
+        LOG_WARN("Dashboard", "Skipping layout save — the stored layout could not be read this session, so the "
+                              "on-screen default must not overwrite it");
+        return;
+    }
+
+    // Every page whose stored layout has been read is written back; a page
+    // still being restored is skipped so its stored layout is not replaced by
+    // an empty canvas.
+    QVector<QPair<QString, QString>> writes;
+    QJsonArray list;
+    for (const auto& page : pages_) {
+        QJsonObject o;
+        o.insert("id", page.id);
+        o.insert("name", page.name);
+        list.append(o);
+        if (page.restored)
+            writes.append({layout_key(page.id), encode_layout(page.canvas->canonical_layout())});
+    }
+    QJsonObject pages_doc;
+    pages_doc.insert("pages", list);
+    pages_doc.insert("current", current_page_ >= 0 && current_page_ < pages_.size() ? pages_[current_page_].id
+                                                                                    : QString(kFirstPageId));
+    const QString pages_encoded = QString::fromUtf8(QJsonDocument(pages_doc).toJson(QJsonDocument::Compact));
+    (void)QtConcurrent::run([writes, pages_encoded]() {
+        auto& repo = fincept::SettingsRepository::instance();
+        for (const auto& w : writes)
+            repo.set(w.first, w.second, "dashboard");
+        repo.set(kPagesKey, pages_encoded, "dashboard");
+    });
 }
 
 void DashboardScreen::restore_layout() {
     QPointer<DashboardScreen> self = this;
     (void)QtConcurrent::run([self]() {
-        auto result = fincept::SettingsRepository::instance().get("dashboard_canvas_layout");
-
+        auto result = fincept::SettingsRepository::instance().get(kPagesKey);
         QMetaObject::invokeMethod(
             self,
             [self, result]() {
                 if (!self)
                     return;
+                // The page list. Absent (first run, or an older build's
+                // dashboard) or unreadable means a single first page.
+                QString current_id = QString::fromLatin1(kFirstPageId);
+                QVector<QPair<QString, QString>> list;
+                if (result.is_ok() && !result.value().isEmpty()) {
+                    const QJsonObject doc = QJsonDocument::fromJson(result.value().toUtf8()).object();
+                    for (const auto& v : doc.value("pages").toArray()) {
+                        const QJsonObject o = v.toObject();
+                        const QString id = o.value("id").toString();
+                        if (!id.isEmpty() &&
+                            std::none_of(list.cbegin(), list.cend(), [&id](const auto& p) { return p.first == id; }))
+                            list.append({id, o.value("name").toString()});
+                    }
+                    current_id = doc.value("current").toString(current_id);
+                }
+                if (std::none_of(list.cbegin(), list.cend(),
+                                 [](const auto& p) { return p.first == QLatin1String(kFirstPageId); }))
+                    list.prepend({QString::fromLatin1(kFirstPageId), tr("Main")});
+                int current = 0;
+                for (const auto& p : list) {
+                    const int index = self->add_page(p.first, p.second.isEmpty() ? tr("Page") : p.second);
+                    if (p.first == current_id)
+                        current = index;
+                    // Only the first page falls back to the default template;
+                    // an added page starts empty.
+                    self->restore_page_layout(index, p.first == QLatin1String(kFirstPageId));
+                }
+                self->switch_to_page(current);
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void DashboardScreen::restore_page_layout(int index, bool default_if_empty) {
+    QPointer<DashboardScreen> self = this;
+    const QString page_id = pages_[index].id;
+    const QString key = layout_key(page_id);
+    (void)QtConcurrent::run([self, key, page_id, default_if_empty]() {
+        auto result = fincept::SettingsRepository::instance().get(key);
+        QMetaObject::invokeMethod(
+            self,
+            [self, result, page_id, default_if_empty]() {
+                if (!self)
+                    return;
+                const auto it = std::find_if(self->pages_.begin(), self->pages_.end(),
+                                             [&page_id](const Page& p) { return p.id == page_id; });
+                if (it == self->pages_.end())
+                    return; // deleted meanwhile
+                Page& page = *it;
 
                 if (result.is_err()) {
                     LOG_ERROR("Dashboard",
-                              QString("settings read failed for 'dashboard_canvas_layout' — rendering the default "
-                                      "layout read-only, leaving the stored layout untouched: %1")
-                                  .arg(QString::fromStdString(result.error())));
+                              QString("settings read failed for '%1' — rendering the default layout read-only, "
+                                      "leaving the stored layout untouched: %2")
+                                  .arg(layout_key(page_id), QString::fromStdString(result.error())));
                     // Degrade read-only: the user still gets a usable dashboard,
                     // but the layout_changed → save_timer_ → set() chain that
                     // apply_template() is about to trigger is disarmed.
                     self->setProperty(kDashLayoutLoadFailedProp, true);
-                    self->build_default_layout();
+                    if (default_if_empty)
+                        self->build_default_layout(page.canvas);
 
                     // Say so. Suppressing the write stops the saved layout being
                     // destroyed, but on its own it just swaps one silent failure
@@ -469,85 +648,253 @@ void DashboardScreen::restore_layout() {
                 // The read succeeded, so anything below this point is a genuine
                 // "unset or corrupt" case where writing the default back is the
                 // correct behaviour.
-                self->setProperty(kDashLayoutLoadFailedProp, false);
-
-                if (result.value().isEmpty()) {
-                    self->build_default_layout();
-                    return;
-                }
-
-                QByteArray payload = QByteArray::fromBase64(result.value().toUtf8());
-                QDataStream stream(&payload, QIODevice::ReadOnly);
-
+                page.restored = true;
                 GridLayout layout;
-                int count = 0;
-                // Detect the format: a leading magic means the config-carrying
-                // blob; otherwise the 4 bytes we read were the legacy `cols`.
-                quint32 lead = 0;
-                stream >> lead;
-                const bool has_config = (lead == kDashLayoutMagic);
-                if (has_config) {
-                    quint32 version = 0;
-                    stream >> version; // reserved for future migrations
-                    stream >> layout.cols >> layout.row_h >> layout.margin >> count;
-                } else {
-                    layout.cols = static_cast<int>(lead);
-                    stream >> layout.row_h >> layout.margin >> count;
+                if (decode_layout(result.value(), layout)) {
+                    if (self->compact_rows_)
+                        layout.row_h = 40;
+                    page.canvas->load_layout(layout);
+                } else if (default_if_empty) {
+                    self->build_default_layout(page.canvas);
                 }
-
-                if (count <= 0 || count > 100) {
-                    self->build_default_layout();
-                    return;
-                }
-
-                // Clamp the grid geometry before anything downstream uses it.
-                // A truncated / corrupted blob previously produced items with
-                // cols == 0 or w == 0, which grid_to_rect() turns into
-                // zero-width tiles and compact_vertical() spins over.
-                layout.cols = qBound(1, layout.cols, 48);
-                layout.row_h = qBound(10, layout.row_h, 400);
-                layout.margin = qBound(0, layout.margin, 64);
-
-                for (int i = 0; i < count; ++i) {
-                    GridItem item;
-                    stream >> item.id >> item.instance_id;
-                    stream >> item.cell.x >> item.cell.y >> item.cell.w >> item.cell.h;
-                    stream >> item.cell.min_w >> item.cell.min_h;
-                    if (has_config) {
-                        QByteArray cfg_bytes;
-                        stream >> cfg_bytes;
-                        const auto doc = QJsonDocument::fromJson(cfg_bytes);
-                        if (doc.isObject())
-                            item.config = doc.object();
-                    }
-                    // Stop at the first short read rather than appending
-                    // default-constructed garbage for the remaining items.
-                    if (stream.status() != QDataStream::Ok)
-                        break;
-                    if (item.id.isEmpty() || item.instance_id.isEmpty())
-                        continue;
-                    item.cell.min_w = qBound(1, item.cell.min_w, layout.cols);
-                    item.cell.min_h = qBound(1, item.cell.min_h, 64);
-                    item.cell.w = qBound(item.cell.min_w, item.cell.w, layout.cols);
-                    item.cell.h = qBound(item.cell.min_h, item.cell.h, 64);
-                    item.cell.x = qBound(0, item.cell.x, layout.cols - item.cell.w);
-                    item.cell.y = qBound(0, item.cell.y, 999);
-                    layout.items.append(item);
-                }
-
-                if (layout.items.isEmpty()) {
-                    self->build_default_layout();
-                    return;
-                }
-
-                self->canvas_->load_layout(layout);
             },
             Qt::QueuedConnection);
     });
 }
 
-void DashboardScreen::build_default_layout() {
-    canvas_->apply_template("portfolio_manager");
+void DashboardScreen::build_default_layout(DashboardCanvas* canvas) {
+    if (canvas)
+        canvas->apply_template("portfolio_manager");
+}
+
+// ── Pages ─────────────────────────────────────────────────────────────────────
+
+void DashboardScreen::build_page_bar() {
+    page_bar_ = new QWidget(this);
+    page_bar_->setObjectName("dashPageBar");
+    page_bar_->setAttribute(Qt::WA_StyledBackground, true);
+    page_bar_->setFixedHeight(26);
+    auto* hl = new QHBoxLayout(page_bar_);
+    hl->setContentsMargins(8, 0, 8, 0);
+    hl->setSpacing(6);
+
+    page_tabs_ = new QTabBar(page_bar_);
+    page_tabs_->setObjectName("dashPageTabs");
+    page_tabs_->setMovable(true);
+    page_tabs_->setExpanding(false);
+    page_tabs_->setDrawBase(false);
+    page_tabs_->setContextMenuPolicy(Qt::CustomContextMenu);
+    page_tabs_->setAccessibleName(tr("Dashboard pages"));
+    page_tabs_->setToolTip(tr("Dashboard pages — right-click a page to rename or delete it; drag to reorder"));
+    hl->addWidget(page_tabs_);
+
+    auto* add_btn = new QToolButton(page_bar_);
+    add_btn->setText(tr("+ PAGE"));
+    add_btn->setToolTip(tr("Add a dashboard page"));
+    add_btn->setAccessibleName(tr("Add a dashboard page"));
+    add_btn->setCursor(Qt::PointingHandCursor);
+    hl->addWidget(add_btn);
+    hl->addStretch(1);
+
+    auto* hint = new QLabel(tr("Right-click a widget title to move it to another page"), page_bar_);
+    hint->setStyleSheet(QString("color:%1;font-size:9px;background:transparent;").arg(ui::colors::TEXT_TERTIARY()));
+    hl->addWidget(hint);
+
+    connect(add_btn, &QToolButton::clicked, this, &DashboardScreen::new_page);
+    connect(page_tabs_, &QTabBar::currentChanged, this, [this](int index) {
+        if (index >= 0 && index != current_page_)
+            switch_to_page(index);
+    });
+    connect(page_tabs_, &QTabBar::tabMoved, this, [this](int from, int to) {
+        if (from < 0 || to < 0 || from >= pages_.size() || to >= pages_.size())
+            return;
+        pages_.move(from, to);
+        current_page_ = page_tabs_->currentIndex();
+        save_timer_->start();
+    });
+    connect(page_tabs_, &QTabBar::tabBarDoubleClicked, this, [this](int index) {
+        if (index >= 0)
+            rename_page(index);
+    });
+    connect(page_tabs_, &QTabBar::customContextMenuRequested, this, [this](const QPoint& pos) {
+        const int index = page_tabs_->tabAt(pos);
+        if (index >= 0)
+            show_page_menu(index, page_tabs_->mapToGlobal(pos));
+    });
+}
+
+int DashboardScreen::add_page(const QString& id, const QString& name) {
+    Page page;
+    page.id = id;
+    page.name = name;
+    page.canvas = new DashboardCanvas;
+    if (compact_rows_)
+        page.canvas->set_row_height(40);
+
+    // Scroll area wraps canvas — provides vertical scroll when content exceeds viewport
+    page.scroll = new QScrollArea;
+    page.scroll->setWidgetResizable(false); // canvas controls its own size
+    page.scroll->setMinimumWidth(0);        // allow ADS to shrink this panel freely
+    page.scroll->setWidget(page.canvas);
+    // Sync canvas width to scroll viewport via event filter
+    page.scroll->viewport()->installEventFilter(this);
+    pages_stack_->addWidget(page.scroll);
+
+    DashboardCanvas* canvas = page.canvas;
+    connect(canvas, &DashboardCanvas::widget_count_changed, this, [this, canvas](int count) {
+        if (canvas == canvas_) {
+            toolbar_->set_widget_count(count);
+            status_bar_->set_widget_count(count);
+        }
+    });
+    connect(canvas, &DashboardCanvas::layout_changed, this, [this](const GridLayout&) { save_timer_->start(); });
+    connect(canvas, &DashboardCanvas::tile_menu_requested, this,
+            [this, canvas](const QString& instance_id, const QPoint& global_pos) {
+                show_tile_menu(canvas, instance_id, global_pos);
+            });
+
+    pages_.append(page);
+    {
+        const QSignalBlocker block(page_tabs_);
+        page_tabs_->addTab(name.toUpper());
+    }
+    refresh_theme();
+    return static_cast<int>(pages_.size()) - 1;
+}
+
+void DashboardScreen::sync_page_tabs() {
+    const QSignalBlocker block(page_tabs_);
+    for (int i = 0; i < pages_.size() && i < page_tabs_->count(); ++i)
+        page_tabs_->setTabText(i, pages_[i].name.toUpper());
+    if (current_page_ >= 0)
+        page_tabs_->setCurrentIndex(current_page_);
+}
+
+void DashboardScreen::switch_to_page(int index) {
+    if (index < 0 || index >= pages_.size())
+        return;
+    current_page_ = index;
+    scroll_area_ = pages_[index].scroll;
+    canvas_ = pages_[index].canvas;
+    // Hidden pages hide their widgets, which unsubscribes them from the data
+    // hub (BaseWidget show/hide), so only the visible page fetches data.
+    pages_stack_->setCurrentWidget(scroll_area_);
+    {
+        const QSignalBlocker block(page_tabs_);
+        page_tabs_->setCurrentIndex(index);
+    }
+    // The stack does not resize a page that was hidden; size its canvas now.
+    const int vp_w = scroll_area_->viewport()->width();
+    if (vp_w > 0 && vp_w != canvas_->width())
+        canvas_->resize(vp_w, canvas_->height());
+    toolbar_->set_widget_count(canvas_->tile_count());
+    status_bar_->set_widget_count(canvas_->tile_count());
+    save_timer_->start();
+}
+
+void DashboardScreen::new_page() {
+    bool ok = false;
+    const QString suggested = tr("Page %1").arg(pages_.size() + 1);
+    const QString name =
+        QInputDialog::getText(this, tr("New dashboard page"), tr("Page name:"), QLineEdit::Normal, suggested, &ok)
+            .trimmed();
+    if (!ok)
+        return;
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    const int index = add_page(id, name.isEmpty() ? suggested : name);
+    pages_[index].restored = true; // new and empty: nothing stored to protect
+    switch_to_page(index);
+    save_layout();
+}
+
+void DashboardScreen::rename_page(int index) {
+    if (index < 0 || index >= pages_.size())
+        return;
+    bool ok = false;
+    const QString name =
+        QInputDialog::getText(this, tr("Rename page"), tr("Page name:"), QLineEdit::Normal, pages_[index].name, &ok)
+            .trimmed();
+    if (!ok || name.isEmpty())
+        return;
+    pages_[index].name = name;
+    sync_page_tabs();
+    save_layout();
+}
+
+void DashboardScreen::delete_page(int index) {
+    if (index < 0 || index >= pages_.size() || pages_.size() <= 1)
+        return;
+    const Page page = pages_[index];
+    if (page.id == QLatin1String(kFirstPageId)) {
+        QMessageBox::information(this, tr("Delete page"), tr("The first page cannot be deleted."));
+        return;
+    }
+    const auto answer = QMessageBox::question(
+        this, tr("Delete page"),
+        tr("Delete the page \"%1\" and its %2 widget(s)?").arg(page.name).arg(page.canvas->tile_count()),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    pages_.removeAt(index);
+    {
+        const QSignalBlocker block(page_tabs_);
+        page_tabs_->removeTab(index);
+    }
+    pages_stack_->removeWidget(page.scroll);
+    page.scroll->deleteLater();
+    const QString key = layout_key(page.id);
+    (void)QtConcurrent::run([key]() { fincept::SettingsRepository::instance().remove(key); });
+    switch_to_page(std::min(index, static_cast<int>(pages_.size()) - 1));
+    save_layout();
+}
+
+void DashboardScreen::show_page_menu(int index, const QPoint& global_pos) {
+    QMenu menu(this);
+    menu.addAction(tr("Rename…"), this, [this, index]() { rename_page(index); });
+    auto* del = menu.addAction(tr("Delete page…"), this, [this, index]() { delete_page(index); });
+    del->setEnabled(pages_.size() > 1 && pages_[index].id != QLatin1String(kFirstPageId));
+    menu.exec(global_pos);
+}
+
+int DashboardScreen::page_index(const DashboardCanvas* canvas) const {
+    for (int i = 0; i < pages_.size(); ++i)
+        if (pages_[i].canvas == canvas)
+            return i;
+    return -1;
+}
+
+void DashboardScreen::show_tile_menu(DashboardCanvas* canvas, const QString& instance_id, const QPoint& global_pos) {
+    QMenu menu(this);
+    auto* move = menu.addMenu(tr("Move to page"));
+    const int from = page_index(canvas);
+    for (int i = 0; i < pages_.size(); ++i) {
+        if (i == from)
+            continue;
+        move->addAction(pages_[i].name, this,
+                        [this, canvas, instance_id, i]() { move_widget_to_page(canvas, instance_id, i); });
+    }
+    move->addSeparator();
+    move->addAction(tr("New page…"), this, [this, canvas, instance_id]() {
+        const int before = static_cast<int>(pages_.size());
+        new_page();
+        if (pages_.size() > before)
+            move_widget_to_page(canvas, instance_id, static_cast<int>(pages_.size()) - 1);
+    });
+    menu.exec(global_pos);
+}
+
+void DashboardScreen::move_widget_to_page(DashboardCanvas* from, const QString& instance_id, int target) {
+    if (!from || target < 0 || target >= pages_.size() || pages_[target].canvas == from)
+        return;
+    QString type_id;
+    QJsonObject config;
+    if (!from->item_info(instance_id, &type_id, &config))
+        return;
+    // The widget is re-created on the target page with the same settings.
+    pages_[target].canvas->add_widget_with_config(type_id, config);
+    from->remove_widget(instance_id);
+    switch_to_page(target);
+    save_layout();
 }
 
 } // namespace fincept::screens
