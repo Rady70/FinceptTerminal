@@ -23,6 +23,9 @@ class EtfFlowHighlightsWidget : public BaseWidget {
   public:
     explicit EtfFlowHighlightsWidget(QWidget* parent = nullptr);
 
+    /// Dashboard REFRESH ALL: re-read the stored snapshot (same as its button).
+    void request_bulk_refresh() override { load(); }
+
   protected:
     void showEvent(QShowEvent* e) override;
     void on_theme_changed() override;

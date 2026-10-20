@@ -21,6 +21,9 @@ class CotHighlightsWidget : public BaseWidget {
   public:
     explicit CotHighlightsWidget(QWidget* parent = nullptr);
 
+    /// Dashboard REFRESH ALL: re-read the stored archive only (no CFTC download).
+    void request_bulk_refresh() override { request(false); }
+
   protected:
     void showEvent(QShowEvent* e) override;
     void on_theme_changed() override;

@@ -20,6 +20,9 @@ class FedWatchHighlightsWidget : public BaseWidget {
   public:
     explicit FedWatchHighlightsWidget(QWidget* parent = nullptr);
 
+    /// Dashboard REFRESH ALL: re-read the stored workspace only (no collection).
+    void request_bulk_refresh() override { request(QStringLiteral("workspace")); }
+
   protected:
     void showEvent(QShowEvent* e) override;
     void on_theme_changed() override;
@@ -45,6 +48,7 @@ class FedWatchHighlightsWidget : public BaseWidget {
     int sequence_ = 0;
     bool loaded_once_ = false;
     QJsonObject last_data_;
+    QString collect_error_; ///< the last failed collection, kept in the footer until one succeeds
 };
 
 } // namespace fincept::screens::widgets

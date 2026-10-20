@@ -12,6 +12,7 @@
 //
 // Header-only over Qt Core; no app sources.
 
+#include "screens/dashboard/canvas/DashboardPages.h"
 #include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/dashboard/widgets/PortfolioValuation.h"
 #include "screens/markets/QuoteDisplayFormat.h"
@@ -70,12 +71,87 @@ class TestDashboardWidgetRules : public QObject {
     }
 
     void price_decimals_widen_below_one() {
-        QCOMPARE(quote_price_decimals(true, 0.0793, 2), 4);
+        // Four significant digits below 1, at any magnitude.
+        QCOMPARE(quote_price_decimals(true, 0.2164, 2), 4);
+        QCOMPARE(quote_price_decimals(true, 0.0793, 2), 5);
         QCOMPARE(quote_price_decimals(true, -0.5, 2), 4);
+        QCOMPARE(quote_price_decimals(true, 0.00000712, 2), 9); // 0.000007120, not 0.0000
+        QCOMPARE(quote_price_decimals(true, 1e-12, 2), 10);     // capped
         QCOMPARE(quote_price_decimals(true, 1.12, 4), 4);
         QCOMPARE(quote_price_decimals(true, 342.94, 2), 2);
         QCOMPARE(quote_price_decimals(false, 0.0, 2), 2);
         QCOMPARE(quote_price_decimals(true, 0.0, 2), 2); // a genuine zero keeps the base
+        QCOMPARE(QString::number(0.00000712, 'f', quote_price_decimals(true, 0.00000712, 2)),
+                 QStringLiteral("0.000007120"));
+    }
+
+    void redelivered_value_does_not_clear_a_failure() {
+        QuoteData shown;
+        shown.retrieved_at = 1000;
+        QuoteData same = shown; // the hub's cached copy, re-delivered on re-subscribe
+        QVERIFY(!quote_value_clears_error(&shown, same));
+        QuoteData newer = shown;
+        newer.retrieved_at = 1060;
+        QVERIFY(quote_value_clears_error(&shown, newer));
+        QVERIFY(quote_value_clears_error(nullptr, same)); // first value
+        QuoteData unknown;
+        QVERIFY(quote_value_clears_error(&unknown, same)); // retrieval time unknown
+    }
+
+    void page_layout_round_trip_and_keys() {
+        using namespace fincept::screens::pages;
+        GridLayout layout;
+        GridItem item;
+        item.id = "watchlist";
+        item.instance_id = "abc";
+        item.cell = {4, 2, 6, 5, 2, 3};
+        item.config.insert("symbols", "AAPL");
+        layout.items.append(item);
+        GridLayout back;
+        QVERIFY(decode_layout(encode_layout(layout), back));
+        QCOMPARE(back.items.size(), 1);
+        QCOMPARE(back.items[0].id, QStringLiteral("watchlist"));
+        QCOMPARE(back.items[0].cell.w, 6);
+        QCOMPARE(back.items[0].config.value("symbols").toString(), QStringLiteral("AAPL"));
+        GridLayout empty;
+        QVERIFY(!decode_layout(QString(), empty));
+        QVERIFY(!decode_layout(encode_layout(GridLayout{}), empty)); // zero items = nothing stored
+        // The first page keeps the single-dashboard key (old layouts open as page 1).
+        QCOMPARE(layout_key("main"), QStringLiteral("dashboard_canvas_layout"));
+        QCOMPARE(layout_key("p2"), QStringLiteral("dashboard_canvas_layout:p2"));
+    }
+
+    void page_list_is_cleaned_and_first_page_kept() {
+        using namespace fincept::screens::pages;
+        QString current;
+        auto list = parse_pages(QString(), "Main", &current); // never saved: one first page
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list[0].id, QStringLiteral("main"));
+        QCOMPARE(current, QStringLiteral("main"));
+
+        const QString stored = R"({"pages":[{"id":"p2","name":"Research"},{"id":"main","name":"Main"},)"
+                               R"({"id":"p2","name":"dup"},{"id":"","name":"x"}],"current":"gone"})";
+        list = parse_pages(stored, "Main", &current);
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(list[0].id, QStringLiteral("main")); // first page always first
+        QCOMPARE(list[1].name, QStringLiteral("Research"));
+        QCOMPARE(current, QStringLiteral("main")); // a missing current page falls back
+
+        list = parse_pages(pages_json(list, "p2"), "Main", &current);
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(current, QStringLiteral("p2"));
+    }
+
+    void deleting_another_page_keeps_the_shown_one() {
+        using namespace fincept::screens::pages;
+        // Pages [Main, A, B]; showing Main (0), delete A (1) -> still Main (0).
+        QCOMPARE(current_after_delete(1, 0, 2), 0);
+        // Showing B (2), delete A (1) -> B is now index 1.
+        QCOMPARE(current_after_delete(1, 2, 2), 1);
+        // Showing A (1), delete A -> its neighbour (now index 1 = B).
+        QCOMPARE(current_after_delete(1, 1, 2), 1);
+        // Showing the last page and deleting it -> the new last.
+        QCOMPARE(current_after_delete(2, 2, 2), 1);
     }
 
     void basis_is_described() {

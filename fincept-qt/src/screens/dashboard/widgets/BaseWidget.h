@@ -57,6 +57,11 @@ class BaseWidget : public QFrame {
     /// refresh button. Used by the dashboard "REFRESH ALL" toolbar button.
     void request_refresh() { emit refresh_requested(); }
 
+    /// The dashboard's REFRESH ALL. Default: the same as the refresh button.
+    /// Widgets whose own refresh starts a long acquisition (CFTC, FedWatch)
+    /// override it to re-read their stored data only.
+    virtual void request_bulk_refresh() { emit refresh_requested(); }
+
     /// Current per-instance config. Default: empty — subclasses override to
     /// return their live state (symbol, broker id, filters, etc.).
     virtual QJsonObject config() const { return {}; }

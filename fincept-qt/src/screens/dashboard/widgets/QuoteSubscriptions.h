@@ -35,8 +35,11 @@ class QuoteSubscriptions {
             hub.subscribe(owner, topic, [this, sym, changed](const QVariant& v) {
                 if (!v.canConvert<services::QuoteData>())
                     return;
-                cache_.insert(sym, v.value<services::QuoteData>());
-                errors_.remove(sym);
+                const auto delivered = v.value<services::QuoteData>();
+                const auto it = cache_.constFind(sym);
+                if (quote_value_clears_error(it == cache_.constEnd() ? nullptr : &it.value(), delivered))
+                    errors_.remove(sym);
+                cache_.insert(sym, delivered);
                 if (changed)
                     changed();
             });

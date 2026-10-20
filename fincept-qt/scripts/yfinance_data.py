@@ -387,15 +387,53 @@ def _symbol_frame(data, symbol):
     return None
 
 
+def _sig(value, digits=8):
+    """`value` to `digits` significant digits, or None for a missing cell.
+
+    Fixed decimals cannot carry very small prices: a coin at 0.00000712 with
+    6 decimals is 0.000007 and its change rounds to 0.0 while its percentage
+    says -3%. Significant digits keep both readable at any magnitude.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v == 0:
+        return 0.0
+    return float(f"{v:.{digits}g}")
+
+
+# How old the last price before Helsinki midnight may be and still serve as
+# the day's reference. Hourly forex bars are near-continuous on weekdays; a
+# larger gap means missing data, and an old price must not pass as
+# "00:00 Helsinki". Monday's reference is Friday's close (the weekend), and a
+# Sunday-evening open's reference is Friday's close too.
+_FX_REF_MAX_GAP = pd.Timedelta(hours=6)
+_FX_REF_MAX_GAP_AFTER_WEEKEND = pd.Timedelta(hours=56)
+
+
+def _fx_weekend(hel_index):
+    """True for bars inside the forex weekend in Helsinki time: from Saturday
+    00:00 until Sunday 22:00. The market reopens at Monday 00:00 Helsinki in
+    most weeks, but at Sunday 23:00 in the weeks when the US and EU clocks
+    change on different dates; those Sunday bars are real and are kept."""
+    wd = hel_index.weekday
+    return (wd == 5) | ((wd == 6) & (hel_index.hour < 22))
+
+
 def helsinki_day_change(frame, bar=pd.Timedelta(hours=1)):
     """Forex day measured from 00:00 Europe/Helsinki (DST-aware).
 
     `frame` holds intraday OHLC bars indexed by tz-aware bar START times.
     The Helsinki day is the day of the latest bar; its reference is the close
     of the last bar that ENDED at or before that day's 00:00 Helsinki (the
-    last price before midnight). Saturday and Sunday in Helsinki time carry no
-    forex session (the market opens at Monday 00:00 Helsinki in both winter
-    and summer time), so stray weekend bars are ignored.
+    last price before midnight). Bars inside the forex weekend are ignored
+    (_fx_weekend). A reference older than the allowed gap is not used: the
+    change is then missing rather than measured from an older day.
 
     Returns a dict (price, previous_close, open, high, low, session_date,
     price_time) or None when the frame has no usable close.
@@ -409,14 +447,21 @@ def helsinki_day_change(frame, bar=pd.Timedelta(hours=1)):
     if getattr(idx, "tz", None) is None:
         idx = idx.tz_localize("UTC")
     hel = idx.tz_convert(_HELSINKI_TZ)
-    weekday = pd.Series(hel.weekday, index=f.index)
-    keep = (weekday < 5).to_numpy()
-    f, hel = f[keep], hel[keep]
+    keep = ~_fx_weekend(hel)
+    keep = keep.to_numpy() if hasattr(keep, "to_numpy") else keep
+    f, hel, idx = f[keep], hel[keep], idx[keep]
     if f.empty:
         return None
     day_start = hel[-1].normalize()
     ended = (hel + bar) <= day_start
-    previous = float(f["Close"][ended].iloc[-1]) if ended.any() else None
+    previous = None
+    if ended.any():
+        ref_end = hel[ended][-1] + bar
+        gap = day_start - ref_end
+        after_weekend = day_start.weekday() in (0, 6)  # Monday, or a Sunday-evening open
+        limit = _FX_REF_MAX_GAP_AFTER_WEEKEND if after_weekend else _FX_REF_MAX_GAP
+        if gap <= limit:
+            previous = float(f["Close"][ended].iloc[-1])
     today = f[hel >= day_start]
     return {
         "price": float(f["Close"].iloc[-1]),
@@ -425,62 +470,80 @@ def helsinki_day_change(frame, bar=pd.Timedelta(hours=1)):
         "high": float(today["High"].max()) if today["High"].notna().any() else None,
         "low": float(today["Low"].min()) if today["Low"].notna().any() else None,
         "session_date": day_start.date().isoformat(),
-        "price_time": int(idx[keep][-1].timestamp()),
+        "price_time": int(idx[-1].timestamp()),
     }
 
 
-def _previous_settlement(symbol, info_reader=None):
+_SETTLEMENT_FAIL_TTL_SEC = 120
+
+
+def _read_info(symbol):
+    """Yahoo quote summary with a time limit: the worker serves requests one
+    at a time, so a stuck lookup must not hold every other quote."""
+    import io, contextlib
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run():
+        _buf = io.StringIO()
+        with contextlib.redirect_stdout(_buf), contextlib.redirect_stderr(_buf):
+            return yf.Ticker(symbol).info or {}
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(run).result(timeout=_NET_TIMEOUT)
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _previous_settlement(symbol, info_reader=None, session_date=None):
     """(previous settlement, contract) of a futures symbol's current contract.
 
     Read from Yahoo's quote summary, which names the contract the continuous
-    symbol currently points to; cached briefly in the long-running worker.
+    symbol currently points to. Cached briefly in the long-running worker; the
+    cache entry is dropped as soon as the daily bars move to a new session (the
+    previous settlement changes with the session), and a failed read is
+    remembered for a short time so every refresh does not wait on it again.
     Returns (None, '') when it cannot be read.
     """
     now = datetime.now().timestamp()
     hit = _settlement_cache.get(symbol)
-    if hit and hit[0] > now:
+    if hit and hit[0] > now and (session_date is None or hit[3] == session_date):
         return hit[1], hit[2]
     prev, contract = None, ""
     try:
-        if info_reader is not None:
-            info = info_reader(symbol)
-        else:
-            import io, contextlib
-            _buf = io.StringIO()
-            with contextlib.redirect_stdout(_buf), contextlib.redirect_stderr(_buf):
-                info = yf.Ticker(symbol).info or {}
-        prev = _num(info.get("regularMarketPreviousClose"), 6)
+        info = info_reader(symbol) if info_reader is not None else _read_info(symbol)
+        prev = _sig(info.get("regularMarketPreviousClose"))
         if prev is None:
-            prev = _num(info.get("previousClose"), 6)
+            prev = _sig(info.get("previousClose"))
         contract = str(info.get("underlyingSymbol") or "")
     except Exception:
         prev, contract = None, ""
     if prev is not None and prev > 0:
-        _settlement_cache[symbol] = (now + _SETTLEMENT_TTL_SEC, prev, contract)
+        _settlement_cache[symbol] = (now + _SETTLEMENT_TTL_SEC, prev, contract, session_date)
         return prev, contract
+    _settlement_cache[symbol] = (now + _SETTLEMENT_FAIL_TTL_SEC, None, "", session_date)
     return None, ""
 
 
 def _quote_row(symbol, price, previous_close, basis, session_date, open_=None, high=None, low=None,
                volume=None, contract="", price_time=None):
     """One quote dict. The change is derived from the unrounded values and
-    rounded once; a missing or zero reference leaves it missing (a gap, not a
-    0.00 move)."""
-    current = _num(price, 6)
-    prev = _num(previous_close, 6)
+    rounded once (significant digits, so tiny prices keep their size); a
+    missing or zero reference leaves it missing (a gap, not a 0.00 move)."""
+    current = _sig(price)
+    prev = _sig(previous_close)
     raw_change = float(price) - float(previous_close) if current is not None and prev is not None else None
     row = {
         "symbol": symbol,
         "price": current,
-        "change": _num(raw_change, 6),
+        "change": _sig(raw_change),
         "change_percent": (_num(raw_change / float(previous_close) * 100, 4)
                            if raw_change is not None and prev else None),
         # None, not 0, throughout: a cell yfinance did not return is
         # an absent reading, and the host renders it as such.
         "volume": volume,
-        "high": _num(high, 6),
-        "low": _num(low, 6),
-        "open": _num(open_, 6),
+        "high": _sig(high),
+        "low": _sig(low),
+        "open": _sig(open_),
         "previous_close": prev,
         "day_basis": basis,
         "session_date": session_date,
@@ -507,7 +570,7 @@ def _daily_quote(symbol, hist, info_reader=None):
     session_date = last_day.date().isoformat() if hasattr(last_day, "date") else None
     contract = ""
     if _is_future(symbol):
-        prev, contract = _previous_settlement(symbol, info_reader)
+        prev, contract = _previous_settlement(symbol, info_reader, session_date)
         basis = DAY_BASIS_SETTLEMENT
         if prev is None:
             # The settlement could not be read: the prior bar may belong to the
@@ -566,12 +629,17 @@ def get_batch_quotes(symbols, info_reader=None):
 
         return results
     except Exception as e:
-        # Fallback: fetch one by one
+        # Fallback: fetch one by one. Still one row per symbol: a failure is an
+        # error row, never a silently missing symbol. get_quote measures the
+        # change against Yahoo's own previous close, and its day_basis says so.
         results = []
         for symbol in symbols:
             quote = get_quote(symbol)
             if quote and "error" not in quote:
                 results.append(quote)
+            else:
+                results.append({"symbol": symbol,
+                                "error": str((quote or {}).get("error") or e)[:200]})
         return results
 
 # Month tokens used by futures shortNames, e.g. "Gold Jun 26" / "Crude Oil Jul 26".

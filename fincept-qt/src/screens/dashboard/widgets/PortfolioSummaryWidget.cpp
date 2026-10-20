@@ -361,7 +361,8 @@ void PortfolioSummaryWidget::ensure_fx_subscriptions() {
         if (major == pc)
             continue;
         const QString fx = valuation::fx_symbol(major, pc);
-        if (!fx_symbols_.contains(fx) && !wanted.contains(fx))
+        // A pair already held as a holding is already subscribed.
+        if (!fx_symbols_.contains(fx) && !wanted.contains(fx) && !holding_symbols_.contains(fx))
             wanted << fx;
     }
     if (!wanted.isEmpty()) {
@@ -398,6 +399,7 @@ void PortfolioSummaryWidget::render() {
     int priced_count = 0;
     int converted_count = 0;
     QStringList left_out;
+    bool any_foreign = false; ///< a holding quoted in another currency than the portfolio's
 
     // Clear list
     while (list_layout_->count() > 0) {
@@ -436,8 +438,10 @@ void PortfolioSummaryWidget::render() {
             const QString major = valuation::normalize_currency(in.quote_currency).code;
             if (major == pc) {
                 rate = 1.0;
-            } else if (const auto* fx = feed_.quote(valuation::fx_symbol(major, pc)); fx && fx->has_price) {
-                rate = fx->price;
+            } else {
+                any_foreign = true;
+                if (const auto* fx = feed_.quote(valuation::fx_symbol(major, pc)); fx && fx->has_price)
+                    rate = fx->price;
             }
         }
         const valuation::HoldingValue hv = valuation::value_holding(in, pc, rate);
@@ -542,6 +546,20 @@ void PortfolioSummaryWidget::render() {
         summary.text +=
             (summary.text.isEmpty() ? QString() : QStringLiteral(" · ")) + tr("%1 not in totals").arg(left_out.size());
         summary.warn = true;
+    }
+    if (any_foreign) {
+        // The purchase exchange rate is not recorded, so a foreign holding's
+        // P&L is its price gain in its own currency, translated at today's
+        // rate: currency gains or losses are not in it.
+        const QString note = tr("P&L excludes currency moves (today's FX rate)");
+        summary.text += (summary.text.isEmpty() ? QString() : QStringLiteral(" · ")) + note;
+        const QString why = tr("Foreign holdings: P&L is the price change in the holding's own currency, converted at "
+                               "today's exchange rate. Currency gains or losses since purchase are not included "
+                               "because the purchase exchange rate is not recorded.");
+        total_pnl_lbl_->setToolTip(
+            total_pnl_lbl_->toolTip().isEmpty() ? why : total_pnl_lbl_->toolTip() + QLatin1Char(' ') + why);
+        day_pnl_lbl_->setToolTip(day_pnl_lbl_->toolTip() + QLatin1Char(' ') +
+                                 tr("Today's currency move is not included."));
     }
     set_footer(summary.text, summary.tooltip, summary.warn);
 }

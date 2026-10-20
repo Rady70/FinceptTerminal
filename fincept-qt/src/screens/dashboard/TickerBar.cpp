@@ -1,5 +1,6 @@
 #include "screens/dashboard/TickerBar.h"
 
+#include "screens/markets/QuoteDisplayFormat.h"
 #include "services/markets/MarketDataService.h"
 #include "storage/repositories/SettingsRepository.h"
 #include "ui/theme/Theme.h"
@@ -168,9 +169,8 @@ void TickerBar::rebuild_entry_cache() {
     for (auto& e : entries_) {
         // Forex rates and sub-1 prices need more than two decimals (1.1213,
         // 0.0793); the same rule as the dashboard quote widgets.
-        const int decimals = e.symbol.endsWith(QLatin1String("=X"))                       ? 4
-                             : (e.has_price && e.price != 0.0 && std::abs(e.price) < 1.0) ? 4
-                                                                                          : 2;
+        const int decimals = fincept::screens::quote_price_decimals(e.has_price, e.price,
+                                                                    e.symbol.endsWith(QLatin1String("=X")) ? 4 : 2);
         e.price_text = e.has_price ? QString::number(e.price, 'f', decimals) : QStringLiteral("--");
         // The percent reading is preferred when it arrived; otherwise the
         // absolute change is shown *without* a "%" so the unit matches the

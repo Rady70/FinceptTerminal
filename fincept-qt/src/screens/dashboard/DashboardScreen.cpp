@@ -4,6 +4,7 @@
 #include "datahub/DataHub.h"
 #include "datahub/DataHubMetaTypes.h"
 #include "screens/dashboard/canvas/AddWidgetDialog.h"
+#include "screens/dashboard/canvas/DashboardPages.h"
 #include "screens/dashboard/canvas/DashboardTemplates.h"
 #include "screens/dashboard/canvas/TemplatePicker.h"
 #include "screens/dashboard/canvas/WidgetRegistry.h"
@@ -323,7 +324,7 @@ void DashboardScreen::on_refresh_clicked() {
         const auto widgets = canvas_->findChildren<widgets::BaseWidget*>();
         for (auto* w : widgets) {
             if (w && w->isVisible())
-                w->request_refresh();
+                w->request_bulk_refresh();
         }
     }
 }
@@ -413,112 +414,16 @@ bool DashboardScreen::eventFilter(QObject* obj, QEvent* event) {
 // ── Save / Restore layout via SettingsRepository ──────────────────────────────
 
 namespace {
-// Magic + version prefix for the serialized dashboard layout blob. Distinguishes
-// the current config-carrying format from the legacy one (which packed items
-// with no per-item config). `cols` (a small int) never collides with the magic,
-// so legacy blobs are still decoded (with empty per-item config).
-constexpr quint32 kDashLayoutMagic = 0xDA58A101u;
-constexpr quint32 kDashLayoutVersion = 1;
-
 /// Dynamic-property guard: set when restore_layout() could not *read* the
-/// stored blob (as opposed to reading a genuinely absent/corrupt one). While
-/// it is set, save_layout() refuses to write, because the layout on screen is
-/// the built-in default rather than anything the user arranged — persisting it
-/// would replace their real dashboard. Cleared by the next successful load.
+/// stored page list or a page's stored blob (as opposed to reading a genuinely
+/// absent/corrupt one). While it is set, save_layout() refuses to write, because
+/// what is on screen is not everything the user arranged — persisting it would
+/// replace their real dashboard (or drop pages from the stored list).
 constexpr const char* kDashLayoutLoadFailedProp = "fincept_dash_layout_load_failed";
 } // namespace
 
-namespace {
-
-/// Settings keys. The first page keeps the original layout key, so an existing
-/// dashboard opens unchanged as page 1 and an older build still reads it.
-constexpr const char* kPagesKey = "dashboard_pages";
-constexpr const char* kFirstPageId = "main";
-
-QString encode_layout(const GridLayout& layout) {
-    // Serialize: magic+version, cols, row_h, margin, item count, then each item
-    // (including its per-instance config — dropping it reverted every configured
-    // widget to defaults on restart).
-    QByteArray buf;
-    QDataStream stream(&buf, QIODevice::WriteOnly);
-    stream << kDashLayoutMagic << kDashLayoutVersion;
-    stream << layout.cols << layout.row_h << layout.margin;
-    stream << static_cast<int>(layout.items.size());
-    for (const auto& item : layout.items) {
-        stream << item.id << item.instance_id;
-        stream << item.cell.x << item.cell.y << item.cell.w << item.cell.h;
-        stream << item.cell.min_w << item.cell.min_h;
-        stream << QJsonDocument(item.config).toJson(QJsonDocument::Compact);
-    }
-    return QString::fromLatin1(buf.toBase64());
-}
-
-/// Decode a stored layout; false for an absent, empty or corrupt blob.
-bool decode_layout(const QString& encoded, GridLayout& layout) {
-    if (encoded.isEmpty())
-        return false;
-    QByteArray payload = QByteArray::fromBase64(encoded.toUtf8());
-    QDataStream stream(&payload, QIODevice::ReadOnly);
-
-    int count = 0;
-    // Detect the format: a leading magic means the config-carrying
-    // blob; otherwise the 4 bytes we read were the legacy `cols`.
-    quint32 lead = 0;
-    stream >> lead;
-    const bool has_config = (lead == kDashLayoutMagic);
-    if (has_config) {
-        quint32 version = 0;
-        stream >> version; // reserved for future migrations
-        stream >> layout.cols >> layout.row_h >> layout.margin >> count;
-    } else {
-        layout.cols = static_cast<int>(lead);
-        stream >> layout.row_h >> layout.margin >> count;
-    }
-    if (count <= 0 || count > 100)
-        return false;
-
-    // Clamp the grid geometry before anything downstream uses it.
-    // A truncated / corrupted blob previously produced items with
-    // cols == 0 or w == 0, which grid_to_rect() turns into
-    // zero-width tiles and compact_vertical() spins over.
-    layout.cols = qBound(1, layout.cols, 48);
-    layout.row_h = qBound(10, layout.row_h, 400);
-    layout.margin = qBound(0, layout.margin, 64);
-
-    for (int i = 0; i < count; ++i) {
-        GridItem item;
-        stream >> item.id >> item.instance_id;
-        stream >> item.cell.x >> item.cell.y >> item.cell.w >> item.cell.h;
-        stream >> item.cell.min_w >> item.cell.min_h;
-        if (has_config) {
-            QByteArray cfg_bytes;
-            stream >> cfg_bytes;
-            const auto doc = QJsonDocument::fromJson(cfg_bytes);
-            if (doc.isObject())
-                item.config = doc.object();
-        }
-        // Stop at the first short read rather than appending
-        // default-constructed garbage for the remaining items.
-        if (stream.status() != QDataStream::Ok)
-            break;
-        if (item.id.isEmpty() || item.instance_id.isEmpty())
-            continue;
-        item.cell.min_w = qBound(1, item.cell.min_w, layout.cols);
-        item.cell.min_h = qBound(1, item.cell.min_h, 64);
-        item.cell.w = qBound(item.cell.min_w, item.cell.w, layout.cols);
-        item.cell.h = qBound(item.cell.min_h, item.cell.h, 64);
-        item.cell.x = qBound(0, item.cell.x, layout.cols - item.cell.w);
-        item.cell.y = qBound(0, item.cell.y, 999);
-        layout.items.append(item);
-    }
-    return !layout.items.isEmpty();
-}
-
-} // namespace
-
 QString DashboardScreen::layout_key(const QString& page_id) {
-    return page_id == QLatin1String(kFirstPageId) ? QStringLiteral("dashboard_canvas_layout")
-                                                  : QStringLiteral("dashboard_canvas_layout:") + page_id;
+    return pages::layout_key(page_id);
 }
 
 void DashboardScreen::save_layout() {
@@ -536,63 +441,55 @@ void DashboardScreen::save_layout() {
     // still being restored is skipped so its stored layout is not replaced by
     // an empty canvas.
     QVector<QPair<QString, QString>> writes;
-    QJsonArray list;
+    QVector<pages::PageRef> list;
     for (const auto& page : pages_) {
-        QJsonObject o;
-        o.insert("id", page.id);
-        o.insert("name", page.name);
-        list.append(o);
+        list.append({page.id, page.name});
         if (page.restored)
-            writes.append({layout_key(page.id), encode_layout(page.canvas->canonical_layout())});
+            writes.append({layout_key(page.id), pages::encode_layout(page.canvas->canonical_layout())});
     }
-    QJsonObject pages_doc;
-    pages_doc.insert("pages", list);
-    pages_doc.insert("current", current_page_ >= 0 && current_page_ < pages_.size() ? pages_[current_page_].id
-                                                                                    : QString(kFirstPageId));
-    const QString pages_encoded = QString::fromUtf8(QJsonDocument(pages_doc).toJson(QJsonDocument::Compact));
+    const QString current =
+        current_page_ >= 0 && current_page_ < pages_.size() ? pages_[current_page_].id : QString(pages::kFirstPageId);
+    const QString pages_encoded = pages::pages_json(list, current);
     (void)QtConcurrent::run([writes, pages_encoded]() {
         auto& repo = fincept::SettingsRepository::instance();
         for (const auto& w : writes)
             repo.set(w.first, w.second, "dashboard");
-        repo.set(kPagesKey, pages_encoded, "dashboard");
+        repo.set(pages::kPagesKey, pages_encoded, "dashboard");
     });
 }
 
 void DashboardScreen::restore_layout() {
     QPointer<DashboardScreen> self = this;
     (void)QtConcurrent::run([self]() {
-        auto result = fincept::SettingsRepository::instance().get(kPagesKey);
+        auto result = fincept::SettingsRepository::instance().get(pages::kPagesKey);
         QMetaObject::invokeMethod(
             self,
             [self, result]() {
                 if (!self)
                     return;
-                // The page list. Absent (first run, or an older build's
-                // dashboard) or unreadable means a single first page.
-                QString current_id = QString::fromLatin1(kFirstPageId);
-                QVector<QPair<QString, QString>> list;
-                if (result.is_ok() && !result.value().isEmpty()) {
-                    const QJsonObject doc = QJsonDocument::fromJson(result.value().toUtf8()).object();
-                    for (const auto& v : doc.value("pages").toArray()) {
-                        const QJsonObject o = v.toObject();
-                        const QString id = o.value("id").toString();
-                        if (!id.isEmpty() &&
-                            std::none_of(list.cbegin(), list.cend(), [&id](const auto& p) { return p.first == id; }))
-                            list.append({id, o.value("name").toString()});
-                    }
-                    current_id = doc.value("current").toString(current_id);
+                if (result.is_err()) {
+                    // The page list could not be READ (as opposed to never
+                    // saved): show the first page, and save nothing this
+                    // session — writing the list now would drop every other page.
+                    LOG_ERROR("Dashboard",
+                              QString("settings read failed for '%1' — showing the first page only, "
+                                      "read-only: %2")
+                                  .arg(QString::fromLatin1(pages::kPagesKey), QString::fromStdString(result.error())));
+                    self->setProperty(kDashLayoutLoadFailedProp, true);
                 }
-                if (std::none_of(list.cbegin(), list.cend(),
-                                 [](const auto& p) { return p.first == QLatin1String(kFirstPageId); }))
-                    list.prepend({QString::fromLatin1(kFirstPageId), tr("Main")});
+                // Absent (first run, or an older build's dashboard) means a
+                // single first page; parse_pages always puts it first.
+                QString current_id;
+                const QVector<pages::PageRef> list =
+                    pages::parse_pages(result.is_ok() ? result.value() : QString(), tr("Main"), &current_id);
                 int current = 0;
                 for (const auto& p : list) {
-                    const int index = self->add_page(p.first, p.second.isEmpty() ? tr("Page") : p.second);
-                    if (p.first == current_id)
+                    const int index = self->add_page(p.id, p.name.isEmpty() ? tr("Page") : p.name);
+                    if (p.id == current_id)
                         current = index;
                     // Only the first page falls back to the default template;
                     // an added page starts empty.
-                    self->restore_page_layout(index, p.first == QLatin1String(kFirstPageId));
+                    self->restore_page_layout(index, p.id == QLatin1String(pages::kFirstPageId));
                 }
                 self->switch_to_page(current);
             },
@@ -650,7 +547,7 @@ void DashboardScreen::restore_page_layout(int index, bool default_if_empty) {
                 // correct behaviour.
                 page.restored = true;
                 GridLayout layout;
-                if (decode_layout(result.value(), layout)) {
+                if (pages::decode_layout(result.value(), layout)) {
                     if (self->compact_rows_)
                         layout.row_h = 40;
                     page.canvas->load_layout(layout);
@@ -825,7 +722,13 @@ void DashboardScreen::delete_page(int index) {
     if (index < 0 || index >= pages_.size() || pages_.size() <= 1)
         return;
     const Page page = pages_[index];
-    if (page.id == QLatin1String(kFirstPageId)) {
+    if (property(kDashLayoutLoadFailedProp).toBool()) {
+        QMessageBox::information(this, tr("Delete page"),
+                                 tr("The saved dashboard could not be read this session, so pages cannot be changed. "
+                                    "Restart to retry."));
+        return;
+    }
+    if (page.id == QLatin1String(pages::kFirstPageId)) {
         QMessageBox::information(this, tr("Delete page"), tr("The first page cannot be deleted."));
         return;
     }
@@ -835,6 +738,7 @@ void DashboardScreen::delete_page(int index) {
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
         return;
+    const int shown = current_page_;
     pages_.removeAt(index);
     {
         const QSignalBlocker block(page_tabs_);
@@ -844,7 +748,8 @@ void DashboardScreen::delete_page(int index) {
     page.scroll->deleteLater();
     const QString key = layout_key(page.id);
     (void)QtConcurrent::run([key]() { fincept::SettingsRepository::instance().remove(key); });
-    switch_to_page(std::min(index, static_cast<int>(pages_.size()) - 1));
+    // The page being viewed stays in view unless it is the one deleted.
+    switch_to_page(pages::current_after_delete(index, shown, static_cast<int>(pages_.size())));
     save_layout();
 }
 
@@ -852,7 +757,7 @@ void DashboardScreen::show_page_menu(int index, const QPoint& global_pos) {
     QMenu menu(this);
     menu.addAction(tr("Rename…"), this, [this, index]() { rename_page(index); });
     auto* del = menu.addAction(tr("Delete page…"), this, [this, index]() { delete_page(index); });
-    del->setEnabled(pages_.size() > 1 && pages_[index].id != QLatin1String(kFirstPageId));
+    del->setEnabled(pages_.size() > 1 && pages_[index].id != QLatin1String(pages::kFirstPageId));
     menu.exec(global_pos);
 }
 
@@ -886,12 +791,21 @@ void DashboardScreen::show_tile_menu(DashboardCanvas* canvas, const QString& ins
 void DashboardScreen::move_widget_to_page(DashboardCanvas* from, const QString& instance_id, int target) {
     if (!from || target < 0 || target >= pages_.size() || pages_[target].canvas == from)
         return;
+    if (!pages_[target].restored) {
+        // Its stored layout is still being read: the read would replace the
+        // canvas and the moved tile with it.
+        QMessageBox::information(
+            this, tr("Move to page"),
+            tr("The page \"%1\" is still loading. Try again in a moment.").arg(pages_[target].name));
+        return;
+    }
     QString type_id;
     QJsonObject config;
-    if (!from->item_info(instance_id, &type_id, &config))
+    GridCell cell;
+    if (!from->item_info(instance_id, &type_id, &config, &cell))
         return;
-    // The widget is re-created on the target page with the same settings.
-    pages_[target].canvas->add_widget_with_config(type_id, config);
+    // The widget is re-created on the target page with the same settings and size.
+    pages_[target].canvas->add_widget_with_config(type_id, config, cell.w, cell.h);
     from->remove_widget(instance_id);
     switch_to_page(target);
     save_layout();

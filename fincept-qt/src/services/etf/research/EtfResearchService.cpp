@@ -103,6 +103,9 @@ EtfResearchService& EtfResearchService::instance() {
 }
 
 const ResearchUniverse* EtfResearchService::universe(QString* error) {
+    // Loaded once; afterwards the optional is never reset, so the returned
+    // pointer stays valid without the lock.
+    QMutexLocker lock(&universe_mutex_);
     if (!universe_ && universe_error_.isEmpty()) {
         universe_ = load_universe(QLatin1String(kUniverseResourcePath), &universe_error_);
         if (!universe_)

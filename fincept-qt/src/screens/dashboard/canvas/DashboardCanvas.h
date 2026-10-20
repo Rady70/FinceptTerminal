@@ -28,9 +28,10 @@ class DashboardCanvas : public QWidget {
     void add_widget(const QString& widget_type_id);
     /// Add a widget with a per-instance config (used to move a tile between
     /// dashboard pages without losing its settings).
-    void add_widget_with_config(const QString& widget_type_id, const QJsonObject& config);
+    /// `w`/`h` > 0 keep a size (a tile moved from another page), else the default.
+    void add_widget_with_config(const QString& widget_type_id, const QJsonObject& config, int w = 0, int h = 0);
     /// The type id and config of a tile, from the canonical arrangement.
-    bool item_info(const QString& instance_id, QString* type_id, QJsonObject* config) const;
+    bool item_info(const QString& instance_id, QString* type_id, QJsonObject* config, GridCell* cell = nullptr) const;
     void remove_widget(const QString& instance_id);
     void set_row_height(int px);
 

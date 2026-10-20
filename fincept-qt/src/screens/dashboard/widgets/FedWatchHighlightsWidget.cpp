@@ -34,17 +34,42 @@ void fw_clear_grid(QGridLayout* grid) {
     }
 }
 
-/// The outcome with the highest probability on one side (fed or Polymarket).
-const fw::Comparison* fw_most_likely(const QVector<fw::Comparison>& rows, bool fed_side) {
-    const fw::Comparison* best = nullptr;
-    for (const auto& c : rows) {
-        const auto v = fed_side ? c.fed : c.poly;
-        if (!v)
-            continue;
-        if (!best || *v > *(fed_side ? best->fed : best->poly))
-            best = &c;
-    }
+/// The outcome with the highest probability in one side's list. Both lists are
+/// the move AT that meeting (futures: `fed.local`; Polymarket: its outcomes).
+const fw::Outcome* fw_most_likely(const QVector<fw::Outcome>& outcomes) {
+    const fw::Outcome* best = nullptr;
+    for (const auto& o : outcomes)
+        if (!best || o.pct > best->pct)
+            best = &o;
     return best;
+}
+
+/// One outcome row of the next meeting: the futures and Polymarket
+/// probabilities of the same move (either may be missing).
+struct FwOutcomeRow {
+    int bp = 0;
+    bool open = false;
+    fw::Value fed, poly;
+};
+
+QVector<FwOutcomeRow> fw_outcome_rows(const fw::Meeting& m) {
+    QVector<FwOutcomeRow> rows;
+    auto find = [&rows](int bp, bool open) -> FwOutcomeRow& {
+        for (auto& r : rows)
+            if (r.bp == bp && r.open == open)
+                return r;
+        rows.append({bp, open, std::nullopt, std::nullopt});
+        return rows.last();
+    };
+    for (const auto& o : m.fed.local)
+        find(o.bp, o.open).fed = o.pct;
+    for (const auto& o : m.poly.outcomes)
+        find(o.bp, o.open).poly = o.pct;
+    std::sort(rows.begin(), rows.end(), [](const FwOutcomeRow& a, const FwOutcomeRow& b) {
+        return a.fed.value_or(-1) != b.fed.value_or(-1) ? a.fed.value_or(-1) > b.fed.value_or(-1)
+                                                        : a.poly.value_or(-1) > b.poly.value_or(-1);
+    });
+    return rows;
 }
 
 } // namespace
@@ -73,7 +98,7 @@ FedWatchHighlightsWidget::FedWatchHighlightsWidget(QWidget* parent)
     outcomes_->setVerticalSpacing(2);
     vl->addLayout(outcomes_);
 
-    path_title_ = fw_cell(tr("PATH · MOST LIKELY OUTCOME VS TODAY'S TARGET"), QStringLiteral("fwHead"));
+    path_title_ = fw_cell(tr("PATH · MOST LIKELY MOVE AT EACH MEETING"), QStringLiteral("fwHead"));
     vl->addWidget(path_title_);
     path_ = new QGridLayout;
     path_->setHorizontalSpacing(10);
@@ -110,7 +135,7 @@ void FedWatchHighlightsWidget::retranslateUi() {
     BaseWidget::retranslateUi();
     set_title(tr("FEDWATCH · RATE OUTLOOK"));
     outcomes_title_->setText(tr("NEXT MEETING · OUTCOME PROBABILITIES"));
-    path_title_->setText(tr("PATH · MOST LIKELY OUTCOME VS TODAY'S TARGET"));
+    path_title_->setText(tr("PATH · MOST LIKELY MOVE AT EACH MEETING"));
     if (!last_data_.isEmpty())
         render(last_data_);
 }
@@ -139,10 +164,10 @@ void FedWatchHighlightsWidget::on_result(const QString& request_id, const servic
     const QJsonObject data = fw_payload(result.data);
     const bool usable = result.success || (result.data["success"].toBool() && result.data["data"].isObject());
     if (pending_command_ == QLatin1String("collect")) {
-        if (!usable)
-            set_footer(tr("Collection failed: %1 — stored data shown")
-                           .arg(result.error.isEmpty() ? tr("no usable response") : result.error.left(120)),
-                       result.error, true);
+        // Kept until a collection succeeds, so the re-read below cannot hide it.
+        collect_error_ = usable ? QString()
+                                : tr("Collection failed: %1 — stored data shown")
+                                      .arg(result.error.isEmpty() ? tr("no usable response") : result.error.left(120));
         request(QStringLiteral("workspace"));
         return;
     }
@@ -186,12 +211,10 @@ void FedWatchHighlightsWidget::render(const QJsonObject& data) {
         exp += tr(" · 1 week %1").arg(fw::bp_change(*m.fed.expected - *m.fed.expected_previous_week));
     expected_->setText(exp);
 
-    // Outcome probabilities of the next meeting, highest fed-side first.
-    QVector<fw::Comparison> rows = m.comparison;
-    std::sort(rows.begin(), rows.end(), [](const fw::Comparison& a, const fw::Comparison& b) {
-        return a.fed.value_or(-1) != b.fed.value_or(-1) ? a.fed.value_or(-1) > b.fed.value_or(-1)
-                                                        : a.poly.value_or(-1) > b.poly.value_or(-1);
-    });
+    // Outcome probabilities of the next meeting, highest futures side first.
+    // Futures come from the meeting's own move distribution (`fed.local`), so
+    // they show even where Polymarket lists no market.
+    const QVector<FwOutcomeRow> rows = fw_outcome_rows(m);
     outcomes_->addWidget(fw_cell(tr("OUTCOME"), QStringLiteral("fwHead")), 0, 0);
     outcomes_->addWidget(fw_cell(tr("FUTURES"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 1);
     outcomes_->addWidget(fw_cell(tr("POLYMARKET"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 2);
@@ -210,20 +233,23 @@ void FedWatchHighlightsWidget::render(const QJsonObject& data) {
         outcomes_->addWidget(fw_cell(tr("No outcome probabilities stored for this meeting."), QStringLiteral("fwSub")),
                              1, 0, 1, 3);
 
-    // The path over the next meetings: the most likely outcome (futures side)
-    // and the expected rate after each meeting.
+    // The path over the next meetings: the most likely move at each meeting
+    // (futures side, else Polymarket) and the expected rate after it.
     path_->addWidget(fw_cell(tr("MEETING"), QStringLiteral("fwHead")), 0, 0);
     path_->addWidget(fw_cell(tr("MOST LIKELY"), QStringLiteral("fwHead")), 0, 1);
     path_->addWidget(fw_cell(tr("EXP. RATE"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 2);
     for (int i = 0; i < upcoming.size() && i < 4; ++i) {
         const fw::Meeting& mm = *upcoming[i];
-        const fw::Comparison* best = fw_most_likely(mm.comparison, true);
+        const fw::Outcome* fed_best = fw_most_likely(mm.fed.local);
+        const fw::Outcome* best = fed_best ? fed_best : fw_most_likely(mm.poly.outcomes);
         path_->addWidget(fw_cell(fw::short_meeting(mm.date), QString()), i + 1, 0);
-        path_->addWidget(
-            fw_cell(best ? QStringLiteral("%1 %2").arg(fw::outcome_label(best->bp, best->open), fw::pct(best->fed, 0))
+        auto* move =
+            fw_cell(best ? QStringLiteral("%1 %2%3").arg(fw::outcome_label(best->bp, best->open), fw::pct(best->pct, 0),
+                                                         fed_best ? QString() : QStringLiteral(" (PM)"))
                          : QStringLiteral("—"),
-                    QString()),
-            i + 1, 1);
+                    QString());
+        move->setToolTip(fed_best ? tr("Futures side") : tr("Polymarket (no futures distribution stored)"));
+        path_->addWidget(move, i + 1, 1);
         path_->addWidget(fw_cell(fw::rate(mm.fed.expected), QStringLiteral("fwNum"), Qt::AlignRight), i + 1, 2);
     }
 
@@ -233,10 +259,12 @@ void FedWatchHighlightsWidget::render(const QJsonObject& data) {
     QString footer =
         tr("Futures: %1 %2 · Polymarket: %3")
             .arg(fw::state_label(m.fed.state), fw::age_text(m.fed.age_days), fw::state_label(m.poly.state));
+    if (!collect_error_.isEmpty())
+        footer = collect_error_ + QStringLiteral(" · ") + footer;
     set_footer(footer.simplified(),
                tr("Futures side observed %1; Polymarket observed %2. Same stored data as Economics → FedWatch.")
                    .arg(fw::utc(m.fed.observed_at), fw::utc(m.poly.observed_at)),
-               !fed_current || !poly_current);
+               !fed_current || !poly_current || !collect_error_.isEmpty());
 }
 
 } // namespace fincept::screens::widgets

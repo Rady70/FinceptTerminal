@@ -152,12 +152,27 @@ inline QString quote_provenance_text(const services::QuoteData& q) {
     return text;
 }
 
-/// Decimals for a price cell: `base`, or at least 4 for a price below 1 so a
-/// coin at 0.0793 is not shown as 0.08 (and its change as 0.00).
+/// Decimals for a price cell: `base`, or enough for four significant digits
+/// below 1 — 0.0793 → "0.07930", 0.00000712 → "0.000007120" — so a small
+/// price and its change never collapse to 0.00 (capped at 10 decimals).
 inline int quote_price_decimals(bool has, double price, int base) {
-    if (has && price != 0.0 && std::abs(price) < 1.0)
-        return std::max(base, 4);
-    return base;
+    if (!has || price == 0.0 || std::abs(price) >= 1.0)
+        return base;
+    const int leading = static_cast<int>(std::floor(std::log10(std::abs(price)))); // -1 for 0.2, -6 for 7e-6
+    return std::clamp(3 - leading, base, 10);
+}
+
+/// Whether a delivered quote clears a recorded refresh failure. The hub
+/// re-delivers the last value it holds whenever a widget subscribes again
+/// (e.g. on a page switch); that is not a new reading and must not hide the
+/// failure. Only a value retrieved later than the one already shown clears it
+/// (or any value when nothing was shown, or when retrieval times are unknown).
+inline bool quote_value_clears_error(const services::QuoteData* shown, const services::QuoteData& delivered) {
+    if (!shown)
+        return true;
+    if (shown->retrieved_at <= 0 || delivered.retrieved_at <= 0)
+        return true;
+    return delivered.retrieved_at > shown->retrieved_at;
 }
 
 /// "19 Oct" — the trading day a price belongs to; empty when unknown.
@@ -179,8 +194,13 @@ inline QString quote_basis_text(const services::QuoteData& q) {
         return QCoreApplication::translate("QuoteDisplayFormat",
                                            "change vs previous daily bar (settlement unavailable; may span a "
                                            "contract roll)");
-    if (b == QLatin1String("prior_session_close") || b == QLatin1String("provider_previous_close"))
+    if (b == QLatin1String("prior_session_close"))
         return QCoreApplication::translate("QuoteDisplayFormat", "change vs previous session close");
+    if (b == QLatin1String("provider_previous_close"))
+        // The one-by-one fallback: Yahoo's own previous close, which for forex
+        // is not 00:00 Helsinki and for futures may not be the settlement.
+        return QCoreApplication::translate("QuoteDisplayFormat",
+                                           "change vs Yahoo's reported previous close (fallback)");
     return QCoreApplication::translate("QuoteDisplayFormat", "change reference not reported");
 }
 

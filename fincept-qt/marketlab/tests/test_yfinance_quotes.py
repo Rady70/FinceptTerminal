@@ -134,5 +134,76 @@ class PrecisionAndShapeTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["change_percent"], 100.0)
 
 
+class ReviewFindingTests(unittest.TestCase):
+    """Cases from the 2026-10-20 independent review."""
+
+    def setUp(self):
+        yd._settlement_cache.clear()
+
+    def test_tiny_prices_keep_significant_digits(self):
+        row = yd._quote_row("PEPE-USD", 0.00000712, 0.00000734, yd.DAY_BASIS_SESSION, "2026-10-20")
+        self.assertAlmostEqual(row["price"], 0.00000712, places=12)
+        self.assertAlmostEqual(row["change"], -0.00000022, places=12)
+        self.assertLess(row["change"], 0)
+        self.assertAlmostEqual(row["change_percent"], -2.9973, places=3)
+
+    def test_sunday_evening_open_in_dst_mismatch_week_is_kept(self):
+        # 2026-11-01 (Sunday): US still on summer time, EU on winter time ->
+        # forex opens at 21:00 UTC = 23:00 Helsinki (EET).
+        fri = hourly("2026-10-30 20:00", [1.00, 1.01])   # Fri 22:00/23:00 Helsinki
+        sun = hourly("2026-11-01 21:00", [1.05])         # Sun 23:00 Helsinki
+        mon = hourly("2026-11-01 22:00", [1.06, 1.07])   # Mon 00:00/01:00 Helsinki
+        day = yd.helsinki_day_change(pd.concat([fri, sun, mon]))
+        self.assertEqual(day["session_date"], "2026-11-02")
+        self.assertAlmostEqual(day["previous_close"], 1.05)  # the last price before midnight
+
+    def test_stale_reference_is_not_used(self):
+        # Friday bars, Monday missing entirely, Tuesday bars: Tuesday must not
+        # be measured against Friday and still be called "since 00:00".
+        fri = hourly("2026-11-06 20:00", [1.01])
+        tue = hourly("2026-11-09 22:00", [1.07, 1.08])  # Tue 00:00 Helsinki (EET)
+        day = yd.helsinki_day_change(pd.concat([fri, tue]))
+        self.assertEqual(day["session_date"], "2026-11-10")
+        self.assertIsNone(day["previous_close"])
+
+    def test_settlement_cache_drops_on_new_session_and_remembers_failures(self):
+        calls = []
+
+        def reader(s):
+            calls.append(s)
+            return {"regularMarketPreviousClose": 50.0 + len(calls)}
+        self.assertEqual(yd._previous_settlement("CL=F", reader, "2026-10-20")[0], 51.0)
+        self.assertEqual(yd._previous_settlement("CL=F", reader, "2026-10-20")[0], 51.0)
+        self.assertEqual(yd._previous_settlement("CL=F", reader, "2026-10-21")[0], 52.0)
+        self.assertEqual(len(calls), 2)
+        failing = []
+        yd._previous_settlement("NG=F", lambda s: failing.append(s) or {}, "2026-10-20")
+        yd._previous_settlement("NG=F", lambda s: failing.append(s) or {}, "2026-10-20")
+        self.assertEqual(len(failing), 1)
+
+    def test_batch_with_forex_and_daily_symbols_uses_both_downloads(self):
+        daily_frame = pd.concat({"AAPL": daily(["2026-10-16", "2026-10-19"], [100.0, 101.0])}, axis=1)
+        fx_frame = pd.concat({"EURUSD=X": hourly("2026-10-19 19:00", [1.10, 1.12, 1.13])}, axis=1)
+
+        def fake_download(symbols, **kw):
+            return fx_frame if kw.get("interval") == "1h" else daily_frame
+        with mock.patch.object(yd.yf, "download", side_effect=fake_download):
+            rows = {r["symbol"]: r for r in yd.get_batch_quotes(["AAPL", "EURUSD=X"])}
+        self.assertEqual(rows["AAPL"]["day_basis"], yd.DAY_BASIS_SESSION)
+        self.assertAlmostEqual(rows["AAPL"]["change_percent"], 1.0)
+        self.assertEqual(rows["EURUSD=X"]["day_basis"], yd.DAY_BASIS_HELSINKI)
+        self.assertAlmostEqual(rows["EURUSD=X"]["previous_close"], 1.12)
+
+    def test_fallback_keeps_one_row_per_symbol(self):
+        def boom(*a, **k):
+            raise RuntimeError("network down")
+        good = {"symbol": "AAPL", "price": 1.0, "day_basis": "provider_previous_close"}
+        with mock.patch.object(yd.yf, "download", side_effect=boom),                 mock.patch.object(yd, "get_quote", side_effect=lambda s: good if s == "AAPL"
+                                  else {"symbol": s, "error": "no data"}):
+            rows = yd.get_batch_quotes(["AAPL", "BAD"])
+        self.assertEqual([r["symbol"] for r in rows], ["AAPL", "BAD"])
+        self.assertIn("error", rows[1])
+
+
 if __name__ == "__main__":
     unittest.main()

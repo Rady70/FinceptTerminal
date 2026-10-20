@@ -26,10 +26,10 @@ namespace fincept::screens::widgets {
 /// The trading day of a daily bar. Yahoo stamps a daily bar at the
 /// exchange's local midnight, which in UTC (and in Helsinki time) is the
 /// previous evening for Asian exchanges — a Tokyo bar of 20 Oct is
-/// 19 Oct 15:00 UTC. Twelve hours later is inside the right day for every
-/// exchange from UTC−11 to UTC+12.
+/// 19 Oct 15:00 UTC. 13.5 hours later is inside the right day for every
+/// exchange from UTC−10 to UTC+13 (New Zealand in summer included).
 static QDateTime daily_bar_day(qint64 timestamp) {
-    return QDateTime::fromSecsSinceEpoch(timestamp + 12 * 3600, QTimeZone::UTC);
+    return QDateTime::fromSecsSinceEpoch(timestamp + 13 * 3600 + 1800, QTimeZone::UTC);
 }
 
 CandleCanvas::CandleCanvas(QWidget* parent) : QWidget(parent) {

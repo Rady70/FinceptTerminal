@@ -25,6 +25,7 @@
 
 #include <QDateTime>
 #include <QJsonObject>
+#include <QMutex>
 #include <QObject>
 #include <QString>
 
@@ -92,6 +93,9 @@ class EtfResearchService : public QObject {
     void default_sec_stage(std::function<void(SourceStageStatus)> done);
 
     std::optional<ResearchUniverse> universe_;
+    /// The universe is loaded on first use from worker threads (the ETF screen
+    /// and the dashboard's ETF widget can load at the same time).
+    QMutex universe_mutex_;
     QString universe_error_;
     bool running_ = false;
     int fetch_invocations_ = 0;

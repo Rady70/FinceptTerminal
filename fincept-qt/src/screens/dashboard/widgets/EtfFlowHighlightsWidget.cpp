@@ -47,6 +47,15 @@ void etf_rank(const er::ResearchSnapshot& s, Pick pick, QVector<EtfFlowRow>& in,
             continue;
         all.append({r.inst.symbol, etf_subject(r), *v.value, v.effective});
     }
+    // Rank only funds of the latest period (the same SEC month / estimate
+    // interval end), so a ranking never compares flows of different periods.
+    QDate latest;
+    for (const auto& f : all)
+        if (f.period.isValid() && (!latest.isValid() || f.period > latest))
+            latest = f.period;
+    if (latest.isValid())
+        all.erase(std::remove_if(all.begin(), all.end(), [&latest](const EtfFlowRow& f) { return f.period != latest; }),
+                  all.end());
     std::sort(all.begin(), all.end(), [](const EtfFlowRow& a, const EtfFlowRow& b) { return a.usd > b.usd; });
     for (const auto& f : all)
         if (f.usd > 0 && in.size() < per_side)
