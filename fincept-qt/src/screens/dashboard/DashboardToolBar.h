@@ -17,6 +17,9 @@ class DashboardToolBar : public QWidget {
 
     void set_widget_count(int count);
     void set_connected(bool connected);
+    /// Show the layout lock state: LOCKED hides the layout-changing
+    /// buttons (+ ADD, RESET, COMPACT); the button then offers UNLOCK.
+    void set_locked(bool locked);
 
   signals:
     void add_widget_clicked();
@@ -25,6 +28,7 @@ class DashboardToolBar : public QWidget {
     void refresh_clicked();
     void toggle_pulse_clicked();
     void toggle_compact_clicked();
+    void toggle_lock_clicked();
 
   protected:
     void showEvent(QShowEvent* event) override;
@@ -52,6 +56,8 @@ class DashboardToolBar : public QWidget {
     QPushButton* add_btn_ = nullptr;
     QPushButton* save_btn_ = nullptr;
     QPushButton* reset_btn_ = nullptr;
+    QPushButton* lock_btn_ = nullptr;
+    bool locked_ = false;
     QTimer clock_timer_;
 };
 

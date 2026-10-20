@@ -176,7 +176,22 @@ void WidgetTile::paintEvent(QPaintEvent* e) {
     p.drawRect(rect().adjusted(-2, -2, 2, 2));
 }
 
+void WidgetTile::set_locked(bool locked) {
+    locked_ = locked;
+    if (grip_)
+        grip_->setVisible(!locked);
+    if (content_) {
+        content_->set_closable(!locked);
+        if (QWidget* title_bar = content_->drag_handle())
+            title_bar->setCursor(locked ? Qt::ArrowCursor : Qt::SizeAllCursor);
+    }
+    if (locked)
+        unsetCursor();
+}
+
 bool WidgetTile::is_on_resize_edge(const QPoint& pos) const {
+    if (locked_)
+        return false;
     bool on_right = pos.x() >= width() - kEdgeZone && pos.y() > kGripSize;
     bool on_bottom = pos.y() >= height() - kEdgeZone && pos.x() > kGripSize;
     return on_right || on_bottom;
@@ -263,6 +278,8 @@ bool fincept::screens::WidgetTile::eventFilter(QObject* obj, QEvent* event) {
         emit context_menu_requested(this, static_cast<QContextMenuEvent*>(event)->globalPos());
         return true;
     }
+    if (locked_ && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseMove))
+        return QWidget::eventFilter(obj, event); // locked: no drag
     if (event->type() == QEvent::MouseButtonPress) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {

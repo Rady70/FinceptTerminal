@@ -59,6 +59,9 @@ RiskMetricsWidget::RiskMetricsWidget(QWidget* parent) : BaseWidget(tr("RISK METR
     vcl->addWidget(vix_bar_fill_);
 
     vl->addWidget(vix_card_);
+    // The VIX reading is the headline: on a short tile the stock rows below
+    // give way first, never the VIX value (it used to collapse to nothing).
+    vix_card_->setMinimumHeight(vix_card_->sizeHint().height());
 
     // ── Section separator ──
     sep1_ = new QFrame;

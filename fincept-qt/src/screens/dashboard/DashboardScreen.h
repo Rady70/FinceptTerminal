@@ -18,6 +18,7 @@ class NotifToast;
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTimer>
+#include <QToolButton>
 #include <QWidget>
 
 namespace fincept::screens {
@@ -69,6 +70,11 @@ class DashboardScreen : public QWidget {
     void sync_page_tabs();
     int page_index(const DashboardCanvas* canvas) const;
     static QString layout_key(const QString& page_id);
+
+    /// Lock or unlock the layout (every page): tiles cannot be moved, resized,
+    /// closed or added, and pages cannot be added, renamed, deleted or
+    /// reordered. Persisted under `dashboard_layout_locked`.
+    void set_layout_locked(bool locked, bool persist);
     void refresh_ticker();
     void on_refresh_clicked();
 
@@ -85,6 +91,8 @@ class DashboardScreen : public QWidget {
     QStackedWidget* pages_stack_ = nullptr;
     QVector<Page> pages_;
     int current_page_ = -1;
+    QToolButton* add_page_btn_ = nullptr;
+    bool layout_locked_ = false;
     QSplitter* content_split_ = nullptr;
     MarketPulsePanel* market_pulse_ = nullptr;
     DashboardStatusBar* status_bar_ = nullptr;

@@ -118,6 +118,13 @@ DashboardToolBar::DashboardToolBar(QWidget* parent) : QWidget(parent) {
     connect(refresh_btn_, &QPushButton::clicked, this, &DashboardToolBar::refresh_clicked);
     rl->addWidget(refresh_btn_);
 
+    lock_btn_ = new QPushButton(tr("LOCK"));
+    lock_btn_->setFixedHeight(20);
+    lock_btn_->setObjectName("dtBtn");
+    lock_btn_->setToolTip(tr("Lock the layout: widgets cannot be moved, resized, closed or added (Ctrl+Shift+L)"));
+    connect(lock_btn_, &QPushButton::clicked, this, &DashboardToolBar::toggle_lock_clicked);
+    rl->addWidget(lock_btn_);
+
     add_btn_ = new QPushButton(tr("+ ADD"));
     add_btn_->setFixedHeight(20);
     add_btn_->setObjectName("dtAddBtn");
@@ -176,6 +183,7 @@ void DashboardToolBar::apply_accessibility() {
         {add_btn_, tr("Add widget")},
         {save_btn_, tr("Save layout")},
         {reset_btn_, tr("Reset layout from a template")},
+        {lock_btn_, tr("Lock or unlock the dashboard layout")},
     };
     for (const auto& n : named) {
         if (n.w)
@@ -183,7 +191,7 @@ void DashboardToolBar::apply_accessibility() {
     }
 
     // Left-to-right tab order across the action buttons.
-    QWidget* chain[] = {clock_btn_, compact_btn_, pulse_btn_, refresh_btn_, add_btn_, save_btn_, reset_btn_};
+    QWidget* chain[] = {clock_btn_, compact_btn_, pulse_btn_, refresh_btn_, lock_btn_, add_btn_, save_btn_, reset_btn_};
     QWidget* prev = nullptr;
     for (QWidget* w : chain) {
         if (!w)
@@ -262,6 +270,23 @@ void DashboardToolBar::set_widget_count(int count) {
     widget_count_->setText(tr("%1 WIDGETS").arg(count));
 }
 
+void DashboardToolBar::set_locked(bool locked) {
+    locked_ = locked;
+    if (lock_btn_) {
+        lock_btn_->setText(locked ? tr("UNLOCK") : tr("LOCK"));
+        lock_btn_->setToolTip(locked ? tr("The layout is locked. Unlock to move, resize, close or add widgets "
+                                          "(Ctrl+Shift+L)")
+                                     : tr("Lock the layout: widgets cannot be moved, resized, closed or added "
+                                          "(Ctrl+Shift+L)"));
+        lock_btn_->setStyleSheet(locked ? QString("color:%1;border-color:%1;").arg(ui::colors::AMBER()) : QString());
+    }
+    // Hidden, not just disabled: the toolbar style draws a disabled button
+    // like an enabled one, so a greyed-out state would not be visible.
+    for (QPushButton* b : {add_btn_, reset_btn_, compact_btn_})
+        if (b)
+            b->setVisible(!locked);
+}
+
 void DashboardToolBar::set_connected(bool connected) {
     connected_ = connected;
     status_text_->setText(connected ? tr("ONLINE") : tr("OFFLINE"));
@@ -285,6 +310,7 @@ void DashboardToolBar::retranslateUi() {
         widget_count_->setText(tr("%1 WIDGETS").arg(widget_count_value_));
     if (compact_btn_)
         compact_btn_->setText(tr("COMPACT"));
+    set_locked(locked_); // re-applies the LOCK / UNLOCK text
     if (pulse_btn_)
         pulse_btn_->setText(tr("PULSE"));
     if (refresh_btn_) {

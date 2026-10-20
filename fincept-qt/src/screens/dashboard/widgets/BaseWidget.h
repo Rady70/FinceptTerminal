@@ -90,6 +90,15 @@ class BaseWidget : public QFrame {
     /// so the gear icon appears. Also hides the icon if set to false later.
     void set_configurable(bool configurable);
 
+  public:
+    /// Show or hide the title-bar close button (hidden while the dashboard
+    /// layout is locked). Settings and refresh stay available.
+    void set_closable(bool closable) {
+        if (close_btn_)
+            close_btn_->setVisible(closable);
+    }
+
+  protected:
     /// Coalesce repeated re-render requests into a single call on the next
     /// event-loop turn.
     ///
