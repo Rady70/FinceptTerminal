@@ -38,7 +38,7 @@ int usage(const QString& why) {
         {"error", why},
         {"usage",
          QJsonArray{QStringLiteral("--etf-research request [--out <file.json>]"),
-                    QStringLiteral("--etf-research refresh [--mode incremental|full]"),
+                    QStringLiteral("--etf-research refresh [--mode incremental|full] [--trigger manual_cli|scheduled]"),
                     QStringLiteral("--etf-research snapshot --out <file.json> [--as-of <instant>] "
                                    "[--known-at <instant>] [--compact]"),
                     QStringLiteral("--etf-research export --out <file.json>"), QStringLiteral("--etf-research status"),
@@ -247,16 +247,20 @@ int run_etf_research_cli(int argc, char* argv[]) {
         return 0;
     }
     if (command == QLatin1String("refresh")) {
-        if (const QString bad = allowed({QStringLiteral("mode")}); !bad.isEmpty())
+        if (const QString bad = allowed({QStringLiteral("mode"), QStringLiteral("trigger")}); !bad.isEmpty())
             return usage(QStringLiteral("unknown option --%1 for refresh").arg(bad));
         const QString mode = options.value(QStringLiteral("mode"), QStringLiteral("incremental"));
         if (mode != QLatin1String("incremental") && mode != QLatin1String("full"))
             return usage(QStringLiteral("refresh --mode must be incremental or full"));
+        // The run's recorded trigger: "scheduled" for the daily update task.
+        const QString trigger = options.value(QStringLiteral("trigger"), QStringLiteral("manual_cli"));
+        if (trigger != QLatin1String("manual_cli") && trigger != QLatin1String("scheduled"))
+            return usage(QStringLiteral("refresh --trigger must be manual_cli or scheduled"));
         QEventLoop loop;
         auto result = std::make_shared<RefreshResult>();
         bool finished = false;
         service.refresh(
-            QStringLiteral("manual_cli"),
+            trigger,
             [](const QString& stage, int d, int t) {
                 std::fprintf(stderr, "progress %s %d/%d\n", stage.toUtf8().constData(), d, t);
                 std::fflush(stderr);

@@ -1,9 +1,9 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/HighlightCharts.h"
 #include "services/etf/research/EtfResearchSnapshot.h"
 
 #include <QFutureWatcher>
-#include <QGridLayout>
 #include <QLabel>
 
 #include <memory>
@@ -33,19 +33,26 @@ class EtfFlowHighlightsWidget : public BaseWidget {
 
   private:
     void load();
+    /// The ETF Flow screen's full source refresh, then load().
+    void refresh_sources();
     void render();
     void apply_styles();
 
     QWidget* body_ = nullptr;
+    QLabel* tilt_caption_ = nullptr;
     QLabel* tilt_ = nullptr;
-    QLabel* measured_title_ = nullptr;
-    QGridLayout* measured_ = nullptr;
-    QLabel* estimated_title_ = nullptr;
-    QGridLayout* estimated_ = nullptr;
+    QLabel* breadth_caption_ = nullptr;
+    QLabel* breadth_ = nullptr;
+    QLabel* sectors_title_ = nullptr;
+    charts::BarList* sectors_ = nullptr; ///< U.S. sector funds, 1M total return minus SPY
+    QLabel* flows_title_ = nullptr;
+    charts::BarList* flows_ = nullptr; ///< measured (else estimated) fund flows, USD
 
     QFutureWatcher<void>* watcher_ = nullptr;
     std::shared_ptr<services::etf::research::ResearchSnapshot> snap_;
     bool loaded_once_ = false;
+    bool refreshing_ = false;
+    QString refresh_error_; ///< the last source refresh's error (empty after a success)
 };
 
 } // namespace fincept::screens::widgets

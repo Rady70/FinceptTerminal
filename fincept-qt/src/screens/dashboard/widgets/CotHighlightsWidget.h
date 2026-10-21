@@ -1,9 +1,13 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/HighlightCharts.h"
+#include "services/economics/CftcMetricModel.h"
 #include "services/economics/EconomicsService.h"
 
 #include <QGridLayout>
 #include <QLabel>
+#include <QPair>
+#include <QVector>
 
 namespace fincept::screens::widgets {
 
@@ -31,24 +35,32 @@ class CotHighlightsWidget : public BaseWidget {
 
   private:
     void request(bool refresh);
+    /// The next report of a full refresh (other families / bases), if any.
+    void refresh_next_report();
     void on_result(const QString& request_id, const services::EconomicsResult& result);
     void render(const QJsonObject& data);
     void apply_styles();
 
     QWidget* body_ = nullptr;
     QLabel* report_ = nullptr;
-    QLabel* lean_ = nullptr;
-    QLabel* crowded_long_ = nullptr;
-    QLabel* crowded_short_ = nullptr;
+    QLabel* lean_title_ = nullptr;
+    charts::SplitBar* lean_ = nullptr; ///< leaning long / neutral / short counts
+    QLabel* extremes_title_ = nullptr;
+    charts::BarList* extremes_ = nullptr; ///< crowded markets, net position % of OI
     QLabel* flipped_ = nullptr;
     QLabel* moves_title_ = nullptr;
-    QGridLayout* moves_ = nullptr;
+    charts::BarList* moves_ = nullptr; ///< largest one-week net changes
 
     QString pending_id_;
     bool pending_refresh_ = false;
     int sequence_ = 0;
     bool loaded_once_ = false;
     QJsonObject last_data_;
+    QVector<QPair<services::CftcFamily, bool>> refresh_queue_; ///< (family, futures only) still to refresh
+    int refresh_total_ = 0;
+    QString pending_other_;
+    QString other_status_;
+    QStringList other_failures_;
 };
 
 } // namespace fincept::screens::widgets

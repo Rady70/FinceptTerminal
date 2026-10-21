@@ -16,6 +16,7 @@
 #include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/dashboard/widgets/PortfolioValuation.h"
 #include "screens/markets/QuoteDisplayFormat.h"
+#include "services/DailyUpdateRule.h"
 #include "services/markets/MarketQuoteParse.h"
 
 #include <QJsonObject>
@@ -207,6 +208,78 @@ class TestDashboardWidgetRules : public QObject {
         QCOMPARE(vix_regime(20.0), VixRegime::Elevated);
         QCOMPARE(vix_regime(30.0), VixRegime::High);
         QCOMPARE(vix_regime(40.0), VixRegime::Extreme);
+    }
+
+    void vix_gauge_marker_sits_in_its_regime_band() {
+        using namespace fincept::screens::gauges;
+        // 17.31 is NORMAL: between the 15 and 20 bounds, not in the first band.
+        const double f = vix_gauge_fraction(17.31);
+        QVERIFY(f > kVixBounds[0] / kVixGaugeMax && f < kVixBounds[1] / kVixGaugeMax);
+        QCOMPARE(vix_gauge_fraction(-1.0), 0.0);
+        QCOMPARE(vix_gauge_fraction(80.0), 1.0);
+    }
+
+    void exchange_hours_follow_each_exchange_clock() {
+        using namespace fincept::screens::gauges;
+        auto at = [](int y, int mo, int d, int h, int mi) {
+            return QDateTime(QDate(y, mo, d), QTime(h, mi), QTimeZone(QTimeZone::UTC));
+        };
+        // US summer time (EDT, UTC-4): opens 13:30 UTC; winter (EST): 14:30 UTC.
+        QCOMPARE(exchange_status("US", at(2026, 10, 21, 13, 35)), SessionState::Open);
+        QCOMPARE(exchange_status("US", at(2026, 12, 2, 13, 35)), SessionState::Pre);
+        QCOMPARE(exchange_status("US", at(2026, 12, 2, 14, 35)), SessionState::Open);
+        QCOMPARE(exchange_status("US", at(2026, 10, 21, 20, 30)), SessionState::After);
+        // London in BST opens 07:00 UTC; in GMT 08:00 UTC.
+        QCOMPARE(exchange_status("UK", at(2026, 10, 21, 7, 10)), SessionState::Open);
+        QCOMPARE(exchange_status("UK", at(2026, 12, 2, 7, 10)), SessionState::Closed);
+        // Tokyo lunch 11:30-12:30 JST = 02:30-03:30 UTC.
+        QCOMPARE(exchange_status("JP", at(2026, 10, 21, 3, 0)), SessionState::Break);
+        QCOMPARE(exchange_status("JP", at(2026, 10, 21, 5, 0)), SessionState::Open);
+        // India 09:15-15:30 IST = 03:45-10:00 UTC.
+        QCOMPARE(exchange_status("IN", at(2026, 10, 21, 3, 50)), SessionState::Open);
+        QCOMPARE(exchange_status("IN", at(2026, 10, 21, 10, 5)), SessionState::Closed);
+        // Weekend by the exchange's own date: Friday 23:30 UTC is Saturday in Tokyo.
+        QCOMPARE(exchange_status("JP", at(2026, 10, 23, 23, 30)), SessionState::Closed);
+        QCOMPARE(exchange_status("JP", at(2026, 10, 26, 0, 30)), SessionState::Open);
+        QCOMPARE(exchange_status("US", at(2026, 10, 24, 15, 0)), SessionState::Closed);
+        QCOMPARE(exchange_status("XX", at(2026, 10, 21, 15, 0)), SessionState::Unknown);
+    }
+
+    void daily_update_covers_the_last_closed_session() {
+        using namespace fincept::services::daily_update;
+        auto at = [](int y, int mo, int d, int h, int mi) {
+            return QDateTime(QDate(y, mo, d), QTime(h, mi), QTimeZone(QTimeZone::UTC));
+        };
+        // Wednesday 21 Oct 2026, EDT (UTC-4): 10:00 New York -> Tuesday's session.
+        QCOMPARE(session_for(at(2026, 10, 21, 14, 0)), QDate(2026, 10, 20));
+        QCOMPARE(session_for(at(2026, 10, 21, 20, 29)), QDate(2026, 10, 20)); // 16:29 NY
+        QCOMPARE(session_for(at(2026, 10, 21, 20, 30)), QDate(2026, 10, 21)); // 16:30 NY
+        // Weekend and Monday morning -> Friday.
+        QCOMPARE(session_for(at(2026, 10, 24, 12, 0)), QDate(2026, 10, 23));
+        QCOMPARE(session_for(at(2026, 10, 26, 12, 0)), QDate(2026, 10, 23));
+        // EST (UTC-5) in December: 21:20 UTC is 16:20 NY, still the day before.
+        QCOMPARE(session_for(at(2026, 12, 2, 21, 20)), QDate(2026, 12, 1));
+        QCOMPARE(session_for(at(2026, 12, 2, 21, 31)), QDate(2026, 12, 2));
+    }
+
+    void daily_update_runs_once_per_session_with_bounded_retries() {
+        using namespace fincept::services::daily_update;
+        const QDate s(2026, 10, 20);
+        const QDateTime now(QDate(2026, 10, 21), QTime(1, 0), QTimeZone(QTimeZone::UTC));
+        QVERIFY(job_due({}, s, now));
+        QJsonObject st = after_attempt({}, s, now, false, "task", "collect failed");
+        QCOMPARE(st.value("attempts").toInt(), 1);
+        QVERIFY(!job_due(st, s, now.addSecs(10 * 60))); // too soon to retry
+        QVERIFY(job_due(st, s, now.addSecs(60 * 60)));  // retry after 50 min
+        st = after_attempt(st, s, now.addSecs(3600), false, "task", "x");
+        st = after_attempt(st, s, now.addSecs(7200), false, "task", "x");
+        QCOMPARE(st.value("attempts").toInt(), 3);
+        QVERIFY(!job_due(st, s, now.addSecs(4 * 3600)));    // three tries per session
+        QVERIFY(job_due(st, s.addDays(1), now.addDays(1))); // next session starts over
+        st = after_attempt(st, s.addDays(1), now.addDays(1), true, "app", "done");
+        QCOMPARE(st.value("attempts").toInt(), 1);
+        QCOMPARE(st.value("done_session").toString(), QStringLiteral("2026-10-21"));
+        QVERIFY(!job_due(st, s.addDays(1), now.addDays(1).addSecs(7200)));
     }
 
     void basket_score_matches_market_pulse_rule() {

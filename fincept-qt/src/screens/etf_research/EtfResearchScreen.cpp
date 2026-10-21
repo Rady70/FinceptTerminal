@@ -5,6 +5,7 @@
 #include "screens/etf_research/EtfResearchFormat.h"
 #include "screens/etf_research/EtfResearchTableModel.h"
 #include "screens/etf_research/EtfResearchWidgets.h"
+#include "services/ResearchDataEvents.h"
 #include "ui/theme/ThemeManager.h"
 
 #include <QButtonGroup>
@@ -314,6 +315,13 @@ EtfResearchScreen::EtfResearchScreen(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("etfrScreen"));
     build_ui();
     apply_style();
+    // The dashboard ETF widget ran a refresh into the same store: recompute
+    // from it so this screen shows the same data (once it has been opened).
+    connect(&services::ResearchDataEvents::instance(), &services::ResearchDataEvents::etf_saved, this,
+            [this](QObject* origin) {
+                if (origin != this && loaded_once_ && !etfr::manual_refresh_running())
+                    start_load();
+            });
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this, [this]() {
         apply_style();
         populated_.clear();
@@ -1049,6 +1057,7 @@ void EtfResearchScreen::on_refresh() {
                                      .arg(failed));
             loaded_once_ = true;
             start_load();
+            emit services::ResearchDataEvents::instance().etf_saved(this);
         });
 }
 

@@ -5,6 +5,7 @@
 #include "network/http/ExternalUrlGuard.h"
 #include "screens/common/IStatefulScreen.h"
 #include "screens/economics/panels/FedWatchCharts.h"
+#include "services/ResearchDataEvents.h"
 #include "services/economics/EconomicsEnvelopeParse.h"
 #include "ui/theme/Theme.h"
 
@@ -405,6 +406,13 @@ void FedWatchPanel::activate() {
     if (activated_)
         return;
     activated_ = true;
+    // A refresh from the dashboard widget saves into the same history
+    // database: re-read it so this screen never shows an older refresh.
+    connect(&services::ResearchDataEvents::instance(), &services::ResearchDataEvents::fedwatch_saved, this,
+            [this](QObject* origin) {
+                if (origin != this && stage_ == Stage::Idle)
+                    load_workspace();
+            });
     load_workspace();
 }
 
@@ -483,6 +491,7 @@ void FedWatchPanel::on_result(const QString& id, const services::EconomicsResult
         stage_ = Stage::Loading;
         render_status();
         request("workspace");
+        emit services::ResearchDataEvents::instance().fedwatch_saved(this);
         return;
     }
     if (command == QLatin1String("workspace")) {

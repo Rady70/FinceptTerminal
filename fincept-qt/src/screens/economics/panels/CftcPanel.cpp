@@ -9,6 +9,7 @@
 #include "screens/economics/panels/CftcResearchModel.h"
 #include "screens/economics/panels/CftcResearchText.h"
 #include "screens/economics/panels/CftcSyncChartData.h"
+#include "services/ResearchDataEvents.h"
 #include "services/economics/CftcMarketCatalog.h"
 #include "services/economics/EconomicsService.h"
 #include "ui/theme/Theme.h"
@@ -238,6 +239,16 @@ CftcPanel::CftcPanel(QWidget* parent) : EconPanelBase(kCotSourceId, kCotColor, p
     show_view(View::Overview);
     connect(&services::EconomicsService::instance(), &services::EconomicsService::result_ready, this,
             &CftcPanel::on_result);
+    // The dashboard COT widget refreshed the shared archive: re-read it so this
+    // screen shows the same reports (only once it has been opened).
+    connect(&services::ResearchDataEvents::instance(), &services::ResearchDataEvents::cot_saved, this,
+            [this](QObject* origin) {
+                if (origin == this || !overview_loaded_ || !pending_overview_.isEmpty())
+                    return;
+                request_overview(false);
+                if (view_ == View::Market && !market_key_.isEmpty() && pending_market_.isEmpty())
+                    open_market(market_key_, false);
+            });
     arrange();
     refresh_panel_theme();
 }
@@ -1068,6 +1079,8 @@ void CftcPanel::accept_overview(const services::EconomicsResult& result, bool re
             text +=
                 QLatin1Char(' ') + tr("%1 markets could not be refreshed; their stored reports are shown.").arg(failed);
         set_status(text, false);
+        if (read > 0)
+            emit services::ResearchDataEvents::instance().cot_saved(this);
     }
     render_overview();
 }

@@ -1,8 +1,8 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/HighlightCharts.h"
 #include "services/economics/EconomicsService.h"
 
-#include <QGridLayout>
 #include <QLabel>
 
 namespace fincept::screens::widgets {
@@ -34,11 +34,13 @@ class FedWatchHighlightsWidget : public BaseWidget {
     void render(const QJsonObject& data);
     void apply_styles();
 
+    QLabel* target_caption_ = nullptr;
     QLabel* target_ = nullptr;
+    QLabel* next_caption_ = nullptr;
     QLabel* next_ = nullptr;
     QLabel* expected_ = nullptr;
-    QGridLayout* outcomes_ = nullptr;
-    QGridLayout* path_ = nullptr;
+    charts::PairBarList* outcomes_ = nullptr; ///< next meeting: futures vs Polymarket
+    charts::RatePathChart* path_ = nullptr;   ///< expected rate after each upcoming meeting
     QLabel* outcomes_title_ = nullptr;
     QLabel* path_title_ = nullptr;
     QWidget* body_ = nullptr;
