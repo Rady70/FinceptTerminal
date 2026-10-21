@@ -78,6 +78,11 @@ struct SecNportRequest {
     int max_filings = 4;
     QDate report_period_from; ///< optional filter on the listed report date
     QDate report_period_to;
+    /// Do not download a selected filing whose accession is already stored:
+    /// a filed document does not change (an amendment is a new accession).
+    /// The research refresh sets it; the --etf-data command keeps re-reading
+    /// and checking stored filings byte for byte.
+    bool skip_stored = false;
 };
 
 struct SecNportRunSummary {
@@ -89,6 +94,7 @@ struct SecNportRunSummary {
     int filings_selected = 0;
     int filings_stored = 0;
     int filings_skipped = 0;
+    int filings_already_stored = 0; ///< selected, stored before, not downloaded again (skip_stored)
     int filings_outside_period = 0; ///< read to learn their report period; outside the request, not stored
     int observations_inserted = 0;
     int observations_amended = 0;

@@ -264,6 +264,7 @@ class TstEtfIngest : public QObject {
     void sec_registrant_target_ingests_real_filings();
     void sec_series_target_reads_an_older_page_and_keeps_the_amendment();
     void sec_replay_confirms_without_duplicates();
+    void sec_skip_stored_reads_only_the_listing();
     void sec_forward_observation_after_the_observation_start();
     void sec_unavailable_records_a_source_error();
     void sec_throttle_stops_the_run();
@@ -389,6 +390,26 @@ void TstEtfIngest::sec_replay_confirms_without_duplicates() {
                     "effective_date = '2026-06-30'")
                  .left(10),
              QStringLiteral("2026-09-26"));
+}
+
+void TstEtfIngest::sec_skip_stored_reads_only_the_listing() {
+    FakeSec sec;
+    serve_spy(sec);
+    run_sec(sec, request("884394"), "2026-09-26T10:00:00.000Z");
+    const int rows = count("etf_observations");
+    const int filings = count("etf_sec_filings");
+    sec.requested.clear();
+    SecNportRequest again_req = request("884394");
+    again_req.skip_stored = true;
+    const SecNportRunSummary again = run_sec(sec, again_req, "2026-09-27T10:00:00.000Z");
+    QCOMPARE(again.status, RetrievalStatus::Ok);
+    QCOMPARE(again.filings_already_stored, 2);
+    QCOMPARE(again.filings_skipped, 0);
+    QVERIFY(!sec.requested.contains(kSpyDocJune)); // no stored document downloaded again
+    QVERIFY(!sec.requested.contains(kSpyDocMarch));
+    QVERIFY(sec.requested.contains(kSpySubs)); // the listing is still read
+    QCOMPARE(count("etf_observations"), rows);
+    QCOMPARE(count("etf_sec_filings"), filings);
 }
 
 void TstEtfIngest::sec_forward_observation_after_the_observation_start() {

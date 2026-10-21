@@ -1,6 +1,6 @@
 {
  "version": "etf-research-universe-v1",
- "description": "MarketLab ETF Flow & Sector Rotation research universe. Listed rows are keyed by Yahoo symbol for the free research sources; taxonomy_v2 rows carry their reviewed IBKR conId and classification. A ticker never creates an SEC/IBKR identity: SEC reporting identities are explicit, copied from taxonomy v2 with their intervals and evidence.",
+ "description": "MarketLab ETF Flow & Sector Rotation research universe. Listed rows are keyed by Yahoo symbol for the free research sources; taxonomy_v2 rows carry their reviewed IBKR conId and classification. A ticker never creates an SEC/IBKR identity at run time: SEC reporting identities are explicit rows with their intervals and evidence — SPY, IVV and QQQ copied from taxonomy v2 (research_declaration_v1); the others (sec_series_class_page_v1, 2026-10-21) from the SEC's company_tickers_mf.json ticker-to-series file, each confirmed on the series' EDGAR page as the series' only share class (a multi-class series is never declared).",
  "reference": {
   "repository": "triphopp/bloomberg-terminal",
   "commit": "338707216bb4d411335da9685dc9275cd16e106a",
@@ -66,7 +66,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000022496",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000022496"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -96,7 +107,18 @@
     "benchmark"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000021461",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000021461"
+    }
+   ],
    "note": "Added as the declared global benchmark for country/regional relative rotation."
   },
   {
@@ -125,7 +147,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001579982",
+     "series_id": "S000042975",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-03-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000042975"
+    }
+   ],
    "note": ""
   },
   {
@@ -154,7 +187,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001579982",
+     "series_id": "S000042977",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-03-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000042977"
+    }
+   ],
    "note": ""
   },
   {
@@ -183,7 +227,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001579982",
+     "series_id": "S000071318",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2021-03-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000071318"
+    }
+   ],
    "note": ""
   },
   {
@@ -216,7 +271,18 @@
     "category": "treasury_bill",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064642",
+     "series_id": "S000017326",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000017326"
+    }
+   ],
    "note": ""
   },
   {
@@ -245,7 +311,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001928561",
+     "series_id": "S000093581",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2025-11-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000093581"
+    }
+   ],
    "note": "Crypto-industry equities; not spot crypto (compare IBIT/ETHA)."
   },
   {
@@ -274,7 +351,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001432353",
+     "series_id": "S000054693",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000054693"
+    }
+   ],
    "note": ""
   },
   {
@@ -303,7 +391,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001364608",
+     "series_id": "S000050385",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000050385"
+    }
+   ],
    "note": ""
   },
   {
@@ -367,7 +466,18 @@
     "category": "emerging_markets",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004266",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004266"
+    }
+   ],
    "note": "",
    "country_region": "Global"
   },
@@ -402,7 +512,18 @@
     "category": "developed_international",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004351",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004351"
+    }
+   ],
    "note": "",
    "country_region": "Global"
   },
@@ -465,7 +586,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004246",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004246"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -495,7 +627,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004265",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004265"
+    }
+   ],
    "note": "",
    "country_region": "Americas"
   },
@@ -525,7 +668,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004249",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004249"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -555,7 +709,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004261",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004261"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -585,7 +750,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004258",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004258"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -615,7 +791,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000004264",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004264"
+    }
+   ],
    "note": "",
    "country_region": "Americas"
   },
@@ -645,7 +832,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001432353",
+     "series_id": "S000054691",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000054691"
+    }
+   ],
    "note": ""
   },
   {
@@ -674,7 +872,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004364",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004364"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -704,7 +913,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001137360",
+     "series_id": "S000009191",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000009191"
+    }
+   ],
    "note": "Equity of gold producers; not physical gold (compare GLD)."
   },
   {
@@ -770,7 +990,18 @@
     "category": "high_yield_credit",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000016772",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000016772"
+    }
+   ],
    "note": ""
   },
   {
@@ -799,7 +1030,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004350",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004350"
+    }
+   ],
    "note": ""
   },
   {
@@ -865,7 +1107,18 @@
     "category": "treasury_intermediate",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004358",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004358"
+    }
+   ],
    "note": ""
   },
   {
@@ -894,7 +1147,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004355",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004355"
+    }
+   ],
    "note": ""
   },
   {
@@ -923,7 +1187,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000034702",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000034702"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -953,7 +1228,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000009423",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000009423"
+    }
+   ],
    "note": ""
   },
   {
@@ -1030,7 +1316,18 @@
     "category": "us_small_cap",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004344",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004344"
+    }
+   ],
    "note": ""
   },
   {
@@ -1063,7 +1360,18 @@
     "category": "option_income",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001485894",
+     "series_id": "S000068402",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-05-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000068402"
+    }
+   ],
    "note": ""
   },
   {
@@ -1092,7 +1400,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001540305",
+     "series_id": "S000048544",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-02-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000048544"
+    }
+   ],
    "note": ""
   },
   {
@@ -1121,7 +1440,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064642",
+     "series_id": "S000006977",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006977"
+    }
+   ],
    "note": ""
   },
   {
@@ -1150,7 +1480,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001547576",
+     "series_id": "S000041596",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000041596"
+    }
+   ],
    "note": ""
   },
   {
@@ -1183,7 +1524,18 @@
     "category": "investment_grade_credit",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004361",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004361"
+    }
+   ],
    "note": ""
   },
   {
@@ -1212,7 +1564,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001683471",
+     "series_id": "S000079576",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2023-05-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000079576"
+    }
+   ],
    "note": "Equal-weight Magnificent Seven exposure; prospectus permits swaps (mechanism not separately reviewed)."
   },
   {
@@ -1241,7 +1604,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001137360",
+     "series_id": "S000034408",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000034408"
+    }
+   ],
    "note": "Energy-services equity; not crude-oil futures (compare USO)."
   },
   {
@@ -1270,7 +1644,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001137360",
+     "series_id": "S000034409",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000034409"
+    }
+   ],
    "note": ""
   },
   {
@@ -1363,7 +1748,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001540305",
+     "series_id": "S000062478",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-02-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000062478"
+    }
+   ],
    "note": ""
   },
   {
@@ -1396,7 +1792,18 @@
     "category": "treasury_bill",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000068768",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2020-04-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000068768"
+    }
+   ],
    "note": ""
   },
   {
@@ -1429,7 +1836,18 @@
     "category": "inverse_us_large_cap",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001174610",
+     "series_id": "S000006828",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006828"
+    }
+   ],
    "note": ""
   },
   {
@@ -1462,7 +1880,18 @@
     "category": "treasury_short",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004357",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004357"
+    }
+   ],
    "note": ""
   },
   {
@@ -1491,7 +1920,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001364608",
+     "series_id": "S000033237",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000033237"
+    }
+   ],
    "note": ""
   },
   {
@@ -1553,7 +1993,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001137360",
+     "series_id": "S000034411",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000034411"
+    }
+   ],
    "note": ""
   },
   {
@@ -1632,7 +2083,18 @@
     "category": "leveraged_us_large_cap",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001174610",
+     "series_id": "S000006821",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006821"
+    }
+   ],
    "note": ""
   },
   {
@@ -1661,7 +2123,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001378872",
+     "series_id": "S000060822",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000060822"
+    }
+   ],
    "note": ""
   },
   {
@@ -1719,7 +2192,18 @@
     "country"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0000930667",
+     "series_id": "S000018072",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000018072"
+    }
+   ],
    "note": "",
    "country_region": "Asia"
   },
@@ -1753,7 +2237,18 @@
     "category": "tips",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004363",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004363"
+    }
+   ],
    "note": ""
   },
   {
@@ -1786,7 +2281,18 @@
     "category": "treasury_long",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001100663",
+     "series_id": "S000004360",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000004360"
+    }
+   ],
    "note": ""
   },
   {
@@ -1815,7 +2321,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001432353",
+     "series_id": "S000029442",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000029442"
+    }
+   ],
    "note": ""
   },
   {
@@ -1973,7 +2490,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064642",
+     "series_id": "S000010019",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000010019"
+    }
+   ],
    "note": ""
   },
   {
@@ -2002,7 +2530,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006414",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006414"
+    }
+   ],
    "note": ""
   },
   {
@@ -2031,7 +2570,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000062095",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000062095"
+    }
+   ],
    "note": ""
   },
   {
@@ -2065,7 +2615,18 @@
     "category": "us_energy_sector",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006410",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006410"
+    }
+   ],
    "note": ""
   },
   {
@@ -2094,7 +2655,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006411",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006411"
+    }
+   ],
    "note": ""
   },
   {
@@ -2123,7 +2695,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006413",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006413"
+    }
+   ],
    "note": ""
   },
   {
@@ -2157,7 +2740,18 @@
     "category": "us_technology_sector",
     "effective_from": "2026-09-25"
    },
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006415",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006415"
+    }
+   ],
    "note": ""
   },
   {
@@ -2186,7 +2780,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006409",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006409"
+    }
+   ],
    "note": ""
   },
   {
@@ -2215,7 +2820,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000051152",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000051152"
+    }
+   ],
    "note": ""
   },
   {
@@ -2244,7 +2860,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006416",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006416"
+    }
+   ],
    "note": ""
   },
   {
@@ -2273,7 +2900,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006412",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006412"
+    }
+   ],
    "note": ""
   },
   {
@@ -2302,7 +2940,18 @@
     "us_sector"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064641",
+     "series_id": "S000006408",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000006408"
+    }
+   ],
    "note": ""
   },
   {
@@ -2331,7 +2980,18 @@
     "theme"
    ],
    "taxonomy_v2": null,
-   "sec_reporting": [],
+   "sec_reporting": [
+    {
+     "cik": "0001064642",
+     "series_id": "S000012322",
+     "relationship": "sole_class_of_series",
+     "identity_basis": "sec_series_class_page_v1",
+     "effective_from": "2019-01-01",
+     "effective_to": "",
+     "fund_structure": "open_end_etf",
+     "evidence_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&scd=series&CIK=S000012322"
+    }
+   ],
    "note": ""
   },
   {
