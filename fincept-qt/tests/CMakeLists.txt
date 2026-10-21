@@ -197,6 +197,7 @@ fincept_add_test(tst_fedwatch_panel
     "${PROJECT_SOURCE_DIR}/src/services/economics/EconomicsService.h"
     "${PROJECT_SOURCE_DIR}/src/core/session/ScreenStateManager.h"
     "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchPanel.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/ResearchDataEvents.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/economics/panels/FedWatchCharts.cpp"
     "${PROJECT_SOURCE_DIR}/src/network/http/ExternalUrlGuard.cpp"
     "${PROJECT_SOURCE_DIR}/src/network/http/HostedPathGuard.cpp"
@@ -526,6 +527,7 @@ fincept_add_test(tst_etf_research_store
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v053_etf_research_sources.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v054_etf_research_cftc.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp"
+    "${PROJECT_SOURCE_DIR}/src/storage/sqlite/migrations/v056_etf_research_scheduled_runs.cpp"
     "${PROJECT_SOURCE_DIR}/src/storage/repositories/EtfResearchRepository.cpp"
     "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp"
     "${PROJECT_SOURCE_DIR}/src/core/logging/Logger.cpp")
@@ -541,6 +543,7 @@ fincept_add_test(tst_etf_research_ui
     tst_etf_research_ui.cpp
     "${PROJECT_SOURCE_DIR}/src/services/etf/research/EtfResearchEngine.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchScreen.cpp"
+    "${PROJECT_SOURCE_DIR}/src/services/ResearchDataEvents.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchScreenDetail.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchTableModel.cpp"
     "${PROJECT_SOURCE_DIR}/src/screens/etf_research/EtfResearchWidgets.cpp"

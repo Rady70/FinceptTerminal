@@ -39,6 +39,7 @@
 #include "network/http/HttpClient.h"
 #include "python/OptionGreeksWorker.h"
 #include "python/PythonSetupManager.h"
+#include "services/DailyUpdateScheduler.h"
 #include "python/PythonWorker.h"
 #include "screens/launchpad/LaunchpadScreen.h"
 #include "screens/recovery/CrashRecoveryDialog.h"
@@ -77,6 +78,7 @@
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
 
+#include <QEventLoop>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
@@ -128,7 +130,12 @@ static void post_chain(std::vector<std::function<void()>> steps, std::size_t i =
 // Called from both the post-setup-screen path and the no-setup path so the
 // two branches stay in sync.
 static void wire_app_lifecycle(QApplication& app, fincept::InstanceLock& lock) {
-    QObject::connect(&lock, &fincept::InstanceLock::message_received, [](const QStringList& /*args*/) {
+    QObject::connect(&lock, &fincept::InstanceLock::message_received, [](const QStringList& args) {
+        // The daily update task launched while this instance is open: this
+        // instance runs the update itself (DailyUpdateScheduler), so the
+        // window is not brought forward.
+        if (args.contains(QStringLiteral("--daily-update")))
+            return;
         // Re-launching the exe while an instance is already
         // running means "bring the running instance forward" —
         // the standard single-instance behaviour — NOT "open a
@@ -295,6 +302,11 @@ int main(int argc, char* argv[]) {
 
     // ── Secondary instance: argv was already shipped to the primary. Exit. ──
     if (lock_status == fincept::InstanceLock::Status::Secondary) {
+        // The daily update task while the app is open: the open app runs the
+        // due update itself. Nothing to do here.
+        for (int i = 1; i < argc; ++i)
+            if (qstrcmp(argv[i], "--daily-update") == 0)
+                return 0;
         // MarketLab ETF (Batch B): a headless ETF command needs this profile's
         // database, which the running instance owns, and forwarding argv to it
         // runs nothing. Refuse (exit 1) instead of exiting 0 as if it had run.
@@ -400,7 +412,7 @@ int main(int argc, char* argv[]) {
         if (fincept::marketlab::etf_headless_command_requested(argc, argv))
             return true;
         for (int i = 1; i < argc; ++i) {
-            if (qstrcmp(argv[i], "--selftest-ibkr") == 0)
+            if (qstrcmp(argv[i], "--selftest-ibkr") == 0 || qstrcmp(argv[i], "--daily-update") == 0)
                 return true;
         }
         return false;
@@ -634,6 +646,7 @@ int main(int argc, char* argv[]) {
     fincept::register_migration_v053();
     fincept::register_migration_v054();
     fincept::register_migration_v055();
+    fincept::register_migration_v056();
 
     // Open main database
     QString db_path = fincept::AppPaths::data() + "/fincept.db";
@@ -708,13 +721,18 @@ int main(int argc, char* argv[]) {
         const bool headless_run = [argc, argv]() {
             for (int i = 1; i < argc; ++i) {
                 if (qstrcmp(argv[i], "--smoke-test") == 0 || qstrncmp(argv[i], "--selftest", 10) == 0 ||
-                    qstrcmp(argv[i], "--etf-data") == 0 || qstrcmp(argv[i], "--etf-research") == 0)
+                    qstrcmp(argv[i], "--etf-data") == 0 || qstrcmp(argv[i], "--etf-research") == 0 ||
+                    qstrcmp(argv[i], "--daily-update") == 0)
                     return true;
             }
             return false;
         }();
-        if (!headless_run)
+        if (!headless_run) {
             fincept::StorageManager::instance().start_retention_sweeper();
+            // The daily FedWatch / ETF Flow update while the app is open (the
+            // Windows scheduled task covers the time it is closed).
+            fincept::services::DailyUpdateScheduler::instance().start();
+        }
 
         // Load persisted font settings and apply before any window is shown
         // — eliminates flash/wrong-font-on-startup. Theme is always Obsidian.
@@ -790,6 +808,30 @@ int main(int argc, char* argv[]) {
         const int etfr_rc = fincept::marketlab::run_etf_research_cli(argc, argv);
         fincept::TerminalShell::instance().shutdown();
         return etfr_rc;
+    }
+    // The daily FedWatch / ETF Flow update (the Windows scheduled task, app
+    // closed): run whatever DailyUpdateRule says is due, then exit. Same
+    // headless pattern; progress goes to <profile>/daily_update/log.txt.
+    if ([argc, argv]() {
+            for (int i = 1; i < argc; ++i)
+                if (qstrcmp(argv[i], "--daily-update") == 0)
+                    return true;
+            return false;
+        }()) {
+        QEventLoop loop;
+        int rc = 1;
+        bool finished = false;
+        fincept::services::DailyUpdateScheduler::instance().run_due_once([&](int r) {
+            rc = r;
+            finished = true;
+            loop.quit();
+        });
+        if (!finished) {
+            QTimer::singleShot(2 * 60 * 60 * 1000, &loop, &QEventLoop::quit);
+            loop.exec();
+        }
+        fincept::TerminalShell::instance().shutdown();
+        return finished ? rc : 1;
     }
 
     LOG_INFO("App", "Starting session manager...");

@@ -8,7 +8,9 @@
 // Sentiment widget scored −100..+100 on ±0.5% moves while Market Pulse scored
 // 0..100 on ±0.3% moves — two different "sentiment" numbers on one screen.
 // Header-only, no Qt GUI, so the rules are unit-testable.
+#include <QDateTime>
 #include <QString>
+#include <QTimeZone>
 
 #include <cmath>
 #include <optional>
@@ -73,6 +75,72 @@ inline Tone vix_tone(VixRegime r) {
             return Tone::Negative;
     }
     return Tone::Neutral;
+}
+
+/// The VIX gauge scale: 0..kVixGaugeMax, with the regime boundaries above
+/// (15, 20, 30, 40) as its colour bands, so the marker lands in the band whose
+/// name the widget shows.
+inline constexpr double kVixGaugeMax = 50.0;
+inline constexpr double kVixBounds[] = {15.0, 20.0, 30.0, 40.0};
+
+/// Marker position on the gauge, 0..1 (readings above the scale sit at 1).
+inline double vix_gauge_fraction(double vix) {
+    const double f = vix / kVixGaugeMax;
+    return f < 0 ? 0 : (f > 1 ? 1 : f);
+}
+
+/// Exchange session state from the exchange's own clock (DST-correct through
+/// QTimeZone). Regular weekday hours only: exchange holidays are not known.
+enum class SessionState { Open, Pre, Break, After, Closed, Unknown };
+
+struct ExchangeSession {
+    const char* tz;
+    int pre_from; ///< minutes after local midnight, -1 = none
+    int open;
+    int break_from; ///< -1 = no midday break
+    int break_to;
+    int close;
+    int after_to; ///< -1 = no after-hours session shown
+};
+
+/// US: NYSE/Nasdaq 09:30-16:00 ET (pre 04:00, after to 20:00); UK: LSE
+/// 08:00-16:30; JP: TSE 09:00-11:30 / 12:30-15:30; CN: SSE 09:30-11:30 /
+/// 13:00-15:00 (call auction from 09:15); IN: NSE 09:15-15:30 (pre-open 09:00).
+inline std::optional<ExchangeSession> exchange_session(const QString& region) {
+    if (region == QLatin1String("US"))
+        return ExchangeSession{"America/New_York", 4 * 60, 9 * 60 + 30, -1, -1, 16 * 60, 20 * 60};
+    if (region == QLatin1String("UK"))
+        return ExchangeSession{"Europe/London", -1, 8 * 60, -1, -1, 16 * 60 + 30, -1};
+    if (region == QLatin1String("JP"))
+        return ExchangeSession{"Asia/Tokyo", -1, 9 * 60, 11 * 60 + 30, 12 * 60 + 30, 15 * 60 + 30, -1};
+    if (region == QLatin1String("CN"))
+        return ExchangeSession{"Asia/Shanghai", 9 * 60 + 15, 9 * 60 + 30, 11 * 60 + 30, 13 * 60, 15 * 60, -1};
+    if (region == QLatin1String("IN"))
+        return ExchangeSession{"Asia/Kolkata", 9 * 60, 9 * 60 + 15, -1, -1, 15 * 60 + 30, -1};
+    return std::nullopt;
+}
+
+inline SessionState exchange_status(const QString& region, const QDateTime& utc) {
+    const auto s = exchange_session(region);
+    if (!s)
+        return SessionState::Unknown;
+    const QTimeZone tz{QByteArray(s->tz)};
+    if (!tz.isValid())
+        return SessionState::Unknown;
+    const QDateTime local = utc.toTimeZone(tz);
+    if (local.date().dayOfWeek() >= 6)
+        return SessionState::Closed;
+    const int m = local.time().hour() * 60 + local.time().minute();
+    if (m >= s->open && m < s->close) {
+        if (s->break_from >= 0 && m >= s->break_from && m < s->break_to)
+            return SessionState::Break;
+        return SessionState::Open;
+    }
+    if (s->pre_from >= 0 && m >= s->pre_from && m < s->open)
+        return SessionState::Pre;
+    if (s->after_to >= 0 && m >= s->close && m < s->after_to)
+        return SessionState::After;
+    return SessionState::Closed;
 }
 
 /// Basket sentiment: 50 + (up − down) / observed × 50, then −20 when VIX > 30,

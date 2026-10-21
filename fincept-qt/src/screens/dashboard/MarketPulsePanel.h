@@ -161,6 +161,8 @@ class MarketPulsePanel : public QWidget {
     void hub_subscribe_all();
     void hub_unsubscribe_all();
     void rebuild_breadth_from_cache();
+    /// The market-wide sentiment score (services::MarketBreadthFeed).
+    void apply_breadth_sentiment();
     void rebuild_movers_from_cache();
     void rebuild_snapshot_from_cache();
 

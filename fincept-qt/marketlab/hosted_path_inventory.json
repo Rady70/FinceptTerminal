@@ -666,6 +666,22 @@
       "sink": "py_http_client",
       "disposition": "no_hosted_route",
       "files": [
+        "scripts/cnn_fear_greed.py"
+      ],
+      "note": "The CNN Fear & Greed collector of the dashboard (added 2026-10-21; the owner reviewed CNN's terms first). Two sites: (1) the requests import inside fetch(); (2) its single requests.get to the module constant URL = https://production.dataviz.cnn.io/index/fearandgreed/graphdata, the feed CNN's Fear & Greed page draws from, with fixed browser-style headers. No scheme, host or path comes from configuration, arguments or the environment. requests follows redirects, so the final host is whatever CNN's servers redirect to, never anything a Fincept configuration can set; nothing reaches a Fincept-owned destination."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/market_breadth.py"
+      ],
+      "note": "The market-wide breadth collector of the dashboard (added 2026-10-21). Two sites: (1) the requests import inside load_members(); (2) its single requests.get to the module constant MEMBERS_URL = https://en.wikipedia.org/wiki/List_of_S%26P_500_companies (the S&P 500 member table, read weekly). Daily bars come through yfinance (Yahoo, the library's own fixed hosts, as for yfinance_data.py). No scheme, host or path comes from configuration, arguments or the environment; the only argument is the local cache directory. Nothing reaches a Fincept-owned destination."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
         "scripts/cftc_data.py"
       ],
       "note": "The CFTC Commitments of Traders provider, launched as a child process by the C++ layer. It is pinned on its own because CFTC Batch 5 (commits 7a3b99958..a7ddd35c4) raised its count from 2 to 3, and each site was judged. (1) The requests import. (2) The wrapper's shared requests.Session, built in CFTCDataWrapper.__init__. It reaches exactly two destinations, both fixed by the source. The first is the CFTC public-reporting Socrata API at the literal base_url https://publicreporting.cftc.gov, with resource ids from the fixed reports_dict. The second, added by Batch 5, is the official annual history files under the class constant ANNUAL_HISTORY_BASE = https://www.cftc.gov/files/dea/history, fetched by _download_annual; the file names come from the fixed ANNUAL_SOURCES and ANNUAL_ALTERNATE_SOURCES tables formatted with an integer year. (3) The per-thread requests.Session that Batch 5 added in _thread_session(), which is the site that raised the count. It copies the shared session's headers and is used only by _monitor_get, for the cross-market monitor's Socrata pages built from the same literal base_url. No scheme, host or path prefix is taken from configuration, arguments or the environment. The environment supplies only the optional Socrata app token (CFTC_APP_TOKEN, sent as a query parameter) and the local archive directory. requests follows HTTP redirects, so the final host is whatever these two CFTC hosts redirect to; that is decided by the CFTC's servers, never by anything a Fincept configuration can set. None of these routes can reach a Fincept-owned destination, so there is nothing to guard. The literal-host scan covers this file as well."
@@ -734,6 +750,9 @@
     },
     "scripts/cftc_data.py": {
       "py_http_client": 3
+    },
+    "scripts/cnn_fear_greed.py": {
+      "py_http_client": 2
     },
     "scripts/cnb_data.py": {
       "py_http_client": 2
@@ -805,6 +824,9 @@
       "py_http_client": 2
     },
     "scripts/imf_datamapper_data.py": {
+      "py_http_client": 2
+    },
+    "scripts/market_breadth.py": {
       "py_http_client": 2
     },
     "scripts/mnb_data.py": {

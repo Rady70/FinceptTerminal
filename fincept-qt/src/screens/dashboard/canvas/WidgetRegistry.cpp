@@ -1,5 +1,6 @@
 ﻿#include "screens/dashboard/canvas/WidgetRegistry.h"
 
+#include "screens/dashboard/widgets/CnnFearGreedWidget.h"
 #include "screens/dashboard/widgets/CommoditiesWidget.h"
 #include "screens/dashboard/widgets/CotHighlightsWidget.h"
 #include "screens/dashboard/widgets/CryptoTickerWidget.h"
@@ -91,9 +92,54 @@ WidgetRegistry::WidgetRegistry() {
     register_widget({"sentiment", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Sentiment"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "0-100 score from moves beyond ±0.3% in a fixed 24-stock basket, adjusted "
-                                       "for VIX; not an external index"),
-                     4, 4, 2, 3, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+                                       "Market-wide breadth of all S&P 500 stocks: five readings ranked against "
+                                       "the past year, as a 0-100 score"),
+                     4, 7, 3, 5, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+
+    register_widget({"cnn_fear_greed", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN Fear & Greed Index"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "CNN's index, its seven indicators with their charts, and the past year"),
+                     4, 8, 3, 6, [](const QJsonObject&) { return new widgets::CnnFearGreedWidget; }});
+
+    // CNN's seven indicators, one widget each (one shared read of CNN's data).
+    struct CnnIndicator {
+        const char* type;
+        const char* key;
+        const char* name;
+        const char* label;
+        const char* description;
+    };
+    static const CnnIndicator kCnnIndicators[] = {
+        {"cnn_fg_momentum", "market_momentum_sp500",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Market Momentum"), "Market momentum",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "S&P 500 against its 125-day average (CNN)")},
+        {"cnn_fg_strength", "stock_price_strength",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Stock Price Strength"), "Stock price strength",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "NYSE 52-week highs against lows (CNN)")},
+        {"cnn_fg_breadth", "stock_price_breadth",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Stock Price Breadth"), "Stock price breadth",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "McClellan volume summation index (CNN)")},
+        {"cnn_fg_put_call", "put_call_options",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Put and Call Options"), "Put and call options",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "5-day average put/call ratio (CNN)")},
+        {"cnn_fg_volatility", "market_volatility_vix",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Market Volatility"), "Market volatility",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "VIX against its 50-day average (CNN)")},
+        {"cnn_fg_safe_haven", "safe_haven_demand",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Safe Haven Demand"), "Safe-haven demand",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Stocks against bonds over 20 days (CNN)")},
+        {"cnn_fg_junk_bonds", "junk_bond_demand",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN · Junk Bond Demand"), "Junk-bond demand",
+         QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Junk against investment-grade bond yields (CNN)")},
+    };
+    for (const auto& ind : kCnnIndicators) {
+        const QString key = QString::fromLatin1(ind.key);
+        const QString label = QString::fromUtf8(ind.label);
+        register_widget({ind.type, ind.name, QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+                         ind.description, 4, 5, 3, 4,
+                         [key, label](const QJsonObject&) { return new widgets::CnnIndicatorWidget(key, label); }});
+    }
 
     // ── Research ──────────────────────────────────────────────────────────────
     register_widget({"news", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "News Feed"),

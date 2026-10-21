@@ -1,5 +1,6 @@
 #pragma once
 #include "screens/dashboard/widgets/BaseWidget.h"
+#include "screens/dashboard/widgets/HighlightCharts.h"
 #include "screens/dashboard/widgets/QuoteSubscriptions.h"
 #include "services/markets/MarketDataService.h"
 
@@ -8,8 +9,9 @@
 
 namespace fincept::screens::widgets {
 
-/// Risk Metrics Widget — displays VIX (fear gauge), estimated beta for key stocks,
-/// 52-week range positions, and correlation proxies. All data from yfinance.
+/// Risk Metrics Widget — the VIX on its regime gauge, today's move and day
+/// range of a fixed list of high-beta stocks, and today's relative moves
+/// (SPY minus QQQ / IWM / TLT, percentage points). All data from yfinance.
 ///
 /// Subscribes to `market:quote:<sym>` on the DataHub for the fixed
 /// risk-symbol set; on every delivery `populate()` is re-invoked with the
@@ -40,13 +42,14 @@ class RiskMetricsWidget : public BaseWidget {
     QLabel* vix_header_lbl_ = nullptr;
     QLabel* vix_value_ = nullptr;
     QLabel* vix_regime_ = nullptr;
-    QLabel* vix_bar_fill_ = nullptr;
-    QVector<QFrame*> vix_bar_segments_; // 5 gradient segments
+    charts::VixGauge* vix_gauge_ = nullptr; ///< 0–50 scale, bands at the regime bounds
 
     // Separators and section headers
     QFrame* sep1_ = nullptr;
     QFrame* sep2_ = nullptr;
     QLabel* stocks_hdr_ = nullptr;
+    QLabel* chg_hdr_ = nullptr;
+    QLabel* range_hdr_ = nullptr;
     QLabel* corr_hdr_ = nullptr;
 
     // Volatility cluster labels [6 stocks]

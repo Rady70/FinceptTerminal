@@ -1023,6 +1023,7 @@ set(STORAGE_SOURCES
     src/storage/sqlite/migrations/v053_etf_research_sources.cpp
     src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
     src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp
+    src/storage/sqlite/migrations/v056_etf_research_scheduled_runs.cpp
 
     # Historical OHLCV data store (Historify, Phase 3 §13)
     src/storage/HistoricalDataStore.cpp
@@ -1245,6 +1246,10 @@ set(SERVICE_SOURCES
     src/services/crypto/TotpService.cpp
     src/services/python_cli/PythonCliService.cpp
     src/services/markets/MarketDataService.cpp
+    src/services/markets/MarketBreadthFeed.cpp
+    src/services/markets/CnnFearGreedFeed.cpp
+    src/services/ResearchDataEvents.cpp
+    src/services/DailyUpdateScheduler.cpp
     src/services/markets/MarketSearchService.cpp
     src/services/ibkr/IbkrTwsService.cpp
     src/services/etf/EtfSecNportIngestor.cpp
@@ -1591,6 +1596,7 @@ set(SCREEN_SOURCES
     src/screens/dashboard/widgets/FedWatchHighlightsWidget.cpp
     src/screens/dashboard/widgets/CotHighlightsWidget.cpp
     src/screens/dashboard/widgets/EtfFlowHighlightsWidget.cpp
+    src/screens/dashboard/widgets/CnnFearGreedWidget.cpp
     # ReportBuilderScreen split; see header.
     src/screens/report_builder/ReportBuilderScreen.cpp
     src/screens/report_builder/ReportBuilderScreen_Components.cpp
@@ -2598,6 +2604,7 @@ set_source_files_properties(
     src/storage/sqlite/migrations/v053_etf_research_sources.cpp
     src/storage/sqlite/migrations/v054_etf_research_cftc.cpp
     src/storage/sqlite/migrations/v055_etf_research_holdings_reads.cpp
+    src/storage/sqlite/migrations/v056_etf_research_scheduled_runs.cpp
     src/storage/repositories/EtfResearchRepository.cpp
     src/services/etf/research/EtfResearchEngine.cpp
     src/services/etf/research/EtfResearchService.cpp

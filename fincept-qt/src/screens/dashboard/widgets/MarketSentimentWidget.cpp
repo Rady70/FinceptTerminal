@@ -1,326 +1,212 @@
 #include "screens/dashboard/widgets/MarketSentimentWidget.h"
 
-#include "datahub/DataHub.h"
-#include "datahub/DataHubMetaTypes.h"
-#include "screens/dashboard/widgets/MarketGauges.h"
-#include "screens/markets/QuoteDisplayFormat.h"
+#include "services/markets/MarketBreadthFeed.h"
 #include "ui/theme/Theme.h"
+
+#include <QHBoxLayout>
+#include <QJsonArray>
+#include <QLocale>
+#include <QShowEvent>
+#include <QVBoxLayout>
 
 namespace fincept::screens::widgets {
 
 namespace {
-inline const QStringList kSentimentSymbols = {"^VIX", "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "NFLX",
-                                              "AMD",  "INTC", "JPM",  "GS",    "BAC",  "WMT",  "DIS",  "BA",   "XOM",
-                                              "CVX",  "COIN", "PLTR", "SOFI",  "NKE",  "PFE",  "PYPL"};
+
+constexpr int kStaleAfterSec = 15 * 60;
+
+QString ms_signed(double v, const QString& unit) {
+    const QString text = QString::number(std::abs(v), 'f', 1);
+    if (std::abs(v) < 0.05)
+        return QStringLiteral("0.0") + unit;
+    return (v > 0 ? QStringLiteral("+") : QString::fromUtf8("−")) + text + unit;
 }
 
+} // namespace
+
 MarketSentimentWidget::MarketSentimentWidget(QWidget* parent) : BaseWidget(tr("MARKET SENTIMENT"), parent) {
-    auto* vl = content_layout();
-    vl->setContentsMargins(8, 8, 8, 8);
-    vl->setSpacing(8);
+    body_ = new QWidget(this);
+    body_->setObjectName("mktSent");
+    auto* vl = new QVBoxLayout(body_);
+    vl->setContentsMargins(10, 8, 10, 8);
+    vl->setSpacing(4);
 
-    // ── Score banner ──
-    banner_ = new QWidget(this);
-    auto* bl = new QVBoxLayout(banner_);
-    bl->setContentsMargins(12, 10, 12, 10);
-    bl->setSpacing(4);
-    bl->setAlignment(Qt::AlignCenter);
+    auto* hero = new QHBoxLayout;
+    score_ = new QLabel(QStringLiteral("--"));
+    score_->setObjectName("msBig");
+    hero->addWidget(score_);
+    auto* right = new QVBoxLayout;
+    right->setSpacing(0);
+    rating_ = new QLabel(QStringLiteral("—"));
+    rating_->setObjectName("msRating");
+    basis_ = new QLabel(tr("All S&P 500 stocks · ranked against the past year"));
+    basis_->setObjectName("msSub");
+    right->addStretch();
+    right->addWidget(rating_);
+    right->addWidget(basis_);
+    hero->addSpacing(8);
+    hero->addLayout(right);
+    hero->addStretch();
+    vl->addLayout(hero);
 
-    auto* score_row = new QWidget(this);
-    auto* srl = new QHBoxLayout(score_row);
-    srl->setContentsMargins(0, 0, 0, 0);
-    srl->setAlignment(Qt::AlignCenter);
-    srl->setSpacing(8);
+    gauge_ = new charts::ScoreGauge(body_);
+    gauge_->setToolTip(tr("Average of the five readings' ranks against their own previous 252 sessions (0–100). "
+                          "Hollow marker: the previous session."));
+    vl->addWidget(gauge_);
+    today_ = new QLabel;
+    today_->setObjectName("msSub");
+    today_->setWordWrap(true);
+    vl->addWidget(today_);
 
-    arrow_label_ = new QLabel(QChar(0x2014)); // em-dash placeholder
-    srl->addWidget(arrow_label_);
+    parts_title_ = new QLabel(tr("FIVE BREADTH READINGS · RANK VS PAST YEAR (0–100)"));
+    parts_title_->setObjectName("msHead");
+    vl->addWidget(parts_title_);
+    parts_ = new charts::BarList(body_);
+    parts_->set_fixed_scale(100.0);
+    parts_->set_empty_text(tr("Waiting for the first market-wide reading (about a minute)…"));
+    vl->addWidget(parts_, 3);
 
-    score_label_ = new QLabel("--");
-    srl->addWidget(score_label_);
+    history_title_ = new QLabel(tr("SCORE · PAST 60 SESSIONS"));
+    history_title_->setObjectName("msHead");
+    vl->addWidget(history_title_);
+    history_ = new charts::ScoreLine(body_);
+    vl->addWidget(history_, 2);
+    content_layout()->addWidget(body_);
 
-    bl->addWidget(score_row);
-
-    verdict_label_ = new QLabel(tr("LOADING..."));
-    verdict_label_->setAlignment(Qt::AlignCenter);
-    bl->addWidget(verdict_label_);
-
-    vl->addWidget(banner_);
-
-    // ── Sentiment bar ──
-    auto* bar_container = new QWidget(this);
-    bar_container->setFixedHeight(8);
-    auto* bar_layout = new QHBoxLayout(bar_container);
-    bar_layout->setContentsMargins(0, 0, 0, 0);
-    bar_layout->setSpacing(1);
-
-    bull_bar_ = new QFrame;
-    bar_layout->addWidget(bull_bar_, 1);
-
-    neutral_bar_ = new QFrame;
-    bar_layout->addWidget(neutral_bar_, 1);
-
-    bear_bar_ = new QFrame;
-    bar_layout->addWidget(bear_bar_, 1);
-
-    vl->addWidget(bar_container);
-
-    // Labels under bar
-    auto* bar_labels = new QWidget(this);
-    auto* bll = new QHBoxLayout(bar_labels);
-    bll->setContentsMargins(0, 0, 0, 0);
-
-    bull_label_ = new QLabel(tr("-- UP"));
-    bll->addWidget(bull_label_);
-    bll->addStretch();
-
-    neutral_label_ = new QLabel(tr("-- FLAT"));
-    bll->addWidget(neutral_label_);
-    bll->addStretch();
-
-    bear_label_ = new QLabel(tr("-- DOWN"));
-    bll->addWidget(bear_label_);
-
-    vl->addWidget(bar_labels);
-
-    // ── VIX and Breadth ──
-    separator_ = new QFrame;
-    separator_->setFixedHeight(1);
-    vl->addWidget(separator_);
-
-    auto* stats = new QWidget(this);
-    auto* stl = new QVBoxLayout(stats);
-    stl->setContentsMargins(0, 4, 0, 0);
-    stl->setSpacing(4);
-
-    auto make_stat_row = [&](const QString& label, QLabel*& title_out, QLabel*& val_out) {
-        auto* row = new QWidget(this);
-        auto* rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-
-        title_out = new QLabel(label);
-        rl->addWidget(title_out);
-        rl->addStretch();
-
-        val_out = new QLabel("--");
-        rl->addWidget(val_out);
-
-        stl->addWidget(row);
-    };
-
-    make_stat_row(tr("VIX (Fear Gauge)"), vix_title_label_, vix_label_);
-    make_stat_row(tr("Up / down (beyond ±0.3%)"), breadth_title_label_, breadth_label_);
-
-    vl->addWidget(stats);
-    vl->addStretch();
-
-    connect(this, &BaseWidget::refresh_requested, this, &MarketSentimentWidget::refresh_data);
+    auto& feed = services::MarketBreadthFeed::instance();
+    connect(&feed, &services::MarketBreadthFeed::changed, this, &MarketSentimentWidget::render);
+    connect(this, &BaseWidget::refresh_requested, this, []() { services::MarketBreadthFeed::instance().request(); });
 
     apply_styles();
-    set_loading(true);
+    render();
+}
+
+void MarketSentimentWidget::request_bulk_refresh() {
+    services::MarketBreadthFeed::instance().request();
 }
 
 void MarketSentimentWidget::apply_styles() {
-    banner_->setStyleSheet(QString("background: %1; border-radius: 2px;").arg(ui::colors::BG_RAISED()));
-    arrow_label_->setStyleSheet(
-        QString("font-size: 18px; background: transparent; color: %1;").arg(ui::colors::TEXT_TERTIARY()));
-    score_label_->setStyleSheet(QString("color: %1; font-size: 24px; font-weight: bold; background: transparent;")
-                                    .arg(ui::colors::TEXT_TERTIARY()));
-    verdict_label_->setStyleSheet(QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;")
-                                      .arg(ui::colors::TEXT_TERTIARY()));
-
-    bull_bar_->setStyleSheet(QString("background: %1; border-radius: 0;").arg(ui::colors::POSITIVE()));
-    neutral_bar_->setStyleSheet(QString("background: %1; border-radius: 0;").arg(ui::colors::TEXT_TERTIARY()));
-    bear_bar_->setStyleSheet(QString("background: %1; border-radius: 0;").arg(ui::colors::NEGATIVE()));
-
-    bull_label_->setStyleSheet(
-        QString("color: %1; font-size: 9px; background: transparent;").arg(ui::colors::POSITIVE()));
-    neutral_label_->setStyleSheet(
-        QString("color: %1; font-size: 9px; background: transparent;").arg(ui::colors::TEXT_TERTIARY()));
-    bear_label_->setStyleSheet(
-        QString("color: %1; font-size: 9px; background: transparent;").arg(ui::colors::NEGATIVE()));
-
-    separator_->setStyleSheet(QString("background: %1;").arg(ui::colors::BORDER_DIM()));
-
-    vix_title_label_->setStyleSheet(QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;")
-                                        .arg(ui::colors::TEXT_TERTIARY()));
-    breadth_title_label_->setStyleSheet(
-        QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;")
-            .arg(ui::colors::TEXT_TERTIARY()));
-    vix_label_->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                                  .arg(ui::colors::TEXT_PRIMARY()));
-    breadth_label_->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                                      .arg(ui::colors::TEXT_PRIMARY()));
+    body_->setStyleSheet(QString("#mktSent QLabel{background:transparent;font-size:10px;color:%1;}"
+                                 "#mktSent QLabel#msBig{font-size:30px;font-weight:bold;}"
+                                 "#mktSent QLabel#msRating{font-size:13px;font-weight:bold;}"
+                                 "#mktSent QLabel#msSub{color:%2;}"
+                                 "#mktSent QLabel#msHead{font-size:9px;font-weight:bold;color:%3;"
+                                 "padding-top:8px;letter-spacing:0.5px;}")
+                             .arg(ui::colors::TEXT_PRIMARY(), ui::colors::TEXT_SECONDARY(), ui::colors::INFO()));
+    gauge_->update();
+    parts_->update();
+    history_->update();
 }
 
 void MarketSentimentWidget::on_theme_changed() {
     apply_styles();
+    render();
 }
 
 void MarketSentimentWidget::showEvent(QShowEvent* e) {
     BaseWidget::showEvent(e);
-    if (!hub_active_)
-        hub_subscribe_all();
-}
-
-void MarketSentimentWidget::hideEvent(QHideEvent* e) {
-    BaseWidget::hideEvent(e);
-    if (hub_active_)
-        hub_unsubscribe_all();
-}
-
-void MarketSentimentWidget::refresh_data() {
-    // User-triggered refresh — force past min_interval; producer rate limit still paces upstream.
-    auto& hub = datahub::DataHub::instance();
-    QStringList topics;
-    topics.reserve(kSentimentSymbols.size());
-    for (const auto& sym : kSentimentSymbols)
-        topics.append(QStringLiteral("market:quote:") + sym);
-    hub.request(topics, /*force=*/true);
-}
-
-void MarketSentimentWidget::hub_subscribe_all() {
-    show_feed_status(this, feed_.summary(kSentimentSymbols), static_cast<int>(kSentimentSymbols.size()));
-    // One redraw per delivery burst, not one per symbol.
-    feed_.subscribe(this, kSentimentSymbols, [this]() { schedule_render([this]() { rebuild_from_cache(); }); });
-    hub_active_ = true;
-}
-
-void MarketSentimentWidget::hub_unsubscribe_all() {
-    QuoteSubscriptions::unsubscribe(this);
-    hub_active_ = false;
-}
-
-void MarketSentimentWidget::rebuild_from_cache() {
-    QVector<services::QuoteData> quotes;
-    quotes.reserve(feed_.cache().size());
-    for (const auto& sym : kSentimentSymbols) {
-        auto it = feed_.cache().constFind(sym);
-        if (it != feed_.cache().constEnd())
-            quotes.append(it.value());
-    }
-    if (!quotes.isEmpty())
-        populate(quotes);
-    show_feed_status(this, feed_.summary(kSentimentSymbols), static_cast<int>(kSentimentSymbols.size()));
-}
-
-void MarketSentimentWidget::populate(const QVector<services::QuoteData>& quotes) {
-    int up = 0, down = 0, flat = 0;
-    bool has_vix = false;
-    double vix_price = 0.0;
-
-    for (const auto& q : quotes) {
-        if (q.symbol == "^VIX") {
-            has_vix = q.has_price;
-            vix_price = q.price;
-            continue;
-        }
-        // Without a change reading this symbol is not an "unchanged" stock —
-        // it is not an observation, and must not pad the total.
-        if (!q.has_change_pct)
-            continue;
-        const int move = gauges::classify_move(q.change_pct);
-        if (move > 0)
-            ++up;
-        else if (move < 0)
-            ++down;
-        else
-            ++flat;
-    }
-
-    const QString dim = ui::colors::TEXT_DIM();
-    auto tone_color = [](gauges::Tone t) -> QString {
-        switch (t) {
-            case gauges::Tone::Positive:
-                return ui::colors::POSITIVE();
-            case gauges::Tone::Negative:
-                return ui::colors::NEGATIVE();
-            case gauges::Tone::Warning:
-                return ui::colors::WARNING();
-            case gauges::Tone::Neutral:
-                break;
-        }
-        return ui::colors::TEXT_PRIMARY();
-    };
-
-    // VIX first — independent of the breadth observation set. A missing price
-    // is unavailable, never "VIX 0.00". Same regime rule as Risk Metrics.
-    if (has_vix) {
-        const auto regime = gauges::vix_regime(vix_price);
-        vix_label_->setText(
-            QString("%1  %2").arg(QString::number(vix_price, 'f', 2), tr(gauges::vix_regime_key(regime))));
-        vix_label_->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;")
-                                      .arg(tone_color(gauges::vix_tone(regime))));
-    } else {
-        vix_label_->setText(QStringLiteral("--"));
-        vix_label_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(dim));
-    }
-
-    auto* bar_layout = qobject_cast<QHBoxLayout*>(bull_bar_->parentWidget()->layout());
-
-    const auto scored = gauges::basket_score(up, down, flat, has_vix ? std::optional<double>(vix_price) : std::nullopt);
-    if (!scored) {
-        // No observations: no score, no verdict, and no directional breadth.
-        score_label_->setText(QStringLiteral("--"));
-        score_label_->setStyleSheet(
-            QString("color: %1; font-size: 24px; font-weight: bold; background: transparent;").arg(dim));
-        verdict_label_->setText(QStringLiteral("—"));
-        verdict_label_->setStyleSheet(
-            QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;").arg(dim));
-        if (bar_layout) {
-            bar_layout->setStretch(0, 1);
-            bar_layout->setStretch(1, 1);
-            bar_layout->setStretch(2, 1);
-        }
-        bull_label_->setText(QString("%1 -- ").arg(QChar(0x25B2)) + tr("UP"));
-        neutral_label_->setText("-- " + tr("FLAT"));
-        bear_label_->setText(QString("%1 -- ").arg(QChar(0x25BC)) + tr("DOWN"));
-        breadth_label_->setText(QStringLiteral("--"));
-        breadth_label_->setStyleSheet(
-            QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(dim));
-        return;
-    }
-
-    // Same 0..100 basket score and verdict words as the Market Pulse panel.
-    const QString score_color = tone_color(scored->tone);
-    score_label_->setText(QString("%1 /100").arg(scored->score));
-    score_label_->setStyleSheet(
-        QString("color: %1; font-size: 24px; font-weight: bold; background: transparent;").arg(score_color));
-    verdict_label_->setText(tr(scored->key));
-    verdict_label_->setStyleSheet(
-        QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;").arg(score_color));
-    arrow_label_->setText(up > down   ? QString(QChar(0x25B2))
-                          : up < down ? QString(QChar(0x25BC))
-                                      : QString(QChar(0x2022)));
-
-    // Bar proportions. A zero stretch would fall back to the size hint and
-    // still draw a sliver, so an empty group is hidden instead.
-    if (bar_layout) {
-        bar_layout->setStretch(0, up);
-        bar_layout->setStretch(1, flat);
-        bar_layout->setStretch(2, down);
-    }
-    bull_bar_->setVisible(up > 0);
-    neutral_bar_->setVisible(flat > 0);
-    bear_bar_->setVisible(down > 0);
-
-    bull_label_->setText(QString("%1 %2 ").arg(QChar(0x25B2)).arg(up) + tr("UP"));
-    neutral_label_->setText(QString::number(flat) + " " + tr("FLAT"));
-    bear_label_->setText(QString("%1 %2 ").arg(QChar(0x25BC)).arg(down) + tr("DOWN"));
-
-    // An exact tie is neutral, not a bearish claim.
-    const QString breadth_color = up > down   ? ui::colors::POSITIVE()
-                                  : up < down ? ui::colors::NEGATIVE()
-                                              : ui::colors::TEXT_PRIMARY();
-    breadth_label_->setText(QString("%1 / %2").arg(up).arg(down));
-    breadth_label_->setStyleSheet(
-        QString("color: %1; font-size: 10px; font-weight: bold; background: transparent;").arg(breadth_color));
+    auto& feed = services::MarketBreadthFeed::instance();
+    const QDateTime last = feed.last_success();
+    if (!feed.running() && (!last.isValid() || last.secsTo(QDateTime::currentDateTimeUtc()) > kStaleAfterSec))
+        feed.request();
 }
 
 void MarketSentimentWidget::retranslateUi() {
     BaseWidget::retranslateUi();
     set_title(tr("MARKET SENTIMENT"));
-    rebuild_from_cache(); // re-derives all derived text labels from cached quotes
+    basis_->setText(tr("All S&P 500 stocks · ranked against the past year"));
+    parts_title_->setText(tr("FIVE BREADTH READINGS · RANK VS PAST YEAR (0–100)"));
+    history_title_->setText(tr("SCORE · PAST 60 SESSIONS"));
+    render();
+}
+
+void MarketSentimentWidget::render() {
+    const auto& feed = services::MarketBreadthFeed::instance();
+    const QJsonObject& d = feed.data();
+    set_loading(feed.running() && d.isEmpty());
+    if (d.isEmpty()) {
+        if (!feed.error().isEmpty())
+            set_footer(tr("Market breadth could not be collected: %1").arg(feed.error().left(160)), feed.error(), true);
+        return;
+    }
+
+    const QJsonValue score_v = d.value(QStringLiteral("score"));
+    const std::optional<double> score = score_v.isDouble() ? std::optional<double>(score_v.toDouble()) : std::nullopt;
+    const QString color = score ? QString((*charts::score_color(*score))()) : QString(ui::colors::TEXT_DIM());
+    score_->setText(score ? QString::number(*score, 'f', 0) : QStringLiteral("--"));
+    score_->setStyleSheet(QString("color:%1;").arg(color));
+    rating_->setText(d.value(QStringLiteral("rating")).toString().toUpper());
+    rating_->setStyleSheet(QString("color:%1;").arg(color));
+
+    QVector<charts::ScorePoint> points;
+    for (const auto& v : d.value(QStringLiteral("history")).toArray()) {
+        const QJsonObject h = v.toObject();
+        const QDate day = QDate::fromString(h.value(QStringLiteral("date")).toString(), Qt::ISODate);
+        if (day.isValid() && h.value(QStringLiteral("score")).isDouble())
+            points.append({day, h.value(QStringLiteral("score")).toDouble()});
+    }
+    history_->set_points(points);
+    gauge_->set_score(score,
+                      points.size() >= 2 ? std::optional<double>(points[points.size() - 2].score) : std::nullopt);
+
+    const QDate as_of = QDate::fromString(d.value(QStringLiteral("as_of")).toString(), Qt::ISODate);
+    const QString day_text = QLocale::c().toString(as_of, QStringLiteral("d MMM"));
+    const QJsonValue move = d.value(QStringLiteral("today_avg_move"));
+    today_->setText(tr("%1: %2 stocks up · %3 down · average stock %4")
+                        .arg(day_text)
+                        .arg(d.value(QStringLiteral("up")).toInt())
+                        .arg(d.value(QStringLiteral("down")).toInt())
+                        .arg(move.isDouble() ? ms_signed(move.toDouble(), QStringLiteral("%")) : QStringLiteral("—")));
+
+    QVector<charts::BarRow> rows;
+    for (const auto& v : d.value(QStringLiteral("components")).toArray()) {
+        const QJsonObject c = v.toObject();
+        const QString label = c.value(QStringLiteral("label")).toString();
+        const QString unit = c.value(QStringLiteral("unit")).toString();
+        const QJsonValue val = c.value(QStringLiteral("value"));
+        const QJsonValue pct = c.value(QStringLiteral("percentile"));
+        const QString reading = !val.isDouble() ? QStringLiteral("—")
+                                : unit == QLatin1String("%")
+                                    ? (c.value(QStringLiteral("key")).toString() == QLatin1String("above_50d")
+                                           ? QString::number(val.toDouble(), 'f', 0) + "%"
+                                           : ms_signed(val.toDouble(), QStringLiteral("%")))
+                                    : ms_signed(val.toDouble(), QStringLiteral("% net"));
+        const QString tip = tr("%1\nNow: %2 · higher than %3% of the previous 252 sessions")
+                                .arg(c.value(QStringLiteral("detail")).toString(), reading,
+                                     pct.isDouble() ? QString::number(pct.toDouble(), 'f', 0) : QStringLiteral("—"));
+        if (!pct.isDouble()) {
+            rows.append({label, QStringLiteral("—"), reading, 0.0, tip, &ui::colors::TEXT_DIM});
+            continue;
+        }
+        rows.append({label, QString::number(pct.toDouble(), 'f', 0), reading, pct.toDouble(), tip,
+                     charts::score_color(pct.toDouble())});
+    }
+    parts_->set_rows(rows, false);
+
+    const int members = d.value(QStringLiteral("members")).toInt();
+    const int observed = d.value(QStringLiteral("observed")).toInt();
+    const QJsonArray missing = d.value(QStringLiteral("missing")).toArray();
+    const QDateTime got = QDateTime::fromString(d.value(QStringLiteral("retrieved_at")).toString(), Qt::ISODate);
+    QString footer = tr("%1 of %2 stocks · session %3 · updated %4 UTC")
+                         .arg(observed)
+                         .arg(members)
+                         .arg(day_text, got.toUTC().toString(QStringLiteral("HH:mm")));
+    if (feed.running())
+        footer += tr(" · updating…");
+    QStringList tip;
+    for (const auto& n : d.value(QStringLiteral("notes")).toArray())
+        tip << n.toString();
+    if (!missing.isEmpty()) {
+        QStringList names;
+        for (const auto& m : missing)
+            names << m.toString();
+        tip << tr("No bar for: %1").arg(names.mid(0, 30).join(QStringLiteral(", ")));
+    }
+    if (!feed.error().isEmpty()) {
+        footer = tr("Last update failed · showing %1 · ").arg(day_text) + footer;
+        tip << feed.error();
+    }
+    set_footer(footer, tip.join(QStringLiteral("\n")), !missing.isEmpty() || !feed.error().isEmpty());
 }
 
 } // namespace fincept::screens::widgets

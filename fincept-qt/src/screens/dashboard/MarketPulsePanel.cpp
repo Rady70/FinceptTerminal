@@ -5,6 +5,7 @@
 #include "screens/dashboard/widgets/LoadingOverlay.h"
 #include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/markets/QuoteDisplayFormat.h"
+#include "services/markets/MarketBreadthFeed.h"
 #include "services/markets/MarketDataService.h"
 #include "ui/theme/Theme.h"
 #include "ui/theme/ThemeManager.h"
@@ -144,6 +145,8 @@ MarketPulsePanel::MarketPulsePanel(QWidget* parent) : QWidget(parent) {
     connect(&ui::ThemeManager::instance(), &ui::ThemeManager::theme_changed, this,
             [this](const ui::ThemeTokens&) { refresh_theme(); });
     refresh_theme();
+    connect(&services::MarketBreadthFeed::instance(), &services::MarketBreadthFeed::changed, this,
+            &MarketPulsePanel::apply_breadth_sentiment);
 }
 
 // ── Theme refresh ────────────────────────────────────────────────────────────
@@ -307,6 +310,13 @@ void MarketPulsePanel::refresh_theme() {
 void MarketPulsePanel::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
     refresh_theme();
+    {
+        auto& feed = services::MarketBreadthFeed::instance();
+        const QDateTime last = feed.last_success();
+        if (!feed.running() && (!last.isValid() || last.secsTo(QDateTime::currentDateTimeUtc()) > 15 * 60))
+            feed.request();
+        apply_breadth_sentiment();
+    }
     if (!hub_active_)
         hub_subscribe_all();
     refresh_market_hours();
@@ -387,9 +397,9 @@ QWidget* MarketPulsePanel::build_section_header(const QString& title, const QStr
     SectionHeader* sh = nullptr;
     if (title == "BASKET BREADTH")
         sh = &sh_breadth_;
-    else if (title == "TOP GAINERS")
+    else if (title == "TOP GAINERS · OF 12 WATCHED")
         sh = &sh_gainers_;
-    else if (title == "TOP LOSERS")
+    else if (title == "TOP LOSERS · OF 12 WATCHED")
         sh = &sh_losers_;
     else if (title == "GLOBAL SNAPSHOT")
         sh = &sh_snapshot_;
@@ -419,10 +429,7 @@ QWidget* MarketPulsePanel::build_fear_greed_section() {
     auto* hrl = new QHBoxLayout(header_row);
     hrl->setContentsMargins(0, 0, 0, 0);
 
-    fg_header_label_ = new QLabel(tr("BASKET SENTIMENT (PROXY)"));
-    fg_header_label_->setToolTip(
-        tr("Computed from a fixed proxy basket of ~50 symbols; it is not the CNN Fear & Greed Index "
-           "and not full exchange breadth."));
+    fg_header_label_ = new QLabel(tr("MARKET SENTIMENT · ALL S&P 500"));
     hrl->addWidget(fg_header_label_);
     hrl->addStretch();
 
@@ -518,9 +525,14 @@ QWidget* MarketPulsePanel::build_breadth_section() {
         bl->addWidget(rw);
     };
 
-    make_row("NYSE (PROXY)", nyse_row_);
-    make_row("NASDAQ (PROXY)", nasdaq_row_);
-    make_row("S&P 500 (PROXY)", sp500_row_);
+    // Three fixed groups of the proxy basket — not exchange-wide breadth.
+    make_row(tr("20 LARGEST US STOCKS"), sp500_row_);
+    make_row(tr("10 TECH STOCKS"), nasdaq_row_);
+    make_row(tr("20 OTHER LARGE CAPS"), nyse_row_);
+    sp500_row_.name->setToolTip(
+        tr("AAPL MSFT GOOGL AMZN NVDA META TSLA BRK-B JPM UNH V XOM LLY JNJ WMT MA PG HD CVX MRK"));
+    nasdaq_row_.name->setToolTip(tr("NFLX AMD INTC QCOM ADBE CSCO ORCL CRM AVGO TXN"));
+    nyse_row_.name->setToolTip(tr("GS BAC WFC C MS BLK AXP CAT BA GE DIS NKE KO PEP MCD PFE ABT TMO UPS FDX"));
 
     vl->addWidget(bars);
     return w;
@@ -611,7 +623,7 @@ QWidget* MarketPulsePanel::build_gainers_section() {
     vl->setContentsMargins(0, 0, 0, 0);
     vl->setSpacing(0);
 
-    vl->addWidget(build_section_header("TOP GAINERS", QChar(0x2191), ui::colors::POSITIVE()));
+    vl->addWidget(build_section_header("TOP GAINERS · OF 12 WATCHED", QChar(0x2191), ui::colors::POSITIVE()));
 
     gainers_rows_ = new QWidget(this);
     gainers_layout_ = new QVBoxLayout(gainers_rows_);
@@ -636,7 +648,7 @@ QWidget* MarketPulsePanel::build_losers_section() {
     vl->setContentsMargins(0, 0, 0, 0);
     vl->setSpacing(0);
 
-    vl->addWidget(build_section_header("TOP LOSERS", QChar(0x2193), ui::colors::NEGATIVE()));
+    vl->addWidget(build_section_header("TOP LOSERS · OF 12 WATCHED", QChar(0x2193), ui::colors::NEGATIVE()));
 
     losers_rows_ = new QWidget(this);
     losers_layout_ = new QVBoxLayout(losers_rows_);
@@ -758,32 +770,20 @@ QWidget* MarketPulsePanel::build_market_hours_section() {
 QString MarketPulsePanel::market_status(const QString& region) {
     // Returns an English source key. Display-time translation happens in
     // refresh_market_hours() so the key is stable for retranslateUi().
-    auto now = QDateTime::currentDateTimeUtc();
-    int hour = now.time().hour();
-    int day = now.date().dayOfWeek(); // 1=Mon, 7=Sun
-
-    if (day >= 6)
-        return QStringLiteral("CLOSED");
-
-    if (region == "US") {
-        if (hour >= 13 && hour < 14)
+    // Each exchange's own clock (DST-correct); holidays are not known.
+    switch (gauges::exchange_status(region, QDateTime::currentDateTimeUtc())) {
+        case gauges::SessionState::Open:
+            return QStringLiteral("OPEN");
+        case gauges::SessionState::Pre:
             return QStringLiteral("PRE");
-        if (hour >= 14 && hour < 21)
-            return QStringLiteral("OPEN");
-    } else if (region == "UK") {
-        if (hour >= 7 && hour < 8)
-            return QStringLiteral("PRE");
-        if (hour >= 8 && hour < 17)
-            return QStringLiteral("OPEN");
-    } else if (region == "JP") {
-        if (hour >= 0 && hour < 6)
-            return QStringLiteral("OPEN");
-    } else if (region == "CN") {
-        if (hour >= 1 && hour < 7)
-            return QStringLiteral("OPEN");
-    } else if (region == "IN") {
-        if (hour >= 3 && hour < 10)
-            return QStringLiteral("OPEN");
+        case gauges::SessionState::Break:
+            return QStringLiteral("BREAK");
+        case gauges::SessionState::After:
+            return QStringLiteral("AFTER");
+        case gauges::SessionState::Unknown:
+            return QStringLiteral("UNKNOWN");
+        case gauges::SessionState::Closed:
+            break;
     }
     return QStringLiteral("CLOSED");
 }
@@ -793,9 +793,13 @@ QString MarketPulsePanel::market_status(const QString& region) {
 void MarketPulsePanel::refresh_market_hours() {
     for (auto& hr : hours_rows_) {
         const QString status_key = market_status(hr.region);
-        const QString color = (status_key == QLatin1String("OPEN"))  ? ui::colors::POSITIVE()
-                              : (status_key == QLatin1String("PRE")) ? ui::colors::WARNING()
-                                                                     : ui::colors::NEGATIVE();
+        const bool partial = status_key == QLatin1String("PRE") || status_key == QLatin1String("BREAK") ||
+                             status_key == QLatin1String("AFTER");
+        const QString color = (status_key == QLatin1String("OPEN"))      ? ui::colors::POSITIVE()
+                              : partial                                  ? ui::colors::WARNING()
+                              : (status_key == QLatin1String("UNKNOWN")) ? ui::colors::TEXT_DIM()
+                                                                         : ui::colors::NEGATIVE();
+        hr.container->setToolTip(tr("Regular weekday hours on the exchange's own clock; holidays are not known."));
         hr.dot->setStyleSheet(QString("background: %1; border-radius: 2px;").arg(color));
         // Translate at display time. retranslateUi() also calls back into this
         // function so a language switch picks up the new locale.
@@ -803,6 +807,12 @@ void MarketPulsePanel::refresh_market_hours() {
             hr.status->setText(tr("OPEN"));
         else if (status_key == QLatin1String("PRE"))
             hr.status->setText(tr("PRE"));
+        else if (status_key == QLatin1String("BREAK"))
+            hr.status->setText(tr("LUNCH BREAK"));
+        else if (status_key == QLatin1String("AFTER"))
+            hr.status->setText(tr("AFTER-HOURS"));
+        else if (status_key == QLatin1String("UNKNOWN"))
+            hr.status->setText(tr("UNKNOWN"));
         else
             hr.status->setText(tr("CLOSED"));
         hr.status->setStyleSheet(
@@ -821,8 +831,6 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     int sp500_adv = 0, sp500_dec = 0, sp500_obs = 0;
     int nasdaq_adv = 0, nasdaq_dec = 0, nasdaq_obs = 0;
     int nyse_adv = 0, nyse_dec = 0, nyse_obs = 0;
-    double vix = -1;
-    int bullish = 0, bearish = 0, neutral_count = 0;
 
     const QStringList sp500_set = {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "UNH",
                                    "V",    "XOM",  "LLY",   "JNJ",  "WMT",  "MA",   "PG",   "HD",    "CVX", "MRK"};
@@ -832,13 +840,8 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
         if (!breadth_cache_.contains(sym))
             continue;
         const auto& q = breadth_cache_.value(sym);
-        if (q.symbol == "^VIX") {
-            // A quote with no price is not "VIX 0.00" (FINCEPT_FORK_PLAN.md §4);
-            // leaving vix untouched keeps the panel's existing not-available path.
-            if (q.has_price)
-                vix = q.price;
+        if (q.symbol == "^VIX")
             continue;
-        }
         // Without a change reading this symbol cannot be counted as advancing,
         // declining, unchanged or observed — it is simply not an observation.
         if (!q.has_change_pct)
@@ -858,7 +861,6 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
                 ++nasdaq_adv;
             else
                 ++nyse_adv;
-            ++bullish;
         } else if (gauges::classify_move(q.change_pct) < 0) {
             if (in_sp)
                 ++sp500_dec;
@@ -866,9 +868,6 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
                 ++nasdaq_dec;
             else
                 ++nyse_dec;
-            ++bearish;
-        } else {
-            ++neutral_count;
         }
     }
 
@@ -903,61 +902,46 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     update_row(nyse_row_, nyse_adv, nyse_dec, nyse_obs);
     update_row(nasdaq_row_, nasdaq_adv, nasdaq_dec, nasdaq_obs);
     update_row(sp500_row_, sp500_adv, sp500_dec, sp500_obs);
+}
 
-    // ── Fear & Greed score ──
-    const int total_stocks = bullish + bearish + neutral_count;
-    if (total_stocks == 0) {
-        // Quotes arrived but none carried a change reading: there is no
-        // observation set to score. A fabricated 50/"NEUTRAL" here would be a
-        // market claim from no data.
+void MarketPulsePanel::apply_breadth_sentiment() {
+    // The dashboard's one market-wide sentiment reading (MarketBreadthFeed),
+    // the same number as the Market Sentiment widget.
+    const auto& feed = services::MarketBreadthFeed::instance();
+    const QJsonObject& d = feed.data();
+    const QJsonValue score_v = d.value(QStringLiteral("score"));
+    QString color = ui::colors::TEXT_DIM();
+    if (!score_v.isDouble()) {
         fg_sentiment_key_.clear();
         if (fg_score_val_)
             fg_score_val_->setText(QStringLiteral("--"));
         if (fg_sentiment_)
-            fg_sentiment_->setText(QStringLiteral("—"));
-        const QString neutral_color = ui::colors::TEXT_DIM();
-        if (neutral_color != fg_applied_color_) {
-            fg_applied_color_ = neutral_color;
-            if (fg_score_val_)
-                fg_score_val_->setStyleSheet(
-                    QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;")
-                        .arg(neutral_color));
-            if (fg_sentiment_)
-                fg_sentiment_->setStyleSheet(
-                    QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; "
-                            "background: transparent;")
-                        .arg(neutral_color));
-        }
-        return;
+            fg_sentiment_->setText(feed.running() ? tr("LOADING...") : QStringLiteral("—"));
+    } else {
+        const double score = score_v.toDouble();
+        fg_sentiment_key_ = d.value(QStringLiteral("rating")).toString().toUpper();
+        color = score < 45 ? ui::colors::NEGATIVE() : score <= 55 ? ui::colors::WARNING() : ui::colors::POSITIVE();
+        if (fg_score_val_)
+            fg_score_val_->setText(QString::number(score, 'f', 0));
+        if (fg_sentiment_)
+            fg_sentiment_->setText(tr(fg_sentiment_key_.toUtf8().constData()));
     }
-    const auto scored =
-        gauges::basket_score(bullish, bearish, neutral_count, vix > 0 ? std::optional<double>(vix) : std::nullopt);
-    const int score = scored->score; // total_stocks > 0, so a score exists
-    const QString sentiment_key = QString::fromLatin1(scored->key);
-    const QString sentiment_text = tr(scored->key);
-    const QString sentiment_color = scored->tone == gauges::Tone::Positive   ? ui::colors::POSITIVE()
-                                    : scored->tone == gauges::Tone::Negative ? ui::colors::NEGATIVE()
-                                                                             : ui::colors::WARNING();
-    fg_sentiment_key_ = sentiment_key;
-
-    if (fg_score_val_)
-        fg_score_val_->setText(QString::number(score));
-    if (fg_sentiment_)
-        fg_sentiment_->setText(sentiment_text);
-
-    // The two colour stylesheets only change when the regime bucket changes —
-    // re-applying them on every one of ~50 breadth deliveries was pure CSS
-    // reparse cost for an identical result.
-    if (sentiment_color != fg_applied_color_) {
-        fg_applied_color_ = sentiment_color;
+    if (fg_header_label_)
+        fg_header_label_->setToolTip(
+            feed.error().isEmpty()
+                ? tr("All S&P 500 stocks, session %1: five breadth readings ranked against the past year (the "
+                     "Market Sentiment widget shows the parts).")
+                      .arg(d.value(QStringLiteral("as_of")).toString())
+                : tr("Last update failed: %1").arg(feed.error()));
+    if (color != fg_applied_color_) {
+        fg_applied_color_ = color;
         if (fg_score_val_)
             fg_score_val_->setStyleSheet(
-                QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;")
-                    .arg(sentiment_color));
+                QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;").arg(color));
         if (fg_sentiment_)
             fg_sentiment_->setStyleSheet(
                 QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; background: transparent;")
-                    .arg(sentiment_color));
+                    .arg(color));
     }
 }
 
@@ -1132,7 +1116,7 @@ void MarketPulsePanel::retranslateUi() {
     if (header_title_)
         header_title_->setText(tr("MARKET PULSE"));
     if (fg_header_label_)
-        fg_header_label_->setText(tr("BASKET SENTIMENT (PROXY)"));
+        fg_header_label_->setText(tr("MARKET SENTIMENT · ALL S&P 500"));
 
     auto set_sh = [](SectionHeader& sh) {
         if (!sh.title)
@@ -1140,10 +1124,10 @@ void MarketPulsePanel::retranslateUi() {
         const QString& k = sh.source_key;
         if (k == QLatin1String("BASKET BREADTH"))
             sh.title->setText(tr("BASKET BREADTH"));
-        else if (k == QLatin1String("TOP GAINERS"))
-            sh.title->setText(tr("TOP GAINERS"));
-        else if (k == QLatin1String("TOP LOSERS"))
-            sh.title->setText(tr("TOP LOSERS"));
+        else if (k == QLatin1String("TOP GAINERS · OF 12 WATCHED"))
+            sh.title->setText(tr("TOP GAINERS · OF 12 WATCHED"));
+        else if (k == QLatin1String("TOP LOSERS · OF 12 WATCHED"))
+            sh.title->setText(tr("TOP LOSERS · OF 12 WATCHED"));
         else if (k == QLatin1String("GLOBAL SNAPSHOT"))
             sh.title->setText(tr("GLOBAL SNAPSHOT"));
         else if (k == QLatin1String("MARKET HOURS"))

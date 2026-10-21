@@ -2,8 +2,10 @@
 
 #include "core/config/ProfileManager.h"
 #include "screens/economics/panels/FedWatchViewModel.h"
+#include "services/ResearchDataEvents.h"
 #include "ui/theme/Theme.h"
 
+#include <QHBoxLayout>
 #include <QShowEvent>
 #include <QVBoxLayout>
 
@@ -24,24 +26,6 @@ QLabel* fw_cell(const QString& text, const QString& object_name, Qt::Alignment a
     l->setObjectName(object_name);
     l->setAlignment(align | Qt::AlignVCenter);
     return l;
-}
-
-void fw_clear_grid(QGridLayout* grid) {
-    while (QLayoutItem* item = grid->takeAt(0)) {
-        if (item->widget())
-            item->widget()->deleteLater();
-        delete item;
-    }
-}
-
-/// The outcome with the highest probability in one side's list. Both lists are
-/// the move AT that meeting (futures: `fed.local`; Polymarket: its outcomes).
-const fw::Outcome* fw_most_likely(const QVector<fw::Outcome>& outcomes) {
-    const fw::Outcome* best = nullptr;
-    for (const auto& o : outcomes)
-        if (!best || o.pct > best->pct)
-            best = &o;
-    return best;
 }
 
 /// One outcome row of the next meeting: the futures and Polymarket
@@ -82,49 +66,74 @@ FedWatchHighlightsWidget::FedWatchHighlightsWidget(QWidget* parent)
     vl->setContentsMargins(10, 8, 10, 8);
     vl->setSpacing(4);
 
+    // Headline: the target range now, and the next decision.
+    auto* hero = new QWidget(body_);
+    hero->setObjectName("fwHero");
+    hero->setAttribute(Qt::WA_StyledBackground, true);
+    auto* hl = new QHBoxLayout(hero);
+    hl->setContentsMargins(10, 6, 10, 6);
+    auto* left = new QVBoxLayout;
+    left->setSpacing(0);
+    target_caption_ = fw_cell(tr("FED TARGET RANGE"), QStringLiteral("fwHead"));
     target_ = fw_cell(QStringLiteral("--"), QStringLiteral("fwBig"));
-    next_ = fw_cell(QStringLiteral("--"), QStringLiteral("fwSub"));
-    next_->setWordWrap(true);
+    left->addWidget(target_caption_);
+    left->addWidget(target_);
+    auto* right = new QVBoxLayout;
+    right->setSpacing(0);
+    next_caption_ = fw_cell(tr("NEXT FOMC DECISION"), QStringLiteral("fwHead"), Qt::AlignRight);
+    next_ = fw_cell(QStringLiteral("--"), QStringLiteral("fwMid"), Qt::AlignRight);
+    right->addWidget(next_caption_);
+    right->addWidget(next_);
+    hl->addLayout(left);
+    hl->addStretch();
+    hl->addLayout(right);
+    vl->addWidget(hero);
+
     expected_ = fw_cell(QString(), QStringLiteral("fwSub"));
     expected_->setWordWrap(true);
-    vl->addWidget(target_);
-    vl->addWidget(next_);
     vl->addWidget(expected_);
 
-    outcomes_title_ = fw_cell(tr("NEXT MEETING · OUTCOME PROBABILITIES"), QStringLiteral("fwHead"));
+    outcomes_title_ = fw_cell(tr("NEXT MEETING · OUTCOME PROBABILITIES"), QStringLiteral("fwSection"));
     vl->addWidget(outcomes_title_);
-    outcomes_ = new QGridLayout;
-    outcomes_->setHorizontalSpacing(10);
-    outcomes_->setVerticalSpacing(2);
-    vl->addLayout(outcomes_);
+    outcomes_ = new charts::PairBarList(tr("Fed funds futures"), tr("Polymarket"), body_);
+    outcomes_->set_empty_text(tr("No outcome probabilities stored for this meeting."));
+    vl->addWidget(outcomes_);
 
-    path_title_ = fw_cell(tr("PATH · MOST LIKELY MOVE AT EACH MEETING"), QStringLiteral("fwHead"));
+    path_title_ = fw_cell(tr("EXPECTED RATE AFTER EACH MEETING · SHADED = TODAY'S RANGE"), QStringLiteral("fwSection"));
     vl->addWidget(path_title_);
-    path_ = new QGridLayout;
-    path_->setHorizontalSpacing(10);
-    path_->setVerticalSpacing(2);
-    vl->addLayout(path_);
-    vl->addStretch(1);
+    path_ = new charts::RatePathChart(body_);
+    vl->addWidget(path_, 1);
     content_layout()->addWidget(body_);
 
     connect(&services::EconomicsService::instance(), &services::EconomicsService::result_ready, this,
             &FedWatchHighlightsWidget::on_result);
-    // Refresh = collect current observations, then re-read the workspace
-    // (the FedWatch screen's REFRESH, without its history backfill).
+    // Refresh = the FedWatch screen's REFRESH: collect current observations,
+    // update the Polymarket history, then re-read the workspace.
     connect(this, &BaseWidget::refresh_requested, this, [this]() { request(QStringLiteral("collect")); });
+    // A refresh on the FedWatch screen saved new data: show it here too.
+    connect(&services::ResearchDataEvents::instance(), &services::ResearchDataEvents::fedwatch_saved, this,
+            [this](QObject* origin) {
+                if (origin != this && pending_id_.isEmpty() && loaded_once_)
+                    request(QStringLiteral("workspace"));
+            });
     apply_styles();
     set_loading(true);
 }
 
 void FedWatchHighlightsWidget::apply_styles() {
     body_->setStyleSheet(QString("#fwHighlights QLabel{background:transparent;font-size:10px;color:%1;}"
-                                 "#fwHighlights QLabel#fwBig{font-size:16px;font-weight:bold;color:%2;}"
-                                 "#fwHighlights QLabel#fwSub{color:%3;}"
-                                 "#fwHighlights QLabel#fwHead{font-size:9px;font-weight:bold;color:%4;"
-                                 "padding-top:6px;letter-spacing:0.5px;}"
-                                 "#fwHighlights QLabel#fwNum{font-weight:bold;}")
-                             .arg(ui::colors::TEXT_PRIMARY(), ui::colors::TEXT_PRIMARY(), ui::colors::TEXT_SECONDARY(),
-                                  ui::colors::TEXT_TERTIARY()));
+                                 "#fwHighlights #fwHero{background:%5;border-radius:2px;}"
+                                 "#fwHighlights QLabel#fwBig{font-size:20px;font-weight:bold;color:%1;}"
+                                 "#fwHighlights QLabel#fwMid{font-size:13px;font-weight:bold;color:%1;}"
+                                 "#fwHighlights QLabel#fwSub{color:%2;}"
+                                 "#fwHighlights QLabel#fwHead{font-size:9px;font-weight:bold;color:%3;"
+                                 "letter-spacing:0.5px;}"
+                                 "#fwHighlights QLabel#fwSection{font-size:9px;font-weight:bold;color:%4;"
+                                 "padding-top:8px;letter-spacing:0.5px;}")
+                             .arg(ui::colors::TEXT_PRIMARY(), ui::colors::TEXT_SECONDARY(), ui::colors::TEXT_TERTIARY(),
+                                  ui::colors::INFO(), ui::colors::BG_RAISED()));
+    outcomes_->update();
+    path_->update();
 }
 
 void FedWatchHighlightsWidget::on_theme_changed() {
@@ -134,8 +143,12 @@ void FedWatchHighlightsWidget::on_theme_changed() {
 void FedWatchHighlightsWidget::retranslateUi() {
     BaseWidget::retranslateUi();
     set_title(tr("FEDWATCH · RATE OUTLOOK"));
+    target_caption_->setText(tr("FED TARGET RANGE"));
+    next_caption_->setText(tr("NEXT FOMC DECISION"));
     outcomes_title_->setText(tr("NEXT MEETING · OUTCOME PROBABILITIES"));
-    path_title_->setText(tr("PATH · MOST LIKELY MOVE AT EACH MEETING"));
+    outcomes_->set_names(tr("Fed funds futures"), tr("Polymarket"));
+    outcomes_->set_empty_text(tr("No outcome probabilities stored for this meeting."));
+    path_title_->setText(tr("EXPECTED RATE AFTER EACH MEETING · SHADED = TODAY'S RANGE"));
     if (!last_data_.isEmpty())
         render(last_data_);
 }
@@ -168,7 +181,16 @@ void FedWatchHighlightsWidget::on_result(const QString& request_id, const servic
         collect_error_ = usable ? QString()
                                 : tr("Collection failed: %1 — stored data shown")
                                       .arg(result.error.isEmpty() ? tr("no usable response") : result.error.left(120));
+        request(QStringLiteral("history_backfill"));
+        return;
+    }
+    if (pending_command_ == QLatin1String("history_backfill")) {
+        if (!usable)
+            collect_error_ += (collect_error_.isEmpty() ? QString() : QStringLiteral(" · ")) +
+                              tr("Polymarket history update failed: %1")
+                                  .arg(result.error.isEmpty() ? tr("no usable response") : result.error.left(120));
         request(QStringLiteral("workspace"));
+        emit services::ResearchDataEvents::instance().fedwatch_saved(this);
         return;
     }
     set_loading(false);
@@ -185,73 +207,94 @@ void FedWatchHighlightsWidget::render(const QJsonObject& data) {
     const auto upcoming = ws.upcoming();
 
     if (ws.target_lower && ws.target_upper)
-        target_->setText(tr("FED TARGET %1").arg(fw::band_label(*ws.target_lower, *ws.target_upper)));
+        target_->setText(fw::band_label(*ws.target_lower, *ws.target_upper));
     else
-        target_->setText(tr("FED TARGET —"));
+        target_->setText(QStringLiteral("—"));
     target_->setToolTip(
         ws.target_date.isValid()
             ? tr("Target range as of %1 (%2)").arg(ws.target_date.toString(Qt::ISODate), ws.target_status)
             : QString());
 
-    fw_clear_grid(outcomes_);
-    fw_clear_grid(path_);
     if (upcoming.isEmpty()) {
-        next_->setText(tr("No upcoming meeting in the stored data."));
-        expected_->clear();
+        next_->setText(QStringLiteral("—"));
+        expected_->setText(tr("No upcoming meeting in the stored data."));
+        outcomes_->set_rows({});
+        path_->set_data({}, std::nullopt, std::nullopt);
         set_footer(tr("Open Economics → FedWatch and press REFRESH to collect data."), QString(), true);
         return;
     }
 
     const fw::Meeting& m = *upcoming.first();
-    next_->setText(tr("Next FOMC decision %1 · in %2 day(s)").arg(fw::meeting_label(m.date)).arg(m.days_until));
-    QString exp = tr("Expected rate after it: %1").arg(fw::rate(m.fed.expected));
+    next_->setText(m.days_until == 0 ? tr("%1 · today").arg(m.date.toString(QStringLiteral("MMM d")))
+                   : m.days_until == 1
+                       ? tr("%1 · tomorrow").arg(m.date.toString(QStringLiteral("MMM d")))
+                       : tr("%1 · in %2 days").arg(m.date.toString(QStringLiteral("MMM d"))).arg(m.days_until));
+    next_->setToolTip(fw::meeting_label(m.date));
+    QString exp = tr("Futures expect %1 after this meeting").arg(fw::rate(m.fed.expected));
+    QStringList moves;
     if (m.fed.expected && m.fed.expected_previous_day)
-        exp += tr(" · 1 day %1").arg(fw::bp_change(*m.fed.expected - *m.fed.expected_previous_day));
+        moves << tr("%1 since yesterday").arg(fw::bp_change(*m.fed.expected - *m.fed.expected_previous_day));
     if (m.fed.expected && m.fed.expected_previous_week)
-        exp += tr(" · 1 week %1").arg(fw::bp_change(*m.fed.expected - *m.fed.expected_previous_week));
+        moves << tr("%1 in a week").arg(fw::bp_change(*m.fed.expected - *m.fed.expected_previous_week));
+    if (!moves.isEmpty())
+        exp += QStringLiteral(" (") + moves.join(QStringLiteral(", ")) + QStringLiteral(")");
     expected_->setText(exp);
 
     // Outcome probabilities of the next meeting, highest futures side first.
     // Futures come from the meeting's own move distribution (`fed.local`), so
     // they show even where Polymarket lists no market.
-    const QVector<FwOutcomeRow> rows = fw_outcome_rows(m);
-    outcomes_->addWidget(fw_cell(tr("OUTCOME"), QStringLiteral("fwHead")), 0, 0);
-    outcomes_->addWidget(fw_cell(tr("FUTURES"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 1);
-    outcomes_->addWidget(fw_cell(tr("POLYMARKET"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 2);
-    int r = 1;
-    for (const auto& c : rows) {
-        if (r > 4)
+    QVector<charts::PairRow> pairs;
+    for (const auto& c : fw_outcome_rows(m)) {
+        if (pairs.size() >= 4)
             break;
         if (c.fed.value_or(0) < 0.5 && c.poly.value_or(0) < 0.5)
             continue; // negligible on both sides
-        outcomes_->addWidget(fw_cell(fw::outcome_label(c.bp, c.open), QString()), r, 0);
-        outcomes_->addWidget(fw_cell(fw::pct(c.fed, 0), QStringLiteral("fwNum"), Qt::AlignRight), r, 1);
-        outcomes_->addWidget(fw_cell(fw::pct(c.poly, 0), QStringLiteral("fwNum"), Qt::AlignRight), r, 2);
-        ++r;
+        pairs.append({fw::outcome_label(c.bp, c.open), c.fed, c.poly,
+                      tr("%1 at the %2 meeting: futures %3, Polymarket %4")
+                          .arg(fw::outcome_label(c.bp, c.open), fw::meeting_label(m.date), fw::pct(c.fed, 1),
+                               fw::pct(c.poly, 1))});
     }
-    if (r == 1)
-        outcomes_->addWidget(fw_cell(tr("No outcome probabilities stored for this meeting."), QStringLiteral("fwSub")),
-                             1, 0, 1, 3);
+    outcomes_->set_rows(pairs);
 
-    // The path over the next meetings: the most likely move at each meeting
-    // (futures side, else Polymarket) and the expected rate after it.
-    path_->addWidget(fw_cell(tr("MEETING"), QStringLiteral("fwHead")), 0, 0);
-    path_->addWidget(fw_cell(tr("MOST LIKELY"), QStringLiteral("fwHead")), 0, 1);
-    path_->addWidget(fw_cell(tr("EXP. RATE"), QStringLiteral("fwHead"), Qt::AlignRight), 0, 2);
-    for (int i = 0; i < upcoming.size() && i < 4; ++i) {
+    // The path over the upcoming meetings: the expected rate after each one
+    // (futures side) and its most likely move (futures, else Polymarket).
+    // The expected rate is probability-weighted, so it rises with any chance
+    // of a hike even where a hold is most likely. The most likely path moves
+    // only by each meeting's most likely outcome, from the middle of today's
+    // range; a meeting without a distribution ends it.
+    QVector<charts::PathPoint> points;
+    std::optional<double> likely;
+    if (ws.target_lower && ws.target_upper)
+        likely = (*ws.target_lower + *ws.target_upper) / 2.0;
+    for (int i = 0; i < upcoming.size() && i < 8; ++i) {
         const fw::Meeting& mm = *upcoming[i];
-        const fw::Outcome* fed_best = fw_most_likely(mm.fed.local);
-        const fw::Outcome* best = fed_best ? fed_best : fw_most_likely(mm.poly.outcomes);
-        path_->addWidget(fw_cell(fw::short_meeting(mm.date), QString()), i + 1, 0);
-        auto* move =
-            fw_cell(best ? QStringLiteral("%1 %2%3").arg(fw::outcome_label(best->bp, best->open), fw::pct(best->pct, 0),
-                                                         fed_best ? QString() : QStringLiteral(" (PM)"))
-                         : QStringLiteral("—"),
-                    QString());
-        move->setToolTip(fed_best ? tr("Futures side") : tr("Polymarket (no futures distribution stored)"));
-        path_->addWidget(move, i + 1, 1);
-        path_->addWidget(fw_cell(fw::rate(mm.fed.expected), QStringLiteral("fwNum"), Qt::AlignRight), i + 1, 2);
+        const bool futures = !mm.fed.local.isEmpty();
+        QVector<fw::Outcome> ranked = futures ? mm.fed.local : mm.poly.outcomes;
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const fw::Outcome& a, const fw::Outcome& b) { return a.pct > b.pct; });
+        auto label = [&](int k) {
+            return k < ranked.size() ? QStringLiteral("%1 %2%3").arg(fw::outcome_label(ranked[k].bp, ranked[k].open),
+                                                                     fw::pct(ranked[k].pct, 0),
+                                                                     futures ? QString() : QStringLiteral(" (PM)"))
+                                     : QString();
+        };
+        const QString note = ranked.isEmpty() ? QStringLiteral("—") : label(0);
+        const QString note2 = label(1);
+        if (likely && !ranked.isEmpty() && !ranked[0].open)
+            likely = *likely + ranked[0].bp / 100.0;
+        else
+            likely.reset();
+        points.append(
+            {mm.date.toString(mm.date.year() == m.date.year() ? QStringLiteral("MMM d") : QStringLiteral("MMM d ''yy")),
+             mm.fed.expected, note,
+             tr("%1\nExpected (probability-weighted) rate: %2\nMost likely: %3%4\nMost likely path: %5\nSource: %6")
+                 .arg(fw::meeting_label(mm.date), fw::rate(mm.fed.expected), note,
+                      note2.isEmpty() ? QString() : tr(" · next: %1").arg(note2), fw::rate(likely),
+                      futures ? tr("futures") : tr("Polymarket; no futures distribution stored")),
+             note2, likely});
     }
+    path_->set_legend(tr("Expected (average)"), tr("Most likely path"));
+    path_->set_data(points, ws.target_lower, ws.target_upper);
 
     // Data state: which side is current and when it was observed.
     const bool fed_current = m.fed.state == QLatin1String("CURRENT");

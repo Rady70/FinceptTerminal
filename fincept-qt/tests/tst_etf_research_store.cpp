@@ -70,6 +70,7 @@ class TstEtfResearchStore : public QObject {
         register_migration_v053();
         register_migration_v054();
         register_migration_v055();
+        register_migration_v056();
         QVERIFY(Database::instance().open(dir_.filePath(QStringLiteral("research.db"))).is_ok());
         QString err;
         const auto u = load_universe(QLatin1String(kUniverseResourcePath), &err);
@@ -101,11 +102,16 @@ void TstEtfResearchStore::schema_constraints() {
                 .is_ok());
     // A running run has no finish time; a finished one must have it.
     QVERIFY(db.execute(QStringLiteral("UPDATE etf_research_runs SET status='COMPLETED' WHERE run_id='c1'")).is_err());
-    // Unknown trigger (e.g. a scheduler) is refused by the schema.
+    // An unknown trigger is refused by the schema; the owner's daily update
+    // records itself as 'scheduled' (v056).
     QVERIFY(
         db.execute(QStringLiteral("INSERT INTO etf_research_runs (run_id, trigger, started_at, status, "
                                   "universe_version) VALUES ('c2','timer','2026-10-01T00:00:00.000Z','RUNNING','v')"))
             .is_err());
+    QVERIFY(db.execute(QStringLiteral("INSERT INTO etf_research_runs (run_id, trigger, started_at, status, "
+                                      "universe_version) VALUES ('c3','scheduled','2026-10-01T00:00:00.000Z',"
+                                      "'RUNNING','v')"))
+                .is_ok());
     QVERIFY(db.execute(QStringLiteral("INSERT INTO etf_research_retrievals (run_id, stage, subject, requested_at, "
                                       "status, rows_received) VALUES ('c1','yahoo_history','X','t','FAILED',5)"))
                 .is_err()); // a failed retrieval delivers no rows
