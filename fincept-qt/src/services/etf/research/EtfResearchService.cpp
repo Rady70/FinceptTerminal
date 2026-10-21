@@ -7,6 +7,7 @@
 #include "services/etf/EtfGroupAnalytics.h"
 #include "services/etf/EtfSecNportIngestor.h"
 #include "services/etf/EtfSessionCalendar.h"
+#include "services/etf/research/EtfSecTargets.h"
 #include "services/ibkr/IbkrTwsService.h"
 #include "storage/repositories/EtfDataRepository.h"
 #include "storage/repositories/EtfResearchRepository.h"
@@ -487,16 +488,21 @@ void EtfResearchService::default_sec_stage(std::function<void(SourceStageStatus)
                           started, QDateTime()));
         return;
     }
+    // The stored identities plus every identity the research universe declares
+    // but no filing has stored yet (EtfSecTargets.h): the first read stores it.
     auto entities = EtfDataRepository::instance().reporting_entities(QDateTime::currentDateTimeUtc());
-    auto list = std::make_shared<QVector<etf_store::ReportingEntityRow>>();
-    if (entities.is_ok())
-        *list = entities.value();
+    const ResearchUniverse* u = universe();
+    const SecRunPlan plan =
+        sec_run_plan(sec_targets(entities.is_ok() ? entities.value() : QVector<etf_store::ReportingEntityRow>(),
+                                 u ? u->instruments : QVector<UniverseInstrument>()));
+    auto list = std::make_shared<QVector<SecTarget>>(plan.targets);
+    const int waiting = plan.waiting;
     auto agg = std::make_shared<SourceStageStatus>(
         stage_status(QStringLiteral("sec_nport"), QString(), QString(), started, QDateTime()));
     agg->items_requested = list->size();
     auto step = std::make_shared<std::function<void(int)>>();
     std::weak_ptr<std::function<void(int)>> wstep = step;
-    *step = [list, agg, wstep, done](int idx) {
+    *step = [list, agg, wstep, done, waiting](int idx) {
         if (idx >= list->size()) {
             agg->retrieved_at = QDateTime::currentDateTimeUtc();
             agg->status = agg->items_requested == 0                    ? QStringLiteral("UNAVAILABLE")
@@ -506,6 +512,9 @@ void EtfResearchService::default_sec_stage(std::function<void(SourceStageStatus)
                                                                        : QStringLiteral("UNCHANGED");
             if (!agg->failed_subjects.isEmpty())
                 agg->detail = QStringLiteral("Failed: %1").arg(agg->failed_subjects.join(QStringLiteral(", ")));
+            if (waiting > 0)
+                agg->detail = (agg->detail.isEmpty() ? QString() : agg->detail + QLatin1Char(' ')) +
+                              QStringLiteral("%1 declared identities wait for a later refresh.").arg(waiting);
             done(*agg);
             return;
         }
@@ -513,9 +522,13 @@ void EtfResearchService::default_sec_stage(std::function<void(SourceStageStatus)
         SecNportRequest req;
         req.cik = list->at(idx).cik;
         req.series_id = list->at(idx).series_id;
-        const auto latest = EtfResearchRepository::instance().latest_sec_report_period(list->at(idx).entity_id);
-        req.max_filings = sec_filings_to_request(latest.is_ok() ? latest.value() : QDate(), QDate::currentDate(),
-                                                 kSecMaxFilingsPerRun);
+        req.skip_stored = true; // only the listing is read again; new filings are downloaded
+        const qint64 entity_id = list->at(idx).entity_id;
+        const auto latest = entity_id > 0 ? EtfResearchRepository::instance().latest_sec_report_period(entity_id)
+                                          : Result<QDate>::ok(QDate());
+        req.max_filings = entity_id > 0 ? sec_filings_to_request(latest.is_ok() ? latest.value() : QDate(),
+                                                                 QDate::currentDate(), kSecMaxFilingsPerRun)
+                                        : kSecFirstReadFilings;
         EtfDataService::instance().ingest_sec_nport(req, [agg, self, idx, list](const SecNportRunSummary& s) {
             const QString key = list->at(idx).cik + QLatin1Char('/') + list->at(idx).series_id;
             if (s.status == RetrievalStatus::Ok)

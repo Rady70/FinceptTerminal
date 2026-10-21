@@ -8,6 +8,7 @@
 #include "services/etf/research/EtfResearchEngine.h"
 #include "services/etf/research/EtfResearchRefresh.h"
 #include "services/etf/research/EtfResearchUniverse.h"
+#include "services/etf/research/EtfSecTargets.h"
 #include "storage/repositories/EtfResearchRepository.h"
 #include "storage/sqlite/Database.h"
 #include "storage/sqlite/migrations/MigrationRunner.h"
@@ -79,6 +80,7 @@ class TstEtfResearchStore : public QObject {
     }
     void cleanupTestCase() { Database::instance().close(); }
     void schema_constraints();
+    void sec_targets_include_declared_identities();
     void bars_confirm_revise_and_keep_vintages();
     void failed_item_never_erases_and_is_not_this_runs_result();
     void history_window_is_one_fetch();
@@ -93,6 +95,41 @@ class TstEtfResearchStore : public QObject {
     void pipeline_records_every_stage_and_survives_fetch_failure();
     void snapshot_replay_is_byte_identical_after_growth();
 };
+
+void TstEtfResearchStore::sec_targets_include_declared_identities() {
+    using namespace fincept::services::etf::research;
+    // SPY is stored already (CIK without zero padding); QQQ declares two
+    // identities (no series, then a series); IVV is declared only.
+    QVector<fincept::etf_store::ReportingEntityRow> stored(1);
+    stored[0].entity_id = 7;
+    stored[0].cik = QStringLiteral("884394");
+    QVector<UniverseInstrument> funds(3);
+    funds[0].symbol = QStringLiteral("SPY");
+    funds[0].sec_reporting.append({QStringLiteral("0000884394"), QString(), {}, {}, QDate(2024, 1, 26), {}, {}, {}});
+    funds[1].symbol = QStringLiteral("QQQ");
+    funds[1].sec_reporting.append({QStringLiteral("0001067839"), QString(), {}, {}, QDate(2025, 1, 27), {}, {}, {}});
+    funds[1].sec_reporting.append(
+        {QStringLiteral("0001067839"), QStringLiteral("S000101292"), {}, {}, QDate(2025, 10, 1), {}, {}, {}});
+    funds[2].symbol = QStringLiteral("IVV");
+    funds[2].sec_reporting.append(
+        {QStringLiteral("0001100663"), QStringLiteral("S000004310"), {}, {}, QDate(2025, 8, 1), {}, {}, {}});
+    const auto t = sec_targets(stored, funds);
+    QCOMPARE(t.size(), 4); // SPY once (stored), QQQ twice, IVV
+    QCOMPARE(t[0].entity_id, qint64(7));
+    QCOMPARE(t[1].cik, QStringLiteral("0001067839"));
+    QCOMPARE(t[1].series_id, QString());
+    QCOMPARE(t[2].series_id, QStringLiteral("S000101292"));
+    QCOMPARE(t[3].symbol, QStringLiteral("IVV"));
+    QCOMPARE(t[3].entity_id, qint64(0));
+    QCOMPARE(sec_targets({}, {}).size(), 0);
+
+    // Pacing: stored identities always, at most `max_new` first reads.
+    const auto plan = sec_run_plan(t, 2);
+    QCOMPARE(plan.targets.size(), 3); // SPY (stored) + the first two declared
+    QCOMPARE(plan.waiting, 1);
+    QCOMPARE(plan.targets[0].entity_id, qint64(7));
+    QCOMPARE(sec_run_plan(t).waiting, 0);
+}
 
 void TstEtfResearchStore::schema_constraints() {
     auto& db = Database::instance();

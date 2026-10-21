@@ -52,6 +52,7 @@ QJsonObject SecNportRunSummary::to_json() const {
     o["filings_selected"] = filings_selected;
     o["filings_stored"] = filings_stored;
     o["filings_skipped"] = filings_skipped;
+    o["filings_already_stored"] = filings_already_stored;
     o["filings_outside_period"] = filings_outside_period;
     o["observations_inserted"] = observations_inserted;
     o["observations_amended"] = observations_amended;
@@ -519,8 +520,10 @@ void EtfSecNportIngestor::select_next_candidate() {
 
 void EtfSecNportIngestor::fetch_next_document() {
     if (document_cursor_ >= selected_.size()) {
-        const QString stored =
+        QString stored =
             QStringLiteral("%1 of %2 selected filings stored").arg(summary_.filings_stored).arg(selected_.size());
+        if (summary_.filings_already_stored > 0)
+            stored += QStringLiteral(", %1 already stored (not downloaded again)").arg(summary_.filings_already_stored);
         if (summary_.filings_skipped > 0 || summary_.observations_refused > 0 || pages_unreadable_ > 0) {
             // What was stored stays stored; the run still did not ingest
             // everything it selected, as delivered, or could not read every
@@ -542,6 +545,14 @@ void EtfSecNportIngestor::fetch_next_document() {
         return;
     }
     const SecFilingRef ref = selected_[document_cursor_++];
+    if (request_.skip_stored) {
+        auto stored = EtfDataRepository::instance().stored_filing_sha256(ref.accession);
+        if (stored.is_ok() && stored.value()) {
+            ++summary_.filings_already_stored;
+            fetch_next_document();
+            return;
+        }
+    }
     const QString url = sec_nport_primary_doc_url(cik10_, ref.accession);
     fetch(url, [this, url, ref](const SecHttpResponse& r, const QDateTime& requested_at,
                                 const QDateTime& retrieved_at) {

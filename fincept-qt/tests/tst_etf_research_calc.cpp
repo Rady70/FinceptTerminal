@@ -122,12 +122,22 @@ void TstEtfResearchCalc::bundled_universe_parses_and_is_unique() {
     QVERIFY(u->find(QStringLiteral("SH"))->inverse);
     QVERIFY(u->find(QStringLiteral("JEPI"))->option_overlay);
     QCOMPARE(u->find(QStringLiteral("^SET.BK"))->instrument_type, QStringLiteral("index"));
-    // Explicit SEC reporting identities only where declared (SPY, IVV, QQQ).
+    // Explicit SEC reporting identities only where declared: SPY, IVV, QQQ
+    // (research_declaration_v1) and 60 funds confirmed as the sole share class
+    // of their series on EDGAR (sec_series_class_page_v1, 2026-10-21). Never a
+    // multi-class series (VGK, VNQ) or a fund that files no N-PORT (GLD).
     int declared = 0;
     for (const auto& i : u->instruments)
         declared += i.sec_reporting.isEmpty() ? 0 : 1;
-    QCOMPARE(declared, 3);
+    QCOMPARE(declared, 63);
     QCOMPARE(u->find(QStringLiteral("QQQ"))->sec_reporting.size(), 3);
+    QVERIFY(u->find(QStringLiteral("VGK"))->sec_reporting.isEmpty());
+    QVERIFY(u->find(QStringLiteral("VNQ"))->sec_reporting.isEmpty());
+    QVERIFY(u->find(QStringLiteral("GLD"))->sec_reporting.isEmpty());
+    const auto& xlk = u->find(QStringLiteral("XLK"))->sec_reporting;
+    QCOMPARE(xlk.size(), 1);
+    QCOMPARE(xlk[0].series_id, QStringLiteral("S000006415"));
+    QCOMPARE(xlk[0].identity_basis, QStringLiteral("sec_series_class_page_v1"));
     QCOMPARE(u->baskets.size(), 13);
     QVERIFY(u->intl.contains(QStringLiteral("eu")));
 }
