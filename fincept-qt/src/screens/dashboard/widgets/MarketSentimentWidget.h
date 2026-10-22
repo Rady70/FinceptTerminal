@@ -6,10 +6,14 @@
 
 namespace fincept::screens::widgets {
 
-/// Market Sentiment — market-wide breadth over every S&P 500 member
-/// (services::MarketBreadthFeed, scripts/market_breadth.py): five readings,
-/// each ranked against its own past year, averaged into a 0–100 score. The
-/// Market Pulse panel shows the same reading.
+/// Market Sentiment — are investors buying risky stocks or retreating into
+/// safe ones? Daily risk appetite over every S&P 500 member
+/// (services::MarketBreadthFeed, scripts/market_breadth.py: riskiest vs
+/// safest fifth, Kumar & Persaud's rank correlation, cyclical vs defensive
+/// sectors), and under it the twice-monthly aggregate short interest
+/// (services::ShortInterestFeed, FINRA). It measures something different
+/// from CNN's index (options, bonds, volatility) and from Market Pulse
+/// (what the market did today).
 class MarketSentimentWidget : public BaseWidget {
     Q_OBJECT
   public:
@@ -25,17 +29,21 @@ class MarketSentimentWidget : public BaseWidget {
   private:
     void apply_styles();
     void render();
+    void render_short_interest();
 
     QWidget* body_ = nullptr;
     QLabel* score_ = nullptr;
     QLabel* rating_ = nullptr;
     QLabel* basis_ = nullptr;
     charts::ScoreGauge* gauge_ = nullptr;
-    QLabel* today_ = nullptr;
+    QLabel* spread_ = nullptr;
     QLabel* parts_title_ = nullptr;
     charts::BarList* parts_ = nullptr;
     QLabel* history_title_ = nullptr;
     charts::ScoreLine* history_ = nullptr;
+    QLabel* si_title_ = nullptr;
+    charts::BarList* si_rows_ = nullptr;
+    QLabel* si_note_ = nullptr;
 };
 
 } // namespace fincept::screens::widgets

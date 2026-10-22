@@ -1248,6 +1248,7 @@ set(SERVICE_SOURCES
     src/services/markets/MarketDataService.cpp
     src/services/markets/MarketBreadthFeed.cpp
     src/services/markets/CnnFearGreedFeed.cpp
+    src/services/markets/ShortInterestFeed.cpp
     src/services/ResearchDataEvents.cpp
     src/services/DailyUpdateScheduler.cpp
     src/services/markets/MarketSearchService.cpp

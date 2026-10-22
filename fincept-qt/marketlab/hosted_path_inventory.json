@@ -676,7 +676,15 @@
       "files": [
         "scripts/market_breadth.py"
       ],
-      "note": "The market-wide breadth collector of the dashboard (added 2026-10-21). Two sites: (1) the requests import inside load_members(); (2) its single requests.get to the module constant MEMBERS_URL = https://en.wikipedia.org/wiki/List_of_S%26P_500_companies (the S&P 500 member table, read weekly). Daily bars come through yfinance (Yahoo, the library's own fixed hosts, as for yfinance_data.py). No scheme, host or path comes from configuration, arguments or the environment; the only argument is the local cache directory. Nothing reaches a Fincept-owned destination."
+      "note": "The dashboard's S&P 500 collector (added 2026-10-21 for breadth; since 2026-10-22 it computes risk appetite and the day's up / down count). Two sites: (1) the requests import inside load_members(); (2) its single requests.get to the module constant MEMBERS_URL = https://en.wikipedia.org/wiki/List_of_S%26P_500_companies (the S&P 500 member table, read weekly). Daily bars come through yfinance (Yahoo, the library's own fixed hosts, as for yfinance_data.py). No scheme, host or path comes from configuration, arguments or the environment; the only argument is the local cache directory. Nothing reaches a Fincept-owned destination."
+    },
+    {
+      "sink": "py_http_client",
+      "disposition": "no_hosted_route",
+      "files": [
+        "scripts/finra_short_interest.py"
+      ],
+      "note": "The S&P 500 aggregate short-interest collector of the Market Sentiment widget (added 2026-10-22; the owner created a free FINRA Individual account and Public API credential, whose terms permit non-commercial personal use). Four sites: (1) the requests import inside access_token(); (2) its requests.post to the module constant TOKEN_URL = https://ews.fip.finra.org/fip/rest/ews/oauth2/access_token?grant_type=client_credentials (FINRA's identity platform, client-credentials grant with the owner's key as Basic auth); (3) the requests import inside _post(); (4) its requests.post to the module constant DATA_URL = https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest. The key comes from the owner's local finra_api.json (path passed by the app, never committed, never printed); without it nothing is contacted. Share counts come through yfinance (Yahoo's fixed hosts); the member list through market_breadth.load_members (Wikipedia, above). No scheme, host or path comes from configuration, arguments or the environment. Nothing reaches a Fincept-owned destination."
     },
     {
       "sink": "py_http_client",
@@ -825,6 +833,9 @@
     },
     "scripts/imf_datamapper_data.py": {
       "py_http_client": 2
+    },
+    "scripts/finra_short_interest.py": {
+      "py_http_client": 4
     },
     "scripts/market_breadth.py": {
       "py_http_client": 2

@@ -92,9 +92,9 @@ WidgetRegistry::WidgetRegistry() {
     register_widget({"sentiment", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Market Sentiment"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
-                                       "Market-wide breadth of all S&P 500 stocks: five readings ranked against "
-                                       "the past year, as a 0-100 score"),
-                     4, 7, 3, 5, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+                                       "Risk appetite of all S&P 500 stocks (riskiest vs safest, ranked against "
+                                       "the past year) and FINRA aggregate short interest"),
+                     4, 9, 3, 6, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
 
     register_widget({"cnn_fear_greed", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN Fear & Greed Index"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),

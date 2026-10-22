@@ -665,6 +665,12 @@ class ScoreGauge : public QWidget {
         earlier_ = earlier;
         update();
     }
+    /// The words under the two ends of the bar (default FEAR / GREED).
+    void set_end_labels(const QString& low, const QString& high) {
+        low_label_ = low;
+        high_label_ = high;
+        update();
+    }
 
   protected:
     void paintEvent(QPaintEvent*) override {
@@ -680,9 +686,8 @@ class ScoreGauge : public QWidget {
         }
         p.setFont(chart_font(8));
         p.setPen(QColor(ui::colors::TEXT_TERTIARY()));
-        p.drawText(QRectF(1, bar_y + bar_h + 9, 80, 10), Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("FEAR"));
-        p.drawText(QRectF(w - 80, bar_y + bar_h + 9, 80, 10), Qt::AlignRight | Qt::AlignVCenter,
-                   QStringLiteral("GREED"));
+        p.drawText(QRectF(1, bar_y + bar_h + 9, w / 2, 10), Qt::AlignLeft | Qt::AlignVCenter, low_label_);
+        p.drawText(QRectF(w / 2, bar_y + bar_h + 9, w / 2, 10), Qt::AlignRight | Qt::AlignVCenter, high_label_);
         auto marker = [&](double v, bool solid) {
             const double x = 1 + std::clamp(v, 0.0, 100.0) / 100 * w;
             QPainterPath tri;
@@ -707,6 +712,8 @@ class ScoreGauge : public QWidget {
 
   private:
     std::optional<double> score_, earlier_;
+    QString low_label_ = QStringLiteral("FEAR");
+    QString high_label_ = QStringLiteral("GREED");
 };
 
 struct ScorePoint {

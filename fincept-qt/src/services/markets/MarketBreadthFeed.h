@@ -1,8 +1,8 @@
 #pragma once
-// MarketBreadthFeed — the one market-wide sentiment reading of the dashboard
-// (scripts/market_breadth.py over every S&P 500 member). The Market Sentiment
-// widget and the Market Pulse panel both read it, so the screen shows one
-// number, and the ~40 s collection runs once however many views want it.
+// MarketBreadthFeed — one daily read of every S&P 500 member
+// (scripts/market_breadth.py). The Market Sentiment widget shows its risk
+// appetite; the Market Pulse panel shows the day's up / down count from the
+// same read, so the ~30 s collection runs once however many views want it.
 #include <QDateTime>
 #include <QJsonObject>
 #include <QObject>
