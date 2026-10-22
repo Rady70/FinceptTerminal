@@ -33,13 +33,21 @@ Sources:
 Members, sectors and CIKs come from market_breadth.py's member cache.
 Missing stocks are counted and named, never filled.
 
+Per-stock lookup (`stock --symbol X`): one stock's counts since 2023, read
+only when asked for (about 18 KB the first time, then only new counts; the
+whole market would be about 4.4 MB per count date and 400 MB for the
+history), with its short interest as a % of Yahoo's share count and FINRA's
+days to cover. Cached per symbol under <cache-dir>/stocks.
+
 Usage: python finra_short_interest.py summary --cache-dir DIR --key-file PATH
+       python finra_short_interest.py stock --symbol TSLA --cache-dir DIR --key-file PATH
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -93,16 +101,29 @@ def access_token(key: tuple[str, str]) -> str:
     return token
 
 
-def _post(token: str, payload: dict) -> list[dict]:
+def _post(token: str, payload: dict, url: str = DATA_URL) -> list[dict]:
+    """One FINRA Query API page. `url` is one of the module constants of the
+    FINRA scripts (this one's DATA_URL, finra_bonds.py's dataset URLs)."""
     import requests
 
-    r = requests.post(DATA_URL, json=payload, timeout=120,
+    r = requests.post(url, json=payload, timeout=120,
                       headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
     if r.status_code == 204 or (r.status_code == 200 and not r.content.strip()):
         return []
     if r.status_code != 200:
-        raise RuntimeError(f"FINRA short interest: HTTP {r.status_code}")
+        raise RuntimeError(f"FINRA: HTTP {r.status_code}")
     return r.json()
+
+
+def post_all(token: str, payload: dict, url: str = DATA_URL) -> list[dict]:
+    """Every page of a FINRA query."""
+    rows, offset = [], 0
+    while True:
+        page = _post(token, {**payload, "limit": PAGE, "offset": offset}, url)
+        rows.extend(page)
+        if len(page) < PAGE:
+            return rows
+        offset += PAGE
 
 
 def settlement_dates(token: str, after: str) -> list[str]:
@@ -334,17 +355,121 @@ def build(counts: pd.DataFrame, shares: pd.DataFrame, members: list[str], ciks: 
     }
 
 
+# ── one stock, on request ────────────────────────────────────────────────────
+
+STOCK_FIELDS = ["symbolCode", "issueName", "settlementDate", "currentShortPositionQuantity",
+                "averageDailyVolumeQuantity", "daysToCoverQuantity", "revisionFlag"]
+SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+def merge_stock_rows(stored: list[dict], rows: list[dict]) -> list[dict]:
+    """Stored counts plus new FINRA rows, one per settlement date (a revised
+    row replaces the original), oldest first."""
+    by_date = {r["date"]: r for r in stored}
+    for row in sorted(rows, key=lambda r: bool(r.get("revisionFlag"))):
+        day = str(row.get("settlementDate") or "")[:10]
+        qty = row.get("currentShortPositionQuantity")
+        if not day or not isinstance(qty, (int, float)) or qty < 0:
+            continue
+        adv = row.get("averageDailyVolumeQuantity")
+        dtc = row.get("daysToCoverQuantity")
+        by_date[day] = {"date": day, "short_qty": float(qty),
+                        "adv": float(adv) if isinstance(adv, (int, float)) and adv > 0 else None,
+                        "days_to_cover": float(dtc) if isinstance(dtc, (int, float)) and dtc >= 0 else None,
+                        "name": str(row.get("issueName") or "").strip()}
+    return [by_date[d] for d in sorted(by_date)]
+
+
+def stock_view(symbol: str, rows: list[dict], shares: list[list]) -> dict:
+    """The lookup's answer: each count with % of shares where a share count
+    dated on or before it exists, the latest count and its change. Days to
+    cover = shares short ÷ FINRA's average daily volume: FINRA's own
+    daysToCoverQuantity never goes below 1 (e.g. TSLA, 13 Jan 2023: 1.0 where
+    the ratio is 0.48), so it is used only when the volume is missing."""
+    if not rows:
+        return {"status": "no_data", "symbol": symbol}
+    share_points = sorted((pd.Timestamp(d), float(v)) for d, v in shares if v and v > 0)
+    history = []
+    for r in rows:
+        day = pd.Timestamp(r["date"])
+        in_force = [v for d, v in share_points if d <= day]
+        pct = r["short_qty"] / in_force[-1] * 100 if in_force else None
+        adv = r.get("adv")
+        dtc = round(r["short_qty"] / adv, 2) if adv else r.get("days_to_cover")
+        history.append({"date": r["date"], "short_qty": r["short_qty"], "days_to_cover": dtc,
+                        "pct": None if pct is None or pct > 100 else round(pct, 3)})
+    last, prev = history[-1], (history[-2] if len(history) > 1 else None)
+    change = None
+    if prev and prev["short_qty"] > 0:
+        change = round((last["short_qty"] / prev["short_qty"] - 1) * 100, 2)
+    return {"status": "ok", "symbol": symbol, "name": rows[-1].get("name", ""), "as_of": last["date"],
+            "short_qty": last["short_qty"], "pct": last["pct"], "days_to_cover": last["days_to_cover"],
+            "previous_date": prev["date"] if prev else None, "change_pct": change, "counts": len(history),
+            "history": history}
+
+
+def stock_lookup(cache: Path, key: tuple[str, str], symbol: str, now: datetime) -> dict:
+    sym = symbol.strip().upper()
+    if not SYMBOL_RE.match(sym):
+        raise ValueError(f"not a stock symbol: {symbol!r}")
+    fsym = finra_symbol(sym)
+    folder = cache / "stocks"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{fsym}.json"
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stored = {"rows": [], "asked_at": None, "shares": [], "shares_at": None}
+    asked_at = stored.get("asked_at")
+    asked = False
+    if not asked_at or now - datetime.fromisoformat(asked_at) >= QUERY_EVERY:
+        after = stored["rows"][-1]["date"] if stored["rows"] else HISTORY_AFTER
+        rows = post_all(access_token(key), {
+            "fields": STOCK_FIELDS,
+            "compareFilters": [{"compareType": "EQUAL", "fieldName": "symbolCode", "fieldValue": fsym},
+                               {"compareType": "GREATER", "fieldName": "settlementDate", "fieldValue": after}]})
+        stored["rows"] = merge_stock_rows(stored["rows"], rows)
+        stored["asked_at"] = now.isoformat(timespec="seconds")
+        asked = True
+    shares_at = stored.get("shares_at")
+    if stored["rows"] and (not shares_at or now - datetime.fromisoformat(shares_at) >= SHARES_MAX_AGE):
+        try:
+            import yfinance as yf
+
+            start = (pd.Timestamp(HISTORY_START) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+            series = yf.Ticker(sym).get_shares_full(start=start)
+            if series is not None and len(series):
+                idx = pd.to_datetime(series.index)
+                idx = idx.tz_localize(None) if idx.tz is not None else idx
+                stored["shares"] = [[d.strftime("%Y-%m-%d"), float(v)] for d, v in zip(idx, series.to_numpy(float))]
+            stored["shares_at"] = now.isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001 - % of shares is then unavailable, the counts still show
+            pass
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(stored), encoding="utf-8")
+    tmp.replace(path)
+    view = stock_view(sym, stored["rows"], stored.get("shares", []))
+    view["asked_finra"] = asked
+    view["retrieved_at"] = now.isoformat(timespec="seconds")
+    return view
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=["summary"])
+    ap.add_argument("command", choices=["summary", "stock"])
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--key-file", required=True)
+    ap.add_argument("--symbol", default="")
     args = ap.parse_args(argv[1:])
     now = datetime.now(timezone.utc)
     try:
         key = read_key(Path(args.key_file))
         if key is None:
             print(json.dumps({"success": True, "data": {"status": "needs_key", "key_file": args.key_file}}))
+            return 0
+        if args.command == "stock":
+            data = stock_lookup(Path(args.cache_dir), key, args.symbol, now)
+            print(json.dumps({"success": True, "data": data}))
             return 0
         cache = Path(args.cache_dir)
         cache.mkdir(parents=True, exist_ok=True)
