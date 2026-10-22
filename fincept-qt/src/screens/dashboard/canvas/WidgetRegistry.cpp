@@ -9,6 +9,7 @@
 #include "screens/dashboard/widgets/EconomicCalendarWidget.h"
 #include "screens/dashboard/widgets/EtfFlowHighlightsWidget.h"
 #include "screens/dashboard/widgets/FedWatchHighlightsWidget.h"
+#include "screens/dashboard/widgets/FinraWidgets.h"
 #include "screens/dashboard/widgets/ForexWidget.h"
 #include "screens/dashboard/widgets/GeopoliticsEventsWidget.h"
 #include "screens/dashboard/widgets/IndicesWidget.h"
@@ -95,6 +96,21 @@ WidgetRegistry::WidgetRegistry() {
                                        "Risk appetite of all S&P 500 stocks (riskiest vs safest, ranked against "
                                        "the past year) and FINRA aggregate short interest"),
                      4, 9, 3, 6, [](const QJsonObject&) { return new widgets::MarketSentimentWidget; }});
+
+    register_widget({"short_interest_lookup",
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Short Interest Lookup"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "One stock's FINRA short interest, read when you ask for it: % of shares "
+                                       "shorted, days to cover, history since 2023"),
+                     4, 6, 3, 4, [](const QJsonObject& cfg) { return new widgets::ShortInterestLookupWidget(cfg); }});
+
+    register_widget({"bond_pulse", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Bond Pulse"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),
+                     QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry",
+                                       "US corporate bonds each day (FINRA TRACE): junk and investment-grade bonds "
+                                       "up vs down, 52-week highs vs lows, customer net buying"),
+                     4, 9, 3, 6, [](const QJsonObject&) { return new widgets::BondPulseWidget; }});
 
     register_widget({"cnn_fear_greed", QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "CNN Fear & Greed Index"),
                      QT_TRANSLATE_NOOP("fincept::screens::WidgetRegistry", "Markets"),

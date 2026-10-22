@@ -3,6 +3,7 @@
 // (FedWatch, COT, ETF flows, Risk Metrics). Colours are read from the live
 // theme at paint time, so a theme switch needs only a repaint. No signals,
 // no moc: header-only QWidget subclasses.
+#include "screens/dashboard/widgets/ChartAxis.h"
 #include "screens/dashboard/widgets/MarketGauges.h"
 #include "ui/theme/Theme.h"
 
@@ -27,6 +28,46 @@ inline QFont chart_font(int px, bool bold = false) {
     f.setPixelSize(px);
     f.setBold(bold);
     return f;
+}
+
+/// Draws a time axis under a plot spanning [d0, d1]: the latest date at the
+/// right end (always), a faint vertical line and a label for each calendar
+/// tick that fits beside its neighbours, and the first date at the left end
+/// only when it does not collide with a tick label.
+template <typename XOf>
+void draw_time_axis(QPainter& p, const QDate& d0, const QDate& d1, XOf x_of, double left, double right, double top,
+                    double bottom) {
+    const QColor dim(ui::colors::TEXT_TERTIARY()), grid(ui::colors::BORDER_DIM());
+    const QFontMetrics fm(p.font());
+    constexpr double kGap = 8;
+    const QString last = d1.toString(QStringLiteral("d MMM yy"));
+    const double last_left = right - fm.horizontalAdvance(last);
+    p.setPen(dim);
+    p.drawText(QRectF(last_left - 2, bottom + 2, right - last_left + 2, 12), Qt::AlignRight | Qt::AlignVCenter, last);
+
+    double first_label_left = right; // left edge of the first tick label drawn
+    double prev_right = left - kGap;
+    for (const auto& t : date_ticks(d0, d1, right - left)) {
+        const double x = x_of(t.date);
+        if (x <= left || x >= right)
+            continue;
+        p.setPen(QPen(grid, 1, Qt::DotLine));
+        p.drawLine(QPointF(x, top), QPointF(x, bottom));
+        const double w = fm.horizontalAdvance(t.label);
+        const double l = std::max(left, x - w / 2), r = l + w;
+        if (l < prev_right + kGap || r > last_left - kGap)
+            continue;
+        p.setPen(dim);
+        p.drawText(QRectF(l - 2, bottom + 2, w + 4, 12), Qt::AlignCenter, t.label);
+        prev_right = r;
+        first_label_left = std::min(first_label_left, l);
+    }
+    const QString first = d0.toString(QStringLiteral("d MMM yy"));
+    const double first_w = fm.horizontalAdvance(first);
+    if (left + first_w + kGap <= std::min(first_label_left, last_left)) {
+        p.setPen(dim);
+        p.drawText(QRectF(left, bottom + 2, first_w + 4, 12), Qt::AlignLeft | Qt::AlignVCenter, first);
+    }
 }
 
 /// Shows the tooltip of the row under the pointer (rows of a fixed height).
@@ -768,6 +809,14 @@ class ScoreLine : public QWidget {
             p.drawText(QRectF(0, y_of(level) - 6, kLeft - 4, 12), Qt::AlignRight | Qt::AlignVCenter,
                        QString::number(int(level)));
         }
+        // Points are evenly spaced by session: a tick sits at the first
+        // session on or after its date.
+        auto x_of_date = [&](const QDate& d) {
+            const auto it = std::lower_bound(points_.cbegin(), points_.cend(), d,
+                                             [](const ScorePoint& sp, const QDate& day) { return sp.date < day; });
+            return x_of(int(it - points_.cbegin()));
+        };
+        draw_time_axis(p, points_.first().date, points_.last().date, x_of_date, kLeft, kLeft + plot_w, top, bottom);
         QPainterPath path;
         for (int i = 0; i < points_.size(); ++i) {
             const QPointF pt(x_of(i), y_of(points_[i].score));
@@ -783,11 +832,6 @@ class ScoreLine : public QWidget {
         p.setPen(Qt::NoPen);
         p.setBrush(QColor((*score_color(last.score))()));
         p.drawEllipse(QPointF(x_of(int(points_.size()) - 1), y_of(last.score)), 3, 3);
-        p.setPen(dim);
-        p.drawText(QRectF(kLeft, bottom + 2, 90, 12), Qt::AlignLeft | Qt::AlignVCenter,
-                   points_.first().date.toString(QStringLiteral("d MMM yy")));
-        p.drawText(QRectF(kLeft + plot_w - 90, bottom + 2, 90, 12), Qt::AlignRight | Qt::AlignVCenter,
-                   last.date.toString(QStringLiteral("d MMM yy")));
     }
 
   private:
@@ -883,13 +927,22 @@ class SeriesLine : public QWidget {
         auto x_of = [&](const QDate& d) { return kLeft + plot_w * d0.daysTo(d) / span_days; };
         auto y_of = [&](double v) { return bottom - (v - lo) / (hi - lo) * (bottom - top); };
 
-        for (int i = 0; i <= 2; ++i) {
-            const double v = lo + (hi - lo) * i / 2.0;
+        // Round values on the value axis (as many decimals as the step needs).
+        const QVector<double> levels = nice_ticks(lo, hi, std::clamp(int((bottom - top) / 22), 3, 6));
+        int dp = 0;
+        if (levels.size() >= 2) {
+            const double step = levels[1] - levels[0];
+            while (dp < 4 && std::abs(step * std::pow(10.0, dp) - std::round(step * std::pow(10.0, dp))) > 1e-6)
+                ++dp;
+        }
+        for (const double v : levels) {
             p.setPen(QPen(grid, 1));
             p.drawLine(QPointF(kLeft, y_of(v)), QPointF(kLeft + plot_w, y_of(v)));
             p.setPen(dim);
-            p.drawText(QRectF(0, y_of(v) - 6, kLeft - 4, 12), Qt::AlignRight | Qt::AlignVCenter, fmt(v));
+            p.drawText(QRectF(0, y_of(v) - 6, kLeft - 4, 12), Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(v, 'f', dp));
         }
+        draw_time_axis(p, d0, d1, x_of, kLeft, kLeft + plot_w, top, bottom);
         if (lo < 0 && hi > 0) {
             p.setPen(QPen(dim, 1, Qt::DashLine));
             p.drawLine(QPointF(kLeft, y_of(0)), QPointF(kLeft + plot_w, y_of(0)));
@@ -914,11 +967,6 @@ class SeriesLine : public QWidget {
         };
         draw(b_, cb, 1.2);
         draw(a_, ca, 1.6);
-        p.setPen(dim);
-        p.drawText(QRectF(kLeft, bottom + 2, 90, 12), Qt::AlignLeft | Qt::AlignVCenter,
-                   d0.toString(QStringLiteral("d MMM yy")));
-        p.drawText(QRectF(kLeft + plot_w - 90, bottom + 2, 90, 12), Qt::AlignRight | Qt::AlignVCenter,
-                   d1.toString(QStringLiteral("d MMM yy")));
     }
 
   private:

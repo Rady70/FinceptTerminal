@@ -13,6 +13,7 @@
 // Header-only over Qt Core; no app sources.
 
 #include "screens/dashboard/canvas/DashboardPages.h"
+#include "screens/dashboard/widgets/ChartAxis.h"
 #include "screens/dashboard/widgets/MarketGauges.h"
 #include "screens/dashboard/widgets/PortfolioValuation.h"
 #include "screens/markets/QuoteDisplayFormat.h"
@@ -361,6 +362,41 @@ class TestDashboardWidgetRules : public QObject {
         QVERIFY(!v.priced);
         QCOMPARE(v.value, 100.0);
         QVERIFY(!v.day);
+    }
+
+    void time_axis_ticks_fill_the_span() {
+        using namespace fincept::screens::widgets::charts;
+        // About three months over a 600 px axis: month starts, inside the span.
+        auto t = date_ticks(QDate(2026, 7, 29), QDate(2026, 10, 21), 600);
+        QCOMPARE(t.size(), 3);
+        QCOMPARE(t[0].date, QDate(2026, 8, 1));
+        QCOMPARE(t[0].label, QStringLiteral("Aug"));
+        QCOMPARE(t[2].date, QDate(2026, 10, 1));
+        // A narrow axis gets coarser ticks, never more than fit.
+        t = date_ticks(QDate(2026, 7, 29), QDate(2026, 10, 21), 150);
+        QVERIFY(t.size() <= 2);
+        // Under two months: Mondays.
+        t = date_ticks(QDate(2026, 10, 1), QDate(2026, 10, 21), 400);
+        QVERIFY(!t.isEmpty());
+        QCOMPARE(t[0].date, QDate(2026, 10, 5));
+        QCOMPARE(t[0].date.dayOfWeek(), 1);
+        // Almost four years: years or half-years, labelled with the year.
+        t = date_ticks(QDate(2023, 1, 13), QDate(2026, 9, 30), 500);
+        QVERIFY(!t.isEmpty());
+        for (const auto& tick : t)
+            QVERIFY(tick.label.contains(QStringLiteral("2")));
+        // A January month start names its year.
+        t = date_ticks(QDate(2025, 11, 15), QDate(2026, 2, 20), 600);
+        QCOMPARE(t[1].label, QStringLiteral("Jan 26"));
+        QVERIFY(date_ticks(QDate(2026, 10, 1), QDate(2026, 10, 2), 600).isEmpty());
+    }
+
+    void value_axis_uses_round_numbers() {
+        using namespace fincept::screens::widgets::charts;
+        const auto v = nice_ticks(-46.61, 21.38, 4);
+        QCOMPARE(v, QVector<double>({-40.0, -20.0, 0.0, 20.0}));
+        QCOMPARE(nice_ticks(0.81, 3.56, 4), QVector<double>({1.0, 2.0, 3.0}));
+        QVERIFY(nice_ticks(5.0, 5.0).isEmpty());
     }
 
     void shares_keep_their_digits() {

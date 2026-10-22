@@ -6,7 +6,9 @@ market_breadth.py: risk appetite (riskiest vs safest fifth, rank
 correlation, cyclical vs defensive) and the day's counts, on a synthetic
 market where the risky stocks are known to lead or lag.
 finra_short_interest.py: FINRA rows, share classes of one company, the
-share count in force on each date, and the ranking.
+share count in force on each date, the ranking, and the one-stock lookup.
+finra_bonds.py: FINRA's corporate bond breadth and flow rows, the daily
+readings, their 10-date averages and ranks.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 import cnn_fear_greed as cnn  # noqa: E402
+import finra_bonds as fb  # noqa: E402
 import finra_short_interest as si  # noqa: E402
 import market_breadth as mb  # noqa: E402
 
@@ -335,6 +338,109 @@ class ShortInterest(unittest.TestCase):
             self.assertIsNone(si.read_key(path))
             path.write_text('{"client_id": "abc", "client_secret": "xyz"}', encoding="utf-8")
             self.assertEqual(si.read_key(path), ("abc", "xyz"))
+
+
+class ShortInterestLookup(unittest.TestCase):
+    def test_rows_merge_one_per_date_and_revision_replaces(self):
+        stored = [{"date": "2026-09-15", "short_qty": 10.0, "adv": 5.0, "days_to_cover": 2.0, "name": "X"}]
+        rows = [{"settlementDate": "2026-09-30", "currentShortPositionQuantity": 12, "averageDailyVolumeQuantity": 6,
+                 "daysToCoverQuantity": 2.0, "issueName": "X Inc", "revisionFlag": None},
+                {"settlementDate": "2026-09-30", "currentShortPositionQuantity": 13, "averageDailyVolumeQuantity": 6,
+                 "daysToCoverQuantity": 2.17, "issueName": "X Inc", "revisionFlag": "R"},
+                {"settlementDate": "2026-09-30", "currentShortPositionQuantity": None}]
+        merged = si.merge_stock_rows(stored, rows)
+        self.assertEqual([r["date"] for r in merged], ["2026-09-15", "2026-09-30"])
+        self.assertEqual(merged[-1]["short_qty"], 13.0)
+
+    def test_view_uses_the_share_count_in_force(self):
+        rows = [{"date": "2026-03-31", "short_qty": 10.0, "days_to_cover": 1.0, "name": "X"},
+                {"date": "2026-09-30", "short_qty": 12.0, "days_to_cover": 1.5, "name": "X Inc"}]
+        v = si.stock_view("X", rows, [["2026-01-01", 100.0], ["2026-06-01", 200.0], ["2026-12-01", 999.0]])
+        self.assertEqual(v["history"][0]["pct"], 10.0)
+        self.assertEqual(v["pct"], 6.0)  # 12 / 200; the December count is not yet in force
+        self.assertEqual(v["change_pct"], 20.0)
+        self.assertEqual(v["name"], "X Inc")
+        self.assertEqual(v["previous_date"], "2026-03-31")
+
+    def test_days_to_cover_is_the_ratio_not_finras_floor(self):
+        rows = [{"date": "2023-01-13", "short_qty": 90.0, "adv": 187.0, "days_to_cover": 1.0, "name": "X"},
+                {"date": "2023-01-31", "short_qty": 90.0, "adv": None, "days_to_cover": 1.0, "name": "X"}]
+        v = si.stock_view("X", rows, [])
+        self.assertEqual(v["history"][0]["days_to_cover"], 0.48)
+        self.assertEqual(v["days_to_cover"], 1.0)  # no volume: FINRA's figure
+
+    def test_view_without_shares_or_counts(self):
+        v = si.stock_view("X", [{"date": "2026-09-30", "short_qty": 5.0, "days_to_cover": None, "name": ""}], [])
+        self.assertIsNone(v["pct"])
+        self.assertIsNone(v["change_pct"])
+        self.assertEqual(si.stock_view("X", [], [])["status"], "no_data")
+
+    def test_symbols(self):
+        for ok in ("TSLA", "BRK-B", "BF.B", "A"):
+            self.assertTrue(si.SYMBOL_RE.match(ok), ok)
+        for bad in ("", "tsla x", "1ABC", "TOOLONGSYMBOL"):
+            self.assertFalse(si.SYMBOL_RE.match(bad.strip().upper()), bad)
+
+
+def breadth_rows(day, ig=(60, 40), hy=(30, 20)):
+    rows = []
+    for cat, (adv, dec) in (("investment grade", ig), ("high yield", hy)):
+        rows.append({"tradeReportDate": day, "productCategory": cat, "advances": adv, "declines": dec,
+                     "unchanged": 5, "fiftyTwoWeekHigh": 3, "fiftyTwoWeekLow": 1, "totalTrades": 100})
+    rows.append({"tradeReportDate": day, "productCategory": "convertibles", "advances": 1, "declines": 1,
+                 "unchanged": 0, "fiftyTwoWeekHigh": 0, "fiftyTwoWeekLow": 0})
+    return rows
+
+
+def flow_rows(day, buy=60.0, sell=40.0):
+    rows = []
+    for cat in ("investment grade", "high yield", "church bonds"):
+        rows.append({"tradeReportDate": day, "tradeType": cat, "productCategory": "customer buy", "totalVolume": buy})
+        rows.append({"tradeReportDate": day, "tradeType": cat, "productCategory": "customer sell", "totalVolume": sell})
+        rows.append({"tradeReportDate": day, "tradeType": cat, "productCategory": "inter-dealer", "totalVolume": 9.0})
+    return rows
+
+
+class BondPulse(unittest.TestCase):
+    def test_parse_keeps_the_two_categories(self):
+        b = fb.parse_breadth(breadth_rows("2026-10-21") + [{"tradeReportDate": "2026-10-21",
+                                                            "productCategory": "high yield", "advances": -1}])
+        self.assertEqual(sorted(b["category"]), ["high_yield", "investment_grade"])
+        f = fb.parse_flows(flow_rows("2026-10-21"))
+        self.assertEqual(len(f), 2)
+        self.assertEqual(float(f["customer_buy"].iloc[0]), 60.0)
+
+    def test_readings_and_ranks(self):
+        days = pd.bdate_range("2025-06-02", periods=300)
+        rows_b, rows_f = [], []
+        for i, d in enumerate(days):
+            day = d.strftime("%Y-%m-%d")
+            last = i == len(days) - 1
+            rows_b += breadth_rows(day, hy=(90, 10) if i >= len(days) - 10 else (50, 50))
+            rows_f += flow_rows(day, buy=80.0 if last else 50.0, sell=20.0 if last else 50.0)
+        d = fb.build(fb.parse_breadth(rows_b), fb.parse_flows(rows_f), "x")
+        hy = d["categories"]["high_yield"]
+        self.assertEqual(hy["as_of"], days[-1].strftime("%Y-%m-%d"))
+        self.assertAlmostEqual(hy["readings"]["net_advances"]["today"], 80.0)
+        self.assertAlmostEqual(hy["readings"]["net_advances"]["average"], 80.0)
+        self.assertEqual(hy["readings"]["net_advances"]["percentile"], 100.0)
+        self.assertAlmostEqual(hy["readings"]["net_buying"]["today"], 60.0)  # (80 - 20) / 100
+        self.assertAlmostEqual(hy["readings"]["net_buying"]["average"], 6.0)  # one day of 60 in ten
+        ig = d["categories"]["investment_grade"]
+        self.assertAlmostEqual(ig["readings"]["net_advances"]["today"], 20.0)
+        self.assertEqual(len(hy["history"]), fb.HISTORY_DAYS)
+
+    def test_a_missing_day_is_not_filled(self):
+        rows_b = breadth_rows("2026-10-20") + breadth_rows("2026-10-22")
+        d = fb.build(fb.parse_breadth(rows_b), fb.parse_flows([]), "x")
+        hy = d["categories"]["high_yield"]
+        self.assertEqual(hy["trade_dates"], 2)
+        self.assertIsNone(hy["readings"]["net_buying"]["today"])
+        self.assertIsNone(hy["readings"]["net_advances"]["percentile"])  # too little history to rank
+
+    def test_no_breadth_is_an_error(self):
+        with self.assertRaises(ValueError):
+            fb.build(fb.parse_breadth([]), fb.parse_flows([]), "x")
 
 
 if __name__ == "__main__":

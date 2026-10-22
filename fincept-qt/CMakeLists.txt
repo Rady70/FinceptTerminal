@@ -1598,6 +1598,7 @@ set(SCREEN_SOURCES
     src/screens/dashboard/widgets/CotHighlightsWidget.cpp
     src/screens/dashboard/widgets/EtfFlowHighlightsWidget.cpp
     src/screens/dashboard/widgets/CnnFearGreedWidget.cpp
+    src/screens/dashboard/widgets/FinraWidgets.cpp
     # ReportBuilderScreen split; see header.
     src/screens/report_builder/ReportBuilderScreen.cpp
     src/screens/report_builder/ReportBuilderScreen_Components.cpp
