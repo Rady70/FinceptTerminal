@@ -1,22 +1,33 @@
-"""Market-wide breadth sentiment over every S&P 500 member (Yahoo daily bars).
+"""Risk appetite over every S&P 500 member (Yahoo daily bars), plus the day's
+up / down counts.
 
-Five readings of how the whole market is behaving, each ranked against its own
-previous 252 sessions (a percentile, 0..100), and the score is their average:
+Risk appetite asks whether investors are buying risky stocks or retreating
+into safe ones. Idea: Kumar & Persaud (2002), "Pure contagion and investors'
+shifting risk appetite" — when appetite rises, the assets that were riskiest
+do best; and Baker & Wurgler (2006, 2007) — investor mood moves volatile,
+speculative stocks most. Each session, over the members with enough history:
 
-  advancers   (stocks up - stocks down) / stocks with a move, %, averaged
-              over the last 5 sessions
-  up_volume   (volume of rising - falling stocks) / both, %, last 5 sessions
-  avg_move    equal-weight average % change over the last 5 sessions
-  above_50d   % of stocks above their 50-day average close
-  net_highs   (new 52-week highs - new lows) / stocks, %
+  risky_minus_safe          equal-weight return over the last 20 sessions of
+                            the most volatile fifth of members minus the
+                            least volatile fifth, percentage points
+  rank_correlation          Spearman rank correlation, across all members,
+                            between that 20-session return and the earlier
+                            volatility (Kumar & Persaud's index), -1..+1
+  cyclical_minus_defensive  equal-weight 20-session return of the cyclical
+                            sectors minus the defensive sectors (GICS), pp
 
-The three daily-flow readings use 5 sessions so one day's swing does not flip
-the score; today's own up / down counts are reported alongside.
+Volatility is the standard deviation of daily returns over the 60 sessions
+BEFORE the 20-session window, so a stock's own recent move cannot make it
+"risky". Each reading is ranked against its own previous 252 sessions (a
+percentile, 0..100); the score is the risky_minus_safe rank.
 
-A percentile says how today compares with the past year, so no fixed
-threshold has to be guessed. Members are today's list (Wikipedia), so the
-past-year history carries the usual survivorship caveat. Missing stocks are
-counted and named, never filled.
+Known limitation (Misina 2003, Bank of Canada): when stocks move together, a
+rise in risk itself can look like a fall in appetite.
+
+Returns use Yahoo's dividend- and split-adjusted close; the day's up / down
+counts use the split-adjusted close, as quoted. Members are today's list
+(Wikipedia), so the history carries the usual survivorship caveat. Missing
+stocks are counted and named, never filled.
 
 Usage: python market_breadth.py sentiment --cache-dir DIR [--force]
 """
@@ -36,21 +47,29 @@ import pandas as pd
 MEMBERS_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 USER_AGENT = "MarketLab/1.0 (personal research terminal)"
 MEMBERS_MAX_AGE = timedelta(days=7)
-# Two years: every reading (the 52-week window needs ~200 sessions of warm-up)
-# is then ranked against a full previous 252 sessions.
+# Two years: 60 + 20 sessions to form the first reading, then a full previous
+# 252 sessions to rank it against, then the 60 sessions of the chart.
 HISTORY_PERIOD = "2y"
 RANK_WINDOW = 252
-FLOW_SESSIONS = 5
+RETURN_SESSIONS = 20
+VOL_SESSIONS = 60
+FIFTH = 0.2
+MIN_STOCKS = 50
 SCORE_HISTORY = 60
 
+CYCLICAL = {"Consumer Discretionary", "Financials", "Industrials", "Materials", "Information Technology"}
+DEFENSIVE = {"Consumer Staples", "Utilities", "Health Care"}
+
 COMPONENTS = [
-    ("advancers", "Rising vs falling, 5d", "% net",
-     "(stocks up − stocks down) ÷ stocks with a move, averaged over the last 5 sessions"),
-    ("up_volume", "Up vs down volume, 5d", "% net",
-     "(volume of rising − falling stocks) ÷ both, summed over the last 5 sessions"),
-    ("avg_move", "Average move, 5d", "%", "Equal-weight average % change of all members over 5 sessions"),
-    ("above_50d", "Above 50-day average", "%", "Share of members closing above their 50-day average"),
-    ("net_highs", "52-wk highs − lows", "% net", "(new 52-week highs − new lows) ÷ members"),
+    ("risky_minus_safe", "Riskiest vs safest, 20d", "pp",
+     "Return over the last 20 sessions of the most volatile fifth of S&P 500 stocks minus the least volatile "
+     "fifth (volatility from the 60 sessions before), percentage points. This is the score."),
+    ("rank_correlation", "Return vs earlier risk", "corr",
+     "Rank correlation across all members between the 20-session return and the earlier volatility "
+     "(Kumar & Persaud's risk-appetite index): +1 = the riskier, the better; −1 = the safer, the better."),
+    ("cyclical_minus_defensive", "Cyclical vs defensive, 20d", "pp",
+     "Equal-weight 20-session return of consumer discretionary, financials, industrials, materials and "
+     "technology stocks minus consumer staples, utilities and health care, percentage points."),
 ]
 
 
@@ -58,21 +77,23 @@ def rating_for(score: float | None) -> str | None:
     if score is None:
         return None
     if score < 25:
-        return "extreme fear"
+        return "strongly avoiding risk"
     if score < 45:
-        return "fear"
+        return "avoiding risk"
     if score <= 55:
         return "neutral"
     if score <= 75:
-        return "greed"
-    return "extreme greed"
+        return "seeking risk"
+    return "strongly seeking risk"
 
 
 # ── members ──────────────────────────────────────────────────────────────────
 
-def load_members(cache: Path, now: datetime) -> tuple[list[str], str, str | None]:
-    """(symbols, fetched_at, note). Refreshed weekly; a failed refresh keeps
-    the cached list and says so."""
+def load_members(cache: Path, now: datetime) -> tuple[list[str], dict[str, str], str, str | None]:
+    """(symbols, GICS sector by symbol, fetched_at, note). Refreshed weekly; a
+    failed refresh keeps the cached list and says so. The file also keeps
+    each member's SEC CIK (member_ciks), which tells the share classes of one
+    company apart (GOOGL / GOOG)."""
     path = cache / "members.json"
     cached = None
     if path.exists():
@@ -80,32 +101,49 @@ def load_members(cache: Path, now: datetime) -> tuple[list[str], str, str | None
             cached = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cached = None
-    if cached and now - datetime.fromisoformat(cached["fetched_at"]) < MEMBERS_MAX_AGE:
-        return cached["symbols"], cached["fetched_at"], None
+    if cached and "ciks" in cached and now - datetime.fromisoformat(cached["fetched_at"]) < MEMBERS_MAX_AGE:
+        return cached["symbols"], cached["sectors"], cached["fetched_at"], None
     try:
         import requests
 
         html = requests.get(MEMBERS_URL, headers={"User-Agent": USER_AGENT}, timeout=30).text
         table = pd.read_html(io.StringIO(html), attrs={"id": "constituents"})[0]
-        symbols = sorted({str(s).strip().replace(".", "-") for s in table["Symbol"] if str(s).strip()})
+        sectors, ciks = {}, {}
+        for sym, sector, cik in zip(table["Symbol"], table["GICS Sector"], table["CIK"]):
+            s = str(sym).strip().replace(".", "-")
+            if s:
+                sectors[s] = str(sector).strip()
+                ciks[s] = str(cik).strip().split(".")[0].zfill(10)
+        symbols = sorted(sectors)
         if len(symbols) < 450:
             raise ValueError(f"only {len(symbols)} members parsed")
         fetched_at = now.isoformat(timespec="seconds")
-        path.write_text(json.dumps({"fetched_at": fetched_at, "symbols": symbols}), encoding="utf-8")
-        return symbols, fetched_at, None
+        path.write_text(json.dumps({"fetched_at": fetched_at, "symbols": symbols, "sectors": sectors,
+                                    "ciks": ciks}),
+                        encoding="utf-8")
+        return symbols, sectors, fetched_at, None
     except Exception as exc:  # noqa: BLE001
         if cached:
-            return cached["symbols"], cached["fetched_at"], f"member list refresh failed ({exc}); using the list of {cached['fetched_at'][:10]}"
+            return (cached["symbols"], cached.get("sectors", {}), cached["fetched_at"],
+                    f"member list refresh failed ({exc}); using the list of {cached['fetched_at'][:10]}")
         raise
+
+
+def member_ciks(cache: Path) -> dict[str, str]:
+    """The cached members' CIKs by symbol (empty when not stored)."""
+    try:
+        return json.loads((cache / "members.json").read_text(encoding="utf-8")).get("ciks", {})
+    except (OSError, ValueError):
+        return {}
 
 
 # ── bars ─────────────────────────────────────────────────────────────────────
 
-FIELDS = ["High", "Low", "Close", "Volume"]
+FIELDS = ["Close", "Adj Close", "Volume"]
 
 
 def _download(symbols: list[str], period: str) -> pd.DataFrame:
-    """Long frame (date, symbol, High, Low, Close, Volume) of unadjusted daily bars."""
+    """Long frame (date, symbol, Close, Adj Close, Volume) of daily bars."""
     import yfinance as yf
 
     if not symbols:
@@ -126,9 +164,9 @@ def _download(symbols: list[str], period: str) -> pd.DataFrame:
     return long.dropna(subset=["Close"])
 
 
-def update_bars(cache: Path, symbols: list[str], force: bool) -> tuple[pd.DataFrame, list[str]]:
+def update_bars(cache: Path, symbols: list[str], force: bool) -> pd.DataFrame:
     """Cached history plus the latest five sessions; full history for members
-    the cache lacks. Returns (bars, symbols that returned no data)."""
+    the cache lacks or whose adjusted history was re-scaled."""
     path = cache / "bars.parquet"
     bars = None
     if path.exists() and not force:
@@ -136,10 +174,14 @@ def update_bars(cache: Path, symbols: list[str], force: bool) -> tuple[pd.DataFr
             bars = pd.read_parquet(path)
         except Exception:  # noqa: BLE001 - a broken cache is rebuilt
             bars = None
-    stale = bars is None or bars.empty or (pd.Timestamp.now().normalize() - bars["date"].max()).days > 5
+    # A cache from before the adjusted close was kept is rebuilt once.
+    stale = (bars is None or bars.empty or "Adj Close" not in bars.columns
+             or (pd.Timestamp.now().normalize() - bars["date"].max()).days > 5)
     if stale:
         bars = _download(symbols, HISTORY_PERIOD)
-    else:
+    if not bars.empty:
+        # The latest sessions come from a short read: a long read made in the
+        # evening has been seen to leave the day's session out.
         have = set(bars["symbol"].unique())
         new = [s for s in symbols if s not in have]
         recent = _download(symbols, "5d")
@@ -148,10 +190,17 @@ def update_bars(cache: Path, symbols: list[str], force: bool) -> tuple[pd.DataFr
         retry = [s for s in symbols if s not in got]
         if retry:
             recent = pd.concat([recent, _download(retry, "5d")], ignore_index=True)
-        parts = [bars[~bars.set_index(["date", "symbol"]).index.isin(recent.set_index(["date", "symbol"]).index)],
-                 recent]
-        if new:
-            parts.append(_download(new, HISTORY_PERIOD))
+        # A new dividend or split re-scales a stock's whole adjusted history:
+        # when its latest stored adjustment factor changed, it is re-read.
+        joined = recent.merge(bars, on=["date", "symbol"], suffixes=("", "_old"))
+        ratio_now = joined["Adj Close"] / joined["Close"]
+        ratio_old = joined["Adj Close_old"] / joined["Close_old"]
+        rescaled = sorted(set(joined.loc[(ratio_now / ratio_old - 1).abs() > 1e-6, "symbol"]))
+        parts = [bars[~bars.set_index(["date", "symbol"]).index.isin(recent.set_index(["date", "symbol"]).index)
+                      & ~bars["symbol"].isin(rescaled)],
+                 recent[~recent["symbol"].isin(rescaled)]]
+        if new or rescaled:
+            parts.append(_download(sorted(set(new) | set(rescaled)), HISTORY_PERIOD))
         bars = pd.concat(parts, ignore_index=True)
     bars = bars[bars["symbol"].isin(symbols)].drop_duplicates(["date", "symbol"], keep="last")
     cutoff = bars["date"].max() - pd.Timedelta(days=760)
@@ -159,48 +208,72 @@ def update_bars(cache: Path, symbols: list[str], force: bool) -> tuple[pd.DataFr
     tmp = path.with_suffix(".tmp")
     bars.to_parquet(tmp, index=False)
     tmp.replace(path)
-    latest = bars["date"].max()
-    present = set(bars.loc[bars["date"] == latest, "symbol"])
-    return bars, sorted(s for s in symbols if s not in present)
+    return bars
+
+
+def complete_sessions(bars: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Drop trailing sessions with bars for fewer than half the stocks of the
+    fullest recent session (a stray early bar), and say so."""
+    per_day = bars.groupby("date")["symbol"].nunique().sort_index()
+    full = per_day.tail(10).max()
+    dropped = []
+    while len(per_day) and per_day.iloc[-1] < 0.5 * full:
+        dropped.append(f"{per_day.index[-1]:%Y-%m-%d} skipped: bars for only {per_day.iloc[-1]} stocks")
+        per_day = per_day.iloc[:-1]
+    if dropped:
+        bars = bars[bars["date"] <= per_day.index[-1]]
+    return bars, dropped
 
 
 # ── readings ─────────────────────────────────────────────────────────────────
 
-def daily_readings(bars: pd.DataFrame) -> pd.DataFrame:
-    """One row per session with the five readings and the counts."""
+def daily_counts(bars: pd.DataFrame) -> pd.DataFrame:
+    """One row per session: stocks up / down / flat / with a move, and the
+    equal-weight average % change."""
     close = bars.pivot(index="date", columns="symbol", values="Close").sort_index()
-    high = bars.pivot(index="date", columns="symbol", values="High").reindex_like(close)
-    low = bars.pivot(index="date", columns="symbol", values="Low").reindex_like(close)
-    vol = bars.pivot(index="date", columns="symbol", values="Volume").reindex_like(close)
-
     chg = close.pct_change(fill_method=None) * 100
-    moved = chg.notna()
-    up = (chg > 0).sum(axis=1)
-    down = (chg < 0).sum(axis=1)
-    observed = moved.sum(axis=1)
-    upvol = vol.where(chg > 0).sum(axis=1)
-    downvol = vol.where(chg < 0).sum(axis=1)
-    ma50 = close.rolling(50, min_periods=50).mean()
-    has_ma = ma50.notna() & close.notna()
-    hi = high.rolling(252, min_periods=200).max()
-    lo = low.rolling(252, min_periods=200).min()
-    has_hl = hi.notna() & lo.notna()
-
     out = pd.DataFrame(index=close.index)
-    net_adv = ((up - down) / observed.replace(0, np.nan)) * 100
-    out["advancers"] = net_adv.rolling(FLOW_SESSIONS, min_periods=FLOW_SESSIONS).mean()
-    up5 = upvol.rolling(FLOW_SESSIONS, min_periods=FLOW_SESSIONS).sum()
-    down5 = downvol.rolling(FLOW_SESSIONS, min_periods=FLOW_SESSIONS).sum()
-    out["up_volume"] = ((up5 - down5) / (up5 + down5).replace(0, np.nan)) * 100
-    out["avg_move"] = (close.pct_change(FLOW_SESSIONS, fill_method=None) * 100).mean(axis=1)
+    out["up"] = (chg > 0).sum(axis=1)
+    out["down"] = (chg < 0).sum(axis=1)
+    out["observed"] = chg.notna().sum(axis=1)
+    out["flat"] = out["observed"] - out["up"] - out["down"]
     out["today_move"] = chg.mean(axis=1)
-    out["above_50d"] = ((close > ma50) & has_ma).sum(axis=1) / has_ma.sum(axis=1).replace(0, np.nan) * 100
-    out["net_highs"] = (((high >= hi) & has_hl).sum(axis=1) - ((low <= lo) & has_hl).sum(axis=1)) / \
-        has_hl.sum(axis=1).replace(0, np.nan) * 100
-    out["up"] = up
-    out["down"] = down
-    out["flat"] = observed - up - down
-    out["observed"] = observed
+    return out
+
+
+def risk_readings(bars: pd.DataFrame, sectors: dict[str, str]) -> pd.DataFrame:
+    """One row per session with the three risk-appetite readings."""
+    adj = bars.pivot(index="date", columns="symbol", values="Adj Close").sort_index()
+    daily = adj.pct_change(fill_method=None)
+    vol = daily.rolling(VOL_SESSIONS, min_periods=VOL_SESSIONS - 10).std().shift(RETURN_SESSIONS)
+    ret = (adj / adj.shift(RETURN_SESSIONS) - 1.0) * 100
+    both = ret.notna() & vol.notna()
+    r = ret.where(both)
+    v = vol.where(both)
+
+    vpct = v.rank(axis=1, pct=True)
+    risky = r.where(vpct > 1 - FIFTH).mean(axis=1)
+    safe = r.where(vpct <= FIFTH).mean(axis=1)
+
+    rr = r.rank(axis=1)
+    rv = v.rank(axis=1)
+    rr = rr.sub(rr.mean(axis=1), axis=0)
+    rv = rv.sub(rv.mean(axis=1), axis=0)
+    denom = np.sqrt((rr ** 2).sum(axis=1) * (rv ** 2).sum(axis=1))
+    corr = (rr * rv).sum(axis=1) / denom.replace(0, np.nan)
+
+    sector = pd.Series(sectors, dtype=object).reindex(adj.columns)
+    cyc = r.loc[:, sector.isin(CYCLICAL).to_numpy()].mean(axis=1)
+    dfn = r.loc[:, sector.isin(DEFENSIVE).to_numpy()].mean(axis=1)
+
+    out = pd.DataFrame(index=adj.index)
+    out["stocks"] = both.sum(axis=1)
+    enough = out["stocks"] >= MIN_STOCKS
+    out["risky_return"] = risky.where(enough)
+    out["safe_return"] = safe.where(enough)
+    out["risky_minus_safe"] = (risky - safe).where(enough)
+    out["rank_correlation"] = corr.where(enough)
+    out["cyclical_minus_defensive"] = (cyc - dfn).where(enough)
     return out
 
 
@@ -212,35 +285,45 @@ def percentile_rank(history: pd.Series, value: float) -> float | None:
     return float((h <= value).mean() * 100.0)
 
 
-def score_at(readings: pd.DataFrame, i: int) -> tuple[float | None, dict]:
+def ranks_at(readings: pd.DataFrame, i: int) -> dict:
     ranks = {}
     for key, *_ in COMPONENTS:
         prior = readings[key].iloc[max(0, i - RANK_WINDOW):i]
         ranks[key] = percentile_rank(prior, readings[key].iloc[i])
-    usable = [v for v in ranks.values() if v is not None]
-    return (float(np.mean(usable)) if len(usable) >= 3 else None), ranks
+    return ranks
 
 
-def build(bars: pd.DataFrame, members: list[str], missing: list[str], retrieved_at: str, notes: list[str]) -> dict:
-    readings = daily_readings(bars)
-    if len(readings) < 70:
+def build(bars: pd.DataFrame, members: list[str], sectors: dict[str, str], retrieved_at: str,
+          notes: list[str]) -> dict:
+    bars, skipped = complete_sessions(bars)
+    notes = [*notes, *skipped]
+    present = set(bars.loc[bars["date"] == bars["date"].max(), "symbol"])
+    missing = sorted(s for s in members if s not in present)
+    counts = daily_counts(bars)
+    readings = risk_readings(bars, sectors)
+    if readings["risky_minus_safe"].notna().sum() < 70:
         raise ValueError(f"only {len(readings)} sessions of history")
     last = len(readings) - 1
-    score, ranks = score_at(readings, last)
+    ranks = ranks_at(readings, last)
+    score = ranks["risky_minus_safe"]
     row = readings.iloc[last]
+    today = counts.iloc[-1]
 
-    def num(v):
-        return None if v is None or not np.isfinite(v) else round(float(v), 2)
+    def num(v, places=2):
+        return None if v is None or not np.isfinite(v) else round(float(v), places)
 
     components = []
     for key, label, unit, detail in COMPONENTS:
-        components.append({"key": key, "label": label, "unit": unit, "detail": detail, "value": num(row[key]),
+        components.append({"key": key, "label": label, "unit": unit, "detail": detail,
+                           "value": num(row[key], 3 if unit == "corr" else 2),
                            "percentile": None if ranks[key] is None else round(ranks[key], 1)})
     history = []
-    for i in range(max(RANK_WINDOW // 4, last - SCORE_HISTORY + 1), last + 1):
-        s, _ = score_at(readings, i)
+    for i in range(max(0, last - SCORE_HISTORY + 1), last + 1):
+        s = ranks_at(readings, i)["risky_minus_safe"]
         if s is not None:
             history.append({"date": readings.index[i].strftime("%Y-%m-%d"), "score": round(s, 1)})
+    if not sectors:
+        notes = [*notes, "No sector list: the cyclical vs defensive reading is unavailable."]
     return {
         "source": "Yahoo daily bars of the S&P 500 members",
         "as_of": readings.index[last].strftime("%Y-%m-%d"),
@@ -248,15 +331,20 @@ def build(bars: pd.DataFrame, members: list[str], missing: list[str], retrieved_
         "score": None if score is None else round(score, 1),
         "rating": rating_for(score),
         "members": len(members),
-        "observed": int(row["observed"]),
-        "up": int(row["up"]),
-        "down": int(row["down"]),
-        "flat": int(row["flat"]),
-        "today_avg_move": num(row["today_move"]),
+        "stocks_ranked": int(row["stocks"]),
+        "risky_return": num(row["risky_return"]),
+        "safe_return": num(row["safe_return"]),
+        "observed": int(today["observed"]),
+        "up": int(today["up"]),
+        "down": int(today["down"]),
+        "flat": int(today["flat"]),
+        "today_avg_move": num(today["today_move"]),
         "missing": missing,
         "components": components,
         "history": history,
         "rank_window": RANK_WINDOW,
+        "return_sessions": RETURN_SESSIONS,
+        "volatility_sessions": VOL_SESSIONS,
         "notes": notes,
     }
 
@@ -271,13 +359,13 @@ def main(argv: list[str]) -> int:
     try:
         cache = Path(args.cache_dir)
         cache.mkdir(parents=True, exist_ok=True)
-        members, members_at, note = load_members(cache, now)
+        members, sectors, members_at, note = load_members(cache, now)
         notes = [note] if note else []
         notes.append(f"Members as listed on {members_at[:10]}; past-year history uses today's members.")
-        bars, missing = update_bars(cache, members, args.force)
-        data = build(bars, members, missing, now.isoformat(timespec="seconds"), notes)
+        bars = update_bars(cache, members, args.force)
+        data = build(bars, members, sectors, now.isoformat(timespec="seconds"), notes)
     except Exception as exc:  # noqa: BLE001 - reported to the widget, never hidden
-        print(json.dumps({"success": False, "error": f"Market breadth: {type(exc).__name__}: {exc}"[:400]}))
+        print(json.dumps({"success": False, "error": f"Risk appetite: {type(exc).__name__}: {exc}"[:400]}))
         return 0
     print(json.dumps({"success": True, "data": data}))
     return 0

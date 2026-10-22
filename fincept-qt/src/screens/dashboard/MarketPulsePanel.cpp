@@ -12,6 +12,7 @@
 
 #include <QDateTime>
 #include <QFrame>
+#include <QLocale>
 #include <QPalette>
 #include <QSet>
 #include <QShowEvent>
@@ -112,7 +113,7 @@ MarketPulsePanel::MarketPulsePanel(QWidget* parent) : QWidget(parent) {
     cl->setContentsMargins(0, 0, 0, 0);
     cl->setSpacing(0);
 
-    cl->addWidget(build_fear_greed_section());
+    cl->addWidget(build_sp500_today_section());
     cl->addWidget(build_breadth_section());
     cl->addWidget(build_gainers_section());
     cl->addWidget(build_losers_section());
@@ -146,7 +147,7 @@ MarketPulsePanel::MarketPulsePanel(QWidget* parent) : QWidget(parent) {
             [this](const ui::ThemeTokens&) { refresh_theme(); });
     refresh_theme();
     connect(&services::MarketBreadthFeed::instance(), &services::MarketBreadthFeed::changed, this,
-            &MarketPulsePanel::apply_breadth_sentiment);
+            &MarketPulsePanel::apply_sp500_today);
 }
 
 // ── Theme refresh ────────────────────────────────────────────────────────────
@@ -203,30 +204,24 @@ void MarketPulsePanel::refresh_theme() {
     style_section(sh_snapshot_, ui::colors::INFO());
     style_section(sh_hours_, ui::colors::WARNING());
 
-    // ── Fear & Greed ──
-    if (fg_header_label_)
-        fg_header_label_->setStyleSheet(
+    // ── S&P 500 today ──
+    if (sp_header_)
+        sp_header_->setStyleSheet(
             QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; background: transparent;")
                 .arg(ui::colors::TEXT_SECONDARY()));
-    if (fg_gauge_icon_)
-        fg_gauge_icon_->setStyleSheet(
-            QString("color: %1; font-size: 12px; background: transparent;").arg(ui::colors::AMBER()));
-    if (fg_gradient_bar_)
-        fg_gradient_bar_->setStyleSheet(QString("QFrame { border-radius: 3px; "
-                                                "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-                                                "stop:0 %1, stop:0.25 %2, stop:0.5 %3, stop:0.75 %4, stop:1 %5); }")
-                                            .arg(ui::colors::NEGATIVE(), ui::colors::AMBER(), ui::colors::WARNING(),
-                                                 ui::colors::POSITIVE_DIM(), ui::colors::POSITIVE()));
-    if (fg_score_val_)
-        fg_score_val_->setStyleSheet(QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;")
-                                         .arg(ui::colors::TEXT_TERTIARY()));
-    if (fg_score_max_)
-        fg_score_max_->setStyleSheet(
-            QString("color: %1; font-size: 9px; background: transparent;").arg(ui::colors::TEXT_TERTIARY()));
-    if (fg_sentiment_)
-        fg_sentiment_->setStyleSheet(
-            QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; background: transparent;")
-                .arg(ui::colors::TEXT_TERTIARY()));
+    if (sp_up_)
+        sp_up_->setStyleSheet(QString("color: %1; font-size: 14px; font-weight: bold; background: transparent;")
+                                  .arg(ui::colors::POSITIVE()));
+    if (sp_down_)
+        sp_down_->setStyleSheet(QString("color: %1; font-size: 14px; font-weight: bold; background: transparent;")
+                                    .arg(ui::colors::NEGATIVE()));
+    if (sp_move_)
+        sp_move_->setStyleSheet(QString("color: %1; font-size: 9px; font-weight: bold; background: transparent;")
+                                    .arg(ui::colors::TEXT_PRIMARY()));
+    if (sp_up_bar_)
+        sp_up_bar_->setStyleSheet(QString("background: %1; border-radius: 0;").arg(ui::colors::POSITIVE()));
+    if (sp_down_bar_)
+        sp_down_bar_->setStyleSheet(QString("background: %1; border-radius: 0;").arg(ui::colors::NEGATIVE()));
 
     // ── Market Breadth rows ──
     auto style_breadth = [](BreadthRow& row) {
@@ -297,9 +292,6 @@ void MarketPulsePanel::refresh_theme() {
     style_mover_section(gainers_rows_, /*positive_section=*/true);
     style_mover_section(losers_rows_, /*positive_section=*/false);
 
-    // Force the Fear & Greed labels to re-apply against the new tokens.
-    fg_applied_color_.clear();
-
     if (isVisible()) {
         rebuild_breadth_from_cache();
         rebuild_movers_from_cache();
@@ -315,7 +307,7 @@ void MarketPulsePanel::showEvent(QShowEvent* e) {
         const QDateTime last = feed.last_success();
         if (!feed.running() && (!last.isValid() || last.secsTo(QDateTime::currentDateTimeUtc()) > 15 * 60))
             feed.request();
-        apply_breadth_sentiment();
+        apply_sp500_today();
     }
     if (!hub_active_)
         hub_subscribe_all();
@@ -416,52 +408,42 @@ QWidget* MarketPulsePanel::build_section_header(const QString& title, const QStr
     return w;
 }
 
-// ── Fear & Greed ─────────────────────────────────────────────────────────────
+// ── S&P 500 today ────────────────────────────────────────────────────────────
 
-QWidget* MarketPulsePanel::build_fear_greed_section() {
+QWidget* MarketPulsePanel::build_sp500_today_section() {
     auto* w = new QWidget(this);
     auto* vl = new QVBoxLayout(w);
     vl->setContentsMargins(12, 8, 12, 8);
     vl->setSpacing(6);
 
-    // Header row
-    auto* header_row = new QWidget(this);
-    auto* hrl = new QHBoxLayout(header_row);
-    hrl->setContentsMargins(0, 0, 0, 0);
+    sp_header_ = new QLabel(tr("S&P 500 · LATEST SESSION · ALL MEMBERS"));
+    vl->addWidget(sp_header_);
 
-    fg_header_label_ = new QLabel(tr("MARKET SENTIMENT · ALL S&P 500"));
-    hrl->addWidget(fg_header_label_);
-    hrl->addStretch();
+    auto* count_row = new QWidget(this);
+    auto* crl = new QHBoxLayout(count_row);
+    crl->setContentsMargins(0, 0, 0, 0);
+    sp_up_ = new QLabel(QStringLiteral("--"));
+    crl->addWidget(sp_up_);
+    crl->addStretch();
+    sp_move_ = new QLabel;
+    crl->addWidget(sp_move_);
+    crl->addStretch();
+    sp_down_ = new QLabel(QStringLiteral("--"));
+    crl->addWidget(sp_down_);
+    vl->addWidget(count_row);
 
-    fg_gauge_icon_ = new QLabel(QChar(0x25CE));
-    hrl->addWidget(fg_gauge_icon_);
-
-    vl->addWidget(header_row);
-
-    // Gradient bar (red→green, themed)
-    fg_gradient_bar_ = new QFrame;
-    fg_gradient_bar_->setFixedHeight(6);
-    vl->addWidget(fg_gradient_bar_);
-
-    // Score row
-    auto* score_row = new QWidget(this);
-    auto* srl = new QHBoxLayout(score_row);
-    srl->setContentsMargins(0, 0, 0, 0);
-
-    fg_score_val_ = new QLabel("--");
-    srl->addWidget(fg_score_val_);
-
-    fg_score_max_ = new QLabel("/100");
-    srl->addWidget(fg_score_max_);
-
-    srl->addStretch();
-
-    fg_sentiment_key_ = QStringLiteral("LOADING...");
-    fg_sentiment_ = new QLabel(tr("LOADING..."));
-    srl->addWidget(fg_sentiment_);
+    // Split bar: rising vs falling members.
+    auto* bar = new QWidget(this);
+    bar->setFixedHeight(6);
+    auto* bl = new QHBoxLayout(bar);
+    bl->setContentsMargins(0, 0, 0, 0);
+    bl->setSpacing(0);
+    sp_up_bar_ = new QFrame;
+    bl->addWidget(sp_up_bar_, 1);
+    sp_down_bar_ = new QFrame;
+    bl->addWidget(sp_down_bar_, 1);
+    vl->addWidget(bar);
     // All styling applied by refresh_theme()
-
-    vl->addWidget(score_row);
     return w;
 }
 
@@ -904,44 +886,50 @@ void MarketPulsePanel::rebuild_breadth_from_cache() {
     update_row(sp500_row_, sp500_adv, sp500_dec, sp500_obs);
 }
 
-void MarketPulsePanel::apply_breadth_sentiment() {
-    // The dashboard's one market-wide sentiment reading (MarketBreadthFeed),
-    // the same number as the Market Sentiment widget.
+void MarketPulsePanel::apply_sp500_today() {
+    // Every S&P 500 member's latest session from MarketBreadthFeed: a count
+    // of what happened, not a sentiment score.
     const auto& feed = services::MarketBreadthFeed::instance();
     const QJsonObject& d = feed.data();
-    const QJsonValue score_v = d.value(QStringLiteral("score"));
-    QString color = ui::colors::TEXT_DIM();
-    if (!score_v.isDouble()) {
-        fg_sentiment_key_.clear();
-        if (fg_score_val_)
-            fg_score_val_->setText(QStringLiteral("--"));
-        if (fg_sentiment_)
-            fg_sentiment_->setText(feed.running() ? tr("LOADING...") : QStringLiteral("—"));
-    } else {
-        const double score = score_v.toDouble();
-        fg_sentiment_key_ = d.value(QStringLiteral("rating")).toString().toUpper();
-        color = score < 45 ? ui::colors::NEGATIVE() : score <= 55 ? ui::colors::WARNING() : ui::colors::POSITIVE();
-        if (fg_score_val_)
-            fg_score_val_->setText(QString::number(score, 'f', 0));
-        if (fg_sentiment_)
-            fg_sentiment_->setText(tr(fg_sentiment_key_.toUtf8().constData()));
+    if (!sp_up_)
+        return;
+    if (!d.value(QStringLiteral("observed")).isDouble()) {
+        sp_up_->setText(QStringLiteral("--"));
+        sp_down_->setText(QStringLiteral("--"));
+        sp_move_->setText(feed.running() ? tr("LOADING...") : QStringLiteral("—"));
+        sp_header_->setToolTip(feed.error().isEmpty() ? QString() : tr("Last update failed: %1").arg(feed.error()));
+        return;
     }
-    if (fg_header_label_)
-        fg_header_label_->setToolTip(
-            feed.error().isEmpty()
-                ? tr("All S&P 500 stocks, session %1: five breadth readings ranked against the past year (the "
-                     "Market Sentiment widget shows the parts).")
-                      .arg(d.value(QStringLiteral("as_of")).toString())
-                : tr("Last update failed: %1").arg(feed.error()));
-    if (color != fg_applied_color_) {
-        fg_applied_color_ = color;
-        if (fg_score_val_)
-            fg_score_val_->setStyleSheet(
-                QString("color: %1; font-size: 18px; font-weight: bold; background: transparent;").arg(color));
-        if (fg_sentiment_)
-            fg_sentiment_->setStyleSheet(
-                QString("color: %1; font-size: 9px; font-weight: bold; letter-spacing: 0.5px; background: transparent;")
-                    .arg(color));
+    const int up = d.value(QStringLiteral("up")).toInt();
+    const int down = d.value(QStringLiteral("down")).toInt();
+    const int flat = d.value(QStringLiteral("flat")).toInt();
+    const QJsonValue move = d.value(QStringLiteral("today_avg_move"));
+    sp_up_->setText(tr("%1 up").arg(up));
+    sp_down_->setText(tr("%1 down").arg(down));
+    sp_move_->setText(move.isDouble() ? tr("avg %1%2%")
+                                            .arg(move.toDouble() >= 0 ? QStringLiteral("+") : QString())
+                                            .arg(move.toDouble(), 0, 'f', 2)
+                                      : QStringLiteral("—"));
+    const QDate as_of = QDate::fromString(d.value(QStringLiteral("as_of")).toString(), Qt::ISODate);
+    // The latest complete session, which is not always today (weekends,
+    // holidays, or Yahoo's daily bar not yet published).
+    sp_header_->setText(
+        tr("S&P 500 · %1 · ALL MEMBERS").arg(QLocale::c().toString(as_of, QStringLiteral("d MMM")).toUpper()));
+    QString tip = tr("All %1 S&P 500 members with a bar, session %2: %3 up, %4 down, %5 unchanged; average "
+                     "stock's change (split-adjusted close).")
+                      .arg(d.value(QStringLiteral("observed")).toInt())
+                      .arg(QLocale::c().toString(as_of, QStringLiteral("d MMM yyyy")))
+                      .arg(up)
+                      .arg(down)
+                      .arg(flat);
+    if (!feed.error().isEmpty())
+        tip += QStringLiteral("\n") + tr("Last update failed: %1").arg(feed.error());
+    sp_header_->setToolTip(tip);
+    if (auto* layout = qobject_cast<QHBoxLayout*>(sp_up_bar_->parentWidget()->layout())) {
+        const int classified = up + down;
+        const int up_pct = classified > 0 ? static_cast<int>(double(up) / classified * 100) : 50;
+        layout->setStretch(0, up_pct);
+        layout->setStretch(1, 100 - up_pct);
     }
 }
 
@@ -1115,8 +1103,6 @@ void MarketPulsePanel::changeEvent(QEvent* event) {
 void MarketPulsePanel::retranslateUi() {
     if (header_title_)
         header_title_->setText(tr("MARKET PULSE"));
-    if (fg_header_label_)
-        fg_header_label_->setText(tr("MARKET SENTIMENT · ALL S&P 500"));
 
     auto set_sh = [](SectionHeader& sh) {
         if (!sh.title)
@@ -1139,21 +1125,7 @@ void MarketPulsePanel::retranslateUi() {
     set_sh(sh_snapshot_);
     set_sh(sh_hours_);
 
-    if (fg_sentiment_ && !fg_sentiment_key_.isEmpty()) {
-        const QString& k = fg_sentiment_key_;
-        if (k == QLatin1String("EXTREME FEAR"))
-            fg_sentiment_->setText(tr("EXTREME FEAR"));
-        else if (k == QLatin1String("FEAR"))
-            fg_sentiment_->setText(tr("FEAR"));
-        else if (k == QLatin1String("NEUTRAL"))
-            fg_sentiment_->setText(tr("NEUTRAL"));
-        else if (k == QLatin1String("GREED"))
-            fg_sentiment_->setText(tr("GREED"));
-        else if (k == QLatin1String("EXTREME GREED"))
-            fg_sentiment_->setText(tr("EXTREME GREED"));
-        else if (k == QLatin1String("LOADING..."))
-            fg_sentiment_->setText(tr("LOADING..."));
-    }
+    apply_sp500_today();
 
     for (auto& hr : hours_rows_) {
         if (!hr.name_lbl)

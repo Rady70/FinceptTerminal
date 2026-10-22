@@ -17,8 +17,9 @@ class LoadingOverlay;
 
 namespace fincept::screens {
 
-/// Right-side market pulse panel — Fear/Greed, breadth, top movers, global
-/// snapshot, market hours.
+/// Right-side market pulse panel — what the market did today: the whole
+/// S&P 500's up / down count, basket breadth, top movers, global snapshot,
+/// market hours. (Sentiment lives in the Market Sentiment and CNN widgets.)
 ///
 /// Subscribes to `market:quote:<sym>` on the DataHub for the union of
 /// breadth + mover + snapshot symbol sets. Each delivery updates the
@@ -48,7 +49,7 @@ class MarketPulsePanel : public QWidget {
     // ── Build helpers ──
     QWidget* build_header();
     QWidget* build_section_header(const QString& title, const QString& icon_char, const QString& color);
-    QWidget* build_fear_greed_section();
+    QWidget* build_sp500_today_section();
     QWidget* build_breadth_section();
     QWidget* build_gainers_section();
     QWidget* build_losers_section();
@@ -85,14 +86,13 @@ class MarketPulsePanel : public QWidget {
     SectionHeader sh_snapshot_;
     SectionHeader sh_hours_;
 
-    // ── Fear & Greed ──
-    QLabel* fg_header_label_ = nullptr;
-    QLabel* fg_gauge_icon_ = nullptr;
-    QLabel* fg_score_val_ = nullptr;
-    QLabel* fg_score_max_ = nullptr;
-    QLabel* fg_sentiment_ = nullptr;
-    QFrame* fg_gradient_bar_ = nullptr;
-    QString fg_sentiment_key_; // English source key, fed through tr() on retranslate
+    // ── S&P 500 today (services::MarketBreadthFeed) ──
+    QLabel* sp_header_ = nullptr;
+    QLabel* sp_up_ = nullptr;
+    QLabel* sp_down_ = nullptr;
+    QLabel* sp_move_ = nullptr;
+    QWidget* sp_up_bar_ = nullptr;
+    QWidget* sp_down_bar_ = nullptr;
 
     // ── Market Breadth ──
     // per-exchange: {name_label, adv_label, slash_label, dec_label, green_bar, red_bar}
@@ -161,8 +161,8 @@ class MarketPulsePanel : public QWidget {
     void hub_subscribe_all();
     void hub_unsubscribe_all();
     void rebuild_breadth_from_cache();
-    /// The market-wide sentiment score (services::MarketBreadthFeed).
-    void apply_breadth_sentiment();
+    /// Today's up / down count of every S&P 500 member (services::MarketBreadthFeed).
+    void apply_sp500_today();
     void rebuild_movers_from_cache();
     void rebuild_snapshot_from_cache();
 
@@ -181,10 +181,6 @@ class MarketPulsePanel : public QWidget {
     bool snapshot_dirty_ = false;
     void schedule_render();
     void flush_render();
-
-    // Last-applied sentiment colour, so the Fear & Greed labels only pay a CSS
-    // reparse when the regime actually changes.
-    QString fg_applied_color_;
 
     // Loading overlay shown over the scroll area while the union of the
     // breadth/movers/snapshot caches fills up. The denominator is the
